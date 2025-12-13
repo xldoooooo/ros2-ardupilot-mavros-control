@@ -6,7 +6,9 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![ArduPilot](https://img.shields.io/badge/ArduPilot-Copter%204.x-green)](https://ardupilot.org/)
 
-> Production-ready framework to control ArduPilot drones with ROS2. **Seamlessly switch between SITL simulation and real hardware** using the same code.
+ > Open-source framework to control ArduPilot drones with ROS2. Test missions in SITL simulation, then deploy to real hardware.
+
+
 
 **Battle-tested** on real flights with Cube Orange flight controller and Raspberry Pi 4.
 
@@ -18,7 +20,7 @@
 - 🔄 **SITL & Hardware Testing** - Test missions in simulation on same Raspberry Pi, then deploy to real drone
 - ✅ **Flight Validated** - Tested on [FuryVision AAV](https://github.com/sidharthmohannair/Fury-Drone-Project) in actual autonomous flight
 - 🛡️ **Safety First** - Comprehensive pre-flight checks and emergency procedures
-- 📡 **Ground Station Optional** - Mission Planner/QGroundControl for monitoring (may or maynot required for flight,it depends on  application)
+- 📡 **Ground Station Optional** - Mission Planner/QGroundControl for monitoring (may or may not be required depending on application)
 - 📚 **Complete Workflow** - SITL testing → Bench testing → Flight testing documented
 - 🔧 **Open Hardware Reference** - Test platform fully documented (CAD, assembly, wiring)
 - 🔄 **Iterative Development** - Actively maintained with community feedback and new examples
