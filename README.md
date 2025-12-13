@@ -30,7 +30,7 @@
 - **ArduPilot SITL** (for simulation)
 - **MAVROS** installed
 
-**Don't have these?** See [Installation Guide](docs/installation/PREREQUISITES.md)
+**Don't have these?** See [Installation Guide](docs/installation/installation-README.md)
 
 ### Test in Simulation (5 minutes)
 
