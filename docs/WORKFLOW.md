@@ -370,7 +370,7 @@ pkill -9 -f sim_vehicle
 
 - **New to this?** Start with [SITL Setup Guide](guides/SITL_SETUP.md)
 - **Ready for hardware?** See [Real Hardware Setup](guides/REAL_HARDWARE_SETUP.md)
-- **Creating missions?** Check [Mission Examples](scripts/missions/README.md)
+- **Creating missions?** Check [Mission Examples](../scripts/missions/README.md)
 
 ---
 

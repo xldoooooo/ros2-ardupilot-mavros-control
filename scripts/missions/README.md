@@ -2,8 +2,6 @@
 
 Python scripts for autonomous drone control via MAVROS and ArduPilot SITL.
 
-**Created by:** [Sidharth Mohan Nair](https://github.com/sidharthmohannair)
-
 ---
 
 ## Available Scripts

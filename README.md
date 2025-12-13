@@ -34,7 +34,7 @@
 - **ArduPilot SITL** (for simulation)
 - **MAVROS** installed
 
-**Don't have these?** See [Installation Guide](docs/installation/README.md)
+**Don't have these?** See [Installation Guide](docs/installation/installation-README.md)
 
 ---
 
@@ -116,7 +116,7 @@ See **[WORKFLOW.md](docs/WORKFLOW.md)** for:
 ## 📖 Documentation
 
 ### Getting Started
-- **[Installation Guide](docs/installation/README.md)** - Install ROS2, MAVROS, ArduPilot SITL
+- **[Installation Guide](docs/installation/installation-README.md)** - Install ROS2, MAVROS, ArduPilot SITL
 - **[SITL Simulation](docs/guides/SITL_SETUP.md)** - Test missions safely in simulation
 
 ### Hardware Deployment  
