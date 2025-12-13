@@ -1,156 +1,155 @@
-# MAVROS + ArduPilot SITL Configuration
+# ROS2-ArduPilot SITL & Hardware Integration
 
-This workspace contains the configuration for running MAVROS with ArduPilot SITL (Software In The Loop) simulation.
+[![ROS2](https://img.shields.io/badge/ROS2-Humble-blue)](https://docs.ros.org/en/humble/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![ArduPilot](https://img.shields.io/badge/ArduPilot-Copter%204.x-green)](https://ardupilot.org/)
 
-## Setup Complete ✅
+> Production-ready framework to control ArduPilot drones with ROS2. **Seamlessly switch between SITL simulation and real hardware** using the same code.
 
-Your workspace is ready! Here's what was created:
+**Battle-tested** on real flights with Cube Orange flight controller and Raspberry Pi 4.
 
-### Workspace Structure
-```
-~/ros2_ws/
-├── src/
-│   └── mavros_sitl_config/          # MAVROS configuration package
-│       ├── launch/
-│       │   └── ardupilot_sitl.launch.py   # Launch file for SITL connection
-│       └── config/
-│           └── mavros_params.yaml         # MAVROS parameters
-├── start_sitl.sh                    # Helper script to start SITL
-└── start_mavros.sh                  # Helper script to start MAVROS
-```
+---
 
-## How to Use
+## ✨ Key Features
 
-### Option 1: Using Helper Scripts (Easiest)
+- 🔄 **Dual Environment** - Same mission code works in SITL and real hardware
+- ✅ **Flight Tested** - Validated on actual drone flights
+- 🛡️ **Safety First** - Comprehensive safety checks and procedures
+- 📡 **Ground Control** - Mission Planner/QGroundControl integration included
+- 📚 **Complete Docs** - Step-by-step guides for every scenario
+- 🎯 **Ready to Use** - Working mission examples included
 
-**Terminal 1 - Start SITL:**
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- **ROS2 Humble** on Ubuntu 22.04
+- **ArduPilot SITL** (for simulation)
+- **MAVROS** installed
+
+**Don't have these?** See [Installation Guide](docs/installation/PREREQUISITES.md)
+
+### Test in Simulation (5 minutes)
+
 ```bash
-cd ~/ros2_ws
-./start_sitl.sh
-```
+# 1. Clone this repository
+git clone https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware.git
+cd ros2-ardupilot-sitl-hardware
 
-**Terminal 2 - Start MAVROS:**
-```bash
-cd ~/ros2_ws
-./start_mavros.sh
-```
-
-### Option 2: Manual Commands
-
-**Terminal 1 - Start ArduPilot SITL:**
-```bash
-cd ~/ardupilot/ArduCopter
-sim_vehicle.py -v ArduCopter --map --console
-```
-
-**Terminal 2 - Start MAVROS:**
-```bash
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch mavros_sitl_config ardupilot_sitl.launch.py
-```
-
-## Verify Connection
-
-**Terminal 3 - Check MAVROS topics:**
-```bash
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-
-# List all MAVROS topics
-ros2 topic list
-
-# Check heartbeat
-ros2 topic echo /mavros/state
-
-# Check GPS position
-ros2 topic echo /mavros/global_position/global
-
-# Check local position
-ros2 topic echo /mavros/local_position/pose
-```
-
-## Connection Details
-
-- **SITL MAVLink Output:** `127.0.0.1:14550` and `127.0.0.1:14551`
-- **MAVROS Connection:** `udp://:14550@127.0.0.1:14555`
-- **Protocol:** MAVLink v2.0
-- **Target System ID:** 1
-- **Target Component ID:** 1
-
-## Common MAVROS Topics
-
-### State & Status
-- `/mavros/state` - Connection status and flight mode
-- `/mavros/battery` - Battery status
-- `/mavros/sys_status` - System status
-
-### Position & Navigation
-- `/mavros/global_position/global` - GPS position (lat/lon/alt)
-- `/mavros/local_position/pose` - Local position (x/y/z)
-- `/mavros/imu/data` - IMU data
-- `/mavros/altitude` - Altitude data
-
-### Control
-- `/mavros/setpoint_position/local` - Set target position
-- `/mavros/setpoint_velocity/cmd_vel_unstamped` - Set velocity
-- `/mavros/rc/override` - RC override
-
-### Services
-- `/mavros/cmd/arming` - Arm/disarm vehicle
-- `/mavros/set_mode` - Change flight mode
-- `/mavros/cmd/takeoff` - Takeoff command
-- `/mavros/cmd/land` - Land command
-
-## Testing Basic Commands
-
-### Arm the Vehicle (in SITL console)
-```
-arm throttle
-```
-
-### Change to GUIDED mode (in SITL console)
-```
-mode GUIDED
-```
-
-### Via ROS2 Service (from Terminal 3)
-```bash
-# Arm
-ros2 service call /mavros/cmd/arming mavros_msgs/srv/CommandBool "{value: true}"
-
-# Set mode to GUIDED
-ros2 service call /mavros/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'GUIDED'}"
-
-# Takeoff to 10m
-ros2 service call /mavros/cmd/takeoff mavros_msgs/srv/CommandTOL "{altitude: 10.0}"
-```
-
-## Troubleshooting
-
-### MAVROS not connecting
-1. Make sure SITL is running first
-2. Check that SITL shows MAVLink output on port 14550
-3. Look for "IMU: Stabilized" in MAVROS output
-
-### No topics appearing
-1. Verify MAVROS is running: `ros2 node list`
-2. Source the workspace: `source ~/ros2_ws/install/setup.bash`
-3. Check MAVROS logs for errors
-
-### Build issues
-If you modify the package, rebuild with:
-```bash
-cd ~/ros2_ws
-colcon build --packages-select mavros_sitl_config
+# 2. Build packages
+colcon build
 source install/setup.bash
+
+# 3. Start SITL (Terminal 1)
+./launch/start_sitl.sh
+
+# 4. Start MAVROS (Terminal 2)
+./launch/start_mavros.sh
+
+# 5. Run autonomous mission (Terminal 3)
+source install/setup.bash
+python3 scripts/missions/mission_simple.py
 ```
 
-## Next Steps
+**Watch your drone takeoff in the SITL map!** 🎉
 
-1. Try the basic testing commands above
-2. Write custom ROS2 nodes to control the drone
-3. Test waypoint missions
-4. Experiment with different flight modes
+---
 
-Enjoy flying! 🚁
+## 📂 Repository Structure
+
+```
+├── src/                          # ROS2 packages
+│   ├── simtofly_mavros_sitl/    # SITL simulation configuration
+│   └── simtofly_mavros_real/    # Real hardware configuration
+├── scripts/missions/             # Autonomous mission examples
+├── launch/                       # Helper scripts (start/stop)
+├── docs/                         # Complete documentation
+└── README.md                     # You are here
+```
+
+---
+
+## 📖 Documentation
+
+### Getting Started
+- **[Installation Prerequisites](docs/installation/PREREQUISITES.md)** - Install ROS2, MAVROS, ArduPilot
+- **[SITL Simulation Guide](docs/guides/SITL_SETUP.md)** - Test safely in simulation
+
+### Hardware Deployment
+- **[Real Hardware Setup](docs/guides/REAL_HARDWARE_SETUP.md)** - Deploy on Cube Orange/Pixhawk
+- **[Mission Planner Connection](docs/guides/MISSION_PLANNER_SETUP.md)** - Connect ground control station
+
+### Usage
+- **[Creating Missions](scripts/missions/README.md)** - Write autonomous flight missions
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+
+---
+
+## 🛠️ Tested Hardware
+
+| Component | Tested Model | Status |
+|-----------|-------------|---------|
+| **Flight Controller** | Cube Orange | ✅ Validated |
+| **Companion Computer** | Raspberry Pi 4 (4GB) | ✅ Validated |
+| **ROS2 Version** | Humble Hawksbill | ✅ Validated |
+| **OS** | Ubuntu 22.04 | ✅ Validated |
+
+**Should work with:** Pixhawk 4, Pixhawk 6C, Cube Black, Jetson Nano
+
+---
+
+## ⚠️ Safety Notice
+
+**Before testing on real hardware:**
+- ✅ Remove all propellers during bench testing
+- ✅ Secure drone on stable surface
+- ✅ Have RC transmitter ready for manual override
+- ✅ Read the [Real Hardware Setup Guide](docs/guides/REAL_HARDWARE_SETUP.md)
+- ✅ Follow local drone regulations
+
+**Motors WILL spin when armed - propellers off = safe testing!**
+
+---
+
+## 🤝 Contributing
+
+Contributions welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+**Ways to contribute:**
+- Report bugs or suggest features
+- Test on different hardware
+- Improve documentation
+- Share your missions
+
+---
+
+## 📜 License
+
+This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) file.
+
+**When using this work, please credit:**
+```
+Based on work by Sidharth Mohan Nair
+https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware
+```
+
+---
+
+## 🙏 Acknowledgments
+
+- ROS2 community
+- ArduPilot developers  
+- MAVROS maintainers
+
+---
+
+## 📞 Support
+
+- **Issues:** [GitHub Issues](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/discussions)
+- **Author:** [Sidharth Mohan Nair](https://github.com/sidharthmohannair)
+
+---
+
+**Star ⭐ this repository if it helps your project!**
