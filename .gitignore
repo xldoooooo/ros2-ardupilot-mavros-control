@@ -1,0 +1,66 @@
+# ROS2 Workspace - Build Artifacts
+# These folders are generated during colcon build and should not be committed
+
+# Colcon build outputs
+build/
+install/
+log/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ROS specific
+*.pyc
+*.pyo
+COLCON_IGNORE
+
+# Backup files
+*.bak
+*.orig
+*~
+
+# Compiled binaries
+*.exe
+*.out
+*.app
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Documentation builds
+docs/_build/
+site/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Custom ignore (add project-specific files here if needed)
+# For example, if you have local test files:
+# test_output/
+# *.local

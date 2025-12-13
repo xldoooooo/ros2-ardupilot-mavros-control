@@ -1,0 +1,88 @@
+/**:
+  ros__parameters:
+    # Connection parameters
+    fcu_url: "udp://:14550@127.0.0.1:14555"
+    gcs_url: ""
+    target_system_id: 1
+    target_component_id: 1
+    fcu_protocol: "v2.0"
+
+    # System status
+    conn:
+      timeout: 30.0
+      heartbeat_rate: 1.0
+      system_time_rate: 0.0
+
+    # Time synchronization
+    time:
+      time_ref_source: "fcu"
+      timesync_mode: "MAVLINK"
+      timesync_rate: 10.0
+
+    # Frame IDs
+    frame_id:
+      local_frame: "map"
+      odom_frame: "odom"
+      body_frame: "base_link"
+
+    # IMU configuration
+    imu:
+      frame_id: "base_link"
+      linear_acceleration_stdev: 0.0003
+      angular_velocity_stdev: 0.0003490659  # 0.02 deg/s
+      orientation_stdev: 1.0
+      magnetic_stdev: 0.0
+
+    # Global Position (GPS)
+    global_position:
+      frame_id: "map"
+      rot_covariance: 99999.0
+      gps_uere: 1.0
+      use_relative_alt: true
+      tf:
+        send: false
+        frame_id: "map"
+        child_frame_id: "base_link"
+
+    # Local Position
+    local_position:
+      frame_id: "map"
+      tf:
+        send: true
+        frame_id: "map"
+        child_frame_id: "base_link"
+        send_fcu: false
+
+    # Setpoint plugins
+    setpoint_position:
+      tf:
+        listen: false
+        frame_id: "map"
+        child_frame_id: "target_position"
+        rate_limit: 50.0
+
+    setpoint_velocity:
+      mav_frame: "LOCAL_NED"
+
+    # RC configuration
+    rc:
+      override_channels: 8
+
+    # Plugin allowlist
+    plugin_allowlist:
+      - 'sys_status'
+      - 'sys_time'
+      - 'imu'
+      - 'global_position'
+      - 'local_position'
+      - 'setpoint_position'
+      - 'setpoint_velocity'
+      - 'setpoint_attitude'
+      - 'setpoint_raw'
+      - 'command'
+      - 'home_position'
+      - 'rc'
+      - 'param'
+      - 'waypoint'
+      - 'mission'
+      - 'altitude'
