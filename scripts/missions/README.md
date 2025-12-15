@@ -19,9 +19,10 @@ Python scripts for autonomous drone control via MAVROS and ArduPilot SITL.
 
 **How to run:**
 ```bash
-cd ~/ros2_ws/scripts
+cd ~/ros2-ardupilot-sitl-hardware
 source /opt/ros/humble/setup.bash
-python3 mission_simple.py
+source install/setup.bash
+python3 scripts/missions/mission_simple.py
 ```
 
 **Features:**
@@ -40,13 +41,13 @@ Before running any script, you need:
 
 ### 1. Start SITL (Terminal 1)
 ```bash
-cd ~/ros2_ws
+cd ~/ros2-ardupilot-sitl-hardware/launch
 ./start_sitl.sh
 ```
 
 ### 2. Start MAVROS (Terminal 2)
 ```bash
-cd ~/ros2_ws
+cd ~/ros2-ardupilot-sitl-hardware/launch
 ./start_mavros.sh
 ```
 
@@ -136,7 +137,7 @@ qos_profile = QoSProfile(
 ros2 node list | grep mavros
 
 # Restart MAVROS if needed
-cd ~/ros2_ws
+cd ~/ros2-ardupilot-sitl-hardware/launch
 ./stop_mavros.sh
 ./start_mavros.sh
 ```

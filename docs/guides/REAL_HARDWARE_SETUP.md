@@ -193,15 +193,20 @@ minicom -D /dev/ttyACM0 -b 921600
 ### Your New Package Structure
 
 ```
-~/ros2_ws/
+~/ros2-ardupilot-sitl-hardware/
 ├── src/
-│   ├── mavros_sitl_config/      ← For simulation (unchanged)
-│   └── mavros_real_config/      ← For real hardware (NEW!)
+│   ├── simtofly_mavros_sitl/          # Simulation config
+│   │   └── launch/
+│   │       └── ardupilot_sitl.launch.py
+│   └── simtofly_mavros_real/          # Real hardware config
 │       └── launch/
 │           └── cube_orange.launch.py
 ├── scripts/                      ← Mission scripts work for both!
-├── start_mavros.sh              ← For SITL
-└── start_mavros_real.sh         ← For real hardware
+├── launch/
+│   ├── start_mavros.sh          ← For SITL
+│   ├── start_mavros_real.sh     ← For real hardware
+│   ├── start_sitl.sh
+│   └── stop_all.sh
 ```
 
 ### Start MAVROS for Real Hardware
@@ -209,16 +214,16 @@ minicom -D /dev/ttyACM0 -b 921600
 **Terminal 1:**
 
 ```bash
-cd ~/ros2_ws
-./start_mavros_real.sh
+cd ~/ros2-ardupilot-sitl-hardware
+./launch/start_mavros_real.sh
 ```
 
 **OR manually:**
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch mavros_real_config cube_orange.launch.py
+source ~/ros2-ardupilot-sitl-hardware/install/setup.bash
+ros2 launch simtofly_mavros_real cube_orange.launch.py
 ```
 
 ---
@@ -384,7 +389,7 @@ Your mission scripts from SITL will work on real hardware!
 **⚠️ CRITICAL: Props must still be OFF for bench testing**
 
 ```bash
-cd ~/ros2_ws/scripts
+cd ~/ros2-ardupilot-sitl-hardware
 source /opt/ros/humble/setup.bash
 python3 mission_simple.py
 ```
@@ -511,22 +516,26 @@ ros2 service call /mavros/cmd/arming mavros_msgs/srv/CommandBool "{value: false}
 ## Package Structure
 
 ```
-~/ros2_ws/
+~/ros2-ardupilot-sitl-hardware/
 ├── src/
-│   ├── mavros_sitl_config/          # Simulation config
+│   ├── simtofly_mavros_sitl/          # Simulation config
 │   │   └── launch/
 │   │       └── ardupilot_sitl.launch.py
-│   └── mavros_real_config/          # Real hardware config
+│   └── simtofly_mavros_real/          # Real hardware config
 │       └── launch/
 │           └── cube_orange.launch.py
 ├── scripts/
-│   ├── mission_simple.py            # Works for both SITL and real!
-│   └── README.md
-├── start_sitl.sh                    # Start simulation
-├── start_mavros.sh                  # MAVROS for SITL
-├── start_mavros_real.sh             # MAVROS for real hardware
-├── stop_all.sh                      # Stop SITL + MAVROS
-└── REAL_HARDWARE_SETUP.md           # This file
+│   └── missions/
+│       ├── mission_simple.py        # Works for both SITL and real!
+│       └── README.md
+├── launch/
+│   ├── start_sitl.sh                # Start simulation
+│   ├── start_mavros.sh              # MAVROS for SITL
+│   ├── start_mavros_real.sh         # MAVROS for real hardware
+│   └── stop_all.sh                  # Stop SITL + MAVROS
+└── docs/
+    └── guides/
+        └── REAL_HARDWARE_SETUP.md   # This file
 ```
 
 ---
@@ -537,7 +546,7 @@ ros2 service call /mavros/cmd/arming mavros_msgs/srv/CommandBool "{value: false}
 - [ ] Cube Orange parameters set (`SERIAL0_PROTOCOL=2`, `SERIAL0_BAUD=921600`)
 - [ ] User added to dialout group + rebooted
 - [ ] USB cable connected
-- [ ] `mavros_real_config` package built
+- [ ] `simtofly_mavros_real` package built
 
 **Before each test:**
 - [ ] Propellers REMOVED (bench testing)

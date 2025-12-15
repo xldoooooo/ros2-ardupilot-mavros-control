@@ -22,8 +22,8 @@ Guide to connect Mission Planner on your laptop to MAVROS running on Raspberry P
 On **Raspberry Pi**, run:
 
 ```bash
-cd ~/ros2_ws
-./start_mavros_real.sh
+cd ~/ros2-ardupilot-sitl-hardware
+./launch/start_mavros_real.sh
 ```
 
 **When prompted:**
@@ -229,13 +229,13 @@ If your laptop IP changes, update the script:
 
 **Option 1: Script will prompt you**
 ```bash
-./start_mavros_real.sh
+./launch/start_mavros_real.sh
 # Enter new IP when prompted
 ```
 
 **Option 2: Edit default in script**
 ```bash
-nano ~/ros2_ws/start_mavros_real.sh
+nano ~/ros2-ardupilot-sitl-hardware/launch/start_mavros_real.sh
 # Change line: LAPTOP_IP=${LAPTOP_IP:-10.73.2.236}
 # To new IP:   LAPTOP_IP=${LAPTOP_IP:-10.73.2.XXX}
 ```
