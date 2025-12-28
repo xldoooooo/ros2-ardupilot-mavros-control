@@ -9,10 +9,12 @@ Guide to connect Mission Planner on your laptop to MAVROS running on Raspberry P
 
 ## Network Setup
 
-**Current Network Configuration:**
-- **Raspberry Pi IP:** 10.73.2.222
-- **Laptop IP:** 10.73.2.236
-- **Network:** Same WiFi network (10.73.2.x)
+> **Note:** The IP addresses below are examples from our test setup. Replace them with your own network IPs. To find your IP, run `ip addr show wlan0` on Raspberry Pi or `ipconfig` on Windows.
+
+**Example Network Configuration:**
+- **Raspberry Pi IP:** 10.73.2.222 *(replace with your RPi IP)*
+- **Laptop IP:** 10.73.2.236 *(replace with your laptop IP)*
+- **Network:** Same WiFi network
 - **Protocol:** UDP on port 14550
 
 ---

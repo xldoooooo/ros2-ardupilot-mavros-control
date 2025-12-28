@@ -10,24 +10,68 @@
 
 
 
-**Battle-tested** on real flights with Cube Orange flight controller and Raspberry Pi 4.
+Validated on real flights with Cube Orange flight controller and Raspberry Pi 4.
 
 ---
 
-## ✨ Key Features
+## Getting Started
 
-- 🎮 **Companion Computer Control** - Command drone autonomously from Raspberry Pi in GUIDED mode (no Mission Planner required)
-- 🔄 **SITL & Hardware Testing** - Test missions in simulation on same Raspberry Pi, then deploy to real drone
-- ✅ **Flight Validated** - Tested on [FuryVision AAV](https://github.com/sidharthmohannair/Fury-Drone-Project) in actual autonomous flight
-- 🛡️ **Safety First** - Comprehensive pre-flight checks and emergency procedures
-- 📡 **Ground Station Optional** - Mission Planner/QGroundControl for monitoring (may or may not be required depending on application)
-- 📚 **Complete Workflow** - SITL testing → Bench testing → Flight testing documented
-- 🔧 **Open Hardware Reference** - Test platform fully documented (CAD, assembly, wiring)
-- 🔄 **Iterative Development** - Actively maintained with community feedback and new examples
+| Step | Description | Guide |
+|:----:|-------------|-------|
+| 1 | **Install** - ROS2, MAVROS, ArduPilot SITL | [Installation Guide](docs/installation/installation-README.md) |
+| 2 | **Use** - Test in simulation, deploy to hardware | [Workflow Guide](docs/WORKFLOW.md) |
+
+> Already have ROS2 + MAVROS + ArduPilot installed? Skip to [Quick Start](#quick-start) below.
 
 ---
 
-## 🚀 Quick Start
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Your Mission Script                          │
+│                      (Python / ROS2 Node)                           │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        MAVROS (ROS2)                                │
+│              Translates ROS2 ↔ MAVLink Protocol                     │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+        ┌───────────────────┐       ┌───────────────────┐
+        │   SITL Simulator  │       │   Real Hardware   │
+        │   (UDP:14550)     │       │   (/dev/ttyACM0)  │
+        │                   │       │                   │
+        │   ArduPilot       │       │  Cube Orange      │
+        │   Virtual Drone   │       │  Flight Controller│
+        └───────────────────┘       └───────────────────┘
+                                            │
+                                            ▼
+                                    ┌───────────────┐
+                                    │    Drone      │
+                                    └───────────────┘
+```
+
+**Same mission code works for both paths** - only the MAVROS connection changes.
+
+---
+
+## Key Features
+
+- **Companion Computer Control** - Command drone autonomously from Raspberry Pi in GUIDED mode
+- **SITL & Hardware Testing** - Test missions in simulation, then deploy same code to real drone
+- **Flight Validated** - Tested on [FuryVision AAV](https://github.com/sidharthmohannair/Fury-Drone-Project) in autonomous flight
+- **Safety First** - Comprehensive pre-flight checks and emergency procedures
+- **Ground Station Optional** - Mission Planner/QGroundControl for monitoring
+- **Complete Workflow** - SITL testing → Bench testing → Flight testing documented
+- **Open Hardware Reference** - Test platform fully documented (CAD, assembly, wiring)
+
+---
+
+## Quick Start
 
 ### Prerequisites
 - **ROS2 Humble** on Ubuntu 22.04
@@ -38,7 +82,7 @@
 
 ---
 
-### Test in Simulation (5 minutes)
+### Test in Simulation
 ```bash
 # 1. Clone this repository
 git clone https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware.git
@@ -48,21 +92,24 @@ cd ros2-ardupilot-sitl-hardware
 colcon build
 source install/setup.bash
 
-# 3. Start SITL (Terminal 1)
+# 3. Make scripts executable (first time only)
+chmod +x launch/*.sh
+
+# 4. Start SITL (Terminal 1)
 ./launch/start_sitl.sh
 
-# 4. Start MAVROS (Terminal 2)
+# 5. Start MAVROS (Terminal 2)
 ./launch/start_mavros.sh
 
-# 5. Run autonomous mission (Terminal 3)
+# 6. Run autonomous mission (Terminal 3)
 source install/setup.bash
 python3 scripts/missions/mission_simple.py
 
-# 6. Stop cleanly when done
+# 7. Stop cleanly when done
 ./launch/stop_all.sh
 ```
 
-**Watch your drone takeoff in the SITL map!** 🎉
+**Watch your drone takeoff in the SITL map!**
 
 ---
 
@@ -99,7 +146,7 @@ See **[WORKFLOW.md](docs/WORKFLOW.md)** for:
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```
 ├── src/                          # ROS2 packages
@@ -113,7 +160,7 @@ See **[WORKFLOW.md](docs/WORKFLOW.md)** for:
 
 ---
 
-## 📖 Documentation
+## Documentation
 
 ### Getting Started
 - **[Installation Guide](docs/installation/installation-README.md)** - Install ROS2, MAVROS, ArduPilot SITL
@@ -131,7 +178,7 @@ See **[WORKFLOW.md](docs/WORKFLOW.md)** for:
 
 ---
 
-## 🛠️ Tested Hardware
+## Tested Hardware
 
 This framework has been validated on the following configuration:
 
@@ -139,7 +186,7 @@ This framework has been validated on the following configuration:
 
 **Flight Controller:** Cube Orange+ (Pixhawk)  
 **Companion Computer:** Raspberry Pi 4 (8GB)  
-**Firmware:** ArduCopter v4.5.6  
+**Firmware:** ArduCopter v4.5.7  
 **ROS2 Version:** Humble Hawksbill  
 **OS:** Ubuntu 22.04 LTS
 
@@ -176,7 +223,7 @@ This framework has been validated on the following configuration:
 
 ---
 
-## ⚠️ Safety Notice
+## Safety Notice
 
 **Before testing on real hardware:**
 - ✅ Remove all propellers during bench testing
@@ -189,36 +236,35 @@ This framework has been validated on the following configuration:
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 **This project is actively maintained and welcomes contributions!**
 
 We're building this based on community feedback and real-world usage. Your input helps make this better for everyone.
 
 **Ways to contribute:**
-- 🐛 Report bugs or hardware compatibility issues
-- 💡 Suggest features or improvements
-- 📝 Improve documentation
-- 🔧 Test on different hardware configurations
-- 🚁 Share your mission examples
-- 📊 Provide performance data from your setup
+- Report bugs or hardware compatibility issues
+- Suggest features or improvements
+- Improve documentation
+- Test on different hardware configurations
+- Share your mission examples
 
 **See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.**
 
 ### **Roadmap (Community-Driven)**
 
 Planned improvements based on feedback:
-- 🔄 More mission examples (waypoint patterns, search patterns)
-- 🔧 Additional hardware configurations (Jetson, RPi5)
-- 📹 Computer vision integration examples
-- 🌐 Multi-drone coordination examples
-- 📚 Video tutorials
+- More mission examples (waypoint patterns, search patterns)
+- Additional hardware configurations (Jetson, RPi5)
+- Computer vision integration examples
+- Multi-drone coordination examples
+- Video tutorials
 
 **Your suggestions welcome in [Discussions](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/discussions)!**
 
 ---
 
-## 📜 License
+## License
 
 This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) file.
 
@@ -230,7 +276,7 @@ https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - ROS2 community
 - ArduPilot developers  
@@ -238,7 +284,7 @@ https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware
 
 ---
 
-## 📞 Support
+## Support
 
 - **Issues:** [GitHub Issues](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/discussions)
@@ -246,4 +292,4 @@ https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware
 
 ---
 
-**Star ⭐ this repository if it helps your project!**
+If this project helps you, consider giving it a ⭐ on GitHub.

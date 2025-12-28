@@ -36,7 +36,7 @@ Thank you for your interest in contributing! This project helps researchers, stu
 
 ---
 
-## 🔧 Development Guidelines
+## Development Guidelines
 
 ### Code Style
 - Follow ROS2 Python style guidelines
@@ -66,22 +66,22 @@ Use clear, descriptive commit messages:
 
 ---
 
-## 🧪 Testing Your Changes
+## Testing Your Changes
 
 ### Before Submitting:
 
 1. **Clean Build Test:**
    ```bash
-   cd ~/ros2_ws
+   cd ~/ros2-ardupilot-sitl-hardware
    rm -rf build/ install/ log/
    colcon build
    ```
 
 2. **SITL Test:**
    ```bash
-   ./start_sitl.sh  # Terminal 1
-   ./start_mavros.sh  # Terminal 2
-   python3 scripts/missions/mission_simple.py  # Terminal 3
+   ./launch/start_sitl.sh  # Terminal 1
+   ./launch/start_mavros.sh  # Terminal 2
+   source install/setup.bash && python3 scripts/missions/mission_simple.py  # Terminal 3
    ```
 
 3. **Code Quality:**
@@ -92,7 +92,7 @@ Use clear, descriptive commit messages:
 
 ---
 
-## 📝 Pull Request Process
+## Pull Request Process
 
 1. **Update Documentation**
    - If you add features, update relevant .md files
@@ -115,7 +115,7 @@ Use clear, descriptive commit messages:
 
 ---
 
-## 🛡️ Safety Guidelines
+## Safety Guidelines
 
 When contributing features related to **real hardware**:
 
@@ -127,7 +127,7 @@ When contributing features related to **real hardware**:
 
 ---
 
-## 💬 Getting Help
+## Getting Help
 
 - **Questions:** Open a [Discussion](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/discussions)
 - **Bugs:** Open an [Issue](https://github.com/sidharthmohannair/ros2-ardupilot-sitl-hardware/issues)
@@ -135,7 +135,7 @@ When contributing features related to **real hardware**:
 
 ---
 
-## 🙏 Recognition
+## Recognition
 
 Contributors will be:
 - Listed in the project README
@@ -144,7 +144,7 @@ Contributors will be:
 
 ---
 
-## 📜 Code of Conduct
+## Code of Conduct
 
 ### Our Standards
 
@@ -163,7 +163,7 @@ Contributors will be:
 
 ---
 
-## 📞 Contact
+## Contact
 
 **Maintainer:** Sidharth Mohan Nair  
 **GitHub:** [@sidharthmohannair](https://github.com/sidharthmohannair)  

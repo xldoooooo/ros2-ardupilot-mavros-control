@@ -391,7 +391,7 @@ Your mission scripts from SITL will work on real hardware!
 ```bash
 cd ~/ros2-ardupilot-sitl-hardware
 source /opt/ros/humble/setup.bash
-python3 mission_simple.py
+python3 scripts/missions/mission_simple.py
 ```
 
 **What should happen:**
@@ -415,7 +415,7 @@ python3 mission_simple.py
 |--------|------|---------------|
 | **Connection** | UDP (`udp://:14550@`) | Serial (`/dev/ttyACM0:921600`) |
 | **Launch File** | `ardupilot_sitl.launch.py` | `cube_orange.launch.py` |
-| **Package** | `mavros_sitl_config` | `mavros_real_config` |
+| **Package** | `simtofly_mavros_sitl` | `simtofly_mavros_real` |
 | **Start Script** | `./start_mavros.sh` | `./start_mavros_real.sh` |
 | **Mission Scripts** | ✅ Same scripts work! | ✅ Same scripts work! |
 | **Safety** | Simulated, safe | **REMOVE PROPS!** |

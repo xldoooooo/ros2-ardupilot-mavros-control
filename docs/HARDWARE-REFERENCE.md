@@ -27,7 +27,7 @@ This framework was developed and tested using the **FuryVision AAV** - a fully o
 | **All-Up Weight** | 1161g |
 | **Flight Time** | 8 minutes 40 seconds |
 | **Sensors** | 4x Intel RealSense cameras |
-| **Firmware** | ArduCopter v4.5.6 |
+| **Firmware** | ArduCopter v4.5.7 |
 
 ### Flight Performance
 

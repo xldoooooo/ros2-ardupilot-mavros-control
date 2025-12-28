@@ -73,7 +73,7 @@ cd ~/ardupilot
 git checkout Copter-4.5.7
 ```
 
-**Why 4.5.7?** Latest stable release (as of December 2024).
+**Why 4.5.7?** Stable release validated with this framework (November 2025).
 
 **Expected output:**
 ```
@@ -241,7 +241,7 @@ source install/setup.bash
 # Test in simulation
 ./launch/start_sitl.sh      # Terminal 1
 ./launch/start_mavros.sh    # Terminal 2
-python3 scripts/missions/mission_simple.py  # Terminal 3
+source install/setup.bash && python3 scripts/missions/mission_simple.py  # Terminal 3
 ```
 
 → **Continue to:** [SITL Setup Guide](../guides/SITL_SETUP.md)
