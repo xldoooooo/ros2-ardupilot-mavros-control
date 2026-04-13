@@ -13,7 +13,51 @@ echo "MAVROS will connect to port 14550"
 echo ""
 echo "========================================="
 
-cd ~/ardupilot/ArduCopter
+cd ~/ardupilot
 
-# Start SITL with map and console
-sim_vehicle.py -v ArduCopter --map --console
+# 定义清理函数
+cleanup() {
+    echo "Shutting down Gazebo gracefully..."
+    if [ -n "$GAZEBO_PID" ]; then
+        # 先发送 SIGINT (Ctrl+C) 让 Gazebo 自行清理
+        kill -SIGINT "$GAZEBO_PID" 2>/dev/null
+        # 等待最多 5 秒，让它自己退出
+        for i in {1..5}; do
+            if ! kill -0 "$GAZEBO_PID" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        # 如果还没退出，再强制终止
+        kill -9 "$GAZEBO_PID" 2>/dev/null
+    fi
+    exit 0
+}
+
+# 捕获 SIGINT (Ctrl+C) 和 SIGTERM
+trap cleanup SIGINT SIGTERM
+
+echo "Starting Gazebo..."
+gz sim -v4 -r iris_runway.sdf &
+GAZEBO_PID=$!
+
+sleep 5
+
+echo "Starting ArduPilot SITL..."
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON
+
+# 如果 sim_vehicle.py 正常退出（非中断），也执行清理
+cleanup
+
+
+
+# 等待 Gazebo 完全启动
+sleep 5
+
+# 启动 SITL
+echo "Starting ArduPilot SITL..."
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON
+
+# 当 SITL 退出后，自动关闭 Gazebo
+echo "Shutting down Gazebo..."
+kill $GAZEBO_PID 2>/dev/null
