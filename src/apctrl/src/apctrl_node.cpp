@@ -1,7 +1,7 @@
 #include "apctrl_node.h"
 
 // 信号处理函数
-void mySigintHandler(int sig)
+void mySigintHandler(int /*sig*/)
 {
     RCLCPP_INFO(rclcpp::get_logger("apctrl_node"), "[apctrl_node] exit...");
     rclcpp::shutdown();
@@ -82,7 +82,9 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<rclcpp::Node>("apctrl_node");
-    rcutils_logging_set_logger_level(node->get_logger().get_name(), RCUTILS_LOG_SEVERITY_DEBUG);
+    // 设置日志级别并存储返回值以消除警告
+    rcutils_ret_t logging_result = rcutils_logging_set_logger_level(node->get_logger().get_name(), RCUTILS_LOG_SEVERITY_DEBUG);
+    (void)logging_result; // 显式忽略返回值
     
     signal(SIGINT, mySigintHandler);
     rclcpp::sleep_for(std::chrono::seconds(1));

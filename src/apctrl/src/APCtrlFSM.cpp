@@ -646,7 +646,7 @@ void APCtrlFSM::set_hov_with_rc()
 	// }
 }
 
-void APCtrlFSM::set_start_pose_for_takeoff_land(const Odom_Data_t &odom)
+void APCtrlFSM::set_start_pose_for_takeoff_land(const Odom_Data_t & /*odom*/)
 {
 	takeoff_land.start_pose.head<3>() = odom_data.p;
 	takeoff_land.start_pose(3) = get_yaw_from_quaternion(odom_data.q);

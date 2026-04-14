@@ -45,7 +45,7 @@ LinearControl::calculateControl(const Desired_State_t &des,
     u.thrust = computeDesiredCollectiveThrustSignal(des_acc);//用到z加速度
 
     // 计算期望姿态
-    double roll,pitch,yaw,yaw_imu;
+    double roll,pitch;
     double yaw_odom = fromQuaternion2yaw(odom.q);
     double sin = std::sin(yaw_odom);
     double cos = std::cos(yaw_odom);
@@ -53,7 +53,7 @@ LinearControl::calculateControl(const Desired_State_t &des,
     roll = (des_acc(0) * sin - des_acc(1) * cos )/ param_.gra;
     pitch = (des_acc(0) * cos + des_acc(1) * sin )/ param_.gra;
     
-    yaw_imu = fromQuaternion2yaw(imu.q);
+    // yaw_imu变量已移除，因为未使用
 
     // 构建期望姿态四元数
     Eigen::Quaterniond q = Eigen::AngleAxisd(des.yaw,Eigen::Vector3d::UnitZ())
@@ -110,7 +110,7 @@ LinearControl::computeDesiredCollectiveThrustSignal(
 bool 
 LinearControl::estimateThrustModel(
     const Eigen::Vector3d &est_a,
-    const Parameter_t &param)
+    const Parameter_t & /*param*/)
 {
     rclcpp::Time t_now = node_->now();
     while (timed_thrust_.size() >= 1)

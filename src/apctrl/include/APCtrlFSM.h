@@ -28,8 +28,9 @@ struct AutoTakeoffLand_t
 class APCtrlFSM
 {
 public:
-	rclcpp::Node::SharedPtr node_;  // ROS2节点指针
 	Parameter_t &param;  // 参数引用
+	LinearControl &controller;  // 控制器引用
+	rclcpp::Node::SharedPtr node_;  // ROS2节点指针
 
 	// 各类数据对象
 	RC_Data_t rc_data;                    // 遥控器数据
@@ -40,8 +41,6 @@ public:
 	Command_Data_t cmd_data;              // 指令数据
 	Battery_Data_t bat_data;              // 电池数据
 	Takeoff_Land_Data_t takeoff_land_data;  // 起降数据
-
-	LinearControl &controller;  // 控制器引用
 
 	bool set_GUIDED_flag;  // 是否设置GUIDED模式
 	
