@@ -106,8 +106,8 @@ ros2-ardupilot-sitl-hardware/
 
 3. **运行示例任务**（在新终端中）：
    ```bash
-   cd scripts/missions
-   python3 mission_simple.py
+   source ./install/setup.bash
+   ros2 launch apctrl run_ctrl_launch.py
    ```
 
 ## 使用示例
@@ -144,6 +144,163 @@ ros2 service call /mavros/set_mode mavros_msgs/srv/SetMode "{custom_mode: 'RTL'}
 ### 运行自定义任务
 
 查看 `scripts/missions/mission_simple.py` 作为基础模板，创建自己的任务脚本。
+
+## 使用 mavros odometry 和位置命令控制无人机
+
+### 修改说明
+
+已对系统进行以下修改：
+
+#### 1. 修改了启动文件
+- 文件: `src/apctrl/launch/run_ctrl_launch.py`
+- 修改内容: 将 odometry 主题从 `/imu_propagate` 改为 `/mavros/local_position/odom`
+- 目的: 让控制器使用来自 mavros 的 odometry 数据
+
+#### 2. 创建了位置命令发送脚本
+- 文件: `scripts/send_position_command.py`
+- 功能: 允许用户发送位置命令到无人机控制器
+- 支持模式:
+  1. 交互式模式: 手动输入目标位置
+  2. 预定义任务: 执行预设的航点序列
+  3. 单次测试: 发送单个测试命令
+
+### 使用步骤
+
+#### 步骤 1: 启动系统
+```bash
+# 启动 SITL 仿真（如果需要）
+./launch/start_sitl.sh
+
+# 启动 MAVROS
+./launch/start_mavros.sh
+
+# 启动控制器
+source install/setup.bash
+ros2 launch apctrl run_ctrl_launch.py
+```
+
+#### 步骤 2: 发送位置命令
+```bash
+# 确保在 ROS2 环境中
+source install/setup.bash
+
+# 运行位置命令发送器
+python3 scripts/send_position_command.py
+```
+
+#### 步骤 3: 选择模式
+脚本启动后会显示以下选项：
+```
+选择模式:
+1. 交互式模式 (手动输入位置)
+2. 预定义任务 (执行预设航点)
+3. 发送单个测试命令
+```
+
+### 交互式模式使用示例
+
+在交互式模式下，输入位置坐标：
+```
+请输入位置 (x y z [yaw]): 5.0 3.0 2.0 0.0
+```
+
+参数说明：
+- `x`: X轴位置（米），正方向为前
+- `y`: Y轴位置（米），正方向为左
+- `z`: Z轴位置（米），正方向为上（高度）
+- `yaw`: 偏航角（弧度，可选，默认0），0表示机头朝前
+
+### 预定义任务
+
+预定义任务包含以下航点：
+1. 起飞到2米高度
+2. 向前移动5米
+3. 向右移动5米，偏航90度
+4. 向后移动5米，偏航180度
+5. 返回起点
+6. 降落
+
+### 注意事项
+
+1. **确保 mavros 发布 odometry 数据**：
+   - mavros 需要配置为发布 `/mavros/local_position/odom` 主题
+   - 如果该主题不可用，可以尝试其他 mavros odometry 主题：
+     - `/mavros/odometry/in`
+     - `/mavros/odometry/out`
+
+2. **无人机状态**：
+   - 确保无人机已解锁并处于 GUIDED 模式
+   - 控制器需要收到有效的 odometry 数据才能工作
+
+3. **坐标系**：
+   - 使用 ENU（东-北-天）坐标系
+   - X轴：东方向（前）
+   - Y轴：北方向（左）
+   - Z轴：天方向（上）
+
+### 故障排除
+
+#### 问题1: odometry 频率过低
+如果 `/mavros/local_position/odom` 频率低于30Hz（通常只有3-4Hz），可以使用以下解决方案：
+
+**方案A: 提高 mavros 频率**
+修改 `launch/start_mavros.sh`，增加数据流频率参数：
+```bash
+ros2 run mavros mavros_node --ros-args \
+    -p fcu_url:="udp://:14550@" \
+    -p target_system_id:=1 \
+    -p target_component_id:=1 \
+    -p local_position/rate:=50.0 \
+    -p local_position/raw/rate:=50.0 \
+    -p odometry/rate:=50.0
+```
+
+**方案B: 使用 PoseStamped 转换器**
+使用更高频率的 `/mavros/local_position/pose` 主题（通常3.9Hz）：
+```bash
+# 启动转换器和控制器
+ros2 launch apctrl run_ctrl_with_converter_launch.py
+```
+转换器将 PoseStamped 消息转换为 Odometry 消息。
+
+**方案C: 检查其他 odometry 源**
+运行频率检查脚本：
+```bash
+python3 scripts/check_odom_frequency.py
+```
+查看哪个主题频率最高。
+
+#### 问题2: 控制器没有收到 odometry 数据
+```
+检查主题列表:
+ros2 topic list | grep odom
+```
+
+如果 `/mavros/local_position/odom` 不存在，尝试：
+1. 检查 mavros 配置
+2. 修改启动文件中的 remapping，使用其他 odometry 主题
+
+#### 问题3: 位置命令没有效果
+```
+检查命令是否发布:
+ros2 topic echo /position_cmd
+```
+
+确保：
+1. 控制器正在运行
+2. 无人机处于正确的模式（AUTO_HOVER 或 CMD_CTRL）
+3. 遥控器切换到命令模式（如果启用）
+
+#### 问题4: 坐标系不匹配
+如果无人机移动方向不正确，可能需要调整坐标系转换。检查 `converters.h` 中的坐标系转换函数。
+
+### 扩展功能
+
+可以根据需要修改 `send_position_command.py` 脚本：
+- 添加更多预定义任务
+- 实现轨迹跟踪
+- 添加安全限制（高度、速度限制）
+- 集成外部输入（如从文件读取航点）
 
 ## 开发指南
 

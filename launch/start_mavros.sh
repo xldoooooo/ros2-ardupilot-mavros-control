@@ -11,7 +11,7 @@ echo ""
 echo "========================================="
 
 
-# Start MAVROS with direct command (more reliable than launch file)  
+# Start MAVROS with direct command (more reliable than launch file)
 ros2 run mavros mavros_node --ros-args \
     -p fcu_url:="udp://:14550@" \
     -p target_system_id:=1 \

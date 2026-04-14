@@ -46,18 +46,6 @@ sleep 5
 echo "Starting ArduPilot SITL..."
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON
 
-# 如果 sim_vehicle.py 正常退出（非中断），也执行清理
-cleanup
-
-
-
-# 等待 Gazebo 完全启动
-sleep 5
-
-# 启动 SITL
-echo "Starting ArduPilot SITL..."
-sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON
-
 # 当 SITL 退出后，自动关闭 Gazebo
 echo "Shutting down Gazebo..."
 kill $GAZEBO_PID 2>/dev/null
