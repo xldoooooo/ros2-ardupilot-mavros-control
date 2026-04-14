@@ -229,7 +229,7 @@ ros2 topic hz /mavros/local_position/pose
 
 如有问题或建议，请通过以下方式联系：
 - GitHub Issues: [项目 Issues 页面](https://github.com/xldoooooo/ros2-ardupilot-sitl-hardware/issues)
-- 维护者邮箱: your_email@example.com
+- 维护者邮箱: lidanxu@buaa.edu.cn
 
 ---
 
