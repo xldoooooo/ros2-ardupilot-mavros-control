@@ -15,15 +15,12 @@
 #include "utils.h"
 #include "APCtrlParam.h"
 
-/**
- * @brief ң����������
- * ���ڴ����ʹ洢����ң��������������
- */
+// 存储遥控器通道消息的数据结构
 class RC_Data_t
 {
 public:
-  rclcpp::Node::SharedPtr node_;    // ROS2�ڵ�ָ��
-  double mode;                      // ��ǰ����ģʽ
+  rclcpp::Node::SharedPtr node_;    // ROS2节点
+  double mode;                      // 遥控器模式
   double gear;                      // ��λ״̬
   double reboot_cmd;               // ��������
   double last_mode;                // ��һ�εķ���ģʽ
@@ -37,11 +34,11 @@ public:
   mavros_msgs::msg::RCIn msg;      // ң����ԭʼ��Ϣ
   rclcpp::Time rcv_stamp;          // ����ʱ���
 
-  bool is_command_mode;            // �Ƿ�������ģʽ
-  bool enter_command_mode;         // �Ƿ��������ģʽ
-  bool is_hover_mode;              // �Ƿ�����ͣģʽ
-  bool enter_hover_mode;           // �Ƿ������ͣģʽ
-  bool toggle_reboot;              // ��������״̬
+  bool is_command_mode;            // 是否为指令模式
+  bool enter_command_mode;         // 进入指令模式
+  bool is_hover_mode;              // 是否为悬停模式
+  bool enter_hover_mode;           // 进入悬停模式
+  bool toggle_reboot;              // 
 
   // ң���������ֵ����
   static constexpr double GEAR_SHIFT_VALUE = 0.75;           // ��λ�л���ֵ
@@ -51,29 +48,26 @@ public:
   // static constexpr double TAKEOFF_LAND_THRESHOLD_VALUE = 0.75; // ��ɽ�����ֵ
 
   RC_Data_t(const rclcpp::Node::SharedPtr& node);
-  void check_validity();           // ���������Ч��
-  bool check_centered();           // ����Ƿ����
+  void check_validity();           // 检查遥控器状态有效性
+  bool check_centered();           // 检查全部摇杆是否回中
   void feed(const mavros_msgs::msg::RCIn::SharedPtr pMsg);  // ��������
   bool is_received(const rclcpp::Time &now_time);           // ����Ƿ���յ�����
 };
 
-/**
- * @brief ��̼�������
- * ���ڴ����ʹ洢����λ�á��ٶȺ���̬��Ϣ
- */
+// 存储odom消息的数据结构
 class Odom_Data_t
 {
 public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   rclcpp::Node::SharedPtr node_;
-  Eigen::Vector3d p;               // λ��
-  Eigen::Vector3d v;               // �ٶ�
-  Eigen::Quaterniond q;            // ��̬��Ԫ��
-  Eigen::Vector3d w;               // ���ٶ�
+  Eigen::Vector3d p;               // 位置
+  Eigen::Vector3d v;               // 速度
+  Eigen::Quaterniond q;            // 姿态
+  Eigen::Vector3d w;               // 角速度
 
-  nav_msgs::msg::Odometry msg;     // ��̼�ԭʼ��Ϣ
-  rclcpp::Time rcv_stamp;          // ����ʱ���
-  bool recv_new_msg;               // �Ƿ���յ�����Ϣ
+  nav_msgs::msg::Odometry msg;     // mavros的odom消息类型
+  rclcpp::Time rcv_stamp;          // 接收消息的时间戳
+  bool recv_new_msg;               // 是否收到新的消息
 
   Odom_Data_t(const rclcpp::Node::SharedPtr& node);
   void feed(const nav_msgs::msg::Odometry::SharedPtr pMsg);

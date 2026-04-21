@@ -117,6 +117,7 @@ void RC_Data_t::feed(const mavros_msgs::msg::RCIn::SharedPtr pMsg)
     last_reboot_cmd = reboot_cmd;
 }
 
+// 检查遥控器状态的有效性
 void RC_Data_t::check_validity()
 {
     if (mode >= -1.1 && mode <= 1.1 && gear >= -1.1 && gear <= 1.1 && reboot_cmd >= -1.1 && reboot_cmd <= 1.1)
@@ -129,9 +130,10 @@ void RC_Data_t::check_validity()
     }
 }
 
+// 检查遥控器通道是否回中，全部已回中则返回True
 bool RC_Data_t::check_centered()
 {
-    bool centered = abs(ch[0]) < 1e-5 && abs(ch[0]) < 1e-5 && abs(ch[0]) < 1e-5 && abs(ch[0]) < 1e-5;
+    bool centered = abs(ch[0]) < 1e-5 && abs(ch[1]) < 1e-5 && abs(ch[2]) < 1e-5 && abs(ch[3]) < 1e-5;
     return centered;
 }
 
@@ -145,6 +147,7 @@ Odom_Data_t::Odom_Data_t(const rclcpp::Node::SharedPtr& node)
     recv_new_msg = false;
 }
 
+// 接收mavros传来的odom消息，并更新状态
 void Odom_Data_t::feed(const nav_msgs::msg::Odometry::SharedPtr pMsg)
 {
     rclcpp::Time now = node_->now();
@@ -155,18 +158,7 @@ void Odom_Data_t::feed(const nav_msgs::msg::Odometry::SharedPtr pMsg)
 
     uav_utils::extract_odometry(pMsg, p, v, q, w);
 
-// #define VEL_IN_BODY
-#ifdef VEL_IN_BODY /* Set to 1 if the velocity in odom topic is relative to current body frame, not to world frame.*/
-    Eigen::Quaternion<double> wRb_q(msg.pose.pose.orientation.w, msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z);
-    Eigen::Matrix3d wRb = wRb_q.matrix();
-    v = wRb * v;
-
-    static int count = 0;
-    if (count++ % 500 == 0)
-        ROS_WARN("VEL_IN_BODY!!!");
-#endif
-
-    // 检查频率
+    // 一秒检查一次odom接收频率，频率小于100Hz就会报出警告
     static int one_min_count = 9999;
     static rclcpp::Time last_clear_count_time = node_->now();
     if ( (now - last_clear_count_time).seconds() > 1.0 )
@@ -181,6 +173,7 @@ void Odom_Data_t::feed(const nav_msgs::msg::Odometry::SharedPtr pMsg)
     one_min_count++;
 }
 
+// Imu_Data_t类用于处理Imu数据
 //构造函数3-----------------------------------------------------------
 Imu_Data_t::Imu_Data_t(const rclcpp::Node::SharedPtr& node)
     : node_(node)
@@ -188,6 +181,7 @@ Imu_Data_t::Imu_Data_t(const rclcpp::Node::SharedPtr& node)
     rcv_stamp = node_->now();;
 }
 
+// 接收mavros传来的IMU消息，并更新状态
 void Imu_Data_t::feed(const sensor_msgs::msg::Imu::SharedPtr pMsg)
 {
     rclcpp::Time now = node_->now();

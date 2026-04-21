@@ -7,7 +7,7 @@ void mySigintHandler(int /*sig*/)
     rclcpp::shutdown();
 }
 
-// 创建订阅的辅助函数（简化版）
+// 创建自定义订阅函数（选用true为best_effort,false为reliable，即每条消息都传送到位）
 template<typename MsgType, typename CallbackType>
 auto create_subscription(
     rclcpp::Node::SharedPtr node,
@@ -35,7 +35,7 @@ struct SubscriptionConfig {
         : topic(t), qos_history(q), best_effort(be) {}
 };
 
-// 简化的订阅初始化函数
+// 订阅初始化函数
 void initialize_subscriptions(
     rclcpp::Node::SharedPtr node,
     APCtrlFSM& fsm,

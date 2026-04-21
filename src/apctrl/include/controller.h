@@ -45,9 +45,6 @@ struct Controller_Output_t
 	// 相对于世界坐标系的机体姿态四元数
 	Eigen::Quaterniond q;
 
-	// 机体坐标系下的角速度
-	Eigen::Vector3d bodyrates; // [rad/s]
-
 	// 归一化的总推力
 	double thrust;
 };

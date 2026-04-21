@@ -48,7 +48,6 @@ APCtrlFSM::APCtrlFSM(Parameter_t &param_, LinearControl &controller_, rclcpp::No
 	-------- 指令控制
 
 */
-
 void APCtrlFSM::process()
 {
     // 获取当前时间
@@ -58,7 +57,7 @@ void APCtrlFSM::process()
     bool rotor_low_speed_during_land = false; // 降落时电机是否低速运行标志
     rclcpp::Rate rate4takeoff(param.ctrl_freq_max);  // 设置循环频率
 
-	// 每隔1秒输出一次
+	// 每隔2秒输出一次当前状态信息
 	static rclcpp::Time last_print_time = node_->now();
 	if ((now_time - last_print_time).seconds() > 2.0)
 	{
@@ -117,7 +116,7 @@ void APCtrlFSM::process()
             "\n=================== AP 状态信息 ===================\n"
             "连接状态: %s\n"
             "解锁状态: %s\n"
-            "引导模式: %s\n"
+            "GUIDED模式: %s\n"
             "手动输入: %s\n"
             "飞行模式: %s\n"
             "系统状态: %s\n"
@@ -125,10 +124,10 @@ void APCtrlFSM::process()
             "================================================",
             state_data.current_state.connected ? "已连接" : "未连接",
             state_data.current_state.armed ? "已解锁" : "未解锁", 
-            state_data.current_state.guided ? "已启用" : "未启用",
+            state_data.current_state.guided ? "已启用" : "未启用", // TODO guide_no_gps
             state_data.current_state.manual_input ? "有" : "无",
             state_data.current_state.mode.c_str(),
-            system_status_str.c_str(),  // 使用转换后的中文状态描述
+            system_status_str.c_str(),
             state_str.c_str()
         );
 
@@ -138,8 +137,8 @@ void APCtrlFSM::process()
 	// STEP1: 状态机运行
 	// 状态机包含以下状态:
 	// MANUAL_CTRL: 手动控制模式,完全由遥控器控制
-	// AUTO_HOVER: 自动悬停模式,保持当前位置和高度
-	// CMD_CTRL: 指令控制模式,执行位置/速度等指令
+	// AUTO_HOVER: 自动悬停模式,保持当前位置
+	// CMD_CTRL: 指令控制模式,输出期望姿态等指令
 	// AUTO_TAKEOFF: 自动起飞模式
 	// AUTO_LAND: 自动降落模式
 	switch (state)
@@ -149,29 +148,25 @@ void APCtrlFSM::process()
 		if (rc_data.enter_hover_mode) // 尝试跳转到AUTO_HOVER
 		{
 			RCLCPP_INFO(node_->get_logger(), "\033[32m333\033[0m");
-			if(!odom_is_received(now_time))
+			if(!odom_is_received(now_time)) // 拒绝AUTO_HOVER,因为没有里程计数据!
 			{
-				// 拒绝AUTO_HOVER(L2),因为没有里程计数据!
-				RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_HOVER(L2). No odom!");
+				RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_HOVER. No odom!");
 				break;
 			}
-			if(cmd_is_received(now_time))
+			if(cmd_is_received(now_time))   // 拒绝AUTO_HOVER,因为你在进入AUTO_HOVER之前发送了期望姿态,这是不允许的,请立即停止发送指令!
 			{
-				// 拒绝AUTO_HOVER(L2),因为你在进入AUTO_HOVER之前发送了指令,这是不允许的,请立即停止发送指令!
-				RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_HOVER(L2). You are sending commands before toggling into AUTO_HOVER, which is not allowed. Stop sending commands now!");
+				RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_HOVER. You are sending commands before toggling into AUTO_HOVER, which is not allowed. Stop sending commands now!");
 				break;
 			}
-			if(odom_data.v.norm() > 3.0)
+			if(odom_data.v.norm() > 3.0)    // 拒绝AUTO_HOVER,因为里程计数据表明无人机速度大于3m/s,这可能表明定位模块出现了问题!
 			{
-				//OK
-				// 拒绝AUTO_HOVER(L2),因为里程计数据表明无人机速度大于3m/s,这可能表明定位模块出现了问题!
-				RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_HOVER(L2). Odom_Vel=%fm/s, which seems that the locolization module goes wrong!", odom_data.v.norm());
+				RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_HOVER. Odom_Vel=%fm/s, which seems that the localization module goes wrong!", odom_data.v.norm());
 				break;
 			}
             if(set_GUIDED_flag || toggle_GUIDED_mode(true))// 切换到GUIDED模式
 			{
 				RCLCPP_INFO(node_->get_logger(), "\033[32m111\033[0m");
-				
+
 				if (state_data.current_state.mode == "GUIDED")
 				{
 					RCLCPP_INFO(node_->get_logger(), "\033[32m222\033[0m");
@@ -179,10 +174,10 @@ void APCtrlFSM::process()
 					// 切换到自动悬停模式
 					state = AUTO_HOVER;// 切换到自动悬停模式
 					controller.resetThrustMapping();// 重置推力映射参数
-					set_hov_with_odom();// 设置悬停位置
+					set_hov_with_odom();// 设置悬停位姿，包括当前位置和当前偏航角
 					set_GUIDED_flag = false;
 					rc_data.enter_hover_mode = false;
-					RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] MANUAL_CTRL(L1) --> AUTO_HOVER(L2)\033[0m");
+					RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] MANUAL_CTRL --> AUTO_HOVER\033[0m");
 				}
 				else
 				{
@@ -195,10 +190,7 @@ void APCtrlFSM::process()
 				RCLCPP_INFO(node_->get_logger(), "\033[31mReject AUTO_HOVER. Failed to toggle GUIDED mode!\033[0m");
 				break;
 			}
-		}
-
-		else if (param.takeoff_land.enable && takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::TAKEOFF) // Try to jump to AUTO_TAKEOFF
-		{
+		} else if (param.takeoff_land.enable && takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::TAKEOFF) // 尝试进入自动起飞
 
 			if (!odom_is_received(now_time))// 拒绝AUTO_TAKEOFF,因为没有里程计数据!
 			{
@@ -226,9 +218,9 @@ void APCtrlFSM::process()
 			}
 			if (rc_is_received(now_time))   // 检查遥控器是否连接
 			{
-				if (!rc_data.is_hover_mode || !rc_data.is_command_mode || !rc_data.check_centered())
+				// TODO
+				if (!rc_data.is_hover_mode || !rc_data.is_command_mode || !rc_data.check_centered()) // 拒绝AUTO_TAKEOFF,如果遥控器没有连接或者没有处于自动悬停模式或指令控制模式,或者摇杆没有居中,请重新起飞!
 				{
-					// 拒绝AUTO_TAKEOFF,如果遥控器没有连接或者没有处于自动悬停模式或指令控制模式,或者摇杆没有居中,请重新起飞!
 					RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_TAKEOFF. If you have your RC connected, keep its switches at \"auto hover\" and \"command control\" states, and all sticks at the center, then takeoff again.");
 					while (rclcpp::ok())
 					{
@@ -246,9 +238,7 @@ void APCtrlFSM::process()
 					break;
 				}
 			}
-
-			// 切换到GUIDED模式
-			if (set_GUIDED_flag || toggle_GUIDED_mode(true))
+			if (set_GUIDED_flag || toggle_GUIDED_mode(true)) // 切换到GUIDED模式
 			{
 				if(state_data.current_state.mode == "GUIDED")
 				{
@@ -658,6 +648,7 @@ bool APCtrlFSM::rc_is_received(const rclcpp::Time &now_time)
 {
 	return (now_time - rc_data.rcv_stamp).seconds() < param.msg_timeout.rc;
 }
+
 bool APCtrlFSM::cmd_is_received(const rclcpp::Time &now_time)
 {
 	return (now_time - cmd_data.rcv_stamp).seconds() < param.msg_timeout.cmd;
@@ -689,24 +680,6 @@ bool APCtrlFSM::recv_new_odom()
 	return false;
 }
 
-void APCtrlFSM::publish_bodyrate_ctrl(const Controller_Output_t &u, const rclcpp::Time &stamp)
-{
-	mavros_msgs::msg::AttitudeTarget msg;
-
-	msg.header.stamp = stamp;
-	msg.header.frame_id = std::string("FCU");
-
-	msg.type_mask = mavros_msgs::msg::AttitudeTarget::IGNORE_ATTITUDE;
-
-	msg.body_rate.x = u.bodyrates.x();
-	msg.body_rate.y = u.bodyrates.y();
-	msg.body_rate.z = u.bodyrates.z();
-
-	msg.thrust = u.thrust;
-
-	ctrl_FCU_pub->publish(msg);
-}
-
 void APCtrlFSM::publish_attitude_ctrl(const Controller_Output_t &u, const rclcpp::Time &stamp)
 {
 	mavros_msgs::msg::AttitudeTarget msg;
@@ -736,6 +709,7 @@ void APCtrlFSM::publish_trigger(const nav_msgs::msg::Odometry &odom_msg)
 
 	traj_start_trigger_pub->publish(msg);
 }
+
 // 切换飞行模式
 bool APCtrlFSM::toggle_GUIDED_mode(bool on_off)
 {
@@ -765,27 +739,7 @@ bool APCtrlFSM::toggle_GUIDED_mode(bool on_off)
             RCLCPP_ERROR(node_->get_logger(), "\033[31mFailed to send mode change command!\033[0m");
             return false;
         }
-		set_GUIDED_flag = true;	
-        // 等待模式实际切换（最多等待1秒）实际等待并没有用
-        // auto start_time = node_->now();
-        // while ((node_->now() - start_time).seconds() < 1.0)
-        // {
-        //     if (on_off && state_data.current_state.mode == "GUIDED")
-        //     {
-        //         RCLCPP_INFO(node_->get_logger(), "Successfully entered GUIDED mode");
-        //         return true;
-        //     }
-        //     else if (!on_off && state_data.current_state.mode == state_data.state_before_GUIDED.mode)
-        //     {
-        //         RCLCPP_INFO(node_->get_logger(), "Successfully exited GUIDED mode");
-        //         return true;
-        //     }
-        //     rclcpp::sleep_for(std::chrono::milliseconds(10));
-        //     rclcpp::spin_some(node_);
-        // }
-
-        // RCLCPP_INFO(node_->get_logger(), "\033[31mMode change timed out! Current mode: %s\033[0m", 
-        //     state_data.current_state.mode.c_str());
+		set_GUIDED_flag = true;
         return true;
     }
     else
