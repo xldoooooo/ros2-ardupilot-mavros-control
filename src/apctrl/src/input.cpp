@@ -27,6 +27,7 @@ RC_Data_t::RC_Data_t(const rclcpp::Node::SharedPtr& node)
     }
 }
 
+// 飞控收到遥控器信号后，赋值通道，并依据档位开关确定当前模式
 void RC_Data_t::feed(const mavros_msgs::msg::RCIn::SharedPtr pMsg)
 {
     msg = *pMsg;
@@ -72,19 +73,17 @@ void RC_Data_t::feed(const mavros_msgs::msg::RCIn::SharedPtr pMsg)
         last_reboot_cmd = reboot_cmd;
     }
 
-    //上次不是悬停模式，这次是悬停模式=进入悬停
+    //上次不是悬停模式，若飞行模式已切换，则设为悬停模式进入阶段
     if (last_mode < API_MODE_THRESHOLD_VALUE && mode > API_MODE_THRESHOLD_VALUE)
         enter_hover_mode = true;
-    // else
-    //     enter_hover_mode = false;
 
-    //模式为悬停模式，就是处于悬停模式
+    //若模式已为悬停模式，就是处于悬停模式
     if (mode > API_MODE_THRESHOLD_VALUE)
         is_hover_mode = true;
     else
         is_hover_mode = false;
 
-    // 2 判断命令模式
+    // 2 判断是否进入指令模式
     if (is_hover_mode)
     {
         if (last_gear < GEAR_SHIFT_VALUE && gear > GEAR_SHIFT_VALUE)
@@ -101,7 +100,7 @@ void RC_Data_t::feed(const mavros_msgs::msg::RCIn::SharedPtr pMsg)
     // 3 处理重启命令
     if (!is_hover_mode && !is_command_mode)
     {
-                // 添加toggle_reboot的输出
+        // 添加toggle_reboot的输出
         RCLCPP_INFO(node_->get_logger(), "hhh");
         if (last_reboot_cmd < REBOOT_THRESHOLD_VALUE && reboot_cmd > REBOOT_THRESHOLD_VALUE)
             toggle_reboot = true;
@@ -117,7 +116,7 @@ void RC_Data_t::feed(const mavros_msgs::msg::RCIn::SharedPtr pMsg)
     last_reboot_cmd = reboot_cmd;
 }
 
-// 检查遥控器状态的有效性
+// 检查遥控器数据的有效性
 void RC_Data_t::check_validity()
 {
     if (mode >= -1.1 && mode <= 1.1 && gear >= -1.1 && gear <= 1.1 && reboot_cmd >= -1.1 && reboot_cmd <= 1.1)

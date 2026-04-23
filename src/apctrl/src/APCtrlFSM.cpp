@@ -145,7 +145,7 @@ void APCtrlFSM::process()
 	{
 	case MANUAL_CTRL:
 	{
-		if (rc_data.enter_hover_mode) // 尝试跳转到AUTO_HOVER
+		if (rc_data.enter_hover_mode) // 切为自动悬停模式
 		{
 			RCLCPP_INFO(node_->get_logger(), "\033[32m333\033[0m");
 			if(!odom_is_received(now_time)) // 拒绝AUTO_HOVER,因为没有里程计数据!
@@ -190,8 +190,8 @@ void APCtrlFSM::process()
 				RCLCPP_INFO(node_->get_logger(), "\033[31mReject AUTO_HOVER. Failed to toggle GUIDED mode!\033[0m");
 				break;
 			}
-		} else if (param.takeoff_land.enable && takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::TAKEOFF) // 尝试进入自动起飞
-
+		} else if (param.takeoff_land.enable && takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::TAKEOFF) // 切为自动起飞模式
+		{
 			if (!odom_is_received(now_time))// 拒绝AUTO_TAKEOFF,因为没有里程计数据!
 			{
 				takeoff_land_data.triggered = false;
@@ -218,8 +218,7 @@ void APCtrlFSM::process()
 			}
 			if (rc_is_received(now_time))   // 检查遥控器是否连接
 			{
-				// TODO
-				if (!rc_data.is_hover_mode || !rc_data.is_command_mode || !rc_data.check_centered()) // 拒绝AUTO_TAKEOFF,如果遥控器没有连接或者没有处于自动悬停模式或指令控制模式,或者摇杆没有居中,请重新起飞!
+				if (!rc_data.is_hover_mode || !rc_data.is_command_mode || !rc_data.check_centered()) // 拒绝AUTO_TAKEOFF,如果遥控器没有连接或者没有处于悬停模式或指令控制模式,或者摇杆没有居中,请重新起飞!
 				{
 					RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_TAKEOFF. If you have your RC connected, keep its switches at \"auto hover\" and \"command control\" states, and all sticks at the center, then takeoff again.");
 					while (rclcpp::ok())
@@ -238,22 +237,20 @@ void APCtrlFSM::process()
 					break;
 				}
 			}
-			if (set_GUIDED_flag || toggle_GUIDED_mode(true)) // 切换到GUIDED模式
+			if (set_GUIDED_flag || toggle_GUIDED_mode(true)) // 切换到GUIDED模式，进入自动起飞，TODO
 			{
 				if(state_data.current_state.mode == "GUIDED")
 				{
 					state = AUTO_TAKEOFF;
 					controller.resetThrustMapping();
 					set_start_pose_for_takeoff_land(odom_data);	
-					// 如果启用了自动解锁功能
-					if (param.takeoff_land.enable_auto_arm)
+					if (param.takeoff_land.enable_auto_arm) // 如果启用了自动解锁功能，则自动解锁
 					{
 						toggle_arm_disarm(true);
 					}
 					takeoff_land.toggle_takeoff_land_time = now_time;
 					set_GUIDED_flag = false;
 					takeoff_land_data.triggered = false;
-
 					RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] MANUAL_CTRL(L1) --> AUTO_TAKEOFF\033[0m");
 				}
 				else
@@ -270,7 +267,7 @@ void APCtrlFSM::process()
 			}
 		}
 
-		if (rc_data.toggle_reboot) // Try to reboot. EKF2 based AP FCU requires reboot when its state estimator goes wrong.
+		if (rc_data.toggle_reboot) // 尝试重启
 		{
 			if (state_data.current_state.armed)
 			{
@@ -285,33 +282,27 @@ void APCtrlFSM::process()
 	}
 
 	case AUTO_HOVER:
-	{
-		// 如果遥控器没有进入悬停模式或者没有收到里程计数据
-		if (!rc_data.is_hover_mode || !odom_is_received(now_time))
+	{	
+		if (!rc_data.is_hover_mode || !odom_is_received(now_time)) // 如果遥控器没有进入悬停模式或者没有收到里程计数据，切回手动控制模式
 		{
 			state = MANUAL_CTRL;// 切换到手动控制模式
 			toggle_GUIDED_mode(false);// 关闭GUIDED模式
-
-			RCLCPP_WARN(node_->get_logger(), "AUTO_HOVER(L2) --> MANUAL_CTRL(L1)");
+			RCLCPP_WARN(node_->get_logger(), "AUTO_HOVER --> MANUAL_CTRL");
 		}
-		// 如果遥控器进入指令模式并且收到指令数据
-		else if (rc_data.is_command_mode && cmd_is_received(now_time))
+		else if (rc_data.is_command_mode && cmd_is_received(now_time)) // 如果遥控器进入指令模式并且已收到指令，切为指令控制模式
 		{
 			if (state_data.current_state.mode == "GUIDED")
 			{
 				state = CMD_CTRL;// 切换到指令控制模式
 				des = get_cmd_des();// 获取指令期望状态
-				RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] AUTO_HOVER(L2) --> CMD_CTRL(L3)\033[0m");
+				RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] AUTO_HOVER --> CMD_CTRL\033[0m");
 			}
 		}
-		// 如果起飞降落数据触发并且起飞降落指令为降落
-		else if (takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::LAND)
+		else if (takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::LAND) // 如果着陆指令触发，切为自动着陆模式
 		{
-			// 如果起飞降落数据触发并且起飞降落指令为降落
 			state = AUTO_LAND;// 切换到自动降落模式
-			set_start_pose_for_takeoff_land(odom_data);// 设置起飞降落起始位置
-
-			RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] AUTO_HOVER(L2) --> AUTO_LAND\033[0m");
+			set_start_pose_for_takeoff_land(odom_data);// 设置着陆起点
+			RCLCPP_INFO(node_->get_logger(), "\033[32m[apctrl] AUTO_HOVER --> AUTO_LAND\033[0m");
 		}
 		else
 		{
@@ -330,28 +321,28 @@ void APCtrlFSM::process()
 
 		break;
 	}
+
 	case CMD_CTRL:
 	{
-		if (!rc_data.is_hover_mode || !odom_is_received(now_time))
+		if (!rc_data.is_hover_mode || !odom_is_received(now_time)) // 如果遥控器没有进入悬停模式或者没有收到里程计数据，切回手动控制模式
 		{
 			state = MANUAL_CTRL;
 			toggle_GUIDED_mode(false);
-
-			RCLCPP_WARN(node_->get_logger(), "From CMD_CTRL(L3) to MANUAL_CTRL(L1)!");
+			RCLCPP_WARN(node_->get_logger(), "From CMD_CTRL to MANUAL_CTRL!");
 		}
-		else if (!rc_data.is_command_mode || !cmd_is_received(now_time))
+		else if (!rc_data.is_command_mode || !cmd_is_received(now_time)) // 如果遥控器没有进入指令模式或者未收到指令，切回自动悬停模式
 		{
 			state = AUTO_HOVER;
 			set_hov_with_odom();
 			des = get_hover_des();
-			RCLCPP_INFO(node_->get_logger(), "From CMD_CTRL(L3) to AUTO_HOVER(L2)!");
+			RCLCPP_INFO(node_->get_logger(), "From CMD_CTRL to AUTO_HOVER!");
 		}
 		else
 		{
 			des = get_cmd_des();
 		}
 
-		if (takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::LAND)
+		if (takeoff_land_data.triggered && takeoff_land_data.takeoff_land_cmd == quadrotor_msgs::msg::TakeoffLand::LAND) // 如果触发着陆指令，则报错
 		{
 			RCLCPP_ERROR(node_->get_logger(), "Reject AUTO_LAND, which must be triggered in AUTO_HOVER. \
 					Stop sending control commands for longer than %fs to let apctrl return to AUTO_HOVER first.",
@@ -363,8 +354,7 @@ void APCtrlFSM::process()
 
 	case AUTO_TAKEOFF:
 	{
-		//等待起飞
-		if ((now_time - takeoff_land.toggle_takeoff_land_time).seconds() < AutoTakeoffLand_t::MOTORS_SPEEDUP_TIME) // Wait for several seconds to warn prople.
+		if ((now_time - takeoff_land.toggle_takeoff_land_time).seconds() < AutoTakeoffLand_t::MOTORS_SPEEDUP_TIME) // 等待几秒起飞
 		{ 
 			des = get_rotor_speed_up_des(now_time);
 		}
@@ -537,6 +527,7 @@ void APCtrlFSM::land_detector(const State_t state, const Desired_State_t &des, c
 	}
 }
 
+// 根据hover_pose赋值期望状态des
 Desired_State_t APCtrlFSM::get_hover_des()
 {
 	Desired_State_t des;
@@ -603,14 +594,15 @@ Desired_State_t APCtrlFSM::get_takeoff_land_des(const double speed)
 	return des;
 }
 
+// 将飞机当前的位置和偏航角设为hover_pose
 void APCtrlFSM::set_hov_with_odom()
 {
 	hover_pose.head<3>() = odom_data.p;
 	hover_pose(3) = get_yaw_from_quaternion(odom_data.q);
-
 	last_set_hover_pose_time = node_->now();
 }
 
+// 根据遥控器信号，设置hover_pose
 void APCtrlFSM::set_hov_with_rc()
 {
 	rclcpp::Time now = node_->now();
@@ -622,7 +614,7 @@ void APCtrlFSM::set_hov_with_rc()
 	hover_pose(2) += rc_data.ch[2] * param.max_manual_vel * delta_t * (param.rc_reverse.throttle ? 1 : -1);
 	hover_pose(3) += rc_data.ch[3] * param.max_manual_vel * delta_t * (param.rc_reverse.yaw ? 1 : -1);
 
-	if (hover_pose(2) < -0.3)
+	if (hover_pose(2) < -0.3) // 悬停高度最小为0.3m
 		hover_pose(2) = -0.3;
 
 	// if (param.print_dbg)
@@ -636,24 +628,26 @@ void APCtrlFSM::set_hov_with_rc()
 	// }
 }
 
+// 记录当前的位置和偏航角作为起飞或着陆的起点
 void APCtrlFSM::set_start_pose_for_takeoff_land(const Odom_Data_t & /*odom*/)
 {
 	takeoff_land.start_pose.head<3>() = odom_data.p;
 	takeoff_land.start_pose(3) = get_yaw_from_quaternion(odom_data.q);
-
-	takeoff_land.toggle_takeoff_land_time = node_->now();
 }
 
+// 判断遥控器信号接收是否超时
 bool APCtrlFSM::rc_is_received(const rclcpp::Time &now_time)
 {
 	return (now_time - rc_data.rcv_stamp).seconds() < param.msg_timeout.rc;
 }
 
+// 判断指令接收是否超时
 bool APCtrlFSM::cmd_is_received(const rclcpp::Time &now_time)
 {
 	return (now_time - cmd_data.rcv_stamp).seconds() < param.msg_timeout.cmd;
 }
 
+// 判断里程计数据接收是否超时
 bool APCtrlFSM::odom_is_received(const rclcpp::Time &now_time)
 {
 	return (now_time - odom_data.rcv_stamp).seconds() < param.msg_timeout.odom;

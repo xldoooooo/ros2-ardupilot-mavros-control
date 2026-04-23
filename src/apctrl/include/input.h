@@ -40,9 +40,9 @@ public:
   bool enter_hover_mode;           // 进入悬停模式
   bool toggle_reboot;              // 
 
-  // ң���������ֵ����
-  static constexpr double GEAR_SHIFT_VALUE = 0.75;           // ��λ�л���ֵ
-  static constexpr double API_MODE_THRESHOLD_VALUE = 0.75;   // APIģʽ�л���ֵ
+  // 遥控器阈值相关
+  static constexpr double GEAR_SHIFT_VALUE = 0.75;           // 遥控器档位切换阈值
+  static constexpr double API_MODE_THRESHOLD_VALUE = 0.75;   // 遥控器模式切换阈值
   static constexpr double REBOOT_THRESHOLD_VALUE = 0.5;      // ������ֵ
   static constexpr double DEAD_ZONE = 0.25;                  // ����ֵ
   // static constexpr double TAKEOFF_LAND_THRESHOLD_VALUE = 0.75; // ��ɽ�����ֵ

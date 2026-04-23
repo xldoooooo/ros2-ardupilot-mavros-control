@@ -17,7 +17,7 @@ struct AutoTakeoffLand_t
 {
 	bool landed{true};  // 是否已着陆
 	rclcpp::Time toggle_takeoff_land_time;  // 切换起飞/降落的时间戳
-	std::pair<bool, rclcpp::Time> delay_trigger{std::pair<bool, rclcpp::Time>(false, rclcpp::Time(0))};  // ?延迟触发器
+	std::pair<bool, rclcpp::Time> delay_trigger{std::pair<bool, rclcpp::Time>(false, rclcpp::Time(0))};  // 延迟触发器
 	Eigen::Vector4d start_pose;  // 起始姿态 (x,y,z,yaw)
 	
 	static constexpr double MOTORS_SPEEDUP_TIME = 3.0;  // 起飞前电机预热时间(秒)
