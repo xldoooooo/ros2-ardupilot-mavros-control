@@ -82,7 +82,6 @@ public:
 	double max_manual_vel;    // 手动模式最大速度(m/s)
 	double low_voltage;       // 低电压警告阈值(V)
 
-	bool use_bodyrate_ctrl;   // 是否使用机体角速率控制
 	// bool print_dbg;        // 是否打印调试信息（已注释）
 
 	// 构造函数和配置方法

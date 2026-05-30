@@ -8,7 +8,6 @@
     gra         : 9.81   # 重力加速度(m/s^2)
     pose_solver : 1      # 位姿解算器选择: 0-ZhepeiWang方法(考虑阻力,奇异性小), 1-ZhepeiWang方法, 2-基于旋翼阻力
     ctrl_freq_max   : 100.0    # 最大控制频率(Hz)
-    use_bodyrate_ctrl: false # 是否使用机体角速度控制模式
     max_manual_vel: 1.0      # 手动模式下的最大速度限制(m/s)
     max_angle: 30.0          # 姿态角度限制(度)，负值表示无限制
     low_voltage: 13.2        # 低电量警告电压阈值(V)，适用于4S电池

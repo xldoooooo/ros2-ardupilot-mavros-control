@@ -450,14 +450,7 @@ void APCtrlFSM::process()
 	}
 
 	// STEP4: 发布控制命令到mavros
-	if (param.use_bodyrate_ctrl)
-	{
-		publish_bodyrate_ctrl(u, now_time);
-	}
-	else
-	{
-		publish_attitude_ctrl(u, now_time);
-	}
+	publish_attitude_ctrl(u, now_time);
 
 	// STEP5: 检测无人机是否降落
 	land_detector(state, des, odom_data);
@@ -474,7 +467,6 @@ void APCtrlFSM::process()
 void APCtrlFSM::motors_idling(const Imu_Data_t &imu, Controller_Output_t &u)
 {
 	u.q = imu.q;
-	u.bodyrates = Eigen::Vector3d::Zero();
 	u.thrust = 0.04;
 }
 

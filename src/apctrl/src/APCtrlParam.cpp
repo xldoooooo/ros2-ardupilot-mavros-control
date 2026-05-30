@@ -47,7 +47,6 @@ void Parameter_t::config_from_ros_handle(const std::shared_ptr<rclcpp::Node>& no
     read_essential_param(node, "mass", mass);                         // 飞行器质量
     read_essential_param(node, "gra", gra);                          // 重力加速度
     read_essential_param(node, "ctrl_freq_max", ctrl_freq_max);      // 最大控制频率
-    read_essential_param(node, "use_bodyrate_ctrl", use_bodyrate_ctrl); // 是否使用机体角速度控制
     read_essential_param(node, "max_manual_vel", max_manual_vel);    // 最大手动速度
     read_essential_param(node, "max_angle", max_angle);              // 最大倾角
     read_essential_param(node, "low_voltage", low_voltage);          // 低电量警告阈值

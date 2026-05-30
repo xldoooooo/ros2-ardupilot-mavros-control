@@ -4,15 +4,7 @@
 echo "========================================="
 echo "Starting MAVROS for ArduPilot SITL"
 echo "========================================="
-echo ""
-echo "Make sure SITL is running first!"
-echo "Connection: udp://:14550@"
-echo ""
-echo "========================================="
-
 
 # Start MAVROS with direct command (more reliable than launch file)
-ros2 run mavros mavros_node --ros-args \
-    -p fcu_url:="udp://:14550@" \
-    -p target_system_id:=1 \
-    -p target_component_id:=1 
+# ros2 run mavros mavros_node 
+ros2 run mavros mavros_node --ros-args -p fcu_url:="tcp://127.0.0.1:5762"

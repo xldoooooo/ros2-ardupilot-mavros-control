@@ -42,6 +42,8 @@ public:
 	Battery_Data_t bat_data;              // 电池数据
 	Takeoff_Land_Data_t takeoff_land_data;  // 起降数据
 
+	std::vector<rclcpp::SubscriptionBase::SharedPtr> subscriptions_;
+
 	bool set_GUIDED_flag;  // 是否设置GUIDED模式
 	
 	// ROS2发布者和服务客户端
@@ -109,7 +111,6 @@ private:
 	void reboot_FCU();                       // 重启飞控
 
 	// 发布函数
-	void publish_bodyrate_ctrl(const Controller_Output_t &u, const rclcpp::Time &stamp);  // 发布体速率控制指令
 	void publish_attitude_ctrl(const Controller_Output_t &u, const rclcpp::Time &stamp);  // 发布姿态控制指令
 	void publish_trigger(const nav_msgs::msg::Odometry &odom_msg);  // 发布触发消息
 };

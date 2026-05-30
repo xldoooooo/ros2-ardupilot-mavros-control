@@ -41,40 +41,55 @@ void initialize_subscriptions(
     APCtrlFSM& fsm,
     const Parameter_t& param)
 {
-    // 创建所有订阅
-    create_subscription<mavros_msgs::msg::State>(
-        node, "/mavros/state", 10,
-        std::bind(&State_Data_t::feed, &fsm.state_data, std::placeholders::_1));
+    // 保存每一个订阅
+    fsm.subscriptions_.push_back(
+        create_subscription<mavros_msgs::msg::State>(
+            node, "/mavros/state", 10,
+            std::bind(&State_Data_t::feed, &fsm.state_data, std::placeholders::_1))
+    );
     
-    create_subscription<mavros_msgs::msg::ExtendedState>(
-        node, "/mavros/extended_state", 10,
-        std::bind(&ExtendedState_Data_t::feed, &fsm.extended_state_data, std::placeholders::_1));
+    fsm.subscriptions_.push_back(
+        create_subscription<mavros_msgs::msg::ExtendedState>(
+            node, "/mavros/extended_state", 10,
+            std::bind(&ExtendedState_Data_t::feed, &fsm.extended_state_data, std::placeholders::_1))
+    );
     
-    create_subscription<nav_msgs::msg::Odometry>(
-        node, "odom", 100,
-        std::bind(&Odom_Data_t::feed, &fsm.odom_data, std::placeholders::_1), true);
+    fsm.subscriptions_.push_back(
+        create_subscription<nav_msgs::msg::Odometry>(
+            node, "odom", 100,
+            std::bind(&Odom_Data_t::feed, &fsm.odom_data, std::placeholders::_1), true)
+    );
     
-    create_subscription<quadrotor_msgs::msg::PositionCommand>(
-        node, "cmd", 100,
-        std::bind(&Command_Data_t::feed, &fsm.cmd_data, std::placeholders::_1), true);
+    fsm.subscriptions_.push_back(
+        create_subscription<quadrotor_msgs::msg::PositionCommand>(
+            node, "cmd", 100,
+            std::bind(&Command_Data_t::feed, &fsm.cmd_data, std::placeholders::_1), true)
+    );
     
-    create_subscription<sensor_msgs::msg::Imu>(
-        node, "/mavros/imu/data", 100,
-        std::bind(&Imu_Data_t::feed, &fsm.imu_data, std::placeholders::_1), true);
+    fsm.subscriptions_.push_back(
+        create_subscription<sensor_msgs::msg::Imu>(
+            node, "/mavros/imu/data", 100,
+            std::bind(&Imu_Data_t::feed, &fsm.imu_data, std::placeholders::_1), true)
+    );
     
-    create_subscription<sensor_msgs::msg::BatteryState>(
-        node, "/mavros/battery", 100,
-        std::bind(&Battery_Data_t::feed, &fsm.bat_data, std::placeholders::_1), true);
+    fsm.subscriptions_.push_back(
+        create_subscription<sensor_msgs::msg::BatteryState>(
+            node, "/mavros/battery", 100,
+            std::bind(&Battery_Data_t::feed, &fsm.bat_data, std::placeholders::_1), true)
+    );
     
-    create_subscription<quadrotor_msgs::msg::TakeoffLand>(
-        node, "takeoff_land", 100,
-        std::bind(&Takeoff_Land_Data_t::feed, &fsm.takeoff_land_data, std::placeholders::_1), true);
+    fsm.subscriptions_.push_back(
+        create_subscription<quadrotor_msgs::msg::TakeoffLand>(
+            node, "takeoff_land", 100,
+            std::bind(&Takeoff_Land_Data_t::feed, &fsm.takeoff_land_data, std::placeholders::_1), true)
+    );
     
-    // RC订阅（条件性）
     if (!param.takeoff_land.no_RC) {
-        create_subscription<mavros_msgs::msg::RCIn>(
-            node, "/mavros/rc/in", 10,
-            std::bind(&RC_Data_t::feed, &fsm.rc_data, std::placeholders::_1));
+        fsm.subscriptions_.push_back(
+            create_subscription<mavros_msgs::msg::RCIn>(
+                node, "/mavros/rc/in", 10,
+                std::bind(&RC_Data_t::feed, &fsm.rc_data, std::placeholders::_1))
+        );
     }
 }
 
