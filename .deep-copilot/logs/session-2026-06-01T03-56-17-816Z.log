@@ -1,0 +1,37 @@
+[2026-06-01T03:56:17.816Z] [INIT] Deep Copilot debug log started. file=/home/dministrator/ros2-ardupilot-mavros-control/.deep-copilot/logs/session-2026-06-01T03-56-17-816Z.log
+[2026-06-01T03:56:17.816Z] [ACTIVATE] {"version":"0.43.1"}
+[2026-06-01T03:56:17.817Z] [PROVIDERS_LOADED] {"count":4,"ids":["anthropic","custom","deepseek","openai"]}
+[2026-06-01T03:56:17.818Z] [TERMINAL_MONITOR_STARTED] {}
+[2026-06-01T03:56:17.818Z] [STATUSBAR_REGISTERED] {"id":"deepseekAgent.statusBar"}
+[2026-06-01T03:56:17.820Z] [INLINE_COMPLETION_REGISTERED]
+[2026-06-01T03:56:36.736Z] [USER_SEND] {"sid":"s_mpuofoxl_6ded","len":2,"model":"deepseek-v4-pro","baseUrl":"","mode":"manual","text":"你好"}
+[2026-06-01T03:56:36.737Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-01T03:56:36.737Z] [TIKTOKEN_UNAVAILABLE] {"reason":"Cannot find module 'js-tiktoken'\nRequire stack:\n- /home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js\n- /home/dministrator/.vscode-server/bin/cd4ee3b1c348a13bafd8f9ad8060705f6d4b9cba/out/vs/workbench/api/node/extensionHostProcess.js"}
+[2026-06-01T03:56:36.738Z] [ITER_START] {"sid":"s_mpuofoxl_6ded","iter":1,"msg_count":2,"est_tokens":5506}
+[2026-06-01T03:56:36.739Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":2}
+[2026-06-01T03:56:38.059Z] [LOOP_ERROR] {"sid":"s_mpuofoxl_6ded","message":"Connection error.","stack":"Error: Connection error.\n    at K.makeRequest (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:391:4985)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at yU (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:396:83)\n    at hA.handleSend (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:581:2579)"}
+[2026-06-01T03:56:38.060Z] [SEND_END] {"sid":"s_mpuofoxl_6ded","iters":0,"asst_chars":0}
+[2026-06-01T03:56:39.453Z] [USER_SEND] {"sid":"s_mpuofoxl_6ded","len":2,"model":"deepseek-v4-pro","baseUrl":"","mode":"manual","text":"你好"}
+[2026-06-01T03:56:39.455Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-01T03:56:39.456Z] [ITER_START] {"sid":"s_mpuofoxl_6ded","iter":1,"msg_count":2,"est_tokens":5506}
+[2026-06-01T03:56:39.457Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":2}
+[2026-06-01T03:56:40.757Z] [LOOP_ERROR] {"sid":"s_mpuofoxl_6ded","message":"Connection error.","stack":"Error: Connection error.\n    at K.makeRequest (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:391:4985)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at yU (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:396:83)\n    at hA.handleSend (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:581:2579)"}
+[2026-06-01T03:56:40.757Z] [SEND_END] {"sid":"s_mpuofoxl_6ded","iters":0,"asst_chars":0}
+[2026-06-01T03:56:46.309Z] [USER_SEND] {"sid":"s_mpuofoxl_6ded","len":2,"model":"deepseek-v4-pro","baseUrl":"","mode":"manual","text":"你好"}
+[2026-06-01T03:56:46.310Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-01T03:56:46.310Z] [ITER_START] {"sid":"s_mpuofoxl_6ded","iter":1,"msg_count":2,"est_tokens":5506}
+[2026-06-01T03:56:46.311Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":2}
+[2026-06-01T03:56:47.826Z] [LOOP_ERROR] {"sid":"s_mpuofoxl_6ded","message":"Connection error.","stack":"Error: Connection error.\n    at K.makeRequest (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:391:4985)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at yU (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:396:83)\n    at hA.handleSend (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:581:2579)"}
+[2026-06-01T03:56:47.826Z] [SEND_END] {"sid":"s_mpuofoxl_6ded","iters":0,"asst_chars":0}
+[2026-06-01T03:56:48.657Z] [USER_SEND] {"sid":"s_mpuofoxl_6ded","len":2,"model":"deepseek-v4-pro","baseUrl":"","mode":"manual","text":"你好"}
+[2026-06-01T03:56:48.658Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-01T03:56:48.659Z] [ITER_START] {"sid":"s_mpuofoxl_6ded","iter":1,"msg_count":2,"est_tokens":5506}
+[2026-06-01T03:56:48.660Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":2}
+[2026-06-01T03:56:50.103Z] [LOOP_ERROR] {"sid":"s_mpuofoxl_6ded","message":"Connection error.","stack":"Error: Connection error.\n    at K.makeRequest (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:391:4985)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at yU (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:396:83)\n    at hA.handleSend (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:581:2579)"}
+[2026-06-01T03:56:50.104Z] [SEND_END] {"sid":"s_mpuofoxl_6ded","iters":0,"asst_chars":0}
+[2026-06-01T03:56:51.541Z] [USER_SEND] {"sid":"s_mpuofoxl_6ded","len":2,"model":"deepseek-v4-pro","baseUrl":"","mode":"manual","text":"你好"}
+[2026-06-01T03:56:51.542Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-01T03:56:51.543Z] [ITER_START] {"sid":"s_mpuofoxl_6ded","iter":1,"msg_count":2,"est_tokens":5506}
+[2026-06-01T03:56:51.543Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":2}
+[2026-06-01T03:56:53.032Z] [LOOP_ERROR] {"sid":"s_mpuofoxl_6ded","message":"Connection error.","stack":"Error: Connection error.\n    at K.makeRequest (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:391:4985)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at yU (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:396:83)\n    at hA.handleSend (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:581:2579)"}
+[2026-06-01T03:56:53.033Z] [SEND_END] {"sid":"s_mpuofoxl_6ded","iters":0,"asst_chars":0}
