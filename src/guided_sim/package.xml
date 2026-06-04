@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
+<!-- 感谢徐斌、朱灶旭老师的帮助 -->
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>guided_sim</name>
   <version>0.0.0</version>
   <description>The guided_sim package (ROS2)</description>
-  <maintainer email="zzx@todo.todo">zzx</maintainer>
+  <maintainer email="xld@todo.todo">xld</maintainer>
   <license>TODO</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
