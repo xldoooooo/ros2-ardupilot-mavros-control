@@ -4,3 +4,10 @@
 [2026-06-04T00:54:54.813Z] [TERMINAL_MONITOR_STARTED] {}
 [2026-06-04T00:54:54.813Z] [STATUSBAR_REGISTERED] {"id":"deepseekAgent.statusBar"}
 [2026-06-04T00:54:54.816Z] [INLINE_COMPLETION_REGISTERED]
+[2026-06-04T01:46:13.165Z] [USER_SEND] {"sid":"s_mpwkg7mg_1895","len":59,"model":"deepseek-v4-pro","baseUrl":"","mode":"autopilot","text":"当前的keyboard_vel_controller代码太长了，能不能帮我精简一下，但不改变功能，明显不起作用的请删掉"}
+[2026-06-04T01:46:13.167Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-04T01:46:13.169Z] [TIKTOKEN_UNAVAILABLE] {"reason":"Cannot find module 'js-tiktoken'\nRequire stack:\n- /home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js\n- /home/dministrator/.vscode-server/bin/cd4ee3b1c348a13bafd8f9ad8060705f6d4b9cba/out/vs/workbench/api/node/extensionHostProcess.js"}
+[2026-06-04T01:46:13.172Z] [ITER_START] {"sid":"s_mpwkg7mg_1895","iter":1,"msg_count":133,"est_tokens":45282}
+[2026-06-04T01:46:13.174Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":133}
+[2026-06-04T01:46:14.646Z] [LOOP_ERROR] {"sid":"s_mpwkg7mg_1895","message":"Connection error.","stack":"Error: Connection error.\n\tat K.makeRequest (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:391:4985)\n\tat process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n\tat async yU (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:396:83)\n\tat async hA.handleSend (/home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js:581:2579)"}
+[2026-06-04T01:46:14.646Z] [SEND_END] {"sid":"s_mpwkg7mg_1895","iters":0,"asst_chars":0}
