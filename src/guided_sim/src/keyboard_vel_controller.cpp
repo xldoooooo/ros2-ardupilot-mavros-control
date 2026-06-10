@@ -928,7 +928,6 @@ void *keyboard_listener(void *dummy){
 	return NULL;
 }
 
-
 // Empty handler for SIGUSR1 — interrupts blocking getchar() in the keyboard
 // thread (returns EINTR) without terminating the process.
 static void sigusr1_wake_handler(int) {}
@@ -1079,7 +1078,11 @@ int main(int argc, char** argv){
     
     target_position.pose.position.x = 0;
     target_position.pose.position.y = 0;
-    target_position.pose.position.z = 0;   
+    target_position.pose.position.z = 0;
+    target_position.pose.orientation.w = 1.0;   // 单位四元数，保持当前航向不变
+    target_position.pose.orientation.x = 0.0;   // 单位四元数，保持当前航向不变
+    target_position.pose.orientation.y = 0.0;   // 单位四元数，保持当前航向不变
+    target_position.pose.orientation.z = 0.0;   // 单位四元数，保持当前航向不变
     
     // 先发几个点
     for(int i = 20; rclcpp::ok() && i > 0; --i){
@@ -1150,7 +1153,7 @@ int main(int argc, char** argv){
     auto takeoff_req = std::make_shared<mavros_msgs::srv::CommandTOL::Request>();
     bool takeoff_success = false;
     for (int i = 0; i < 3; ++i) {
-        takeoff_req->altitude = 1.0;      // 提高到1米，避免高度过小被拒绝
+        takeoff_req->altitude = 0.3;      // 提高到0.3米，避免高度过小被拒绝
         takeoff_req->min_pitch = 0.0;
         takeoff_req->yaw = 0.0;
         auto takeoff_future = takeoff_client->async_send_request(takeoff_req);
