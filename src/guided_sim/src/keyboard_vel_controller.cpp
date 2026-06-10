@@ -2520,6 +2520,11 @@ int main(int argc, char** argv){
             }
         }
         else if (controlMode == MODE_HOVER_CUSTOM){
+            // DOB persistent state — reset timing on mode entry to avoid dt spike
+            static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;
+            static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;
+            static double dob_last_time = 0.0;
+            static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;
             if(!mode_int){
                 target_position.header.stamp = node->now();
                 target_position.header.frame_id = "map";
@@ -2540,6 +2545,9 @@ int main(int argc, char** argv){
                 target_acc_y_pid_last = 0.0f;
                 target_acc_z_pid_last = 0.0f;
 
+                // Reset DOB timing to avoid large dt spike on mode re-entry
+                dob_last_time = node->now().seconds();
+
                 printf("hoverMode_CUSTOM x:%f y:%f z:%f\r\n",target_position.pose.position.x,target_position.pose.position.y,target_position.pose.position.z);
                 position_pub->publish(target_position);
                 mode_int = true;
@@ -2548,131 +2556,136 @@ int main(int argc, char** argv){
                 double target_vel_y_pid = target_position.pose.position.y - localposition.y;
                 double target_vel_z_pid = target_position.pose.position.z - localposition.z;                       
 
-                double target_acc_x_pid = 4*(target_vel_x_pid - localvelocity.x);                        //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                double target_acc_y_pid = 4*(target_vel_y_pid - localvelocity.y);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
+                double target_acc_x_pid = 2*(target_vel_x_pid - localvelocity.x);                        //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
+                double target_acc_y_pid = 2*(target_vel_y_pid - localvelocity.y);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
                 double target_acc_z_pid = 5*(target_vel_z_pid - localvelocity.z);  
 
                 // DOB 
                 double L = 1;
-                static double z_x = 0.0, z_y = 0.0, z_z = 0.0;
-                static double d_x_hat = 0.0, d_y_hat = 0.0, d_z_hat = 0.0;
-                static double last_time = node->now().seconds();
-                static double u_x = 0, u_y = 0, u_z = 0;
-
-                u_x = target_acc_x_pid;
-                u_y = target_acc_y_pid;
-                u_z = target_acc_z_pid;
 
                 double current_time = node->now().seconds();
-                double dt =  current_time - last_time;
+                double dt =  current_time - dob_last_time;
                 if(dt > 0.005) {
-                    z_x = z_x/(L*dt+1) - L*L*dt*localvelocity.x/(L*dt+1) - L*target_acc_x_pid*dt/(L*dt+1);
-                    z_y = z_y/(L*dt+1) - L*L*dt*localvelocity.y/(L*dt+1) - L*target_acc_y_pid*dt/(L*dt+1);
-                    // z_z = z_z/(L*dt+1) - L*L*dt*localvelocity.z/(L*dt+1) - L*target_acc_z_pid*dt/(L*dt+1);
+                    // Use compensated command (dob_u_*) in DOB dynamics,
+                    // NOT raw command (target_acc_*_pid).
+                    // This yields d_hat = L/s * (a - u) = full disturbance rejection,
+                    // instead of the old L/(s+L)*(a - u_raw) = only 50% rejection.
+                    dob_z_x = dob_z_x/(L*dt+1) - L*L*dt*localvelocity.x/(L*dt+1) - L*dob_u_x*dt/(L*dt+1);
+                    dob_z_y = dob_z_y/(L*dt+1) - L*L*dt*localvelocity.y/(L*dt+1) - L*dob_u_y*dt/(L*dt+1);
+                    dob_z_z = dob_z_z/(L*dt+1) - L*L*dt*localvelocity.z/(L*dt+1) - L*dob_u_z*dt/(L*dt+1);
 
-                    d_x_hat = z_x + L * localvelocity.x;
-                    d_y_hat = z_y + L * localvelocity.y;
-                    // d_z_hat = z_z + L * localvelocity.z;
+                    dob_d_x_hat = dob_z_x + L * localvelocity.x;
+                    dob_d_y_hat = dob_z_y + L * localvelocity.y;
+                    dob_d_z_hat = dob_z_z + L * localvelocity.z;
 
-                    u_x = u_x - d_x_hat;
-                    u_y = u_y - d_y_hat;
-                    // u_z = u_z - d_z_hat;
-
-                    last_time = current_time;
+                    dob_last_time = current_time;
                 }
+
+                dob_u_x = target_acc_x_pid - dob_d_x_hat;
+                dob_u_y = target_acc_y_pid - dob_d_y_hat;
+                dob_u_z = target_acc_z_pid - dob_d_z_hat;
+
                 #define DELT_RANGE (GRAVITY_ACC * tan(5.0*M_PI/180.0f))   //约等于1.728    0.85
 
-                double acc_delt_x = u_x - target_acc_x_pid_last;
+                double acc_delt_x = dob_u_x - target_acc_x_pid_last;
                 if(acc_delt_x > DELT_RANGE){
-                    u_x = target_acc_x_pid_last + DELT_RANGE;
+                    dob_u_x = target_acc_x_pid_last + DELT_RANGE;
                 }else if (acc_delt_x < -DELT_RANGE)
                 {
-                    u_x = target_acc_x_pid_last - DELT_RANGE;
+                    dob_u_x = target_acc_x_pid_last - DELT_RANGE;
                 }
 
-                double acc_delt_y = u_y - target_acc_y_pid_last;
+                double acc_delt_y = dob_u_y - target_acc_y_pid_last;
                 if(acc_delt_y > DELT_RANGE){
-                    u_y = target_acc_y_pid_last + DELT_RANGE;
+                    dob_u_y = target_acc_y_pid_last + DELT_RANGE;
                 }else if (acc_delt_y < -DELT_RANGE)
                 {
-                    u_y = target_acc_y_pid_last - DELT_RANGE;
+                    dob_u_y = target_acc_y_pid_last - DELT_RANGE;
                 }                                
                 
-                double acc_delt_z = u_z - target_acc_z_pid_last;
+                double acc_delt_z = dob_u_z - target_acc_z_pid_last;
                 if(acc_delt_z > DELT_RANGE){
-                    u_z = target_acc_z_pid_last + DELT_RANGE;
+                    dob_u_z = target_acc_z_pid_last + DELT_RANGE;
                 }else if (acc_delt_z < -DELT_RANGE)
                 {
-                    u_z = target_acc_z_pid_last - DELT_RANGE;
+                    dob_u_z = target_acc_z_pid_last - DELT_RANGE;
                 }
 
-                target_acc_x_pid_last = u_x;
-                target_acc_y_pid_last = u_y;
-                target_acc_z_pid_last = u_z;
+                target_acc_x_pid_last = dob_u_x;
+                target_acc_y_pid_last = dob_u_y;
+                target_acc_z_pid_last = dob_u_z;
 
-                const double eps = 1e-6;
-                Eigen::Vector3d accel_cmd(u_x, u_y, u_z);
-                double acc_norm = accel_cmd.norm();
-                #define UAV_WEIGHT 2.0f
-                double out_thrust = UAV_WEIGHT * acc_norm;
+                // ... 位置误差、速度误差、DOB、加速度限幅等代码保持不变 ...
+                // 假设 u_x, u_y, u_z 已得到（期望运动加速度，不含重力）
 
-                //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
-                Eigen::Quaterniond q_des(target_position.pose.orientation.w, target_position.pose.orientation.x, target_position.pose.orientation.y, target_position.pose.orientation.z);                                   //当前姿态四元素，转换为欧拉角
-                double yaw_des,roll_des,pitch_des;
-                toEulerAngle(q_des,roll_des,pitch_des,yaw_des);
+                // ========== 修正开始 ==========
+                const double GRAVITY = 9.81;   // NED下Z向下为正
+                const double MASS = 2.0;       // 无人机质量 (kg)，与 UAV_WEIGHT 数值相同，但明确单位
+                const double HOVER_THROTTLE = 0.5;
+                const double THRUST_RATIO = 2.5;  // 最大推重比，根据实际修改
 
+                // 1. 构造总加速度（运动加速度 + 重力补偿）
+                Eigen::Vector3d accel_motion(dob_u_x, dob_u_y, dob_u_z);
+                Eigen::Vector3d gravity(0.0, 0.0, GRAVITY);
+                Eigen::Vector3d accel_total = accel_motion + gravity;  // 这才是总期望加速度
+
+                // 2. 根据总加速度和期望偏航角生成期望姿态四元数
+                double acc_norm = accel_total.norm();
                 Eigen::Quaterniond out_quat;
-                // 异常处理：期望加速度模长过小 -> 保持水平姿态，仅使用偏航角
+                const double eps = 1e-6;
+
+                // 获取期望偏航角（从目标姿态中提取，或使用当前偏航角）
+                Eigen::Quaterniond q_des_target(
+                    target_position.pose.orientation.w,
+                    target_position.pose.orientation.x,
+                    target_position.pose.orientation.y,
+                    target_position.pose.orientation.z);
+                double yaw_des, roll_des, pitch_des;
+                toEulerAngle(q_des_target, roll_des, pitch_des, yaw_des);  // 请确保你的 toEulerAngle 可用
+
                 if (acc_norm < eps) {
+                    // 异常：总加速度近乎零（几乎不可能），保持水平，仅按偏航
                     Eigen::AngleAxisd yaw_rot(yaw_des, Eigen::Vector3d::UnitZ());
                     out_quat = Eigen::Quaterniond(yaw_rot);
-                    out_quat.normalize();
-                } else{
-                    // 期望推力方向单位向量 (机体Z轴在世界系中的期望方向)
-                    Eigen::Vector3d b_c = accel_cmd.normalized();
-
-                    // 根据期望偏航角构造临时水平向量
+                } else {
+                    // 标准过程：推力方向 = 总加速度方向（机体Z轴）
+                    Eigen::Vector3d b_c = accel_total.normalized();
                     Eigen::Vector3d t(std::cos(yaw_des), std::sin(yaw_des), 0.0);
-                    // 施密特正交化得到 X_c (水平且垂直于 b_c)
                     double dot = t.dot(b_c);
                     Eigen::Vector3d X_c = t - dot * b_c;
-                    if (X_c.norm() < eps) {
-                        // 退化情况：b_c 平行于 Z 轴，取水平 X 轴
-                        X_c = Eigen::Vector3d(1.0, 0.0, 0.0);
-                    }
+                    if (X_c.norm() < eps) X_c = Eigen::Vector3d(1.0, 0.0, 0.0);
                     X_c.normalize();
-
-                    // Y_c = b_c × X_c
                     Eigen::Vector3d Y_c = b_c.cross(X_c);
                     Y_c.normalize();
-
-                    // 构造旋转矩阵 (三列分别为 X_c, Y_c, b_c)
                     Eigen::Matrix3d R;
                     R.col(0) = X_c;
                     R.col(1) = Y_c;
                     R.col(2) = b_c;
-
-                    // 旋转矩阵转四元数
                     out_quat = Eigen::Quaterniond(R);
-                    out_quat.normalize();
                 }
+                out_quat.normalize();
 
-                //换算成角度
-                Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
-                double yaw,roll,pitch;
-                toEulerAngle(q,roll,pitch,yaw);
-                double target_height_pid = u_z * UAV_WEIGHT / (cos(pitch) * cos(roll));       //高度不做控制
+                // 3. 计算总推力（牛顿）并映射到归一化油门
+                double thrust_newtons = MASS * acc_norm;
+                double weight_newtons = MASS * GRAVITY;
+                double max_thrust_newtons = weight_newtons * THRUST_RATIO;
 
-                target_pose.orientation.x = out_quat.coeffs()[0];                 //角度赋值
-                target_pose.orientation.y = out_quat.coeffs()[1];
-                target_pose.orientation.z = out_quat.coeffs()[2];
-                target_pose.orientation.w = out_quat.coeffs()[3];        
-                target_pose.thrust = 0.24f + target_height_pid;                     //设置油门
-                if(target_pose.thrust > 1.0f){
-                    target_pose.thrust = 1.0f;
-                }else if(target_pose.thrust < 0.0f){
-                    target_pose.thrust = 0.0f;
+                double throttle;
+                if (thrust_newtons <= weight_newtons) {
+                    // 悬停以下：线性从 0 到 HOVER_THROTTLE
+                    throttle = HOVER_THROTTLE * (thrust_newtons / weight_newtons);
+                } else {
+                    // 悬停以上：线性从 HOVER_THROTTLE 到 1.0
+                    throttle = HOVER_THROTTLE + (1.0 - HOVER_THROTTLE) * (thrust_newtons - weight_newtons) / (max_thrust_newtons - weight_newtons);
                 }
+                throttle = std::clamp(throttle, 0.0, 1.0);
+
+                // 4. 填充 MAVLink 消息（注意：不要再用原来的 target_height_pid 和 0.24+...）
+                target_pose.orientation.x = out_quat.x();
+                target_pose.orientation.y = out_quat.y();
+                target_pose.orientation.z = out_quat.z();
+                target_pose.orientation.w = out_quat.w();
+                target_pose.thrust = throttle;   // 直接使用映射后的油门
                 target_pose.type_mask = 1+2+4;
                 target_pose.header.stamp = node->now();
                 pose_pub->publish(target_pose);                         
