@@ -2556,27 +2556,25 @@ int main(int argc, char** argv){
                 double target_vel_y_pid = target_position.pose.position.y - localposition.y;
                 double target_vel_z_pid = target_position.pose.position.z - localposition.z;                       
 
-                double target_acc_x_pid = 2*(target_vel_x_pid - localvelocity.x);                        //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                double target_acc_y_pid = 2*(target_vel_y_pid - localvelocity.y);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
+                // High-precision PD — Kp=4, Kd=8, ωn=2.0, ζ=2.0 (overdamped)
+                double target_acc_x_pid = 4.0*target_vel_x_pid - 8.0*localvelocity.x;
+                double target_acc_y_pid = 4.0*target_vel_y_pid - 8.0*localvelocity.y;
                 double target_acc_z_pid = 5*(target_vel_z_pid - localvelocity.z);  
 
-                // DOB 
-                double L = 1;
+                double L_xy = 2.0;  // fast DOB, τ≈0.5s — disturbs rejected quickly
+                double L_z  = 1.0;
 
                 double current_time = node->now().seconds();
                 double dt =  current_time - dob_last_time;
                 if(dt > 0.005) {
-                    // Use compensated command (dob_u_*) in DOB dynamics,
-                    // NOT raw command (target_acc_*_pid).
-                    // This yields d_hat = L/s * (a - u) = full disturbance rejection,
-                    // instead of the old L/(s+L)*(a - u_raw) = only 50% rejection.
-                    dob_z_x = dob_z_x/(L*dt+1) - L*L*dt*localvelocity.x/(L*dt+1) - L*dob_u_x*dt/(L*dt+1);
-                    dob_z_y = dob_z_y/(L*dt+1) - L*L*dt*localvelocity.y/(L*dt+1) - L*dob_u_y*dt/(L*dt+1);
-                    dob_z_z = dob_z_z/(L*dt+1) - L*L*dt*localvelocity.z/(L*dt+1) - L*dob_u_z*dt/(L*dt+1);
+                    // Low-pass DOB on all axes: L/(s+L), DC gain = 1
+                    dob_z_x = dob_z_x/(L_xy*dt+1) - L_xy*L_xy*dt*localvelocity.x/(L_xy*dt+1) - L_xy*dob_u_x*dt/(L_xy*dt+1);
+                    dob_z_y = dob_z_y/(L_xy*dt+1) - L_xy*L_xy*dt*localvelocity.y/(L_xy*dt+1) - L_xy*dob_u_y*dt/(L_xy*dt+1);
+                    dob_z_z = dob_z_z/(L_z*dt+1)  - L_z*L_z*dt*localvelocity.z/(L_z*dt+1)   - L_z*dob_u_z*dt/(L_z*dt+1);
 
-                    dob_d_x_hat = dob_z_x + L * localvelocity.x;
-                    dob_d_y_hat = dob_z_y + L * localvelocity.y;
-                    dob_d_z_hat = dob_z_z + L * localvelocity.z;
+                    dob_d_x_hat = dob_z_x + L_xy * localvelocity.x;
+                    dob_d_y_hat = dob_z_y + L_xy * localvelocity.y;
+                    dob_d_z_hat = dob_z_z + L_z  * localvelocity.z;
 
                     dob_last_time = current_time;
                 }
