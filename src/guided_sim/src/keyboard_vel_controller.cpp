@@ -678,7 +678,7 @@ void *keyboard_listener(void *dummy){
                         }
                         }break;
                     case KEY_I:{   //i->105  向前
-                        target_veloity.linear.y = target_veloity.linear.y+scale;
+                        target_veloity.linear.x = target_veloity.linear.x+scale;
                         vel_change = true;
                         if(controlMode == MODE_HOVER){
                             mode_int = false; 
@@ -686,7 +686,7 @@ void *keyboard_listener(void *dummy){
                         }
                         }break;
                     case KEY_J:{   //j->106  向左
-                        target_veloity.linear.x = target_veloity.linear.x-scale;
+                        target_veloity.linear.y = target_veloity.linear.y+scale;
                         vel_change = true;
                         if(controlMode == MODE_HOVER){
                             mode_int = false; 
@@ -694,7 +694,7 @@ void *keyboard_listener(void *dummy){
                         }
                         }break;
                     case KEY_K:{   //k->107  向后
-                        target_veloity.linear.y = target_veloity.linear.y-scale;
+                        target_veloity.linear.x = target_veloity.linear.x-scale;
                         vel_change = true;
                         if(controlMode == MODE_HOVER){
                             mode_int = false; 
@@ -702,7 +702,7 @@ void *keyboard_listener(void *dummy){
                         }
                         }break;
                     case KEY_L:{   //l->108  向右
-                        target_veloity.linear.x = target_veloity.linear.x+scale;
+                        target_veloity.linear.y = target_veloity.linear.y-scale;
                         vel_change = true;
                         if(controlMode == MODE_HOVER){
                             mode_int = false; 
@@ -933,8 +933,7 @@ void *keyboard_listener(void *dummy){
 // thread (returns EINTR) without terminating the process.
 static void sigusr1_wake_handler(int) {}
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv){
     rclcpp::init(argc, argv);
     signal(SIGUSR1, sigusr1_wake_handler);
     auto node = std::make_shared<rclcpp::Node>("keyboard_vel_controller");
@@ -2519,7 +2518,6 @@ int main(int argc, char** argv)
         }
         else if (controlMode == MODE_HOVER_CUSTOM){
             if(!mode_int){
-
                 target_position.header.stamp = node->now();
                 target_position.header.frame_id = "map";
                 target_position.pose.position.x = localposition.x;
@@ -2543,18 +2541,13 @@ int main(int argc, char** argv)
                 position_pub->publish(target_position);
                 mode_int = true;
             }else{
-                double target_vel_x_h_pid = target_position.pose.position.x - localposition.x;
-                double target_vel_y_h_pid = target_position.pose.position.y - localposition.y;
-                double target_vel_z_h_pid = position_control_z.calculate(localposition.z, target_position.pose.position.z);  
-
-                // no feedforward speed
-                double target_vel_x_pid = target_vel_x_h_pid;
-                double target_vel_y_pid = target_vel_y_h_pid;  
-                double target_vel_z_pid = target_vel_z_h_pid;                          
+                double target_vel_x_pid = target_position.pose.position.x - localposition.x;
+                double target_vel_y_pid = target_position.pose.position.y - localposition.y;
+                double target_vel_z_pid = target_position.pose.position.z - localposition.z;                       
 
                 double target_acc_x_pid = 4*(target_vel_x_pid - localvelocity.x);                        //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
                 double target_acc_y_pid = 4*(target_vel_y_pid - localvelocity.y);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
-                double target_acc_z_pid = vel_control_a_z.calculate(localvelocity.z,target_vel_z_pid);  
+                double target_acc_z_pid = 5*(target_vel_z_pid - localvelocity.z);  
 
                 // DOB 
                 double L = 1;
@@ -2614,40 +2607,64 @@ int main(int argc, char** argv)
                 target_acc_y_pid_last = u_y;
                 target_acc_z_pid_last = u_z;
 
-                //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
-                Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
-                double yaw,roll,pitch;
-                toEulerAngle(q,roll,pitch,yaw);     
-
-                //转换到机体坐标系下
-                double target_acc_x_pid_in_body = u_x * cos(yaw) + u_y * sin(yaw);
-                double target_acc_y_pid_in_body = -u_x * sin(yaw) + u_y * cos(yaw);
-
-                //换算成角度
-                double target_pitch_pid =  atan2(target_acc_x_pid_in_body,GRAVITY_ACC);                                         //加速度转换成姿态
-                double target_roll_pid  = -atan2(target_acc_y_pid_in_body,GRAVITY_ACC);                                         //根据右手法则，roll的目标差值需要反向
-                #define UAV_WEIGHT 3.340f
-                double target_height_pid = u_z * UAV_WEIGHT / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;       //高度不做控制
+                const double eps = 1e-6;
+                Eigen::Vector3d accel_cmd(u_x, u_y, u_z);
+                double acc_norm = accel_cmd.norm();
+                #define UAV_WEIGHT 2.0f
+                double out_thrust = UAV_WEIGHT * acc_norm;
 
                 //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
                 Eigen::Quaterniond q_des(target_position.pose.orientation.w, target_position.pose.orientation.x, target_position.pose.orientation.y, target_position.pose.orientation.z);                                   //当前姿态四元素，转换为欧拉角
                 double yaw_des,roll_des,pitch_des;
                 toEulerAngle(q_des,roll_des,pitch_des,yaw_des);
-                double target_yaw = yaw_des;
 
-                //欧拉角转换成四元素 发送出去，航向角不变，
-                Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(target_roll_pid,Eigen::Vector3d::UnitX()));      //pid计算的目标航向
-                Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(target_pitch_pid,Eigen::Vector3d::UnitY()));
-                Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(target_yaw,Eigen::Vector3d::UnitZ()));        //进入模式的时候，设定的目标航向
-                                
-                Eigen::Quaterniond quaternion_;
-                quaternion_=yawAngle_*pitchAngle_*rollAngle_;
+                Eigen::Quaterniond out_quat;
+                // 异常处理：期望加速度模长过小 -> 保持水平姿态，仅使用偏航角
+                if (acc_norm < eps) {
+                    Eigen::AngleAxisd yaw_rot(yaw_des, Eigen::Vector3d::UnitZ());
+                    out_quat = Eigen::Quaterniond(yaw_rot);
+                    out_quat.normalize();
+                } else{
+                    // 期望推力方向单位向量 (机体Z轴在世界系中的期望方向)
+                    Eigen::Vector3d b_c = accel_cmd.normalized();
 
-                target_pose.orientation.x = quaternion_.coeffs()[0];                 //角度赋值
-                target_pose.orientation.y = quaternion_.coeffs()[1];
-                target_pose.orientation.z = quaternion_.coeffs()[2];
-                target_pose.orientation.w = quaternion_.coeffs()[3];        
-                target_pose.thrust = 0.43f + target_height_pid;                     //设置油门
+                    // 根据期望偏航角构造临时水平向量
+                    Eigen::Vector3d t(std::cos(yaw_des), std::sin(yaw_des), 0.0);
+                    // 施密特正交化得到 X_c (水平且垂直于 b_c)
+                    double dot = t.dot(b_c);
+                    Eigen::Vector3d X_c = t - dot * b_c;
+                    if (X_c.norm() < eps) {
+                        // 退化情况：b_c 平行于 Z 轴，取水平 X 轴
+                        X_c = Eigen::Vector3d(1.0, 0.0, 0.0);
+                    }
+                    X_c.normalize();
+
+                    // Y_c = b_c × X_c
+                    Eigen::Vector3d Y_c = b_c.cross(X_c);
+                    Y_c.normalize();
+
+                    // 构造旋转矩阵 (三列分别为 X_c, Y_c, b_c)
+                    Eigen::Matrix3d R;
+                    R.col(0) = X_c;
+                    R.col(1) = Y_c;
+                    R.col(2) = b_c;
+
+                    // 旋转矩阵转四元数
+                    out_quat = Eigen::Quaterniond(R);
+                    out_quat.normalize();
+                }
+
+                //换算成角度
+                Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                double yaw,roll,pitch;
+                toEulerAngle(q,roll,pitch,yaw);
+                double target_height_pid = u_z * UAV_WEIGHT / (cos(pitch) * cos(roll));       //高度不做控制
+
+                target_pose.orientation.x = out_quat.coeffs()[0];                 //角度赋值
+                target_pose.orientation.y = out_quat.coeffs()[1];
+                target_pose.orientation.z = out_quat.coeffs()[2];
+                target_pose.orientation.w = out_quat.coeffs()[3];        
+                target_pose.thrust = 0.24f + target_height_pid;                     //设置油门
                 if(target_pose.thrust > 1.0f){
                     target_pose.thrust = 1.0f;
                 }else if(target_pose.thrust < 0.0f){

@@ -9,22 +9,22 @@
     # Position PID
     position_X_P: 1.0
     position_X_I: 0.0
-    position_X_D: 0.05
+    position_X_D: 0.0
     position_Y_P: 1.0
     position_Y_I: 0.0
-    position_Y_D: 0.05
+    position_Y_D: 0.0
     position_Z_P: 1.0
     position_Z_I: 0.0
     position_Z_D: 0.0
 
     # Velocity PID
-    vel_X_P: 1.8
-    vel_X_I: 0.0
-    vel_X_D: 0.3
-    vel_Y_P: 5.0
-    vel_Y_I: 0.0
-    vel_Y_D: 0.3
-    vel_Z_P: 1.0
+    vel_X_P: 2.0
+    vel_X_I: 1.0
+    vel_X_D: 0.25
+    vel_Y_P: 2.0
+    vel_Y_I: 1.0
+    vel_Y_D: 0.25
+    vel_Z_P: 5.0
     vel_Z_I: 0.0
     vel_Z_D: 0.0
 
