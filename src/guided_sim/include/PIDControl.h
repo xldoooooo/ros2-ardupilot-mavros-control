@@ -3,36 +3,43 @@
 
 #include <list>
 
-#ifndef EXPORT_API
+class PID {
+public:
+    // Kp - proportional gain
+    // Ki - Integral gain
+    // Kd - derivative gain
+    // dt - loop interval time (s)
+    // max - maximum output clamp
+    // min - minimum output clamp
+    PID(double dt, double max, double min, double Kp, double Ki, double Kd);
+    ~PID() = default;
 
-#define EXPORT_API __attribute__((visibility("default")))
+    void reinitiate();
+    void setPID(double newkp, double newki, double newkd);
+    void setLimit(double newmax, double newmin);
+    void setDt(double dt);
+    std::list<double> getPID();
 
-#endif
+    double calculate(double currentpoint, double setpoint);
+    double calculate_LPF(double currentpoint, double setpoint);
+    double calculate_BUTTER(double currentpoint, double setpoint);
 
-class PIDImpl;  // forward declaration (pimpl)
-class PID
-{
-    public:
-        // Kp -  proportional gain
-        // Ki -  Integral gain
-        // Kd -  derivative gain
-        // dt -  loop interval time
-        // max - maximum value of manipulated variable
-        // min - minimum value of manipulated variable
-        PID( double dt, double max, double min, double Kp, double Ki, double Kd);
-        void reinitiate();
-        void setPID(double newkp, double newki, double newkd);
-        void setLimit(double newmax, double newmin);
-        std::list<double> getPID();
-        // Returns the manipulated variable given a setpoint and current process value
-        double calculate( double currentpoint, double setpoint);
-        double calculate_LPF( double currentpoint, double setpoint);
-        double calculate_BUTTER( double currentpoint, double setpoint);
-        
-        ~PID();
+private:
+    static constexpr int ORDER = 2;
 
-    private:
-        PIDImpl *pimpl;
+    void init_filter(double fs, double fc);
+    double filter(double input);
+
+    double _dt;
+    double _max, _min;
+    double _Kp, _Ki, _Kd;
+    double _pre_error;
+    double _integral;
+    int _count;
+
+    double b[ORDER + 1];
+    double a[ORDER + 1];
+    double state[ORDER + 2] = {};
 };
 
 #endif

@@ -39,24 +39,18 @@
 static rclcpp::Clock g_clock(RCL_ROS_TIME);
 
 double calculate_distance(double x,double y,double z);
-double calculate_distance2(double x,double y,double z,double x1,double y1,double z1);
-
-std::ofstream fout_current_v, fout_current_p, fout_pid;
-
-// Global node pointer for use in keyboard thread (pthread)
-std::shared_ptr<rclcpp::Node> g_node;
+double calculate_distance(double x,double y,double z,double x1,double y1,double z1);
 
 //---------------------自定义数据类型区域---------------------
 //飞行状态
 enum fly_status{
     MODE_POSITION       = 0,    
     MODE_VELOCITY       = 1,
-    MODE_HOVER          = 2,
     MODE_AUTO           = 3,
     MODE_AUTO_POSE      = 8,
     MODE_STRAIGHT       = 9,
     TEST_FLOOR_TRAJ     = 12,
-    MODE_HOVER_CUSTOM   = 13,  //自定义悬停模式
+    MODE_HOVER_CUSTOM   = 13,  //自定义悬停模式（统一悬停，PD+DOB）
 };
 
 //键盘值
@@ -103,59 +97,60 @@ typedef struct{
     float x;
     float y;
     float z;
-} xyz_f_def;
+} xyz_float_def;
 
 typedef struct{
     double x;
     double y;
     double z;
-} xyz_d_def;
+} xyz_double_def;
 
 typedef struct{
     double x;
     double y;
     double z;
     double a;
-} xyza_d_def;
+} xyza_double_def;
 
 typedef struct {
     double x;
     double y;
     double z;
     double w;
-} QuaternionTypedef;
+} quaternion_def;
 
 typedef struct {
     double roll;
     double pitch;
     double yaw;
-} EulerTypedef;
+} euler_def;
 //---------------------自定义数据类型区域结束---------------------
 
 
 //---------------------全局变量定义区域---------------------
 #define GRAVITY_ACC 9.8f
+double uav_weight = 3.340;              // kg, may be overridden from YAML
 
 pthread_t th;                           //键盘线程
-bool      th_created = false;           // whether pthread_create succeeded
+bool th_created = false;                // whether pthread_create succeeded
                                         // (guard against pthread_cancel on invalid handle)
 
 int ctrlMode=0;                         //是否结束线程
 int controlMode = 1;                    //控制模式的变换
 
-bool vel_change = false;     //速度模式是否通过按键改变，用于控制是否打印速度控制信息
+bool vel_change = false;                //速度模式是否通过按键改变，用于控制是否打印速度控制信息
 bool guided_change = false;
 bool arm_change = false;
 bool mode_int = false;                  //用于记录是否切换模式，进入新模式前，进行初始化
 
-EulerTypedef target_pose_euler;         //发布消息接口中，之后四元素的定义，采用欧拉角的全局变量在定义一次
+euler_def target_euler;         //发布消息接口中，之后四元素的定义，采用欧拉角的全局变量在定义一次
 
-std::vector<xyz_d_def> fixed_pathpoint;   //固定轨迹的轨迹存储区域
-std::vector<xyz_d_def> fill_pathpoint;    //填充轨迹
+std::vector<xyz_double_def> fixed_pathpoint;   //固定轨迹的轨迹存储区域
+std::vector<xyz_double_def> fill_pathpoint;    //填充轨迹
 std::vector<float> fill_yaw;
 
-xyz_d_def avoid_target_position;
-QuaternionTypedef avoid_target_pose;
+xyz_double_def avoid_target_position;
+quaternion_def avoid_target_pose;
 bool isObstacleStop = false;
 int turnDirection = 0;
 
@@ -163,7 +158,6 @@ int control_frequency = 100;
 
 // ROS2 发布器
 rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr refTrajectoryPub;
-rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr curTrajectoryPub;
 rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr referencePosePub;
 // ROS2 服务
 rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client;
@@ -181,170 +175,105 @@ double target_vel_z_pid_last;
 
 
 //---------------------发送数据消息接口类型区域---------------------
-//发布控制无人机速度的消息接口变量
-geometry_msgs::msg::Twist       target_veloity;
-//发布控制无人机位置的消息接口变量
-geometry_msgs::msg::PoseStamped  target_position;
-//发布控制无人机姿态的消息接口类型
-mavros_msgs::msg::AttitudeTarget target_pose;
-
-//发布停止轨迹规划的命令
-std_msgs::msg::Int64 stop_command;
-
-//发布设定的跟踪轨迹
-nav_msgs::msg::Path refTrajectory;
-
-//发布当前的运动轨迹
-nav_msgs::msg::Path curTrajectory;
-//发布当前的跟踪的目标点
-geometry_msgs::msg::PoseStamped target_position_show;
+geometry_msgs::msg::Twist        target_twist;       //发布控制无人机速度的消息接口变量
+geometry_msgs::msg::PoseStamped  target_pose;        //发布控制无人机位置的消息接口变量
+mavros_msgs::msg::AttitudeTarget target_att_thrust;  //发布控制无人机姿态+推力的消息接口类型
+std_msgs::msg::Int64 stop_command;                   //发布停止轨迹规划的命令
+nav_msgs::msg::Path refTrajectory;                   //发布设定的跟踪轨迹
+geometry_msgs::msg::PoseStamped target_position_show;//发布当前的跟踪的目标点
 //---------------------发送数据消息接口类型区域结束---------------------
 
+
 //---------------------回调函数区域---------------------
-xyz_d_def localposition;
-QuaternionTypedef localpose;
-void toEulerAngle(const Eigen::Quaterniond &q, double &roll, double &pitch, double &yaw);
-double calculate_VectorAngular_x(xyz_d_def vector_major);
+xyz_double_def localPos;  // 记录当前位置
+quaternion_def localAtt;  // 记录当前姿态
+void pose_cb(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg){
+    localPos.x = msg->pose.position.x ;
+    localPos.y = msg->pose.position.y ;    
+    localPos.z = msg->pose.position.z ;       
 
-//接收当前位姿的回调函数
-void poseCallback(const geometry_msgs::msg::PoseStamped::ConstPtr &msg){
-    localposition.x = msg->pose.position.x ;
-    localposition.y = msg->pose.position.y ;    
-    localposition.z = msg->pose.position.z ;  
-    // localposition.y = msg->pose.position.x ;
-    // localposition.x = -msg->pose.position.y ;    
-    // localposition.z = msg->pose.position.z ;       
+    localAtt.x = msg->pose.orientation.x ;
+    localAtt.y = msg->pose.orientation.y ; 
+    localAtt.z = msg->pose.orientation.z ;
+    localAtt.w = msg->pose.orientation.w ;
+} //接收当前位姿的回调函数
 
-    localpose.x = msg->pose.orientation.x ;
-    localpose.y = msg->pose.orientation.y ; 
-    localpose.z = msg->pose.orientation.z ;
-    localpose.w = msg->pose.orientation.w ;
+xyz_double_def localVel;  // 记录当前速度
+void vel_cb(const geometry_msgs::msg::TwistStamped::ConstSharedPtr &msg){
+    localVel.x = msg->twist.linear.x ;
+    localVel.y = msg->twist.linear.y ;  
+    localVel.z = msg->twist.linear.z ;    
+} //接受当前速度的回调函数
 
-    Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);
-    double p_roll,p_pitch,p_yaw;
-    toEulerAngle(q,p_roll,p_pitch,p_yaw);
+xyz_double_def localAcc;  // 记录当前加速度 
+void imudata_cb(const sensor_msgs::msg::Imu::ConstSharedPtr &msg){
+    localAcc.x = msg->linear_acceleration.x;
+    localAcc.y = msg->linear_acceleration.y;
+    localAcc.z = msg->linear_acceleration.z;
+} //接受当前加速度的回调函数
 
-    fout_current_p<< msg->header.stamp.sec <<","<<localposition.x<<","<<localposition.y<<","<<localposition.z<<std::endl;
+mavros_msgs::msg::State current_state; // 记录当前mavros状态
+void mavrosState_cb(const mavros_msgs::msg::State::ConstSharedPtr& msg){
+    current_state = *msg;
+} //接受无人机当前状态的回调函数
 
-    if(curTrajectory.poses.size() < 200){
-        curTrajectory.header.stamp = g_clock.now();
-        curTrajectory.header.frame_id = "map";
-        geometry_msgs::msg::PoseStamped targetPoseStamped;
-
-        targetPoseStamped.pose.position.x = localposition.x;
-        targetPoseStamped.pose.position.y = localposition.y;
-        targetPoseStamped.pose.position.z = localposition.z;
-        curTrajectory.poses.push_back(targetPoseStamped);
-        curTrajectoryPub->publish(curTrajectory);  
-    }else{
-        for(int i=0;(i<(200-1));i++){
-            curTrajectory.poses[i] = curTrajectory.poses[i+1];
-        }
-        curTrajectory.header.stamp = g_clock.now();
-        curTrajectory.header.frame_id = "map";
-
-        geometry_msgs::msg::PoseStamped targetPoseStamped;
-        targetPoseStamped.pose.position.x = localposition.x;
-        targetPoseStamped.pose.position.y = localposition.y;
-        targetPoseStamped.pose.position.z = localposition.z;
-        curTrajectory.poses[199]=(targetPoseStamped); 
-        curTrajectoryPub->publish(curTrajectory);           
-    }
-}
-
-double obstacle_distance = 100000.0f;
-void nearest_distance_cb(const std_msgs::msg::Float32::ConstPtr &dis){
-    obstacle_distance = dis->data;
-}
-
-xyz_d_def localacceleration;
-xyz_d_def localacceleration_offset={0,0,0};
-void imudata_cb(const sensor_msgs::msg::Imu::ConstPtr &msg){
-    localacceleration.x = msg->linear_acceleration.x;
-    localacceleration.y = msg->linear_acceleration.y;
-    localacceleration.z = msg->linear_acceleration.z;
-}
-
-//接受轨迹信息的回调函数
-std::vector<xyz_d_def> pathpoint_sub;                                 //用于存储轨迹点信息，采用C++容器的凡是
-std::vector<xyza_d_def> pathpoint_sub_test;    
-int targetPointNum = 0;                                                 //当前用于跟踪的轨迹点
+std::vector<xyz_double_def> pathpoint_sub;        //用于存储轨迹点信息，采用C++容器的凡是
+std::vector<xyza_double_def> pathpoint_sub_test;    
+int targetPointNum = 0;                           //当前用于跟踪的轨迹点
 int targetPointNum_test = 0;  
-void pathsub_cb(const nav_msgs::msg::Path::ConstPtr &navpath){
+void pathsub_cb(const nav_msgs::msg::Path::ConstSharedPtr &navpath){
     rclcpp::Time start_time = g_clock.now();
-        if(navpath->poses.size() > 0){      //
-            int check_count=0;
-            xyz_d_def old_path_point;
-            while((check_count != navpath->poses.size()) && (check_count  < 50)){  //如果判断出来轨迹距离一直增加，则判定该点与新轨迹的接续点
-                
-                if(pathpoint_sub.empty()){
-                    pathpoint_sub.clear();
-                    targetPointNum = 0;
-                    break;
-                }else{
-                    old_path_point = pathpoint_sub.back();
-                }
-
-
-
-                double distance_last = calculate_distance2((navpath->poses)[0].pose.position.x,(navpath->poses)[0].pose.position.y,(navpath->poses)[0].pose.position.z,old_path_point.x,old_path_point.y,old_path_point.z);
-                check_count = 1;
-                for(;check_count < (navpath->poses.size());check_count++ ){
-                    double distance = calculate_distance2((navpath->poses)[check_count].pose.position.x,(navpath->poses)[check_count].pose.position.y,(navpath->poses)[check_count].pose.position.z,old_path_point.x,old_path_point.y,old_path_point.z);
-                    if(distance_last > distance){
-                        pathpoint_sub.pop_back();
-                        break ; //点在轨迹的前方
-                    }
-                    distance_last = distance;    
-                }
-
-                if(pathpoint_sub.empty()){
-                    break;
-                }
+    if(navpath->poses.size() > 0){
+        int check_count=0;
+        xyz_double_def old_path_point;
+        while((check_count != navpath->poses.size()) && (check_count  < 50)){  
+            //如果判断出来轨迹距离一直增加，则判定该点与新轨迹的接续点
+            if(pathpoint_sub.empty()){
+                pathpoint_sub.clear();
+                targetPointNum = 0;
+                break;
+            }else{
+                old_path_point = pathpoint_sub.back();
             }
 
-                //开始压入新轨迹，并且跳出循环
-                for (int i=0; i < (navpath->poses.size()); i++)
-                {
-                    pathpoint_sub.push_back({(navpath->poses)[i].pose.position.x ,          //当目标点与轨迹上的计算点大于距离阈值时，保存轨迹点
-                                            (navpath->poses)[i].pose.position.y ,
-                                            (navpath->poses)[i].pose.position.z });
-                }                  
-            
-        }else{
-            RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "Received trajectory is empty");
-        }
-    // }
+            double distance_last = calculate_distance((navpath->poses)[0].pose.position.x,(navpath->poses)[0].pose.position.y,(navpath->poses)[0].pose.position.z,old_path_point.x,old_path_point.y,old_path_point.z);
+            check_count = 1;
+            for(;check_count < (navpath->poses.size());check_count++ ){
+                double distance = calculate_distance((navpath->poses)[check_count].pose.position.x,(navpath->poses)[check_count].pose.position.y,(navpath->poses)[check_count].pose.position.z,old_path_point.x,old_path_point.y,old_path_point.z);
+                if(distance_last > distance){
+                    pathpoint_sub.pop_back();
+                    break ; //点在轨迹的前方
+                }
+                distance_last = distance;    
+            }
 
+            if(pathpoint_sub.empty()){
+                break;
+            }
+        }
+
+        //开始压入新轨迹，并且跳出循环
+        for (int i=0; i < (navpath->poses.size()); i++)
+        {
+            pathpoint_sub.push_back({(navpath->poses)[i].pose.position.x ,          //当目标点与轨迹上的计算点大于距离阈值时，保存轨迹点
+                                    (navpath->poses)[i].pose.position.y ,
+                                    (navpath->poses)[i].pose.position.z });
+        }                  
+            
+    }else{
+        RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "Received trajectory is empty");
+    }
 
     rclcpp::Time end_time = g_clock.now();
     rclcpp::Duration elapsed_time = end_time - start_time;
     RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "TIME:%lf ms\r\n",elapsed_time.seconds());
-    RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "Received trajectory with a length of: %d points pathpoint_sub %d points\r\n",navpath->poses.size(),pathpoint_sub.size());
+    RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "Received trajectory with a length of: %zu points pathpoint_sub %zu points\r\n",navpath->poses.size(),pathpoint_sub.size());
+} //接受轨迹信息的回调函数
 
-
-
-}
-
-//接受当前速度的回调函数
-xyz_d_def localvelocity;
-void velCallback(const geometry_msgs::msg::TwistStamped::ConstPtr &msg){
-    localvelocity.x = msg->twist.linear.x ;
-    localvelocity.y = msg->twist.linear.y ;  
-    localvelocity.z = msg->twist.linear.z ;   
-
-    // localvelocity.y = msg->twist.linear.x ;
-    // localvelocity.x = -msg->twist.linear.y ;  
-    // localvelocity.z = msg->twist.linear.z ;   
-
-    fout_current_v<< msg->header.stamp.sec <<","<<localvelocity.x<<","<<localvelocity.y<<","<<localvelocity.z<<std::endl;
-}
-
-//接受无人机当前状态的回调函数
-mavros_msgs::msg::State current_state;
-void state_cb(const mavros_msgs::msg::State::ConstPtr& msg){
-    current_state = *msg;
-}
+double obstacle_distance = 100000.0f;
+void nearest_distance_cb(const std_msgs::msg::Float32::ConstSharedPtr &dis){
+    obstacle_distance = dis->data;
+} // 接收当前最近障碍物距离的回调函数
 //---------------------回调函数区域结束---------------------
 
 
@@ -360,46 +289,47 @@ typedef struct{
     pid_param_def x;
     pid_param_def y;
     pid_param_def z;
-}pid_vector_param_def;
+} xyz_pid_param_def;
 
-pid_vector_param_def position_pid;
-pid_vector_param_def vel_pid;
-pid_vector_param_def vel_l_pid;
-pid_vector_param_def vel_a_pid;
-xyz_f_def vel_out_limit;
-xyz_f_def pose_out_limit;
+xyz_pid_param_def pos_pid;
+xyz_pid_param_def vel_pid;
+xyz_pid_param_def acc_pid;
+xyz_float_def vel_lim;
+xyz_float_def att_lim;
 
 //其他参数定义
-float ciecle_range;         //进圈判断
-float jump_pointnumber;     //跳点的设置
-float vel_forward_set;
-float target_x;
-float target_y;
+double ciecle_range;         //进圈判断
+double jump_pointnumber;     //跳点的设置
+double vel_forward_set;
+double target_x;
+double target_y;
+double hover_wn_xy;          //悬停XY: 固有频率 ωₙ (rad/s)
+double hover_zeta_xy;        //悬停XY: 阻尼比 ζ
+double hover_wn_z;           //悬停Z:  固有频率 ωₙ (rad/s)
+double hover_zeta_z;         //悬停Z:  阻尼比 ζ
+double dob_L_xy;             //DOB观测器增益 (XY轴)
+double dob_L_z;              //DOB观测器增益 (Z轴)
+double hover_throttle;       //悬停油门 (归一化, 典型0.5)
+double thrust_ratio;         //最大推重比 (典型2.5)
 //---------------launch文件参数读取定义区结束----------------------------
 
-
-//创建PID控制
+//---------------创建PID控制-------------------------------------------
+// 倾角极限 (degrees) 转为加速度极限: G * tan(angle * pi/180)
+double degToAccLimit(double angle_deg);
 //位置控制器的PID
-PID position_control_x = PID(1.0f/control_frequency,1.0f, -1.0f, 0,0,0);          //控制器的输出尽可能限制在 -1m/s~1m/s
-PID position_control_y = PID(1.0f/control_frequency,1.0f, -1.0f, 0,0,0);
-PID position_control_z = PID(1.0f/control_frequency,1.0f, -1.0f, 0,0,0);
+PID pos_control_x = PID(1.0/control_frequency, 1.0, -1.0, 0,0,0);    //控制器的输出尽可能限制在 -1m/s~1m/s
+PID pos_control_y = PID(1.0/control_frequency, 1.0, -1.0, 0,0,0);
+PID pos_control_z = PID(1.0/control_frequency, 1.0, -1.0, 0,0,0);
 //速度控制器的PID
-PID vel_control_x = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);  //控制器输出的加速度限制尽可能限制在 5.65 m/s^2=GRAVITY_ACC * tan(pose_out_limit.x)
-PID vel_control_y = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);  //控制器速度上的y输出
-PID vel_control_z = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-//前向速度上的PID控制器
-PID vel_control_l_x = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-PID vel_control_l_y = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-PID vel_control_l_z = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-//这组PID主要作用是横向上的误差控制，可以与位置控制的PID复用，PID的调节的细节，从理论上讲是前向速度和横向速度的比值
-PID vel_control_a_x = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-PID vel_control_a_y = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-PID vel_control_a_z = PID(1.0f/control_frequency, GRAVITY_ACC * tan(30.0f*M_PI/180.0f), -GRAVITY_ACC * tan(30.0f*M_PI/180.0f), 0,0,0);
-
-
+PID vel_control_x = PID(1.0/control_frequency, 100.0, -100.0, 0,0,0);  // 速度环输出加速度目标，不限幅，由加速度环兜底
+PID vel_control_y = PID(1.0/control_frequency, 100.0, -100.0, 0,0,0);
+PID vel_control_z = PID(1.0/control_frequency, 100.0, -100.0, 0,0,0);
+//加速度控制器的PID
+PID acc_control_x = PID(1.0/control_frequency, degToAccLimit(30.0), -degToAccLimit(30.0), 0,0,0);
+PID acc_control_y = PID(1.0/control_frequency, degToAccLimit(30.0), -degToAccLimit(30.0), 0,0,0);
+PID acc_control_z = PID(1.0/control_frequency, degToAccLimit(30.0), -degToAccLimit(30.0), 0,0,0);
 
 //---------------工具函数区域 ----------------------------
-//四元素转换成欧拉角的函数
 void toEulerAngle(const Eigen::Quaterniond &q, double &roll, double &pitch, double &yaw){
     // roll (x-axis rotation)
     double sinr_cosp = +2.0 * (q.w() * q.x() + q.y() * q.z());
@@ -419,9 +349,8 @@ void toEulerAngle(const Eigen::Quaterniond &q, double &roll, double &pitch, doub
     yaw = atan2(siny_cosp, cosy_cosp);
     if(yaw < 0)
         yaw += 2.0f * M_PI;
-}
+} // 四元数转换成欧拉角的函数
 
-//清空scanf的缓冲区
 bool clear_scanf_buffer(void){
     char ch;
     int count_time = 0;
@@ -431,47 +360,18 @@ bool clear_scanf_buffer(void){
             return false;
         }
     };
-
     return true;
-}
+} // 清空scanf的缓冲区
 
-//计算目标点与当下点的距离的平方
-double calculate_distance_square(double x,double y,double z){
-    return (pow((x-localposition.x),2)+pow((y-localposition.y),2)+pow((z-localposition.z),2)); 
-}
-//计算目标点与当下点的距离
 double calculate_distance(double x,double y,double z){
-    return sqrt(pow((x-localposition.x),2)+pow((y-localposition.y),2)+pow((z-localposition.z),2)); 
-}
-//计算目标点与当下点的距离
-double calculate_distance2(double x,double y,double z,double x1,double y1,double z1){
+    return sqrt(pow((x-localPos.x),2)+pow((y-localPos.y),2)+pow((z-localPos.z),2)); 
+} // 计算目标点与当下点的距离
+
+double calculate_distance(double x,double y,double z,double x1,double y1,double z1){
     return sqrt(pow((x-x1),2)+pow((y-y1),2)+pow((z-z1),2)); 
-}
+} // 计算目标点与指定点的距离
 
-//平面采用点法式，计算平面外的一点到平面上的投影点
-//具体算法参考网站https://blog.csdn.net/lafengxiaoyu/article/details/78435165                    
-xyz_d_def calculate_ProjectionPoint(xyz_d_def normalvector,xyz_d_def includedpoints,xyz_d_def out_point){
-    
-    // double norm = (pow(normalvector.x,2)+pow(normalvector.y,2)+pow(normalvector.z,2));
-    xyz_d_def projectionpoint;
-    projectionpoint.x = (normalvector.x*(normalvector.x*includedpoints.x + normalvector.y*includedpoints.y + normalvector.z*includedpoints.z) + \
-    (pow(normalvector.y,2)+pow(normalvector.z,2)) * out_point.x \
-    -normalvector.x*normalvector.y*out_point.y \
-    -normalvector.x*normalvector.z*out_point.z ) \
-    /(pow(normalvector.x,2)+pow(normalvector.y,2)+pow(normalvector.z,2));
-
-    if(normalvector.x == 0){
-        projectionpoint.y = out_point.y;
-        projectionpoint.z = out_point.z;
-    }else{
-        projectionpoint.y = normalvector.y/normalvector.x*(out_point.x-projectionpoint.x)+out_point.y;
-        projectionpoint.z = normalvector.z/normalvector.x*(out_point.x-projectionpoint.x)+out_point.z;
-    }
-    
-    return projectionpoint;
-}
-
-xyz_d_def calculate_FixedModulusVector(xyz_d_def normalvector,double modulus){
+xyz_double_def calculate_FixedModulusVector(xyz_double_def normalvector,double modulus){
     double norm = sqrt(pow(normalvector.x,2)+pow(normalvector.y,2)+pow(normalvector.z,2));
     double ratio;
     if(norm == 0){
@@ -479,85 +379,89 @@ xyz_d_def calculate_FixedModulusVector(xyz_d_def normalvector,double modulus){
     }else{
         ratio = modulus/norm;
     }
-
-    xyz_d_def returnVector = {
+    xyz_double_def returnVector = {
         normalvector.x * ratio ,
         normalvector.y * ratio ,
         normalvector.z * ratio ,
     };
     return returnVector;
-}
+} // 计算固定模长的向量
 
-xyz_d_def calculate_VectorProjection(xyz_d_def vector_major,xyz_d_def vector_minor){
-    double norm_2 = pow(vector_minor.x,2)+pow(vector_minor.y,2)+pow(vector_minor.z,2);
-    double vectorProduct =  vector_major.x*vector_minor.x+vector_major.y*vector_minor.y+vector_major.z*vector_minor.z;
-    double ratio;
-    if(norm_2 == 0.0f){
-        ratio = 1.0f;
-    }else{
-        ratio = vectorProduct / norm_2;
-    }
-
-    xyz_d_def returnVector = {
-        vector_minor.x * ratio,
-        vector_minor.y * ratio,
-        vector_minor.z * ratio,
-    };
-    return returnVector;
-}
-
-double calculate_VectorAngular_x(xyz_d_def vector_major){
-    double angular =  acos(vector_major.x/sqrt(vector_major.x*vector_major.x+vector_major.y*vector_major.y));
-
-    if(vector_major.y < 0){
-        angular = 2*M_PI - angular;
-    }
-
-    return angular;
-}
-
-// 函数用于计算两个角度之间的夹角
 double calculate_AngleDifference(double angle1, double angle2) {
     // 计算两个角度的差值
     double difference = fabs(angle1 - angle2);
-
     // 如果差值大于pi，说明夹角应该从另一侧计算
     if (difference > M_PI) {
         difference = 2 * M_PI - difference;
     }
-
     return difference;
-}
+} // 计算角度差
 
 void PID_Reset(){
-    position_control_x.reinitiate();    //位置环PID清零
-    position_control_y.reinitiate();
-    position_control_z.reinitiate();
+    pos_control_x.reinitiate();    //位置环PID清零
+    pos_control_y.reinitiate();
+    pos_control_z.reinitiate();
 
-    vel_control_x.reinitiate();         //速度环PID清零
+    vel_control_x.reinitiate();    //速度环PID清零
     vel_control_y.reinitiate();
     vel_control_z.reinitiate();
 
-    vel_control_l_x.reinitiate();       //前向速度PID清零
-    vel_control_l_y.reinitiate();
-    vel_control_l_z.reinitiate();
+    acc_control_x.reinitiate();    //加速度环PID清零
+    acc_control_y.reinitiate();
+    acc_control_z.reinitiate();
+} // PID重置
 
-    vel_control_a_x.reinitiate();       //横向速度PID清零
-    vel_control_a_y.reinitiate();
-    vel_control_a_z.reinitiate();        
-}
+double slew_rate_limit(double new_val, double last_val, double limit) {
+    double delta = new_val - last_val;
+    if (delta > limit)       return last_val + limit;
+    else if (delta < -limit) return last_val - limit;
+    return new_val;
+} // 钳制增长率: clamp (new - last) to ±limit, return last ± limit if exceeded
 
-//读取launch文件中的所有参数
+void fillAttitudeTarget(mavros_msgs::msg::AttitudeTarget& msg,
+                        double roll, double pitch, double yaw,
+                        double hover_thrust, double height_pid, rclcpp::Node* node) {
+    Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX()));
+    Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()));
+    Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
+    Eigen::Quaterniond quaternion_ = yawAngle_ * pitchAngle_ * rollAngle_;
+    msg.orientation.x = quaternion_.coeffs()[0];
+    msg.orientation.y = quaternion_.coeffs()[1];
+    msg.orientation.z = quaternion_.coeffs()[2];
+    msg.orientation.w = quaternion_.coeffs()[3];
+    msg.thrust = hover_thrust + height_pid;
+    if (msg.thrust > 1.0)      msg.thrust = 1.0;
+    else if (msg.thrust < 0.0) msg.thrust = 0.0;
+    msg.type_mask = 1 + 2 + 4;
+    msg.header.stamp = node->now();
+} // 根据期望推力、推力增量与欧拉角生成attitudeTarget
+
+// 坐标系修正1 x' = -y, y' = x
+xyz_double_def pathToLocal(xyz_double_def p) { return {-p.y, p.x, p.z}; }
+
+// 坐标系修正2 x' = y, y' = -x
+xyz_double_def cameraToNED(xyz_double_def p) { return {p.y, -p.x, p.z}; }
+
+double degToAccLimit(double angle_deg) {
+    return GRAVITY_ACC * tan(angle_deg * M_PI / 180.0);
+} // 将倾角极限转为加速度极限
+
+double clamp_symmetric(double val, double limit) {
+    if (val > limit)       return limit;
+    else if (val < -limit) return -limit;
+    return val;
+} // 将值钳制在+-limit之间
+
 void read_param(rclcpp::Node *node){
-    position_pid.x.p = node->declare_parameter<float>("position_X_P", 0.0f);
-    position_pid.x.i = node->declare_parameter<float>("position_X_I", 0.0f);
-    position_pid.x.d = node->declare_parameter<float>("position_X_D", 0.0f);
-    position_pid.y.p = node->declare_parameter<float>("position_Y_P", 0.0f);
-    position_pid.y.i = node->declare_parameter<float>("position_Y_I", 0.0f);
-    position_pid.y.d = node->declare_parameter<float>("position_Y_D", 0.0f);
-    position_pid.z.p = node->declare_parameter<float>("position_Z_P", 0.0f);
-    position_pid.z.i = node->declare_parameter<float>("position_Z_I", 0.0f);
-    position_pid.z.d = node->declare_parameter<float>("position_Z_D", 0.0f);
+    pos_pid.x.p = node->declare_parameter<float>("position_X_P", 0.0f);
+    pos_pid.x.i = node->declare_parameter<float>("position_X_I", 0.0f);
+    pos_pid.x.d = node->declare_parameter<float>("position_X_D", 0.0f);
+    pos_pid.y.p = node->declare_parameter<float>("position_Y_P", 0.0f);
+    pos_pid.y.i = node->declare_parameter<float>("position_Y_I", 0.0f);
+    pos_pid.y.d = node->declare_parameter<float>("position_Y_D", 0.0f);
+    pos_pid.z.p = node->declare_parameter<float>("position_Z_P", 0.0f);
+    pos_pid.z.i = node->declare_parameter<float>("position_Z_I", 0.0f);
+    pos_pid.z.d = node->declare_parameter<float>("position_Z_D", 0.0f);
     vel_pid.x.p = node->declare_parameter<float>("vel_X_P", 0.0f);
     vel_pid.x.i = node->declare_parameter<float>("vel_X_I", 0.0f);
     vel_pid.x.d = node->declare_parameter<float>("vel_X_D", 0.0f);
@@ -567,38 +471,40 @@ void read_param(rclcpp::Node *node){
     vel_pid.z.p = node->declare_parameter<float>("vel_Z_P", 0.0f);
     vel_pid.z.i = node->declare_parameter<float>("vel_Z_I", 0.0f);
     vel_pid.z.d = node->declare_parameter<float>("vel_Z_D", 0.0f);
-    vel_l_pid.x.p = node->declare_parameter<float>("vel_X_F_P", 0.0f);
-    vel_l_pid.x.i = node->declare_parameter<float>("vel_X_F_I", 0.0f);
-    vel_l_pid.x.d = node->declare_parameter<float>("vel_X_F_D", 0.0f);
-    vel_l_pid.y.p = node->declare_parameter<float>("vel_Y_F_P", 0.0f);
-    vel_l_pid.y.i = node->declare_parameter<float>("vel_Y_F_I", 0.0f);
-    vel_l_pid.y.d = node->declare_parameter<float>("vel_Y_F_D", 0.0f);
-    vel_l_pid.z.p = node->declare_parameter<float>("vel_Z_F_P", 0.0f);
-    vel_l_pid.z.i = node->declare_parameter<float>("vel_Z_F_I", 0.0f);
-    vel_l_pid.z.d = node->declare_parameter<float>("vel_Z_F_D", 0.0f);
-    vel_a_pid.x.p = node->declare_parameter<float>("vel_X_T_P", 0.0f);
-    vel_a_pid.x.i = node->declare_parameter<float>("vel_X_T_I", 0.0f);
-    vel_a_pid.x.d = node->declare_parameter<float>("vel_X_T_D", 0.0f);
-    vel_a_pid.y.p = node->declare_parameter<float>("vel_Y_T_P", 0.0f);
-    vel_a_pid.y.i = node->declare_parameter<float>("vel_Y_T_I", 0.0f);
-    vel_a_pid.y.d = node->declare_parameter<float>("vel_Y_T_D", 0.0f);
-    vel_a_pid.z.p = node->declare_parameter<float>("vel_Z_T_P", 0.0f);
-    vel_a_pid.z.i = node->declare_parameter<float>("vel_Z_T_I", 0.0f);
-    vel_a_pid.z.d = node->declare_parameter<float>("vel_Z_T_D", 0.0f);
-    vel_out_limit.x = node->declare_parameter<float>("vel_X_limit", 1.0f);
-    vel_out_limit.y = node->declare_parameter<float>("vel_Y_limit", 1.0f);
-    vel_out_limit.z = node->declare_parameter<float>("vel_Z_limit", 1.0f);
-    pose_out_limit.x = node->declare_parameter<float>("roll_limit", 30.0f);
-    pose_out_limit.y = node->declare_parameter<float>("pitch_limit", 30.0f);
-    pose_out_limit.z = node->declare_parameter<float>("high_limit", 30.0f);
-    ciecle_range = node->declare_parameter<float>("ciecle_range", 0.5f);
-    jump_pointnumber = node->declare_parameter<float>("jump_pointnumber", 1.0f);
-    vel_forward_set = node->declare_parameter<float>("vel_forward_setting", 1.0f);
-    target_x = node->declare_parameter<float>("target_x", 0.0f);
-    target_y = node->declare_parameter<float>("target_y", 8.0f);
-}
+    acc_pid.x.p = node->declare_parameter<float>("acc_X_P", 0.0f);
+    acc_pid.x.i = node->declare_parameter<float>("acc_X_I", 0.0f);
+    acc_pid.x.d = node->declare_parameter<float>("acc_X_D", 0.0f);
+    acc_pid.y.p = node->declare_parameter<float>("acc_Y_P", 0.0f);
+    acc_pid.y.i = node->declare_parameter<float>("acc_Y_I", 0.0f);
+    acc_pid.y.d = node->declare_parameter<float>("acc_Y_D", 0.0f);
+    acc_pid.z.p = node->declare_parameter<float>("acc_Z_P", 0.0f);
+    acc_pid.z.i = node->declare_parameter<float>("acc_Z_I", 0.0f);
+    acc_pid.z.d = node->declare_parameter<float>("acc_Z_D", 0.0f);
+    vel_lim.x = node->declare_parameter<float>("vel_X_limit", 1.0f);
+    vel_lim.y = node->declare_parameter<float>("vel_Y_limit", 1.0f);
+    vel_lim.z = node->declare_parameter<float>("vel_Z_limit", 1.0f);
+    att_lim.x = node->declare_parameter<float>("roll_limit", 30.0f);
+    att_lim.y = node->declare_parameter<float>("pitch_limit", 30.0f);
+    att_lim.z = node->declare_parameter<float>("high_limit", 30.0f);
+    ciecle_range = node->declare_parameter<double>("ciecle_range", 0.5);
+    jump_pointnumber = node->declare_parameter<double>("jump_pointnumber", 1.0);
+    vel_forward_set = node->declare_parameter<double>("vel_forward_setting", 1.0);
+    target_x = node->declare_parameter<double>("target_x", 0.0);
+    target_y = node->declare_parameter<double>("target_y", 8.0);
+    hover_wn_xy   = node->declare_parameter<double>("hover_wn_xy",   1.0);
+    hover_zeta_xy = node->declare_parameter<double>("hover_zeta_xy", 1.0);
+    hover_wn_z    = node->declare_parameter<double>("hover_wn_z",    2.0);
+    hover_zeta_z  = node->declare_parameter<double>("hover_zeta_z",  1.0);
+    dob_L_xy      = node->declare_parameter<double>("dob_L_xy",      1.0);
+    dob_L_z       = node->declare_parameter<double>("dob_L_z",       1.0);
 
-//Keyboard Mode Setting
+    // Physical parameters
+    uav_weight        = node->declare_parameter<double>("uav_weight",        3.34);
+    control_frequency = node->declare_parameter<int>   ("control_frequency", 100);
+    hover_throttle    = node->declare_parameter<double>("hover_throttle",     0.5);
+    thrust_ratio      = node->declare_parameter<double>("thrust_ratio",       2.5);
+} // 读取launch文件中的所有参数
+
 int sh_getch(void) {
     int cr;
     struct termios nts, ots;
@@ -616,13 +522,13 @@ int sh_getch(void) {
         return EOF;
 
     return cr;
-}
+} // 读取键盘
 
-//子线程监听键盘
-void *keyboard_listener(void *dummy){
+void *keyboard_listener(void *arg){
+    auto *raw_node = static_cast<rclcpp::Node*>(arg);
+    std::shared_ptr<rclcpp::Node> node(raw_node, [](auto*){});
     ctrlMode = 1;
 	int key;
-
     float scale=0.2;
 
 	while(rclcpp::ok())
@@ -638,7 +544,7 @@ void *keyboard_listener(void *dummy){
         if (key == 3) {
             printf("\n[INFO] Ctrl+C pressed, exiting...\n");
             ctrlMode = 0;
-            controlMode = MODE_HOVER;
+            controlMode = MODE_HOVER_CUSTOM;
             break;
         }
 
@@ -646,84 +552,83 @@ void *keyboard_listener(void *dummy){
             if(current_state.mode == "GUIDED"){
                 switch (key){
                     case KEY_W:{   // w->119 向上
-                        target_veloity.linear.z = target_veloity.linear.z+scale;
+                        target_twist.linear.z = target_twist.linear.z+scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_A:{   // a->97 左转
-                        target_veloity.angular.z = target_veloity.angular.z+scale;
+                        target_twist.angular.z = target_twist.angular.z+scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_S:{   //s->115  向下
-                        target_veloity.linear.z = target_veloity.linear.z-scale;
+                        target_twist.linear.z = target_twist.linear.z-scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_D:{   //d->100  右转
-                        target_veloity.angular.z = target_veloity.angular.z-scale;
+                        target_twist.angular.z = target_twist.angular.z-scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_I:{   //i->105  向前
-                        target_veloity.linear.x = target_veloity.linear.x+scale;
+                        target_twist.linear.x = target_twist.linear.x+scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_J:{   //j->106  向左
-                        target_veloity.linear.y = target_veloity.linear.y+scale;
+                        target_twist.linear.y = target_twist.linear.y+scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_K:{   //k->107  向后
-                        target_veloity.linear.x = target_veloity.linear.x-scale;
+                        target_twist.linear.x = target_twist.linear.x-scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_L:{   //l->108  向右
-                        target_veloity.linear.y = target_veloity.linear.y-scale;
+                        target_twist.linear.y = target_twist.linear.y-scale;
                         vel_change = true;
-                        if(controlMode == MODE_HOVER){
+                        if(controlMode == MODE_HOVER_CUSTOM){
                             mode_int = false; 
                             controlMode = MODE_VELOCITY;
                         }
-                        }break;
+                    }break;
                     case KEY_SPACE:{    //Space->32 悬停
                         mode_int = false; 
-                        controlMode = MODE_HOVER; 
-                        }break;
+                        controlMode = MODE_HOVER_CUSTOM; 
+                    }break;
                     case KEY_M:{   //m->109 模式选择
                         mode_int = false;               
-                        controlMode = MODE_HOVER;      //只要进入m的参数输入，等待时候，就进入悬停模式，等待操作完成
+                        controlMode = MODE_HOVER_CUSTOM;      //只要进入m的参数输入，等待时候，就进入悬停模式，等待操作完成
                         printf("Please select guided control mode: \r\n \
                         v: velocity control;\r\n \
                         p: position control;\r\n \
-                        a: Tracking the trajectory of falio with position;\r\n \
-                        s: Using attitude method to control position;\r\n \
-                        f: Fixed trajectory \r\n \
-                        t: Tracking the trajectory of falio; \r\n \
-                        y: Test for controller performance \r\n \
+                        a: track the trajectory of falio with position;\r\n \
+                        s: straightly fly towards a postion;\r\n \
+                        f: fixed trajectory \r\n \
+                        t: track the trajectory of falio; \r\n \
                         \r\n");
 
                         key=sh_getch();     //按下m进行功能选择
@@ -733,11 +638,6 @@ void *keyboard_listener(void *dummy){
                                 mode_int = false;  //FLAG
                                 controlMode = MODE_VELOCITY;
                                 printf("Current control mode: \"Veolcity\"\r\n");
-                                }break;
-                            case KEY_Y:{
-                                mode_int = false;
-                                controlMode = MODE_HOVER_CUSTOM;
-                                printf("Current control mode: \"MODE_HOVER_CUSTOM\"\r\n");
                                 }break;
                             case KEY_P:{  //p->112  
                                 printf("Selsct mode: \"Position\",please input target position in \"x  y  z\" :\n");
@@ -749,17 +649,17 @@ void *keyboard_listener(void *dummy){
                                 key=sh_getch();     //等待确认按键的输入
                                 if(key == KEY_ENTER){
                                     //增量式控制
-                                    target_position.pose.position.x = xt ; //+ localposition.x
-                                    target_position.pose.position.y = yt ; //+ localposition.y
-                                    target_position.pose.position.z = zt ; //+ localposition.z
-                                    target_position.pose.orientation.x = localpose.x;
-                                    target_position.pose.orientation.y = localpose.y;
-                                    target_position.pose.orientation.z = localpose.z;
-                                    target_position.pose.orientation.w = localpose.w;
+                                    target_pose.pose.position.x = xt ; //+ localPos.x
+                                    target_pose.pose.position.y = yt ; //+ localPos.y
+                                    target_pose.pose.position.z = zt ; //+ localPos.z
+                                    target_pose.pose.orientation.x = localAtt.x;
+                                    target_pose.pose.orientation.y = localAtt.y;
+                                    target_pose.pose.orientation.z = localAtt.z;
+                                    target_pose.pose.orientation.w = localAtt.w;
 
-                                    xt = target_position.pose.position.x;
-                                    yt = target_position.pose.position.y;
-                                    zt = target_position.pose.position.z;
+                                    xt = target_pose.pose.position.x;
+                                    yt = target_pose.pose.position.y;
+                                    zt = target_pose.pose.position.z;
                                     
                                     mode_int = false;                       //改变模式
                                     controlMode = MODE_POSITION;                                
@@ -770,7 +670,7 @@ void *keyboard_listener(void *dummy){
                                 }break;
                             case KEY_A:{  //a->97
                                 printf("please Set target point position  in \"x  y  z\" :\n");
-                                xyz_d_def goalposition_;
+                                xyz_double_def goalposition_;
                                 scanf("%lf %lf %lf",&(goalposition_.x),&(goalposition_.y),&(goalposition_.z));
                                 clear_scanf_buffer();       //清除scanf中的缓冲数据
 
@@ -780,14 +680,14 @@ void *keyboard_listener(void *dummy){
                                 key=sh_getch();                 //获取确认按键
 
                                 if(key == KEY_ENTER){
-                                    target_position.pose.position.x = goalposition_.x + localposition.x;
-                                    target_position.pose.position.y = goalposition_.y + localposition.y;
-                                    target_position.pose.position.z = goalposition_.z + localposition.z;
+                                    target_pose.pose.position.x = goalposition_.x + localPos.x;
+                                    target_pose.pose.position.y = goalposition_.y + localPos.y;
+                                    target_pose.pose.position.z = goalposition_.z + localPos.z;
 
-                                    target_position.pose.orientation.x = localpose.x;
-                                    target_position.pose.orientation.y = localpose.y;       //确定航向
-                                    target_position.pose.orientation.z = localpose.z;
-                                    target_position.pose.orientation.w = localpose.w;
+                                    target_pose.pose.orientation.x = localAtt.x;
+                                    target_pose.pose.orientation.y = localAtt.y;       //确定航向
+                                    target_pose.pose.orientation.z = localAtt.z;
+                                    target_pose.pose.orientation.w = localAtt.w;
 
                                     mode_int = false;
                                     controlMode = MODE_AUTO;
@@ -809,16 +709,16 @@ void *keyboard_listener(void *dummy){
 
                                 if(key == KEY_ENTER){
                                     //增量式控制
-                                    target_position.pose.position.x = xt + localposition.x;
-                                    target_position.pose.position.y = yt + localposition.y;
-                                    target_position.pose.position.z = zt + localposition.z;
-                                    target_position.pose.orientation.x = localpose.x;
-                                    target_position.pose.orientation.y = localpose.y;
-                                    target_position.pose.orientation.z = localpose.z;
-                                    target_position.pose.orientation.w = localpose.w;
+                                    target_pose.pose.position.x = xt + localPos.x;
+                                    target_pose.pose.position.y = yt + localPos.y;
+                                    target_pose.pose.position.z = zt + localPos.z;
+                                    target_pose.pose.orientation.x = localAtt.x;
+                                    target_pose.pose.orientation.y = localAtt.y;
+                                    target_pose.pose.orientation.z = localAtt.z;
+                                    target_pose.pose.orientation.w = localAtt.w;
                 
-                                    Eigen::Quaterniond q(target_position.pose.orientation.w, target_position.pose.orientation.x, target_position.pose.orientation.y, target_position.pose.orientation.z);
-                                    toEulerAngle(q,target_pose_euler.roll,target_pose_euler.pitch,target_pose_euler.yaw);
+                                    Eigen::Quaterniond q(target_pose.pose.orientation.w, target_pose.pose.orientation.x, target_pose.pose.orientation.y, target_pose.pose.orientation.z);
+                                    toEulerAngle(q,target_euler.roll,target_euler.pitch,target_euler.yaw);
                                     
                                     mode_int = false;
                                     controlMode = MODE_STRAIGHT;
@@ -830,7 +730,7 @@ void *keyboard_listener(void *dummy){
                                 }break;  
                             case KEY_T: {
                                 printf("please Set target point position  in \"x  y  z\" :\n");
-                                xyz_d_def goalposition_;
+                                xyz_double_def goalposition_;
                                 scanf("%lf %lf %lf",&(goalposition_.x),&(goalposition_.y),&(goalposition_.z));
                                 clear_scanf_buffer();       //清除scanf中的缓冲数据
 
@@ -840,17 +740,17 @@ void *keyboard_listener(void *dummy){
                                 key=sh_getch();                 //获取确认按键
 
                                 if(key == KEY_ENTER){
-                                    target_position.pose.position.x = goalposition_.x + localposition.x;        //带坐标转换，从笛卡尔转到东北天
-                                    target_position.pose.position.y = goalposition_.y + localposition.y;
-                                    target_position.pose.position.z = goalposition_.z + localposition.z;
+                                    target_pose.pose.position.x = goalposition_.x + localPos.x;        //带坐标转换，从笛卡尔转到东北天
+                                    target_pose.pose.position.y = goalposition_.y + localPos.y;
+                                    target_pose.pose.position.z = goalposition_.z + localPos.z;
 
-                                    target_position.pose.orientation.x = localpose.x;
-                                    target_position.pose.orientation.y = localpose.y;       //确定航向
-                                    target_position.pose.orientation.z = localpose.z;
-                                    target_position.pose.orientation.w = localpose.w;
+                                    target_pose.pose.orientation.x = localAtt.x;
+                                    target_pose.pose.orientation.y = localAtt.y;       //确定航向
+                                    target_pose.pose.orientation.z = localAtt.z;
+                                    target_pose.pose.orientation.w = localAtt.w;
 
-                                    Eigen::Quaterniond q(target_position.pose.orientation.w, target_position.pose.orientation.x, target_position.pose.orientation.y, target_position.pose.orientation.z);
-                                    toEulerAngle(q,target_pose_euler.roll,target_pose_euler.pitch,target_pose_euler.yaw);    
+                                    Eigen::Quaterniond q(target_pose.pose.orientation.w, target_pose.pose.orientation.x, target_pose.pose.orientation.y, target_pose.pose.orientation.z);
+                                    toEulerAngle(q,target_euler.roll,target_euler.pitch,target_euler.yaw);    
 
                                     mode_int = false;
                                     controlMode = MODE_AUTO_POSE;
@@ -861,7 +761,7 @@ void *keyboard_listener(void *dummy){
                             }break;
                             default:{
                                 printf("[Warning!] Invalid selection, please press m and slelect again!: \n");
-                                }break;
+                            }break;
                         }                     
                         }break;
                     default:{
@@ -870,10 +770,9 @@ void *keyboard_listener(void *dummy){
                 } 
             }else{
                 //先按下s键，后按下w键，最后按下确认enter键切换到guided模式
-
                 //主程序切换模式，获取当前位置，发送当前位置，悬停
                 mode_int = false; 
-                controlMode = MODE_HOVER; 
+                controlMode = MODE_HOVER_CUSTOM; 
 
                 if (key == KEY_S){
                     printf("Please continue to press the W key to switch to guided mode, and exit with other keys\r\n");
@@ -884,24 +783,24 @@ void *keyboard_listener(void *dummy){
                         key = sh_getch();
                         if(key == KEY_ENTER){
 
-                            auto guided_req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
-                            guided_req->custom_mode = "GUIDED";
+                            auto guided_req_recovery = std::make_shared<mavros_msgs::srv::SetMode::Request>();
+                            guided_req_recovery->custom_mode = "GUIDED";
 
-                            auto frame_req = std::make_shared<mavros_msgs::srv::SetMavFrame::Request>();
-                            frame_req->mav_frame = 1;
+                            auto frame_req_recovery = std::make_shared<mavros_msgs::srv::SetMavFrame::Request>();
+                            frame_req_recovery->mav_frame = 1;
                             
-                            auto set_mode_future = set_mode_client->async_send_request(guided_req);
-                            rclcpp::spin_until_future_complete(g_node, set_mode_future);
-                            if (set_mode_future.get()->mode_sent)
+                            auto set_mode_future_recovery = set_mode_client->async_send_request(guided_req_recovery);
+                            rclcpp::spin_until_future_complete(node, set_mode_future_recovery);
+                            if (set_mode_future_recovery.get()->mode_sent)
                             {
                                 printf("[INFO] Guided enabled\n");
 
-                                    auto set_frame_future = set_frame_client->async_send_request(frame_req);
-                                    rclcpp::spin_until_future_complete(g_node, set_frame_future);
-                                    if (set_frame_future.get()->success) {
+                                    auto set_frame_future_recovery = set_frame_client->async_send_request(frame_req_recovery);
+                                    rclcpp::spin_until_future_complete(node, set_frame_future_recovery);
+                                    if (set_frame_future_recovery.get()->success) {
                                         printf("[INFO] Set BODY_FRAME of velocity successfully\n");
                                         mode_int = false; 
-                                        controlMode = MODE_HOVER; 
+                                        controlMode = MODE_HOVER_CUSTOM; 
                                     }
                                     else     {
                                         printf("[INFO] Failed to set BODY_FRAME, please retry!\n");
@@ -924,19 +823,13 @@ void *keyboard_listener(void *dummy){
         }
         // Disarm is handled by the main loop; keep looping until woken by SIGUSR1.
 	}
-
 	return NULL;
-}
-
-// Empty handler for SIGUSR1 — interrupts blocking getchar() in the keyboard
-// thread (returns EINTR) without terminating the process.
-static void sigusr1_wake_handler(int) {}
+} // 子线程监听键盘
 
 int main(int argc, char** argv){
     rclcpp::init(argc, argv);
-    signal(SIGUSR1, sigusr1_wake_handler);
+    signal(SIGUSR1, [](int){});  // needed for clean shutdown: interrupt blocking getchar()
     auto node = std::make_shared<rclcpp::Node>("keyboard_vel_controller");
-    g_node = node;
 
     ButterWorthFIlter* butterfilter_predicted_x = new ButterWorthFIlter(100, 10);
     ButterWorthFIlter* butterfilter_predicted_y = new ButterWorthFIlter(100, 10);
@@ -947,51 +840,35 @@ int main(int argc, char** argv){
     ButterWorthFIlter* butterfilter_vel_z = new ButterWorthFIlter(100, 10);
     
     read_param(node.get());
+    const double dt = 1.0 / control_frequency;
+    pos_control_x.setDt(dt); pos_control_y.setDt(dt); pos_control_z.setDt(dt);
+    vel_control_x.setDt(dt); vel_control_y.setDt(dt); vel_control_z.setDt(dt);
+    acc_control_x.setDt(dt); acc_control_y.setDt(dt); acc_control_z.setDt(dt);
 
-    position_control_x.setLimit(vel_out_limit.x, -vel_out_limit.x);
-    position_control_y.setLimit(vel_out_limit.y, -vel_out_limit.y);
-    position_control_z.setLimit(vel_out_limit.z, -vel_out_limit.z);
-    position_control_x.setPID(position_pid.x.p,  position_pid.x.i,  position_pid.x.d);
-    position_control_y.setPID(position_pid.y.p,  position_pid.y.i,  position_pid.y.d);
-    position_control_z.setPID(position_pid.z.p,  position_pid.z.i,  position_pid.z.d);
-
-    vel_control_x.setLimit(GRAVITY_ACC * tan(pose_out_limit.x * M_PI/180.0f),
-                          -GRAVITY_ACC * tan(pose_out_limit.x * M_PI/180.0f));
-    vel_control_y.setLimit(GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f),
-                          -GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f));
-    vel_control_z.setLimit(GRAVITY_ACC * tan(pose_out_limit.z * M_PI/180.0f),
-                          -GRAVITY_ACC * tan(pose_out_limit.z * M_PI/180.0f));
+    pos_control_x.setLimit(vel_lim.x, -vel_lim.x);
+    pos_control_y.setLimit(vel_lim.y, -vel_lim.y);
+    pos_control_z.setLimit(vel_lim.z, -vel_lim.z);
+    pos_control_x.setPID(pos_pid.x.p,  pos_pid.x.i,  pos_pid.x.d);
+    pos_control_y.setPID(pos_pid.y.p,  pos_pid.y.i,  pos_pid.y.d);
+    pos_control_z.setPID(pos_pid.z.p,  pos_pid.z.i,  pos_pid.z.d);
 
     vel_control_x.setPID(vel_pid.x.p,  vel_pid.x.i,  vel_pid.x.d);
     vel_control_y.setPID(vel_pid.y.p,  vel_pid.y.i,  vel_pid.y.d);
     vel_control_z.setPID(vel_pid.z.p,  vel_pid.z.i,  vel_pid.z.d);
 
-    vel_control_l_x.setLimit(GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f),
-                            -GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f));
-    vel_control_l_y.setLimit(GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f),
-                            -GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f));
-    vel_control_l_z.setLimit(GRAVITY_ACC * tan(pose_out_limit.z * M_PI/180.0f),
-                            -GRAVITY_ACC * tan(pose_out_limit.z * M_PI/180.0f));
-    vel_control_l_x.setPID(vel_l_pid.x.p,  vel_l_pid.x.i,  vel_l_pid.x.d);
-    vel_control_l_y.setPID(vel_l_pid.y.p,  vel_l_pid.y.i,  vel_l_pid.y.d);
-    vel_control_l_z.setPID(vel_l_pid.z.p,  vel_l_pid.z.i,  vel_l_pid.z.d);
-
-    vel_control_a_x.setLimit(GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f),
-                            -GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f));
-    vel_control_a_y.setLimit(GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f),
-                            -GRAVITY_ACC * tan(pose_out_limit.y * M_PI/180.0f));
-    vel_control_a_z.setLimit(GRAVITY_ACC * tan(pose_out_limit.z * M_PI/180.0f),
-                            -GRAVITY_ACC * tan(pose_out_limit.z * M_PI/180.0f));
-    vel_control_a_x.setPID(vel_a_pid.x.p,  vel_a_pid.x.i,  vel_a_pid.x.d);
-    vel_control_a_y.setPID(vel_a_pid.y.p,  vel_a_pid.y.i,  vel_a_pid.y.d);
-    vel_control_a_z.setPID(vel_a_pid.z.p,  vel_a_pid.z.i,  vel_a_pid.z.d);
+    acc_control_x.setLimit(degToAccLimit(att_lim.x), -degToAccLimit(att_lim.x));
+    acc_control_y.setLimit(degToAccLimit(att_lim.y), -degToAccLimit(att_lim.y));
+    acc_control_z.setLimit(degToAccLimit(att_lim.z), -degToAccLimit(att_lim.z));
+    acc_control_x.setPID(acc_pid.x.p,  acc_pid.x.i,  acc_pid.x.d);
+    acc_control_y.setPID(acc_pid.y.p,  acc_pid.y.i,  acc_pid.y.d);
+    acc_control_z.setPID(acc_pid.z.p,  acc_pid.z.i,  acc_pid.z.d);
 
     // ROS2 发布器
     auto vel_pub = node->create_publisher<geometry_msgs::msg::Twist>(
         "/mavros/setpoint_velocity/cmd_vel_unstamped", 1);
-    auto position_pub = node->create_publisher<geometry_msgs::msg::PoseStamped>(
+    auto pos_pub = node->create_publisher<geometry_msgs::msg::PoseStamped>(
         "/mavros/setpoint_position/local", 1);
-    auto pose_pub = node->create_publisher<mavros_msgs::msg::AttitudeTarget>(
+    auto att_thrust_pub = node->create_publisher<mavros_msgs::msg::AttitudeTarget>(
         "/mavros/setpoint_raw/attitude", 1);
     auto acc_pub = node->create_publisher<mavros_msgs::msg::PositionTarget>(
         "/mavros/setpoint_raw/local", 1);
@@ -1002,26 +879,24 @@ int main(int argc, char** argv){
 
     refTrajectoryPub = node->create_publisher<nav_msgs::msg::Path>(
         "trajectory_publisher/reftrajectory", 1);
-    curTrajectoryPub = node->create_publisher<nav_msgs::msg::Path>(
-        "trajectory_publisher/curtrajectory", 1);
     referencePosePub = node->create_publisher<geometry_msgs::msg::PoseStamped>(
         "reference/pose", 1);
 
-    // ROS2 subscribers
-    auto pos_sub2 = node->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/mavros/local_position/pose", rclcpp::SensorDataQoS(), poseCallback);
+    // ROS2 订阅器（SensorDataQoS即best_effort，1即reliable）
+    auto pos_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/mavros/local_position/pose", rclcpp::SensorDataQoS(), pose_cb);
     auto odom_sub = node->create_subscription<geometry_msgs::msg::TwistStamped>(
-        "/mavros/local_position/velocity_local", rclcpp::SensorDataQoS(), velCallback);
+        "/mavros/local_position/velocity_local", rclcpp::SensorDataQoS(), vel_cb);
+    auto imu_data = node->create_subscription<sensor_msgs::msg::Imu>(
+        "/mavros/imu/data", rclcpp::SensorDataQoS(), imudata_cb);
     auto state_sub = node->create_subscription<mavros_msgs::msg::State>(
-        "/mavros/state", 1, state_cb);
+        "/mavros/state", 1, mavrosState_cb);
     auto pathsub = node->create_subscription<nav_msgs::msg::Path>(
         "/search_node/trajectory_position", 1, pathsub_cb);
     auto nearest_obstacle_distance = node->create_subscription<std_msgs::msg::Float32>(
         "/front_obstacle_distance", 1, nearest_distance_cb);
-    auto imu_data = node->create_subscription<sensor_msgs::msg::Imu>(
-        "/mavros/imu/data", rclcpp::SensorDataQoS(), imudata_cb);
 
-    // ROS2 service clients
+    // ROS2 服务
     auto arming_client = node->create_client<mavros_msgs::srv::CommandBool>(
         "/mavros/cmd/arming");
     set_mode_client = node->create_client<mavros_msgs::srv::SetMode>(
@@ -1030,87 +905,64 @@ int main(int argc, char** argv){
         "/mavros/setpoint_velocity/mav_frame");
     takeoff_client = node->create_client<mavros_msgs::srv::CommandTOL>(
         "/mavros/cmd/takeoff");
-    
-    // Wait for takeoff service
-    takeoff_client->wait_for_service(std::chrono::seconds(5));
 
     rclcpp::Rate rate(10);
-    rclcpp::Rate rate_main(control_frequency);
+    rclcpp::Rate rate_control(control_frequency);
 
-    while ((localacceleration.z == 0) && rclcpp::ok()) {
-        printf("wait~~~\r\n");
-        rclcpp::spin_some(node);
-        rate.sleep();
-    }
-
-    for (int i = 0; (i < 50 && rclcpp::ok()); i++) {
-        Eigen::Quaterniond eigen_local_q_(localpose.w, localpose.x, localpose.y, localpose.z);
-        Eigen::Vector3d body_acc_(localacceleration.x, localacceleration.y, localacceleration.z);
-        Eigen::Vector3d local_acc_ = eigen_local_q_*body_acc_;      //////////error  
-
-        localacceleration_offset.x += local_acc_(0);
-        localacceleration_offset.y += local_acc_(1);
-        localacceleration_offset.z += local_acc_(2);
-        printf("~~bx:%lf,by:%lf,bz:%lf,lx:%lf,ly:%lf,lz:%lf\r\n",
-               body_acc_(0), body_acc_(1), body_acc_(2),
-               local_acc_(0), local_acc_(1), local_acc_(2));
-
-        rclcpp::spin_some(node);
-        rate.sleep();
-    }
-
-    localacceleration_offset.x = localacceleration_offset.x / 50.0f;
-    localacceleration_offset.y = localacceleration_offset.y / 50.0f;
-    localacceleration_offset.z = localacceleration_offset.z / 50.0f;
-
-    // wait for FCU connection
     while(rclcpp::ok() && !current_state.connected){
         rclcpp::spin_some(node);
         rate.sleep();
-    }
+    } // 等待飞控连接
 
-    target_veloity.linear.x=0;
-    target_veloity.linear.y=0;
-    target_veloity.linear.z=0;
-    target_veloity.angular.x=0;
-    target_veloity.angular.y=0;
-    target_veloity.angular.z=0;
+    while ((localAcc.z == 0) && rclcpp::ok()) {
+        printf("wait~~~\r\n");
+        rclcpp::spin_some(node);
+        rate.sleep();
+    } // 等待加速度收到
+
+    target_twist.linear.x=0;
+    target_twist.linear.y=0;
+    target_twist.linear.z=0;
+    target_twist.angular.x=0;
+    target_twist.angular.y=0;
+    target_twist.angular.z=0;
     
-    target_position.pose.position.x = 0;
-    target_position.pose.position.y = 0;
-    target_position.pose.position.z = 0;
-    target_position.pose.orientation.w = 1.0;   // 单位四元数，保持当前航向不变
-    target_position.pose.orientation.x = 0.0;   // 单位四元数，保持当前航向不变
-    target_position.pose.orientation.y = 0.0;   // 单位四元数，保持当前航向不变
-    target_position.pose.orientation.z = 0.0;   // 单位四元数，保持当前航向不变
+    target_pose.pose.position.x = 0;
+    target_pose.pose.position.y = 0;
+    target_pose.pose.position.z = 0;
+    target_pose.pose.orientation.w = 1.0;   // 单位四元数，保持当前航向不变
+    target_pose.pose.orientation.x = 0.0;   
+    target_pose.pose.orientation.y = 0.0;   
+    target_pose.pose.orientation.z = 0.0;  
     
     // 先发几个点
     for(int i = 20; rclcpp::ok() && i > 0; --i){
         rclcpp::spin_some(node);
         rate.sleep();
-        position_pub->publish(target_position);
+        pos_pub->publish(target_pose);
     }
 
-    auto guided_req2 = std::make_shared<mavros_msgs::srv::SetMode::Request>();
-    guided_req2->custom_mode = "GUIDED";
+    auto guided_req_init = std::make_shared<mavros_msgs::srv::SetMode::Request>();
+    guided_req_init->custom_mode = "GUIDED";
 
-    auto arm_req2 = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
-    arm_req2->value = true;
+    auto arm_req_init = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
+    arm_req_init->value = true;
 
-    auto frame_req2 = std::make_shared<mavros_msgs::srv::SetMavFrame::Request>();
-    frame_req2->mav_frame = 1;
+    auto frame_req_init = std::make_shared<mavros_msgs::srv::SetMavFrame::Request>();
+    frame_req_init->mav_frame = 1;
     
-    auto set_mode_future2 = set_mode_client->async_send_request(guided_req2);
-    rclcpp::spin_until_future_complete(g_node, set_mode_future2);
-    if (set_mode_future2.get()->mode_sent) {
+    // 设置guided模式并解锁
+    auto set_mode_future_init = set_mode_client->async_send_request(guided_req_init);
+    rclcpp::spin_until_future_complete(node, set_mode_future_init);
+    if (set_mode_future_init.get()->mode_sent) {
         printf("[INFO] Guided enabled\n");
-        auto arm_future2 = arming_client->async_send_request(arm_req2);
-        rclcpp::spin_until_future_complete(g_node, arm_future2);
-        if (arm_future2.get()->success) {
+        auto arm_future_init = arming_client->async_send_request(arm_req_init);
+        rclcpp::spin_until_future_complete(node, arm_future_init);
+        if (arm_future_init.get()->success) {
             printf("[INFO] Vehicle armed\n");
 
             // Set BODY_FRAME - fire-and-forget, non-critical
-            auto set_frame_future2 = set_frame_client->async_send_request(frame_req2);
+            auto set_frame_future_init = set_frame_client->async_send_request(frame_req_init);
             // Don't wait — proceed to takeoff immediately
 
             // Wait for armed state feedback
@@ -1118,21 +970,20 @@ int main(int argc, char** argv){
                 printf("Waiting for unlocking feedback  .....\r\n");
                 rclcpp::spin_some(node);
                 rate.sleep();
-                position_pub->publish(target_position);
+                pos_pub->publish(target_pose);
             }
             // Wait for GUIDED mode feedback
             while(rclcpp::ok() && (current_state.mode != "GUIDED")){
                 printf("Waiting for GUIDED mode feedback  .....\r\n");
                 rclcpp::spin_some(node);
                 rate.sleep();
-                position_pub->publish(target_position);
+                pos_pub->publish(target_pose);
             }
 
             // Create keyboard thread but DON'T block on ctrlMode
-            pthread_create(&th, NULL, keyboard_listener, 0);
+            pthread_create(&th, NULL, keyboard_listener, node.get());
             th_created = true;
             ctrlMode = 1;  // proceed to takeoff immediately
-
         }
         else {
             printf("[INFO] Failed to arm, please retry! \n");
@@ -1141,26 +992,25 @@ int main(int argc, char** argv){
         printf("[INFO] Failed to set Guided, please retry! \n");
     }
 
+    // 先发送几个点直到解锁
     while(rclcpp::ok() && !ctrlMode){
         printf("Waiting for pthread_create  .....\r\n");
         rclcpp::spin_some(node);
         rate.sleep();
-        position_pub->publish(target_position);
+        pos_pub->publish(target_pose);
     }
     printf("[Ready] Controller Mode On !\n");
 
     // 尝试起飞（带重试）
     auto takeoff_req = std::make_shared<mavros_msgs::srv::CommandTOL::Request>();
-    bool takeoff_success = false;
     for (int i = 0; i < 3; ++i) {
         takeoff_req->altitude = 0.3;      // 提高到0.3米，避免高度过小被拒绝
         takeoff_req->min_pitch = 0.0;
         takeoff_req->yaw = 0.0;
         auto takeoff_future = takeoff_client->async_send_request(takeoff_req);
-        rclcpp::spin_until_future_complete(g_node, takeoff_future);
+        rclcpp::spin_until_future_complete(node, takeoff_future);
         if (takeoff_future.get()->success) {
             RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "Takeoff succeeded (altitude=1.0m)");
-            takeoff_success = true;
             break;
         } else {
             RCLCPP_WARN(rclcpp::get_logger("guided_sim"), "Takeoff attempt %d failed, retrying...", i+1);
@@ -1168,19 +1018,28 @@ int main(int argc, char** argv){
         }
     }
 
-    std::this_thread::sleep_for(std::chrono::seconds(4));
+    // 等待起飞完成
+    printf("Waiting for liftoff...\r\n");
+    int liftoff_timeout = 100;  // 10 seconds at 10Hz
+    while (rclcpp::ok() && localPos.z < 0.15 && --liftoff_timeout > 0) {
+        rclcpp::spin_some(node);
+        rate.sleep();
+    }
+    if (liftoff_timeout <= 0) {
+        printf("[WARN] Liftoff timeout — proceeding anyway\n");
+    }
     
     while(rclcpp::ok() && ctrlMode){
         if(current_state.mode != "GUIDED"){
             if(guided_change == true){
                 guided_change = false;
                 mode_int = false; 
-                controlMode = MODE_HOVER; 
+                controlMode = MODE_HOVER_CUSTOM; 
                 printf("The current mode is %s. Press s, w, and enter in sequence to switch modes\r\n",current_state.mode.c_str());
             }
         }else{
             guided_change = true;
-        }
+        } // 检测GUIDED模式是否丢失
 
         if(!current_state.armed){
             if(arm_change == true){
@@ -1191,67 +1050,61 @@ int main(int argc, char** argv){
             }
         }else{
             arm_change = true;
-        }
+        } // 检测是否上锁
 
         if(controlMode == MODE_VELOCITY){
             if(!mode_int){
-                target_veloity.linear.x=0;
-                target_veloity.linear.y=0;
-                target_veloity.linear.z=0;
-                // target_veloity.angular.x=0;
-                // target_veloity.angular.y=0;
-                target_veloity.angular.z=0;
+                target_twist.linear.x=0;
+                target_twist.linear.y=0;
+                target_twist.linear.z=0;
+                // target_twist.angular.x=0;
+                // target_twist.angular.y=0;
+                target_twist.angular.z=0;
                 mode_int = true;
                 vel_change = true;
                 printf("mode velocity init finish\r\n");
             }else{
-                vel_pub->publish(target_veloity);
+                vel_pub->publish(target_twist);
                 if(vel_change == true){
                     vel_change = false;
-                    printf("mode velocity linear x:%lf,y:%lf,z:%lf,angular:%lf\r\n",target_veloity.linear.x,target_veloity.linear.y,target_veloity.linear.z,target_veloity.angular.z);
+                    printf("mode velocity linear x:%lf,y:%lf,z:%lf,angular:%lf\r\n",target_twist.linear.x,target_twist.linear.y,target_twist.linear.z,target_twist.angular.z);
                 }
             }
         }
         else if (controlMode == MODE_POSITION){
-            position_pub->publish(target_position);
+            pos_pub->publish(target_pose);
         }
         else if (controlMode == MODE_AUTO){
             if(!mode_int){
                 pathpoint_sub.clear();
                 targetPointNum = 0;
 
-                xyz_d_def coordinate_camera;
-                coordinate_camera.x =  target_position.pose.position.y;         //将坐标系从笛卡尔坐标系  转换到东北天坐标系下
-                coordinate_camera.y = -target_position.pose.position.x;
-
-                target_position.pose.position.x = coordinate_camera.x;
-                target_position.pose.position.y = coordinate_camera.y;
+                // Transform camera (Cartesian) to NED frame
+                auto cam = cameraToNED({target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z});
+                target_pose.pose.position.x = cam.x;
+                target_pose.pose.position.y = cam.y;
                 
                 //发送当前的位置，setTargetPose是通过/goal的topic发送的，以camera_init作为的目标点，向前为x正，向左为y正，向上为z正
-                target_setpositions_pub->publish(target_position);
+                target_setpositions_pub->publish(target_pose);
                 
-                printf("publish position X:%lf,Y:%lf,Z:%lf \r\n",target_position.pose.position.x ,target_position.pose.position.y ,target_position.pose.position.z );
+                printf("publish position X:%lf,Y:%lf,Z:%lf \r\n",target_pose.pose.position.x ,target_pose.pose.position.y ,target_pose.pose.position.z );
 
                 //用于没有收到轨迹的时候，发送位置悬停。
-                target_position.pose.position.x = localposition.x;
-                target_position.pose.position.y = localposition.y;
-                target_position.pose.position.z = localposition.z;
+                target_pose.pose.position.x = localPos.x;
+                target_pose.pose.position.y = localPos.y;
+                target_pose.pose.position.z = localPos.z;
 
                 mode_int = true;
             }
             else{
                 if(!(pathpoint_sub.empty()) && targetPointNum < pathpoint_sub.size() ){
-                    xyz_d_def pathpoint_in_mavros = {             //将path的坐标转换到local下
-                            -(pathpoint_sub[targetPointNum].y),           //x' = -y
-                            pathpoint_sub[targetPointNum].x,            //y' =  x
-                            pathpoint_sub[targetPointNum].z,            //z' =  z 
-                    };
+                    xyz_double_def pathpoint_in_mavros = pathToLocal(pathpoint_sub[targetPointNum]);
 
                     // 第二步，发送目标点
-                    target_position.pose.position.x = pathpoint_in_mavros.x ;
-                    target_position.pose.position.y = pathpoint_in_mavros.y ;
-                    target_position.pose.position.z = pathpoint_in_mavros.z ;  
-                    position_pub->publish(target_position);
+                    target_pose.pose.position.x = pathpoint_in_mavros.x ;
+                    target_pose.pose.position.y = pathpoint_in_mavros.y ;
+                    target_pose.pose.position.z = pathpoint_in_mavros.z ;  
+                    pos_pub->publish(target_pose);
 
                         
                         //第三步，计算距离
@@ -1260,7 +1113,7 @@ int main(int argc, char** argv){
                         printf("set:%d,D %lf,X:%lf,Y:%lf,Z:%lf,mX:%lf,mY:%lf,mZ:%lf\r\n",
                             targetPointNum,distance,
                             pathpoint_in_mavros.x,pathpoint_in_mavros.y,pathpoint_in_mavros.z,
-                            localposition.x,localposition.y,localposition.z
+                            localPos.x,localPos.y,localPos.z
                         );                   
                         
                         //第四步，判断距离
@@ -1269,9 +1122,9 @@ int main(int argc, char** argv){
                                 if(distance < ciecle_range){
                                     targetPointNum++;                                                   //跟踪到最后一个点，完成本次轨迹跟踪
                                     //悬停时的位置
-                                    target_position.pose.position.x = localposition.x;
-                                    target_position.pose.position.y = localposition.y;
-                                    target_position.pose.position.z = localposition.z;                               
+                                    target_pose.pose.position.x = localPos.x;
+                                    target_pose.pose.position.y = localPos.y;
+                                    target_pose.pose.position.z = localPos.z;                               
                                 }else{
                                     printf("Waiting for the last point to enter the circle!!!!!!!!!!!!\r\n");
                                 }
@@ -1286,16 +1139,16 @@ int main(int argc, char** argv){
                 }             
                 else{
                     if(targetPointNum == 0){                                //没有收到轨迹
-                        position_pub->publish(target_position);             //改位置在模式初始化的时候，更新的位置
+                        pos_pub->publish(target_pose);             //改位置在模式初始化的时候，更新的位置
                         printf("hover no point \r\n");
                     }else if(targetPointNum == pathpoint_sub.size()){       //已经到轨迹终点了
-                        position_pub->publish(target_position);              //该位置在最后一个点进圈后，更新的位置
+                        pos_pub->publish(target_pose);              //该位置在最后一个点进圈后，更新的位置
                         stop_command.data = 0;
                         command_stop_pub->publish(stop_command);                   
                         printf("finish\r\n");
                     }else{
                         mode_int = false;
-                        controlMode = MODE_HOVER;                           //其他情况，切换到悬停模式
+                        controlMode = MODE_HOVER_CUSTOM;                           //其他情况，切换到悬停模式
                     }
                 }
             }
@@ -1304,14 +1157,14 @@ int main(int argc, char** argv){
             if(!mode_int){
                 pathpoint_sub.clear();
                 targetPointNum = 0;
-                double xt = target_position.pose.position.x;
-                double yt = target_position.pose.position.y;
-                double zt = target_position.pose.position.z;
+                double xt = target_pose.pose.position.x;
+                double yt = target_pose.pose.position.y;
+                double zt = target_pose.pose.position.z;
 
                 //开始计算轨迹点
-                double lx = localposition.x;
-                double ly = localposition.y;
-                double lz = localposition.z; 
+                double lx = localPos.x;
+                double ly = localPos.y;
+                double lz = localPos.z; 
 
                 double distance = sqrt(pow((xt-lx),2)+pow((yt-ly),2)+pow((zt-lz),2)); 
                 int num = (int)(distance/0.02f);
@@ -1320,22 +1173,20 @@ int main(int argc, char** argv){
                 double y_1 = (yt - ly) / num;
                 double z_1 = (zt - lz) / num;
 
-                xyz_d_def coordinate_camera;
-                coordinate_camera.x =  target_position.pose.position.y;
-                coordinate_camera.y = -target_position.pose.position.x;
-
-                target_position.pose.position.x = coordinate_camera.x;
-                target_position.pose.position.y = coordinate_camera.y;
+                // Transform camera (Cartesian) to NED frame
+                auto cam = cameraToNED({target_pose.pose.position.x, target_pose.pose.position.y, target_pose.pose.position.z});
+                target_pose.pose.position.x = cam.x;
+                target_pose.pose.position.y = cam.y;
                 
                 //发送当前的位置，setTargetPose是通过/goal的topic发送的，以camera_init作为的目标点，向前为x正，向左为y正，向上为z正
-                target_setpositions_pub->publish(target_position);
+                target_setpositions_pub->publish(target_pose);
                 
-                printf("publish position X:%lf,Y:%lf,Z:%lf \r\n",target_position.pose.position.x ,target_position.pose.position.y ,target_position.pose.position.z );
+                printf("publish position X:%lf,Y:%lf,Z:%lf \r\n",target_pose.pose.position.x ,target_pose.pose.position.y ,target_pose.pose.position.z );
 
                 //用于没有收到轨迹的时候，发送位置悬停。
-                target_position.pose.position.x = localposition.x;
-                target_position.pose.position.y = localposition.y;
-                target_position.pose.position.z = localposition.z;
+                target_pose.pose.position.x = localPos.x;
+                target_pose.pose.position.y = localPos.y;
+                target_pose.pose.position.z = localPos.z;
 
                 target_acc_x_pid_last = 0.0f;
                 target_acc_y_pid_last = 0.0f;
@@ -1350,27 +1201,27 @@ int main(int argc, char** argv){
                 static bool jiansu_flag = false; 
                 if(!(pathpoint_sub.empty()) && targetPointNum < pathpoint_sub.size() && (pathpoint_sub.size() > jump_pointnumber + 1)){
                     if(targetPointNum == 0){                                    //收到轨迹的第一个点跟踪，采用飞控的位置控制
-                        xyz_d_def first_path = pathpoint_sub[0];
-                        target_position.pose.position.x = -first_path.y;
-                        target_position.pose.position.y = first_path.x;
-                        target_position.pose.position.z = first_path.z;
+                        xyz_double_def first_path = pathpoint_sub[0];
+                        target_pose.pose.position.x = -first_path.y;
+                        target_pose.pose.position.y = first_path.x;
+                        target_pose.pose.position.z = first_path.z;
 
-                        position_pub->publish(target_position);
+                        pos_pub->publish(target_pose);
                         double distance = calculate_distance(-first_path.y,first_path.x,first_path.z);
                         if(distance <= 0.1f){
                             targetPointNum = 1;
                             PID_Reset();                  
 
-                            printf("first point tracking finish %lf %lf %lf\r\n",target_position.pose.position.x,target_position.pose.position.y,target_position.pose.position.z);
+                            printf("first point tracking finish %lf %lf %lf\r\n",target_pose.pose.position.x,target_pose.pose.position.y,target_pose.pose.position.z);
                         } 
                         jiansu_flag = false;
                     }else{
 
                     //遍历计算所有点，计算与当前位置最近的点
                         double min_distance = 1000000.0f;
-                        double lx = localposition.y;
-                        double ly = -localposition.x;
-                        double lz = localposition.z;
+                        double lx = localPos.y;
+                        double ly = -localPos.x;
+                        double lz = localPos.z;
                         int min_targetPointNum = 0;
 
                         for(int i=0;i<pathpoint_sub.size();i++){
@@ -1404,17 +1255,8 @@ int main(int argc, char** argv){
                         }
 
                         // desired point
-                        xyz_d_def pathpoint_in_mavros = {             //将path的坐标转换到local下
-                                -(pathpoint_sub[min_targetPointNum].y),           //x' = -y
-                                pathpoint_sub[min_targetPointNum].x,            //y' =  x
-                                pathpoint_sub[min_targetPointNum].z,            //z' =  z 
-                        };
-                        // next desired point
-                        xyz_d_def pathpoint_in_mavros_next = {             //将path的坐标转换到local下
-                                -(pathpoint_sub[min_targetPointNum+jump_pointnumber].y),           //x' = -y
-                                pathpoint_sub[min_targetPointNum+jump_pointnumber].x,            //y' =  x
-                                pathpoint_sub[min_targetPointNum+jump_pointnumber].z,            //z' =  z 
-                        };                   
+                        xyz_double_def pathpoint_in_mavros      = pathToLocal(pathpoint_sub[min_targetPointNum]);
+                        xyz_double_def pathpoint_in_mavros_next = pathToLocal(pathpoint_sub[min_targetPointNum + jump_pointnumber]);                   
 
                     
                         target_position_show.header.stamp = node->now();
@@ -1422,20 +1264,20 @@ int main(int argc, char** argv){
                         target_position_show.pose.position.x = pathpoint_in_mavros.x;
                         target_position_show.pose.position.y = pathpoint_in_mavros.y;
                         target_position_show.pose.position.z = pathpoint_in_mavros.z;
-                        target_position_show.pose.orientation.w = localpose.w;
-                        target_position_show.pose.orientation.x = localpose.x;
-                        target_position_show.pose.orientation.y = localpose.y;
-                        target_position_show.pose.orientation.z = localpose.z;
+                        target_position_show.pose.orientation.w = localAtt.w;
+                        target_position_show.pose.orientation.x = localAtt.x;
+                        target_position_show.pose.orientation.y = localAtt.y;
+                        target_position_show.pose.orientation.z = localAtt.z;
                         referencePosePub->publish(target_position_show);
 
                         //获取轨迹上的feedforward速度方向，即做速度跟随的主方向
-                        xyz_d_def target_vel_main_direction = {   
+                        xyz_double_def target_vel_main_direction = {   
                             (pathpoint_in_mavros_next.x - pathpoint_in_mavros.x),
                             (pathpoint_in_mavros_next.y - pathpoint_in_mavros.y),
                             (pathpoint_in_mavros_next.z - pathpoint_in_mavros.z) 
                         };   
                         //计算目标的前向速度大小
-                        xyz_d_def target_velocity_main ;
+                        xyz_double_def target_velocity_main ;
                         // target_velocity_main = calculate_FixedModulusVector(target_vel_main_direction,vel_forward_set);   //目标前向速度
 
                         {
@@ -1457,32 +1299,32 @@ int main(int argc, char** argv){
                             }
                         }
 
-                        Eigen::Quaterniond eigen_local_q_(localpose.w, localpose.x, localpose.y, localpose.z);
-                        Eigen::Vector3d body_acc_(localacceleration.x, localacceleration.y, localacceleration.z);
+                        Eigen::Quaterniond eigen_local_q_(localAtt.w, localAtt.x, localAtt.y, localAtt.z);
+                        Eigen::Vector3d body_acc_(localAcc.x, localAcc.y, localAcc.z);
                         Eigen::Vector3d local_acc_ = eigen_local_q_*body_acc_;      //////////error
 
                         double jumptime = (double)jump_pointnumber*(1.0f/(double)control_frequency);
 
-                        xyz_d_def predicted_position = {                //预测飞机下一步的位置
-                            localposition.x + localvelocity.x * jumptime, //+ 0.5*(local_acc_(0)-localacceleration_offset.x)*(jumptime)*(jumptime),
-                            localposition.y + localvelocity.y * jumptime, //+ 0.5*(local_acc_(1)-localacceleration_offset.y)*(jumptime)*(jumptime),
-                            localposition.z + localvelocity.z * jumptime  //+ 0.5*(local_acc_(2)-localacceleration_offset.z)*(jumptime)*(jumptime)
+                        xyz_double_def predicted_position = {                //预测飞机下一步的位置
+                            localPos.x + localVel.x * jumptime,
+                            localPos.y + localVel.y * jumptime,
+                            localPos.z + localVel.z * jumptime
                         };
 
-                        xyz_d_def predicted_position_fil = {
+                        xyz_double_def predicted_position_fil = {
                             butterfilter_predicted_x->filter(predicted_position.x),
                             butterfilter_predicted_y->filter(predicted_position.y),
                             butterfilter_predicted_z->filter(predicted_position.z)
                         };        
 
                         // xld  20260115
-                        double target_vel_x_h_pid = 1.2f* position_control_x.calculate(localposition.x, pathpoint_in_mavros.x);              
-                        double target_vel_y_h_pid = 1.2f* position_control_y.calculate(localposition.y, pathpoint_in_mavros.y);              
-                        double target_vel_z_h_pid = 1.2f* position_control_z.calculate(localposition.z, pathpoint_in_mavros.z); 
+                        double target_vel_x_h_pid = 1.2f* pos_control_x.calculate(localPos.x, pathpoint_in_mavros.x);              
+                        double target_vel_y_h_pid = 1.2f* pos_control_y.calculate(localPos.y, pathpoint_in_mavros.y);              
+                        double target_vel_z_h_pid = 1.2f* pos_control_z.calculate(localPos.z, pathpoint_in_mavros.z); 
 
-                        double target_vel_x_h_pid_LPF =  1.0f * position_control_x.calculate_LPF(target_vel_x_h_pid, 0.0f); 
-                        double target_vel_y_h_pid_LPF =  1.0f * position_control_y.calculate_LPF(target_vel_y_h_pid, 0.0f);    
-                        double target_vel_z_h_pid_LPF = position_control_z.calculate_LPF(target_vel_z_h_pid, 0.0f);  
+                        double target_vel_x_h_pid_LPF =  1.0f * pos_control_x.calculate_LPF(target_vel_x_h_pid, 0.0f); 
+                        double target_vel_y_h_pid_LPF =  1.0f * pos_control_y.calculate_LPF(target_vel_y_h_pid, 0.0f);    
+                        double target_vel_z_h_pid_LPF = pos_control_z.calculate_LPF(target_vel_z_h_pid, 0.0f);  
 
                         double target_vel_x_h_pid_BUTTER =  butterfilter_vel_x->filter(target_vel_x_h_pid);
                         double target_vel_y_h_pid_BUTTER =  butterfilter_vel_y->filter(target_vel_y_h_pid);
@@ -1492,73 +1334,31 @@ int main(int argc, char** argv){
                         double target_vel_y_pid = target_vel_y_h_pid_BUTTER + target_velocity_main.y;
                         double target_vel_z_pid = target_vel_z_h_pid_BUTTER + target_velocity_main.z;         
 
-                        #define DELT_RANGE_VEL (0.02)   //约等于1.728    0.85
-
-                        double vel_delt_x = target_vel_x_pid-target_vel_x_pid_last;
-                        if(vel_delt_x > DELT_RANGE_VEL){
-                            target_vel_x_pid = target_vel_x_pid_last + DELT_RANGE_VEL;
-                        }else if (vel_delt_x < -DELT_RANGE_VEL)
-                        {
-                            target_vel_x_pid = target_vel_x_pid_last - DELT_RANGE_VEL;
-                        }
-
-                        double vel_delt_y = target_vel_y_pid-target_vel_y_pid_last;
-                        if(vel_delt_y > DELT_RANGE_VEL){
-                            target_vel_y_pid = target_vel_y_pid_last + DELT_RANGE_VEL;
-                        }else if (vel_delt_y < -DELT_RANGE_VEL)
-                        {
-                            target_vel_y_pid = target_vel_y_pid_last - DELT_RANGE_VEL;
-                        }
-
-                        double vel_delt_z = target_vel_z_pid-target_vel_z_pid_last;
-                        if(vel_delt_z > DELT_RANGE_VEL){
-                            target_vel_z_pid = target_vel_z_pid_last + DELT_RANGE_VEL;
-                        }else if (vel_delt_z < -DELT_RANGE_VEL)
-                        {
-                            target_vel_z_pid = target_vel_z_pid_last - DELT_RANGE_VEL;
-                        }
+                        const double DELT_RANGE_VEL = 0.02;
+                        target_vel_x_pid = slew_rate_limit(target_vel_x_pid, target_vel_x_pid_last, DELT_RANGE_VEL);
+                        target_vel_y_pid = slew_rate_limit(target_vel_y_pid, target_vel_y_pid_last, DELT_RANGE_VEL);
+                        target_vel_z_pid = slew_rate_limit(target_vel_z_pid, target_vel_z_pid_last, DELT_RANGE_VEL);
 
                         target_vel_x_pid_last = target_vel_x_pid;
                         target_vel_y_pid_last = target_vel_y_pid;
                         target_vel_z_pid_last = target_vel_z_pid;
 
-                        double target_acc_x_pid = vel_control_a_x.calculate(localvelocity.x,target_vel_x_pid) ;                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                        double target_acc_y_pid = vel_control_a_y.calculate(localvelocity.y,target_vel_y_pid) ;                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
-                        double target_acc_z_pid = vel_control_a_z.calculate(localvelocity.z,target_vel_z_pid) ;                         //即，10*5 * 0.12 = 6
+                        double target_acc_x_pid = acc_control_x.calculate(localVel.x,target_vel_x_pid) ;                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
+                        double target_acc_y_pid = acc_control_y.calculate(localVel.y,target_vel_y_pid) ;                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
+                        double target_acc_z_pid = acc_control_z.calculate(localVel.z,target_vel_z_pid) ;                         //即，10*5 * 0.12 = 6
 
 
-                        #define DELT_RANGE (GRAVITY_ACC * tan(5.0*M_PI/180.0f))   //约等于1.728    0.85
-
-                        double acc_delt_x = target_acc_x_pid-target_acc_x_pid_last;
-                        if(acc_delt_x > DELT_RANGE){
-                            target_acc_x_pid = target_acc_x_pid_last + DELT_RANGE;
-                        }else if (acc_delt_x < -DELT_RANGE)
-                        {
-                            target_acc_x_pid = target_acc_x_pid_last - DELT_RANGE;
-                        }
-
-                        double acc_delt_y = target_acc_y_pid-target_acc_y_pid_last;
-                        if(acc_delt_y > DELT_RANGE){
-                            target_acc_y_pid = target_acc_y_pid_last + DELT_RANGE;
-                        }else if (acc_delt_y < -DELT_RANGE)
-                        {
-                            target_acc_y_pid = target_acc_y_pid_last - DELT_RANGE;
-                        }                                
-                        
-                        double acc_delt_z = target_acc_z_pid-target_acc_z_pid_last;
-                        if(acc_delt_z > DELT_RANGE){
-                            target_acc_z_pid = target_acc_z_pid_last + DELT_RANGE;
-                        }else if (acc_delt_z < -DELT_RANGE)
-                        {
-                            target_acc_z_pid = target_acc_z_pid_last - DELT_RANGE;
-                        }
+                        const double DELT_RANGE = degToAccLimit(5.0);
+                        target_acc_x_pid = slew_rate_limit(target_acc_x_pid, target_acc_x_pid_last, DELT_RANGE);
+                        target_acc_y_pid = slew_rate_limit(target_acc_y_pid, target_acc_y_pid_last, DELT_RANGE);
+                        target_acc_z_pid = slew_rate_limit(target_acc_z_pid, target_acc_z_pid_last, DELT_RANGE);
 
                         target_acc_x_pid_last = target_acc_x_pid;
                         target_acc_y_pid_last = target_acc_y_pid;
                         target_acc_z_pid_last = target_acc_z_pid;
 
                         //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
-                        Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                        Eigen::Quaterniond q(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                         double yaw,roll,pitch;
                         toEulerAngle(q,roll,pitch,yaw);
 
@@ -1569,39 +1369,17 @@ int main(int argc, char** argv){
                         //换算成角度
                         double target_pitch_pid =  atan2(target_acc_x_pid_in_body,GRAVITY_ACC);                                         //加速度转换成姿态
                         double target_roll_pid  = -atan2(target_acc_y_pid_in_body,GRAVITY_ACC);                                         //根据右手法则，roll的目标差值需要反向
-                        #define UAV_WEIGHT 3.340f
-                        double target_height_pid = target_acc_z_pid * UAV_WEIGHT / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;                                         //高度不做控制
+                        double target_height_pid = target_acc_z_pid * uav_weight / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;                                         //高度不做控制
 
-
-                        //获取当前的目标点需要的航向角
-                        double target_yaw = target_pose_euler.yaw;
 
                         //欧拉角转换成四元素 发送出去，航向角不变，
-                        Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(target_roll_pid,Eigen::Vector3d::UnitX()));      //pid计算的目标航向
-                        Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(target_pitch_pid,Eigen::Vector3d::UnitY()));
-                        Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(target_pose_euler.yaw,Eigen::Vector3d::UnitZ()));        //进入模式的时候，设定的目标航向
-                        
-                        Eigen::Quaterniond quaternion_;                                     
-                        quaternion_=yawAngle_*pitchAngle_*rollAngle_;
-
-                        target_pose.orientation.x = quaternion_.coeffs()[0];                 //角度赋值
-                        target_pose.orientation.y = quaternion_.coeffs()[1];
-                        target_pose.orientation.z = quaternion_.coeffs()[2];
-                        target_pose.orientation.w = quaternion_.coeffs()[3];        
-                        target_pose.thrust = 0.43f + target_height_pid;                     //设置油门
-                        if(target_pose.thrust > 1.0f){
-                            target_pose.thrust = 1.0f;
-                        }else if(target_pose.thrust < 0.0f){
-                            target_pose.thrust = 0.0f;
-                        }
-
-                        target_pose.type_mask = 1+2+4;
-                        target_pose.header.stamp = node->now();
+                        fillAttitudeTarget(target_att_thrust, target_roll_pid, target_pitch_pid,
+                                          target_euler.yaw, 0.43, target_height_pid, node.get());
 
                         // xld 2026.1.14
-                        pose_pub->publish(target_pose);
+                        att_thrust_pub->publish(target_att_thrust);
 
-                        double vel_xy = sqrt(pow(localvelocity.x,2)+pow(localvelocity.y,2)+pow(localvelocity.z,2));
+                        double vel_xy = sqrt(pow(localVel.x,2)+pow(localVel.y,2)+pow(localVel.z,2));
 
                         double vel_xy_main = sqrt(pow(target_velocity_main.x,2)+pow(target_velocity_main.y,2)+pow(target_velocity_main.z,2));
                         double vel_xy_heng = sqrt(pow(target_vel_x_h_pid,2)+pow(target_vel_y_h_pid,2)+pow(target_vel_z_h_pid,2));
@@ -1609,10 +1387,10 @@ int main(int argc, char** argv){
 
                         printf("traj num:%d,D:%lf  vel_norm:%lf  vel_ff_norm:%lf  x:%lf  y:%lf  z:%lf  vx_ff:%lf  vy_ff:%lf  vz_ff:%lf vx_fb:%lf  vy_fb:%lf  vz_fb:%lf vx:%lf  vy:%lf  vz:%lf  x_des:%lf  y_des:%lf  z_des:%lf  vx_des:%lf  vy_des:%lf  vz_des:%lf\r\n",
                         min_targetPointNum,distance,vel_xy,vel_xy_main,
-                        localposition.x,localposition.y,localposition.z,
+                        localPos.x,localPos.y,localPos.z,
                         target_velocity_main.x,target_velocity_main.y,target_velocity_main.z,
                         target_vel_x_h_pid_BUTTER, target_vel_y_h_pid_BUTTER,target_vel_z_h_pid_BUTTER,
-                        localvelocity.x,localvelocity.y,localvelocity.z,
+                        localVel.x,localVel.y,localVel.z,
                         pathpoint_in_mavros_next.x,pathpoint_in_mavros_next.y,pathpoint_in_mavros_next.z,
                         target_vel_x_pid,target_vel_y_pid,target_vel_z_pid
                         ); 
@@ -1622,33 +1400,35 @@ int main(int argc, char** argv){
                         if((pathpoint_sub.size() - 30) > 0 ){
                             if(targetPointNum == pathpoint_sub.size() - 30){                             //轨迹上的最后一个点进入圈内
                                 targetPointNum = pathpoint_sub.size();     
-                                // target_position.pose.position.x = localposition.x;
-                                // target_position.pose.position.y = localposition.y;
-                                // target_position.pose.position.z = localposition.z;  
+                                // target_pose.pose.position.x = localPos.x;
+                                // target_pose.pose.position.y = localPos.y;
+                                // target_pose.pose.position.z = localPos.z;  
 
-                                target_position.pose.position.x = -pathpoint_sub[pathpoint_sub.size() - 1].y;
-                                target_position.pose.position.y = pathpoint_sub[pathpoint_sub.size() - 1].x;
-                                target_position.pose.position.z = pathpoint_sub[pathpoint_sub.size() - 1].z;    
+                                auto pt = pathToLocal(pathpoint_sub[pathpoint_sub.size() - 1]);
+                                target_pose.pose.position.x = pt.x;
+                                target_pose.pose.position.y = pt.y;
+                                target_pose.pose.position.z = pt.z;    
                             }
                         }else{
 
                            
                             if(targetPointNum ==  (pathpoint_sub.size() - 1 - jump_pointnumber)){          //轨迹上的最后一个点进入圈内
                                 targetPointNum = pathpoint_sub.size();     
-                                // target_position.pose.position.x = localposition.x;
-                                // target_position.pose.position.y = localposition.y;
-                                // target_position.pose.position.z = localposition.z;  
+                                // target_pose.pose.position.x = localPos.x;
+                                // target_pose.pose.position.y = localPos.y;
+                                // target_pose.pose.position.z = localPos.z;  
 
-                                target_position.pose.position.x = -pathpoint_sub[pathpoint_sub.size() - 1].y;
-                                target_position.pose.position.y = pathpoint_sub[pathpoint_sub.size() - 1].x;
-                                target_position.pose.position.z = pathpoint_sub[pathpoint_sub.size() - 1].z;    
+                                auto pt2 = pathToLocal(pathpoint_sub[pathpoint_sub.size() - 1]);
+                                target_pose.pose.position.x = pt2.x;
+                                target_pose.pose.position.y = pt2.y;
+                                target_pose.pose.position.z = pt2.z;    
                             }                            
                         }
                     }
                 }             
                 else{
                     if(targetPointNum == 0){                                //没有收到轨迹
-                        position_pub->publish(target_position);             //改位置在模式初始化的时候，更新的位置
+                        pos_pub->publish(target_pose);             //改位置在模式初始化的时候，更新的位置
                         if(pathpoint_sub.size() == 0){
                             printf("hover no point \r\n");
                         }else{
@@ -1657,15 +1437,15 @@ int main(int argc, char** argv){
                         
 
                     }else if(targetPointNum == pathpoint_sub.size()){       //已经到轨迹终点了
-                        position_pub->publish(target_position);              //该位置在最后一个点进圈后，更新的位置
+                        pos_pub->publish(target_pose);              //该位置在最后一个点进圈后，更新的位置
                         stop_command.data = 0;
                         command_stop_pub->publish(stop_command);                   
-                        printf("finish~~~ tx:%lf ty:%lf tz:%lf lx:%lf ly:%lf lz:%lf \r\n",target_position.pose.position.x,target_position.pose.position.y,target_position.pose.position.z,localposition.x,localposition.y,localposition.z);
+                        printf("finish~~~ tx:%lf ty:%lf tz:%lf lx:%lf ly:%lf lz:%lf \r\n",target_pose.pose.position.x,target_pose.pose.position.y,target_pose.pose.position.z,localPos.x,localPos.y,localPos.z);
 
 
                     }else{
                         mode_int = false;
-                        controlMode = MODE_HOVER;                           //其他情况，切换到悬停模式
+                        controlMode = MODE_HOVER_CUSTOM;                           //其他情况，切换到悬停模式
                     }
                 }
             }
@@ -1677,41 +1457,27 @@ int main(int argc, char** argv){
             }
             else
             {
-                double target_vel_x_pid = position_control_x.calculate(localposition.x,target_position.pose.position.x);               //PID的系数设置为0.1~10 之间，速度现在-1~1之间
-                double target_vel_y_pid = position_control_y.calculate(localposition.y,target_position.pose.position.y);               //预设最大P值10时，距离相差1m的时候，最大值输出。
-                double target_vel_z_pid = position_control_z.calculate(localposition.z,target_position.pose.position.z);               //即，10*1*0.1 = 1m/s
+                double target_vel_x_pid = pos_control_x.calculate(localPos.x,target_pose.pose.position.x);               //PID的系数设置为0.1~10 之间，速度现在-1~1之间
+                double target_vel_y_pid = pos_control_y.calculate(localPos.y,target_pose.pose.position.y);               //预设最大P值10时，距离相差1m的时候，最大值输出。
+                double target_vel_z_pid = pos_control_z.calculate(localPos.z,target_pose.pose.position.z);               //即，10*1*0.1 = 1m/s
 
-                double target_acc_x_pid = vel_control_x.calculate(localvelocity.x,target_vel_x_pid) ;                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                double target_acc_y_pid = vel_control_y.calculate(localvelocity.y,target_vel_y_pid) ;                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
-                double target_acc_z_pid = vel_control_z.calculate(localvelocity.z,target_vel_z_pid) ;                         //即，10*5 * 0.12 = 6
+                double target_acc_x_pid = vel_control_x.calculate(localVel.x,target_vel_x_pid) ;                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
+                double target_acc_y_pid = vel_control_y.calculate(localVel.y,target_vel_y_pid) ;                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
+                double target_acc_z_pid = vel_control_z.calculate(localVel.z,target_vel_z_pid) ;                         //即，10*5 * 0.12 = 6
 
  
-                        double max_acc = 5.0f;
-                        double max_x_acc = abs(max_acc * (target_acc_x_pid / sqrt(target_acc_x_pid*target_acc_x_pid+target_acc_y_pid*target_acc_y_pid))) ;
-                        double max_y_acc = abs( max_acc * (target_acc_y_pid / sqrt(target_acc_x_pid*target_acc_x_pid+target_acc_y_pid*target_acc_y_pid)));
+                double max_acc = 5.0f;
+                double max_x_acc = abs(max_acc * (target_acc_x_pid / sqrt(target_acc_x_pid*target_acc_x_pid+target_acc_y_pid*target_acc_y_pid))) ;
+                double max_y_acc = abs( max_acc * (target_acc_y_pid / sqrt(target_acc_x_pid*target_acc_x_pid+target_acc_y_pid*target_acc_y_pid)));
 
-                        if(target_acc_x_pid > GRAVITY_ACC * tan(max_x_acc*M_PI/180.0f)) {
-                            target_acc_x_pid = GRAVITY_ACC * tan(max_x_acc*M_PI/180.0f);
-                        }else if(target_acc_x_pid < -GRAVITY_ACC * tan(max_x_acc*M_PI/180.0f) ){
-                            target_acc_x_pid = -GRAVITY_ACC * tan(max_x_acc*M_PI/180.0f);                           
-                        }
-                    
-                        if(target_acc_y_pid > GRAVITY_ACC * tan(max_y_acc*M_PI/ 180.0f)) {
-                            target_acc_y_pid = GRAVITY_ACC * tan(max_y_acc*M_PI/180.0f);
-                        }else if(target_acc_y_pid < -GRAVITY_ACC * tan(max_y_acc*M_PI/180.0f) ){
-                            target_acc_y_pid = -GRAVITY_ACC * tan(max_y_acc*M_PI/180.0f);                           
-                        }
-                        
-                        if(target_acc_z_pid > GRAVITY_ACC * tan(10.0f*M_PI/ 180.0f)) {
-                            target_acc_z_pid = GRAVITY_ACC * tan(10.0f*M_PI/180.0f);
-                        }else if(target_acc_z_pid < -GRAVITY_ACC * tan(10.0f*M_PI/180.0f) ){
-                            target_acc_z_pid = -GRAVITY_ACC * tan(10.0f*M_PI/180.0f);                           
-                        }   
- 
+                target_acc_x_pid = clamp_symmetric(target_acc_x_pid, degToAccLimit(max_x_acc));
+                target_acc_y_pid = clamp_symmetric(target_acc_y_pid, degToAccLimit(max_y_acc));
+                target_acc_z_pid = clamp_symmetric(target_acc_z_pid, degToAccLimit(10.0f));   
+
  
                 //以上代码target_vel_x_pid，target_acc_x_pid都为与local的坐标系下，即东北天坐标系
 
-                Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                Eigen::Quaterniond q(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                 double yaw,roll,pitch;
                 toEulerAngle(q,roll,pitch,yaw);     
 
@@ -1722,52 +1488,26 @@ int main(int argc, char** argv){
                 //换算成角度
                 double target_pitch_pid =  atan2(target_acc_x_pid_in_body,GRAVITY_ACC);                                         //加速度转换成姿态
                 double target_roll_pid  = -atan2(target_acc_y_pid_in_body,GRAVITY_ACC);                                         //根据右手法则，roll的目标差值需要反向
-                #define UAV_WEIGHT 3.340f
-                double target_height_pid = target_acc_z_pid * UAV_WEIGHT / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;                                         //高度不做控制
+                double target_height_pid = target_acc_z_pid * uav_weight / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;                                         //高度不做控制
 
 
                 //欧拉角转换成四元素 发送出去，航向角不变，
-                Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(target_roll_pid,Eigen::Vector3d::UnitX()));      //pid计算的目标航向
-                Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(target_pitch_pid,Eigen::Vector3d::UnitY()));
-                Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(target_pose_euler.yaw,Eigen::Vector3d::UnitZ()));        //进入模式的时候，设定的目标航向
+                fillAttitudeTarget(target_att_thrust, target_roll_pid, target_pitch_pid,
+                                  target_euler.yaw, 0.43, target_height_pid, node.get());
+
+                att_thrust_pub->publish(target_att_thrust);                                            //发送消息
                 
-                Eigen::Quaterniond quaternion_;                                     
-                quaternion_=yawAngle_*pitchAngle_*rollAngle_;
-
-                target_pose.orientation.x = quaternion_.coeffs()[0];                 //角度赋值
-                target_pose.orientation.y = quaternion_.coeffs()[1];
-                target_pose.orientation.z = quaternion_.coeffs()[2];
-                target_pose.orientation.w = quaternion_.coeffs()[3];        
-                target_pose.thrust = 0.43f + target_height_pid;                     //设置油门
-                if(target_pose.thrust > 1.0f){
-                    target_pose.thrust = 1.0f;
-                }else if(target_pose.thrust < 0.0f){
-                    target_pose.thrust = 0.0f;
-                }
-
-                target_pose.type_mask = 1+2+4;
-                target_pose.header.stamp = node->now();
-
-                pose_pub->publish(target_pose);                                            //发送消息
-                
-                double distance = calculate_distance(target_position.pose.position.x,target_position.pose.position.y,target_position.pose.position.z);
-
-                fout_pid << node->now().seconds() <<","<<localposition.x<<","<<localposition.y<<","<<localposition.z<<","<<
-                target_position.pose.position.x<<","<<target_position.pose.position.y<<","<<target_position.pose.position.z<<","<<
-                localvelocity.x<<","<<localvelocity.y<<","<<localvelocity.z<<","<<
-                target_vel_x_pid<<","<<target_vel_y_pid<<","<<target_vel_z_pid<<","<<
-                target_acc_x_pid<<","<<target_acc_y_pid<<","<<target_acc_z_pid<<","<< target_pose.thrust <<
-                std::endl;
+                double distance = calculate_distance(target_pose.pose.position.x,target_pose.pose.position.y,target_pose.pose.position.z);
 
                 printf("target_vel x:%lf,y:%lf,z:%lf\r\n",target_vel_x_pid,target_vel_y_pid,target_vel_z_pid);
                 printf("target_acc x:%lf,y:%lf,z:%lf\r\n",target_acc_x_pid,target_acc_y_pid,target_acc_z_pid);
-                printf("localvelocity x:%lf,y:%lf,z:%lf\r\n",localvelocity.x,localvelocity.y,localvelocity.z);
+                printf("localVel x:%lf,y:%lf,z:%lf\r\n",localVel.x,localVel.y,localVel.z);
                 printf("MODE_STRAIGHT: D:%lf,current_position x:%lf,y:%lf,z:%lf target_ouer r:%lf,p:%lf,y:%f,thu:%f,orientation x:%lf,y:%lf,z:%lf,w:%lf\r\n",
                 distance,
-                localposition.x,localposition.y,localposition.z,
-                target_pitch_pid * 180.0f/M_PI,target_roll_pid * 180.0f/M_PI,target_pose_euler.yaw,
-                target_pose.thrust,
-                target_pose.orientation.x,target_pose.orientation.y,target_pose.orientation.z,target_pose.orientation.w
+                localPos.x,localPos.y,localPos.z,
+                target_pitch_pid * 180.0f/M_PI,target_roll_pid * 180.0f/M_PI,target_euler.yaw,
+                target_att_thrust.thrust,
+                target_att_thrust.orientation.x,target_att_thrust.orientation.y,target_att_thrust.orientation.z,target_att_thrust.orientation.w
                 );
             }
         }
@@ -1778,8 +1518,8 @@ int main(int argc, char** argv){
 
                 // 总的航迹点
                 {
-                    float XLOCAL = target_x;
-                    float YLOCAL = target_y;
+                    double XLOCAL = target_x;
+                    double YLOCAL = target_y;
                     // #define ANGLE_DIFF      0.0f
                     double ANGLE_DIFF;
                     double abs_x;
@@ -1793,52 +1533,52 @@ int main(int argc, char** argv){
                     }                    
                     pathpoint_sub_test.clear();
 
-                    pathpoint_sub_test.push_back({  0 + localposition.x,             //rrrrrrrree
-                                                    0 + localposition.y,
-                                                    0 + localposition.z,
+                    pathpoint_sub_test.push_back({  0 + localPos.x,             //rrrrrrrree
+                                                    0 + localPos.y,
+                                                    0 + localPos.z,
                                                     M_PI/2 + ANGLE_DIFF
                     });                    
 
-                    pathpoint_sub_test.push_back({  XLOCAL + localposition.x,             //rrrrrrrree
-                                                    YLOCAL + localposition.y,
-                                                    0 + localposition.z,
+                    pathpoint_sub_test.push_back({  XLOCAL + localPos.x,             //rrrrrrrree
+                                                    YLOCAL + localPos.y,
+                                                    0 + localPos.z,
                                                     M_PI/2 + ANGLE_DIFF
                     });
 
-                    pathpoint_sub_test.push_back({ XLOCAL + localposition.x,             //rrrrrrrree
-                                                    YLOCAL + localposition.y,
-                                                    0.5 + localposition.z,
+                    pathpoint_sub_test.push_back({ XLOCAL + localPos.x,             //rrrrrrrree
+                                                    YLOCAL + localPos.y,
+                                                    0.5 + localPos.z,
                                                     M_PI*3/2 + ANGLE_DIFF
                     });
 
-                    pathpoint_sub_test.push_back({ 0 + localposition.x,             //rrrrrrrree
-                                                    0 + localposition.y,
-                                                    0.5 + localposition.z,
+                    pathpoint_sub_test.push_back({ 0 + localPos.x,             //rrrrrrrree
+                                                    0 + localPos.y,
+                                                    0.5 + localPos.z,
                                                     M_PI*3/2 + ANGLE_DIFF
                     });
 
-                    pathpoint_sub_test.push_back({ 0 + localposition.x,             //rrrrrrrree
-                                                    0 + localposition.y,
-                                                    1.0 + localposition.z,
+                    pathpoint_sub_test.push_back({ 0 + localPos.x,             //rrrrrrrree
+                                                    0 + localPos.y,
+                                                    1.0 + localPos.z,
                                                     M_PI/2 + ANGLE_DIFF
                     });
 
-                    pathpoint_sub_test.push_back({ XLOCAL + localposition.x,             //rrrrrrrree
-                                                    YLOCAL + localposition.y,
-                                                    1.0 + localposition.z,
+                    pathpoint_sub_test.push_back({ XLOCAL + localPos.x,             //rrrrrrrree
+                                                    YLOCAL + localPos.y,
+                                                    1.0 + localPos.z,
                                                     M_PI/2 + ANGLE_DIFF
                     });
 
-                    pathpoint_sub_test.push_back({ XLOCAL + localposition.x,             //rrrrrrrree
-                                                    YLOCAL + localposition.y,
-                                                    1.5 + localposition.z,
+                    pathpoint_sub_test.push_back({ XLOCAL + localPos.x,             //rrrrrrrree
+                                                    YLOCAL + localPos.y,
+                                                    1.5 + localPos.z,
                                                     M_PI*3/2 + ANGLE_DIFF
                     });
 
 
-                    pathpoint_sub_test.push_back({ 0 + localposition.x,             //rrrrrrrree
-                                                    0 + localposition.y,
-                                                    1.5 + localposition.z,
+                    pathpoint_sub_test.push_back({ 0 + localPos.x,             //rrrrrrrree
+                                                    0 + localPos.y,
+                                                    1.5 + localPos.z,
                                                     M_PI*3/2 + ANGLE_DIFF
                     });
                 }
@@ -1865,7 +1605,7 @@ int main(int argc, char** argv){
                         }
                     }else{
 
-                        Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                        Eigen::Quaterniond q(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                         double yaw,roll,pitch;
                         toEulerAngle(q,roll,pitch,yaw);  
 
@@ -1891,16 +1631,16 @@ int main(int argc, char** argv){
                             //开始计算轨迹点
                             double lx, ly, lz, lyaw;
                             if(targetPointNum_test == 0){
-                                 lx = localposition.x;    
-                                 ly = localposition.y;
-                                 lz = localposition.z;                                 
+                                 lx = localPos.x;    
+                                 ly = localPos.y;
+                                 lz = localPos.z;                                 
                             }else{
                                  lx = pathpoint_sub_test[targetPointNum_test-1].x;   
                                  ly = pathpoint_sub_test[targetPointNum_test-1].y;
                                  lz = pathpoint_sub_test[targetPointNum_test-1].z;
                             }
                             //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
-                            Eigen::Quaterniond q_1(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                            Eigen::Quaterniond q_1(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                             double lroll,lpitch;
                             toEulerAngle(q_1,lroll,lpitch,lyaw);
 
@@ -1940,9 +1680,9 @@ int main(int argc, char** argv){
 
                         if(!(fill_yaw.empty())){  
                             double min_distance = 1000000.0f;
-                            double ly = localposition.y;
-                            double lx = localposition.x;
-                            double lz = localposition.z;
+                            double ly = localPos.y;
+                            double lx = localPos.x;
+                            double lz = localPos.z;
                             int min_targetPointNum = 0;
                             for(int i=0;i<fill_pathpoint.size();i++){
                                 double dis = pow((ly-fill_pathpoint[i].y),2) + pow((lx-fill_pathpoint[i].x),2) + pow((lz-fill_pathpoint[i].z),2);
@@ -1953,7 +1693,7 @@ int main(int argc, char** argv){
                             }
 
                             //获取轨迹上的速度方向，即做速度跟随的主方向
-                            xyz_d_def target_vel_main_direction;
+                            xyz_double_def target_vel_main_direction;
                             if(min_targetPointNum == (fill_pathpoint.size()-1)){
                                 target_vel_main_direction = {   
                                     (fill_pathpoint[fill_pathpoint.size()-1].x - fill_pathpoint[fill_pathpoint.size()-2].x),
@@ -1975,10 +1715,10 @@ int main(int argc, char** argv){
                             }
 
                             //计算目标的前向速度大小
-                            xyz_d_def target_velocity_main = calculate_FixedModulusVector(target_vel_main_direction, 0.1);   //目标前向速度
+                            xyz_double_def target_velocity_main = calculate_FixedModulusVector(target_vel_main_direction, 0.1);   //目标前向速度
 
-                            Eigen::Quaterniond eigen_local_q_(localpose.w, localpose.x, localpose.y, localpose.z);
-                            Eigen::Vector3d body_acc_(localacceleration.x, localacceleration.y, localacceleration.z);
+                            Eigen::Quaterniond eigen_local_q_(localAtt.w, localAtt.x, localAtt.y, localAtt.z);
+                            Eigen::Vector3d body_acc_(localAcc.x, localAcc.y, localAcc.z);
                             Eigen::Vector3d local_acc_ = eigen_local_q_*body_acc_;      //////////error
 
                             int forwardPoint = min_targetPointNum;        //预测飞机跟踪轨迹的点位
@@ -1988,9 +1728,9 @@ int main(int argc, char** argv){
                                 forwardPoint =  fill_pathpoint.size()-1;
                             }                                
 
-                            double target_vel_x_h_pid = 1.0f* position_control_x.calculate(localposition.x, fill_pathpoint[forwardPoint].x);              
-                            double target_vel_y_h_pid = 1.0f* position_control_y.calculate(localposition.y, fill_pathpoint[forwardPoint].y);              
-                            double target_vel_z_h_pid = 1.0f* position_control_z.calculate(localposition.z, fill_pathpoint[forwardPoint].z);  
+                            double target_vel_x_h_pid = 1.0f* pos_control_x.calculate(localPos.x, fill_pathpoint[forwardPoint].x);              
+                            double target_vel_y_h_pid = 1.0f* pos_control_y.calculate(localPos.y, fill_pathpoint[forwardPoint].y);              
+                            double target_vel_z_h_pid = 1.0f* pos_control_z.calculate(localPos.z, fill_pathpoint[forwardPoint].z);  
 
                             double target_vel_x_h_pid_BUTTER =  butterfilter_vel_x->filter(target_vel_x_h_pid);
                             double target_vel_y_h_pid_BUTTER =  butterfilter_vel_y->filter(target_vel_y_h_pid);
@@ -2001,42 +1741,21 @@ int main(int argc, char** argv){
                             double target_vel_y_pid = target_vel_y_h_pid_BUTTER + target_velocity_main.y;  
                             double target_vel_z_pid = target_vel_z_h_pid_BUTTER + target_velocity_main.z;                          
 
-                            double target_acc_x_pid = vel_control_a_x.calculate(localvelocity.x,target_vel_x_pid);                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                            double target_acc_y_pid = vel_control_a_y.calculate(localvelocity.y,target_vel_y_pid);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
-                            double target_acc_z_pid = vel_control_a_z.calculate(localvelocity.z,target_vel_z_pid);  
+                            double target_acc_x_pid = acc_control_x.calculate(localVel.x,target_vel_x_pid);                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
+                            double target_acc_y_pid = acc_control_y.calculate(localVel.y,target_vel_y_pid);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
+                            double target_acc_z_pid = acc_control_z.calculate(localVel.z,target_vel_z_pid);  
 
-                            #define DELT_RANGE (GRAVITY_ACC * tan(5.0*M_PI/180.0f))   //约等于1.728    0.85
-
-                            double acc_delt_x = target_acc_x_pid-target_acc_x_pid_last;
-                            if(acc_delt_x > DELT_RANGE){
-                                target_acc_x_pid = target_acc_x_pid_last + DELT_RANGE;
-                            }else if (acc_delt_x < -DELT_RANGE)
-                            {
-                                target_acc_x_pid = target_acc_x_pid_last - DELT_RANGE;
-                            }
-
-                            double acc_delt_y = target_acc_y_pid-target_acc_y_pid_last;
-                            if(acc_delt_y > DELT_RANGE){
-                                target_acc_y_pid = target_acc_y_pid_last + DELT_RANGE;
-                            }else if (acc_delt_y < -DELT_RANGE)
-                            {
-                                target_acc_y_pid = target_acc_y_pid_last - DELT_RANGE;
-                            }                                
-                            
-                            double acc_delt_z = target_acc_z_pid-target_acc_z_pid_last;
-                            if(acc_delt_z > DELT_RANGE){
-                                target_acc_z_pid = target_acc_z_pid_last + DELT_RANGE;
-                            }else if (acc_delt_z < -DELT_RANGE)
-                            {
-                                target_acc_z_pid = target_acc_z_pid_last - DELT_RANGE;
-                            }
+                            const double DELT_RANGE_2 = degToAccLimit(5.0);
+                            target_acc_x_pid = slew_rate_limit(target_acc_x_pid, target_acc_x_pid_last, DELT_RANGE_2);
+                            target_acc_y_pid = slew_rate_limit(target_acc_y_pid, target_acc_y_pid_last, DELT_RANGE_2);
+                            target_acc_z_pid = slew_rate_limit(target_acc_z_pid, target_acc_z_pid_last, DELT_RANGE_2);
 
                             target_acc_x_pid_last = target_acc_x_pid;
                             target_acc_y_pid_last = target_acc_y_pid;
                             target_acc_z_pid_last = target_acc_z_pid;
 
                             //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
-                            Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                            Eigen::Quaterniond q(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                             double yaw,roll,pitch;
                             toEulerAngle(q,roll,pitch,yaw);
 
@@ -2047,35 +1766,13 @@ int main(int argc, char** argv){
                             //换算成角度
                             double target_pitch_pid =  atan2(target_acc_x_pid_in_body,GRAVITY_ACC);                                         //加速度转换成姿态
                             double target_roll_pid  = -atan2(target_acc_y_pid_in_body,GRAVITY_ACC);                                         //根据右手法则，roll的目标差值需要反向
-                            #define UAV_WEIGHT 3.340f
-                            double target_height_pid = target_acc_z_pid * UAV_WEIGHT / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;       //高度不做控制
-
-                            //获取当前的目标点需要的航向角
-                            double target_yaw = fill_yaw[forwardPoint];
+                            double target_height_pid = target_acc_z_pid * uav_weight / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;       //高度不做控制
 
                             //欧拉角转换成四元素 发送出去，航向角不变，
-                            Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(target_roll_pid,Eigen::Vector3d::UnitX()));      //pid计算的目标航向
-                            Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(target_pitch_pid,Eigen::Vector3d::UnitY()));
-                            Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(target_yaw,Eigen::Vector3d::UnitZ()));        //进入模式的时候，设定的目标航向
-                            
-                            Eigen::Quaterniond quaternion_;
-                            quaternion_=yawAngle_*pitchAngle_*rollAngle_;
+                            fillAttitudeTarget(target_att_thrust, target_roll_pid, target_pitch_pid,
+                                              fill_yaw[forwardPoint], 0.43, target_height_pid, node.get());
 
-                            target_pose.orientation.x = quaternion_.coeffs()[0];                 //角度赋值
-                            target_pose.orientation.y = quaternion_.coeffs()[1];
-                            target_pose.orientation.z = quaternion_.coeffs()[2];
-                            target_pose.orientation.w = quaternion_.coeffs()[3];        
-                            target_pose.thrust = 0.43f + target_height_pid;                     //设置油门
-                            if(target_pose.thrust > 1.0f){
-                                target_pose.thrust = 1.0f;
-                            }else if(target_pose.thrust < 0.0f){
-                                target_pose.thrust = 0.0f;
-                            }
-
-                            target_pose.type_mask = 1+2+4;
-                            target_pose.header.stamp = node->now();
-
-                            pose_pub->publish(target_pose);    //ZZXZZX              
+                            att_thrust_pub->publish(target_att_thrust);    //ZZXZZX              
                         
                             //第三步，计算距离,计算航向
                             double distance = calculate_distance(pathpoint_sub_test[targetPointNum_test].x,pathpoint_sub_test[targetPointNum_test].y,pathpoint_sub_test[targetPointNum_test].z);
@@ -2083,9 +1780,9 @@ int main(int argc, char** argv){
                             double angulardiff = calculate_AngleDifference(pathpoint_sub_test[targetPointNum_test].a,yaw);
 
                             printf("pure_yaw_set:%d,D %lf,tA:%lf,X:%lf,Y:%lf,Z:%lf,mX:%lf,mY:%lf,mZ:%lf\r\n",
-                                targetPointNum_test,distance,target_yaw*180/M_PI,
+                                targetPointNum_test,distance,fill_yaw[forwardPoint]*180/M_PI,
                                 pathpoint_sub_test[targetPointNum_test].x,pathpoint_sub_test[targetPointNum_test].y,pathpoint_sub_test[targetPointNum_test].z,
-                                localposition.x,localposition.y,localposition.z
+                                localPos.x,localPos.y,localPos.z
                             );                   
                         
                             //第四步，判断距离和航向
@@ -2108,9 +1805,9 @@ int main(int argc, char** argv){
                             //开始计算轨迹点
                             double lx, ly, lz;
                             if(targetPointNum_test == 0){
-                                 lx = localposition.x;    
-                                 ly = localposition.y;
-                                 lz = localposition.z;                                 
+                                 lx = localPos.x;    
+                                 ly = localPos.y;
+                                 lz = localPos.z;                                 
                             }else{
                                  lx = pathpoint_sub_test[targetPointNum_test-1].x;   
                                  ly = pathpoint_sub_test[targetPointNum_test-1].y;
@@ -2149,7 +1846,7 @@ int main(int argc, char** argv){
 
                             isFillTrajectory = false;
 
-                            printf("fill_pathpoint.size()=%d,num=:%d\r\n",fill_pathpoint.size(),num);                                  
+                            printf("fill_pathpoint.size()=%zu,num=:%d\r\n",fill_pathpoint.size(),num);                                  
                         }
 
                         printf("obstacle_distance = %lf \r\n",obstacle_distance); 
@@ -2161,9 +1858,9 @@ int main(int argc, char** argv){
                             // 1. 遍历计算所有点，计算与当前位置最近的点
                             if(!(fill_pathpoint.empty())  ){  
                                 double min_distance = 1000000.0f;
-                                double ly = localposition.y;
-                                double lx = localposition.x;
-                                double lz = localposition.z;
+                                double ly = localPos.y;
+                                double lx = localPos.x;
+                                double lz = localPos.z;
                                 int min_targetPointNum = 0;
                                 for(int i=0;i<fill_pathpoint.size();i++){
                                     double dis = pow((ly-fill_pathpoint[i].y),2) + pow((lx-fill_pathpoint[i].x),2) + pow((lz-fill_pathpoint[i].z),2);
@@ -2182,7 +1879,7 @@ int main(int argc, char** argv){
                                 // //ZZX
 
                                 //获取轨迹上的速度方向，即做速度跟随的主方向
-                                xyz_d_def target_vel_main_direction;
+                                xyz_double_def target_vel_main_direction;
                                 if(min_targetPointNum == (fill_pathpoint.size()-1)){
                                     target_vel_main_direction = {   
                                         (fill_pathpoint[fill_pathpoint.size()-1].x - fill_pathpoint[fill_pathpoint.size()-2].x),
@@ -2204,13 +1901,13 @@ int main(int argc, char** argv){
                                 }
         
                                 //计算目标的前向速度大小
-                                xyz_d_def target_velocity_main = calculate_FixedModulusVector(target_vel_main_direction,vel_forward_set);   //目标前向速度                        
+                                xyz_double_def target_velocity_main = calculate_FixedModulusVector(target_vel_main_direction,vel_forward_set);   //目标前向速度                        
 
-                                Eigen::Quaterniond eigen_local_q_(localpose.w, localpose.x, localpose.y, localpose.z);
-                                Eigen::Vector3d body_acc_(localacceleration.x, localacceleration.y, localacceleration.z);
+                                Eigen::Quaterniond eigen_local_q_(localAtt.w, localAtt.x, localAtt.y, localAtt.z);
+                                Eigen::Vector3d body_acc_(localAcc.x, localAcc.y, localAcc.z);
                                 Eigen::Vector3d local_acc_ = eigen_local_q_*body_acc_;      //////////error
                                
-                                // localacceleration;
+                                // localAcc;
 
                                 double jumptime = (double)jump_pointnumber*(1.0f/(double)control_frequency);
 
@@ -2223,9 +1920,9 @@ int main(int argc, char** argv){
 
                                 //横向控制做预测
 
-                                double target_vel_x_h_pid = position_control_x.calculate(localposition.x, fill_pathpoint[min_targetPointNum].x); 
-                                double target_vel_y_h_pid = position_control_y.calculate(localposition.y, fill_pathpoint[min_targetPointNum].y);    
-                                double target_vel_z_h_pid = position_control_z.calculate(localposition.z, fill_pathpoint[min_targetPointNum].z);  
+                                double target_vel_x_h_pid = pos_control_x.calculate(localPos.x, fill_pathpoint[min_targetPointNum].x); 
+                                double target_vel_y_h_pid = pos_control_y.calculate(localPos.y, fill_pathpoint[min_targetPointNum].y);    
+                                double target_vel_z_h_pid = pos_control_z.calculate(localPos.z, fill_pathpoint[min_targetPointNum].z);  
 
                                 double target_vel_x_h_pid_BUTTER =  butterfilter_vel_x->filter(target_vel_x_h_pid);
                                 double target_vel_y_h_pid_BUTTER =  butterfilter_vel_y->filter(target_vel_y_h_pid);
@@ -2237,72 +1934,30 @@ int main(int argc, char** argv){
                                 double target_vel_y_pid = target_vel_y_h_pid_BUTTER + target_velocity_main.y;  
                                 double target_vel_z_pid = target_vel_z_h_pid_BUTTER + target_velocity_main.z;                          
 
-                                #define DELT_RANGE_VEL (0.02)   //约等于1.728    0.85
-
-                                double vel_delt_x = target_vel_x_pid-target_vel_x_pid_last;
-                                if(vel_delt_x > DELT_RANGE_VEL){
-                                    target_vel_x_pid = target_vel_x_pid_last + DELT_RANGE_VEL;
-                                }else if (vel_delt_x < -DELT_RANGE_VEL)
-                                {
-                                    target_vel_x_pid = target_vel_x_pid_last - DELT_RANGE_VEL;
-                                }
-
-                                double vel_delt_y = target_vel_y_pid-target_vel_y_pid_last;
-                                if(vel_delt_y > DELT_RANGE_VEL){
-                                    target_vel_y_pid = target_vel_y_pid_last + DELT_RANGE_VEL;
-                                }else if (vel_delt_y < -DELT_RANGE_VEL)
-                                {
-                                    target_vel_y_pid = target_vel_y_pid_last - DELT_RANGE_VEL;
-                                }
-
-                                double vel_delt_z = target_vel_z_pid-target_vel_z_pid_last;
-                                if(vel_delt_z > DELT_RANGE_VEL){
-                                    target_vel_z_pid = target_vel_z_pid_last + DELT_RANGE_VEL;
-                                }else if (vel_delt_z < -DELT_RANGE_VEL)
-                                {
-                                    target_vel_z_pid = target_vel_z_pid_last - DELT_RANGE_VEL;
-                                }
+                                const double DELT_RANGE_VEL_2 = 0.02;
+                                target_vel_x_pid = slew_rate_limit(target_vel_x_pid, target_vel_x_pid_last, DELT_RANGE_VEL_2);
+                                target_vel_y_pid = slew_rate_limit(target_vel_y_pid, target_vel_y_pid_last, DELT_RANGE_VEL_2);
+                                target_vel_z_pid = slew_rate_limit(target_vel_z_pid, target_vel_z_pid_last, DELT_RANGE_VEL_2);
 
                                 target_vel_x_pid_last = target_vel_x_pid;
                                 target_vel_y_pid_last = target_vel_y_pid;
                                 target_vel_z_pid_last = target_vel_z_pid;
 
-                                double target_acc_x_pid = vel_control_a_x.calculate(localvelocity.x,target_vel_x_pid);                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                                double target_acc_y_pid = vel_control_a_y.calculate(localvelocity.y,target_vel_y_pid);                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
-                                double target_acc_z_pid = vel_control_a_z.calculate(localvelocity.z,target_vel_z_pid);  
+                                double target_acc_x_pid = acc_control_x.calculate(localVel.x,target_vel_x_pid);
+                                double target_acc_y_pid = acc_control_y.calculate(localVel.y,target_vel_y_pid);
+                                double target_acc_z_pid = acc_control_z.calculate(localVel.z,target_vel_z_pid);
 
-                                #define DELT_RANGE (GRAVITY_ACC * tan(5.0*M_PI/180.0f))   //约等于1.728    0.85
-
-                                double acc_delt_x = target_acc_x_pid-target_acc_x_pid_last;
-                                if(acc_delt_x > DELT_RANGE){
-                                    target_acc_x_pid = target_acc_x_pid_last + DELT_RANGE;
-                                }else if (acc_delt_x < -DELT_RANGE)
-                                {
-                                    target_acc_x_pid = target_acc_x_pid_last - DELT_RANGE;
-                                }
-
-                                double acc_delt_y = target_acc_y_pid-target_acc_y_pid_last;
-                                if(acc_delt_y > DELT_RANGE){
-                                    target_acc_y_pid = target_acc_y_pid_last + DELT_RANGE;
-                                }else if (acc_delt_y < -DELT_RANGE)
-                                {
-                                    target_acc_y_pid = target_acc_y_pid_last - DELT_RANGE;
-                                }                                
-                                
-                                double acc_delt_z = target_acc_z_pid-target_acc_z_pid_last;
-                                if(acc_delt_z > DELT_RANGE){
-                                    target_acc_z_pid = target_acc_z_pid_last + DELT_RANGE;
-                                }else if (acc_delt_z < -DELT_RANGE)
-                                {
-                                    target_acc_z_pid = target_acc_z_pid_last - DELT_RANGE;
-                                }
+                                const double DELT_RANGE_3 = degToAccLimit(5.0);
+                                target_acc_x_pid = slew_rate_limit(target_acc_x_pid, target_acc_x_pid_last, DELT_RANGE_3);
+                                target_acc_y_pid = slew_rate_limit(target_acc_y_pid, target_acc_y_pid_last, DELT_RANGE_3);
+                                target_acc_z_pid = slew_rate_limit(target_acc_z_pid, target_acc_z_pid_last, DELT_RANGE_3);
 
                                 target_acc_x_pid_last = target_acc_x_pid;
                                 target_acc_y_pid_last = target_acc_y_pid;
                                 target_acc_z_pid_last = target_acc_z_pid;
 
                                 //转换到机体坐标系下，将目标加速度转换成飞机的目标姿态
-                                Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                                Eigen::Quaterniond q(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                                 double yaw,roll,pitch;
                                 toEulerAngle(q,roll,pitch,yaw);     
 
@@ -2313,39 +1968,17 @@ int main(int argc, char** argv){
                                 //换算成角度
                                 double target_pitch_pid =  atan2(target_acc_x_pid_in_body,GRAVITY_ACC);                                         //加速度转换成姿态
                                 double target_roll_pid  = -atan2(target_acc_y_pid_in_body,GRAVITY_ACC);                                         //根据右手法则，roll的目标差值需要反向
-                                #define UAV_WEIGHT 3.340f
-                                double target_height_pid = target_acc_z_pid * UAV_WEIGHT / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;       //高度不做控制
+                                double target_height_pid = target_acc_z_pid * uav_weight / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;       //高度不做控制
 
                                 
-                                //获取当前的目标点需要的航向角
-                                double target_yaw = pathpoint_sub_test[targetPointNum_test].a;
-
-
                                 //欧拉角转换成四元素 发送出去，航向角不变，
-                                Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(target_roll_pid,Eigen::Vector3d::UnitX()));      //pid计算的目标航向
-                                Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(target_pitch_pid,Eigen::Vector3d::UnitY()));
-                                Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(target_yaw,Eigen::Vector3d::UnitZ()));        //进入模式的时候，设定的目标航向
-                                
-                                Eigen::Quaterniond quaternion_;
-                                quaternion_=yawAngle_*pitchAngle_*rollAngle_;
+                                fillAttitudeTarget(target_att_thrust, target_roll_pid, target_pitch_pid,
+                                                  pathpoint_sub_test[targetPointNum_test].a,
+                                                  0.43, target_height_pid, node.get());
 
-                                target_pose.orientation.x = quaternion_.coeffs()[0];                 //角度赋值
-                                target_pose.orientation.y = quaternion_.coeffs()[1];
-                                target_pose.orientation.z = quaternion_.coeffs()[2];
-                                target_pose.orientation.w = quaternion_.coeffs()[3];        
-                                target_pose.thrust = 0.43f + target_height_pid;                     //设置油门
-                                if(target_pose.thrust > 1.0f){
-                                    target_pose.thrust = 1.0f;
-                                }else if(target_pose.thrust < 0.0f){
-                                    target_pose.thrust = 0.0f;
-                                }
+                                att_thrust_pub->publish(target_att_thrust);    //ZZXZZX                   
 
-                                target_pose.type_mask = 1+2+4;
-                                target_pose.header.stamp = node->now();
-
-                                pose_pub->publish(target_pose);    //ZZXZZX                   
-
-                                double vel_xy = sqrt(pow(localvelocity.x,2)+pow(localvelocity.y,2)+pow(localvelocity.z,2));
+                                double vel_xy = sqrt(pow(localVel.x,2)+pow(localVel.y,2)+pow(localVel.z,2));
 
                                 double vel_xy_main = sqrt(pow(target_velocity_main.x,2)+pow(target_velocity_main.y,2)+pow(target_velocity_main.z,2));
                                 double vel_xy_heng = sqrt(pow(target_vel_x_h_pid,2)+pow(target_vel_y_h_pid,2)+pow(target_vel_z_h_pid,2));
@@ -2354,15 +1987,15 @@ int main(int argc, char** argv){
 
                                 printf("line_fly num:%d,D:%lf  vel:%lf main:%lf heng:%lf, lx:%lf ly:%lf lz:%lf,lvx:%lf lvy:%lf lvz:%lf,tlx:%lf tly:%lf tlz:%lf,tvhx:%lf tvhy:%lf tvhz:%lf, tvx:%lf tvy:%lf tvz:%lf,tvx_b:%lf tvy_b:%lf tvz_b:%lf,tax:%lf tay:%lf taz:%lf,tbax:%lf tbay:%lf thu:%lf,tpit:%lf troll:%lf tyaw:%lf,\r\n",
                                 min_targetPointNum,distance,vel_xy,vel_xy_main,vel_xy_heng,
-                                localposition.x,localposition.y,localposition.z,
-                                localvelocity.x,localvelocity.y,localvelocity.z,
+                                localPos.x,localPos.y,localPos.z,
+                                localVel.x,localVel.y,localVel.z,
                                 pathpoint_sub_test[targetPointNum_test].x,pathpoint_sub_test[targetPointNum_test].y,pathpoint_sub_test[targetPointNum_test].z,
                                 target_vel_x_h_pid,target_vel_y_h_pid,target_vel_z_h_pid,
                                 target_vel_x_pid,target_vel_y_pid,target_vel_z_pid,
                                 target_vel_x_h_pid_BUTTER,target_vel_y_h_pid_BUTTER,target_vel_z_h_pid_BUTTER,
                                 target_acc_x_pid,target_acc_y_pid,target_acc_z_pid,
                                 target_acc_x_pid_in_body,target_acc_y_pid_in_body,0.45f + target_height_pid,
-                                target_pitch_pid,target_roll_pid,target_yaw
+                                target_pitch_pid,target_roll_pid,pathpoint_sub_test[targetPointNum_test].a
                                 );
 
 
@@ -2375,7 +2008,7 @@ int main(int argc, char** argv){
                                 isObstacleStop = false;
                             }else{
                                 mode_int = false;
-                                controlMode = MODE_HOVER;
+                                controlMode = MODE_HOVER_CUSTOM;
                             }
                         }
 
@@ -2384,29 +2017,29 @@ int main(int argc, char** argv){
                             // 1. 获取当前悬停点以及航向
                             if(!isObstacleStop){
                                 //首先确定悬停的位置,从没有障碍物的状态下，转到有障碍物的情况
-                                avoid_target_position.x = localposition.x;          //带坐标转换，从笛卡尔转到东北天
-                                avoid_target_position.y = localposition.y;
-                                avoid_target_position.z = localposition.z;
+                                avoid_target_position.x = localPos.x;          //带坐标转换，从笛卡尔转到东北天
+                                avoid_target_position.y = localPos.y;
+                                avoid_target_position.z = localPos.z;
                                 
-                                avoid_target_pose.x = localpose.x;
-                                avoid_target_pose.y = localpose.y;                  //确定航向
-                                avoid_target_pose.z = localpose.z;
-                                avoid_target_pose.w = localpose.w;                        
+                                avoid_target_pose.x = localAtt.x;
+                                avoid_target_pose.y = localAtt.y;                  //确定航向
+                                avoid_target_pose.z = localAtt.z;
+                                avoid_target_pose.w = localAtt.w;                        
                             }
 
                             // 2. 控制飞行停止
-                                double target_vel_x_pid = position_control_x.calculate(localposition.x,avoid_target_position.x);               //PID的系数设置为0.1~10 之间，速度现在-1~1之间
-                                double target_vel_y_pid = position_control_y.calculate(localposition.y,avoid_target_position.y);               //预设最大P值10时，距离相差1m的时候，最大值输出。
-                                double target_vel_z_pid = position_control_z.calculate(localposition.z,avoid_target_position.z);               //即，10*1*0.1 = 1m/s
+                                double target_vel_x_pid = pos_control_x.calculate(localPos.x,avoid_target_position.x);               //PID的系数设置为0.1~10 之间，速度现在-1~1之间
+                                double target_vel_y_pid = pos_control_y.calculate(localPos.y,avoid_target_position.y);               //预设最大P值10时，距离相差1m的时候，最大值输出。
+                                double target_vel_z_pid = pos_control_z.calculate(localPos.z,avoid_target_position.z);               //即，10*1*0.1 = 1m/s
                 
-                                double target_acc_x_pid = vel_control_x.calculate(localvelocity.x,target_vel_x_pid) ;                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
-                                double target_acc_y_pid = vel_control_y.calculate(localvelocity.y,target_vel_y_pid) ;                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
-                                double target_acc_z_pid = vel_control_z.calculate(localvelocity.z,target_vel_z_pid) ;                         //即，10*5 * 0.12 = 6  
+                                double target_acc_x_pid = vel_control_x.calculate(localVel.x,target_vel_x_pid) ;                         //PID的系数设置为0.1~10之间，加速度限制在-5.685~5.685之间，取上下限-6~6之间
+                                double target_acc_y_pid = vel_control_y.calculate(localVel.y,target_vel_y_pid) ;                         //预设最大P值10时，速度相差5m/s的时候，最大值输出。
+                                double target_acc_z_pid = vel_control_z.calculate(localVel.z,target_vel_z_pid) ;                         //即，10*5 * 0.12 = 6  
         
         
                                 //以上代码target_vel_x_pid，target_acc_x_pid都为与local的坐标系下，即东北天坐标系
                 
-                                Eigen::Quaterniond q(localpose.w, localpose.x, localpose.y, localpose.z);                                   //当前姿态四元素，转换为欧拉角
+                                Eigen::Quaterniond q(localAtt.w, localAtt.x, localAtt.y, localAtt.z);                                   //当前姿态四元素，转换为欧拉角
                                 double yaw,roll,pitch;
                                 toEulerAngle(q,roll,pitch,yaw);     
                 
@@ -2417,37 +2050,18 @@ int main(int argc, char** argv){
                                 //换算成角度
                                 double target_pitch_pid =  atan2(target_acc_x_pid_in_body,GRAVITY_ACC);                                         //加速度转换成姿态
                                 double target_roll_pid  = -atan2(target_acc_y_pid_in_body,GRAVITY_ACC);                                         //根据右手法则，roll的目标差值需要反向
-                                #define UAV_WEIGHT 3.340f
-                                double target_height_pid = target_acc_z_pid * UAV_WEIGHT / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;                                         //高度不做控制
+                                double target_height_pid = target_acc_z_pid * uav_weight / (cos(target_pitch_pid) * cos(target_roll_pid)) *0.2f;                                         //高度不做控制
                 
-                                Eigen::Quaterniond q_target(avoid_target_pose.w, avoid_target_pose.x, avoid_target_pose.y, avoid_target_pose.z);
-                                EulerTypedef aviod_target_euler;
-                                toEulerAngle(q_target,aviod_target_euler.roll,aviod_target_euler.pitch,aviod_target_euler.yaw);
+                                euler_def aviod_target_euler;
+                                toEulerAngle(Eigen::Quaterniond(avoid_target_pose.w, avoid_target_pose.x,
+                                                                avoid_target_pose.y, avoid_target_pose.z),
+                                             aviod_target_euler.roll, aviod_target_euler.pitch, aviod_target_euler.yaw);
 
-                
                                 //欧拉角转换成四元素 发送出去，航向角不变，
-                                Eigen::AngleAxisd rollAngle_(Eigen::AngleAxisd(target_roll_pid,Eigen::Vector3d::UnitX()));      //pid计算的目标航向
-                                Eigen::AngleAxisd pitchAngle_(Eigen::AngleAxisd(target_pitch_pid,Eigen::Vector3d::UnitY()));
-                                Eigen::AngleAxisd yawAngle_(Eigen::AngleAxisd(aviod_target_euler.yaw,Eigen::Vector3d::UnitZ()));        //进入模式的时候，设定的目标航向
-                                
-                                Eigen::Quaterniond quaternion_;                                     
-                                quaternion_=yawAngle_*pitchAngle_*rollAngle_;
-                
-                                target_pose.orientation.x = quaternion_.coeffs()[0];                 //角度赋值
-                                target_pose.orientation.y = quaternion_.coeffs()[1];
-                                target_pose.orientation.z = quaternion_.coeffs()[2];
-                                target_pose.orientation.w = quaternion_.coeffs()[3];        
-                                target_pose.thrust = 0.43f + target_height_pid;                     //设置油门
-                                if(target_pose.thrust > 1.0f){
-                                    target_pose.thrust = 1.0f;
-                                }else if(target_pose.thrust < 0.0f){
-                                    target_pose.thrust = 0.0f;
-                                }
-                
-                                target_pose.type_mask = 1+2+4;
-                                target_pose.header.stamp = node->now();
-                
-                                pose_pub->publish(target_pose);                                            //发送消息
+                                fillAttitudeTarget(target_att_thrust, target_roll_pid, target_pitch_pid,
+                                                  aviod_target_euler.yaw, 0.43, target_height_pid, node.get());
+
+                                att_thrust_pub->publish(target_att_thrust);                                            //发送消息
 
 
                             // 3 轨迹变量
@@ -2460,16 +2074,16 @@ int main(int argc, char** argv){
                 }             
                 else{
                     if(targetPointNum_test == 0){                                //没有收到轨迹
-                        position_pub->publish(target_position);             //改位置在模式初始化的时候，更新的位置
+                        pos_pub->publish(target_pose);             //改位置在模式初始化的时候，更新的位置
                         printf("hover no point \r\n");
                     }else if(targetPointNum_test == pathpoint_sub_test.size()){       //已经到轨迹终点了
 
 
-                        target_position.header.stamp = node->now();
-                        target_position.header.frame_id = "map";
-                        target_position.pose.position.x = pathpoint_sub_test[targetPointNum_test-1].x;
-                        target_position.pose.position.y = pathpoint_sub_test[targetPointNum_test-1].y;
-                        target_position.pose.position.z = pathpoint_sub_test[targetPointNum_test-1].z;
+                        target_pose.header.stamp = node->now();
+                        target_pose.header.frame_id = "map";
+                        target_pose.pose.position.x = pathpoint_sub_test[targetPointNum_test-1].x;
+                        target_pose.pose.position.y = pathpoint_sub_test[targetPointNum_test-1].y;
+                        target_pose.pose.position.z = pathpoint_sub_test[targetPointNum_test-1].z;
 
 
                         double target_yaw = pathpoint_sub_test[targetPointNum_test-1].a;
@@ -2482,99 +2096,78 @@ int main(int argc, char** argv){
                         Eigen::Quaterniond quaternion_;                                     
                         quaternion_=yawAngle_*pitchAngle_*rollAngle_;
 
-                        target_position.pose.orientation.x = quaternion_.coeffs()[0];  
-                        target_position.pose.orientation.y = quaternion_.coeffs()[1]; 
-                        target_position.pose.orientation.z = quaternion_.coeffs()[2];  
-                        target_position.pose.orientation.w = quaternion_.coeffs()[3];  
+                        target_pose.pose.orientation.x = quaternion_.coeffs()[0];  
+                        target_pose.pose.orientation.y = quaternion_.coeffs()[1]; 
+                        target_pose.pose.orientation.z = quaternion_.coeffs()[2];  
+                        target_pose.pose.orientation.w = quaternion_.coeffs()[3];  
 
-                        position_pub->publish(target_position);              //该位置在最后一个点进圈后，更新的位置                
+                        pos_pub->publish(target_pose);              //该位置在最后一个点进圈后，更新的位置                
                         printf("finish\r\n");
                     }else{
                         mode_int = false;
-                        controlMode = MODE_HOVER;                           //其他情况，切换到悬停模式
+                        controlMode = MODE_HOVER_CUSTOM;                           //其他情况，切换到悬停模式
                     }
                 }
             }
 
         }
-        else if (controlMode == MODE_HOVER){
-            if(!mode_int){
-
-                target_position.header.stamp = node->now();
-                target_position.header.frame_id = "map";
-                target_position.pose.position.x = localposition.x;
-                target_position.pose.position.y = localposition.y;
-                target_position.pose.position.z = localposition.z;
-
-                target_position.pose.orientation.x = localpose.x ;
-                target_position.pose.orientation.y = localpose.y ;
-                target_position.pose.orientation.z = localpose.z ;
-                target_position.pose.orientation.w = localpose.w ;
-
-                printf("hoverMode x:%f y:%f z:%f\r\n",target_position.pose.position.x,target_position.pose.position.y,target_position.pose.position.z);
-                position_pub->publish(target_position);
-                mode_int = true;
-            }else{
-                target_position.header.stamp = node->now();
-                position_pub->publish(target_position);
-            }
-        }
         else if (controlMode == MODE_HOVER_CUSTOM){
-            // DOB persistent state — reset timing on mode entry to avoid dt spike
+            // DOB persistent state — reset on every mode entry
             static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;
             static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;
             static double dob_last_time = 0.0;
             static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;
             if(!mode_int){
-                target_position.header.stamp = node->now();
-                target_position.header.frame_id = "map";
-                target_position.pose.position.x = localposition.x;
-                target_position.pose.position.y = localposition.y;
-                target_position.pose.position.z = localposition.z;
+                target_pose.header.stamp = node->now();
+                target_pose.header.frame_id = "map";
+                target_pose.pose.position.x = localPos.x;
+                target_pose.pose.position.y = localPos.y;
+                target_pose.pose.position.z = localPos.z;
 
-                target_position.pose.orientation.x = localpose.x ;
-                target_position.pose.orientation.y = localpose.y ;
-                target_position.pose.orientation.z = localpose.z ;
-                target_position.pose.orientation.w = localpose.w ;
+                target_pose.pose.orientation.x = localAtt.x ;
+                target_pose.pose.orientation.y = localAtt.y ;
+                target_pose.pose.orientation.z = localAtt.z ;
+                target_pose.pose.orientation.w = localAtt.w ;
 
-                target_vel_x_pid_last = 0.0f;  //速度 初始值
-                target_vel_y_pid_last = 0.0f;
-                target_vel_z_pid_last = 0.0f;
+                // 抓拍当前偏航作为整个悬停期间的期望偏航
+                target_euler.yaw = atan2(2.0 * (localAtt.w * localAtt.z + localAtt.x * localAtt.y),
+                                         1.0 - 2.0 * (localAtt.y * localAtt.y + localAtt.z * localAtt.z));
 
-                target_acc_x_pid_last = 0.0f;  //加速度 初始值
-                target_acc_y_pid_last = 0.0f;
-                target_acc_z_pid_last = 0.0f;
-
-                // Reset DOB timing to avoid large dt spike on mode re-entry
-                dob_last_time = node->now().seconds();
-
-                printf("hoverMode_CUSTOM x:%f y:%f z:%f\r\n",target_position.pose.position.x,target_position.pose.position.y,target_position.pose.position.z);
-                position_pub->publish(target_position);
+                printf("hoverMode_CUSTOM x:%f y:%f z:%f\r\n",target_pose.pose.position.x,target_pose.pose.position.y,target_pose.pose.position.z);
+                pos_pub->publish(target_pose);
                 mode_int = true;
             }else{
-                double target_vel_x_pid = target_position.pose.position.x - localposition.x;
-                double target_vel_y_pid = target_position.pose.position.y - localposition.y;
-                double target_vel_z_pid = target_position.pose.position.z - localposition.z;                       
+                // PD + DOB:   ωₙ = natural frequency,  ζ = damping ratio
+                double err_x = target_pose.pose.position.x - localPos.x;
+                double err_y = target_pose.pose.position.y - localPos.y;
+                double err_z = target_pose.pose.position.z - localPos.z;
 
-                // High-precision PD — Kp=4, Kd=8, ωn=2.0, ζ=2.0 (overdamped)
-                double target_acc_x_pid = 4.0*target_vel_x_pid - 8.0*localvelocity.x;
-                double target_acc_y_pid = 4.0*target_vel_y_pid - 8.0*localvelocity.y;
-                double target_acc_z_pid = 5*(target_vel_z_pid - localvelocity.z);  
+                // XY:  acc = ωₙ²·err − 2ζωₙ·vel
+                double Kp_xy = hover_wn_xy * hover_wn_xy;
+                double Kd_xy = 2.0 * hover_zeta_xy * hover_wn_xy;
+                double target_acc_x_pid = Kp_xy * err_x - Kd_xy * localVel.x;
+                double target_acc_y_pid = Kp_xy * err_y - Kd_xy * localVel.y;
 
-                double L_xy = 2.0;  // fast DOB, τ≈0.5s — disturbs rejected quickly
-                double L_z  = 1.0;
+                // Z:  acc = ωₙ²·err − 2ζωₙ·vel
+                double Kp_z_sq = hover_wn_z * hover_wn_z;
+                double Kd_z     = 2.0 * hover_zeta_z * hover_wn_z;
+                double target_acc_z_pid = Kp_z_sq * err_z - Kd_z * localVel.z;
+
+                // DOB observer gains from YAML
+                double L_xy = dob_L_xy;
+                double L_z  = dob_L_z;
 
                 double current_time = node->now().seconds();
                 double dt =  current_time - dob_last_time;
-                if(dt > 0.005) {
+                if (dt > 0.005) {
                     // Low-pass DOB on all axes: L/(s+L), DC gain = 1
-                    dob_z_x = dob_z_x/(L_xy*dt+1) - L_xy*L_xy*dt*localvelocity.x/(L_xy*dt+1) - L_xy*dob_u_x*dt/(L_xy*dt+1);
-                    dob_z_y = dob_z_y/(L_xy*dt+1) - L_xy*L_xy*dt*localvelocity.y/(L_xy*dt+1) - L_xy*dob_u_y*dt/(L_xy*dt+1);
-                    dob_z_z = dob_z_z/(L_z*dt+1)  - L_z*L_z*dt*localvelocity.z/(L_z*dt+1)   - L_z*dob_u_z*dt/(L_z*dt+1);
+                    dob_z_x = dob_z_x/(L_xy*dt+1) - L_xy*L_xy*dt*localVel.x/(L_xy*dt+1) - L_xy*dob_u_x*dt/(L_xy*dt+1);
+                    dob_z_y = dob_z_y/(L_xy*dt+1) - L_xy*L_xy*dt*localVel.y/(L_xy*dt+1) - L_xy*dob_u_y*dt/(L_xy*dt+1);
+                    dob_z_z = dob_z_z/(L_z*dt+1)  - L_z*L_z*dt*localVel.z/(L_z*dt+1)   - L_z*dob_u_z*dt/(L_z*dt+1);
 
-                    dob_d_x_hat = dob_z_x + L_xy * localvelocity.x;
-                    dob_d_y_hat = dob_z_y + L_xy * localvelocity.y;
-                    dob_d_z_hat = dob_z_z + L_z  * localvelocity.z;
+                    dob_d_x_hat = dob_z_x + L_xy * localVel.x;
+                    dob_d_y_hat = dob_z_y + L_xy * localVel.y;
+                    dob_d_z_hat = dob_z_z + L_z  * localVel.z;
 
                     dob_last_time = current_time;
                 }
@@ -2583,48 +2176,11 @@ int main(int argc, char** argv){
                 dob_u_y = target_acc_y_pid - dob_d_y_hat;
                 dob_u_z = target_acc_z_pid - dob_d_z_hat;
 
-                #define DELT_RANGE (GRAVITY_ACC * tan(5.0*M_PI/180.0f))   //约等于1.728    0.85
-
-                double acc_delt_x = dob_u_x - target_acc_x_pid_last;
-                if(acc_delt_x > DELT_RANGE){
-                    dob_u_x = target_acc_x_pid_last + DELT_RANGE;
-                }else if (acc_delt_x < -DELT_RANGE)
-                {
-                    dob_u_x = target_acc_x_pid_last - DELT_RANGE;
-                }
-
-                double acc_delt_y = dob_u_y - target_acc_y_pid_last;
-                if(acc_delt_y > DELT_RANGE){
-                    dob_u_y = target_acc_y_pid_last + DELT_RANGE;
-                }else if (acc_delt_y < -DELT_RANGE)
-                {
-                    dob_u_y = target_acc_y_pid_last - DELT_RANGE;
-                }                                
-                
-                double acc_delt_z = dob_u_z - target_acc_z_pid_last;
-                if(acc_delt_z > DELT_RANGE){
-                    dob_u_z = target_acc_z_pid_last + DELT_RANGE;
-                }else if (acc_delt_z < -DELT_RANGE)
-                {
-                    dob_u_z = target_acc_z_pid_last - DELT_RANGE;
-                }
-
-                target_acc_x_pid_last = dob_u_x;
-                target_acc_y_pid_last = dob_u_y;
-                target_acc_z_pid_last = dob_u_z;
-
-                // ... 位置误差、速度误差、DOB、加速度限幅等代码保持不变 ...
-                // 假设 u_x, u_y, u_z 已得到（期望运动加速度，不含重力）
-
-                // ========== 修正开始 ==========
-                const double GRAVITY = 9.81;   // NED下Z向下为正
-                const double MASS = 2.0;       // 无人机质量 (kg)，与 UAV_WEIGHT 数值相同，但明确单位
-                const double HOVER_THROTTLE = 0.5;
-                const double THRUST_RATIO = 2.5;  // 最大推重比，根据实际修改
+                // u_x, u_y, u_z 已得到（期望运动加速度，不含重力）
 
                 // 1. 构造总加速度（运动加速度 + 重力补偿）
                 Eigen::Vector3d accel_motion(dob_u_x, dob_u_y, dob_u_z);
-                Eigen::Vector3d gravity(0.0, 0.0, GRAVITY);
+                Eigen::Vector3d gravity(0.0, 0.0, GRAVITY_ACC);
                 Eigen::Vector3d accel_total = accel_motion + gravity;  // 这才是总期望加速度
 
                 // 2. 根据总加速度和期望偏航角生成期望姿态四元数
@@ -2632,14 +2188,8 @@ int main(int argc, char** argv){
                 Eigen::Quaterniond out_quat;
                 const double eps = 1e-6;
 
-                // 获取期望偏航角（从目标姿态中提取，或使用当前偏航角）
-                Eigen::Quaterniond q_des_target(
-                    target_position.pose.orientation.w,
-                    target_position.pose.orientation.x,
-                    target_position.pose.orientation.y,
-                    target_position.pose.orientation.z);
-                double yaw_des, roll_des, pitch_des;
-                toEulerAngle(q_des_target, roll_des, pitch_des, yaw_des);  // 请确保你的 toEulerAngle 可用
+                // 使用初始化时抓拍的期望偏航（保持不变）
+                double yaw_des = target_euler.yaw;
 
                 if (acc_norm < eps) {
                     // 异常：总加速度近乎零（几乎不可能），保持水平，仅按偏航
@@ -2664,34 +2214,34 @@ int main(int argc, char** argv){
                 out_quat.normalize();
 
                 // 3. 计算总推力（牛顿）并映射到归一化油门
-                double thrust_newtons = MASS * acc_norm;
-                double weight_newtons = MASS * GRAVITY;
-                double max_thrust_newtons = weight_newtons * THRUST_RATIO;
+                double thrust_newtons = uav_weight * acc_norm;
+                double weight_newtons = uav_weight * GRAVITY_ACC;
+                double max_thrust_newtons = weight_newtons * thrust_ratio;
 
                 double throttle;
                 if (thrust_newtons <= weight_newtons) {
-                    // 悬停以下：线性从 0 到 HOVER_THROTTLE
-                    throttle = HOVER_THROTTLE * (thrust_newtons / weight_newtons);
+                    // 悬停以下：线性从 0 到 hover_throttle
+                    throttle = hover_throttle * (thrust_newtons / weight_newtons);
                 } else {
-                    // 悬停以上：线性从 HOVER_THROTTLE 到 1.0
-                    throttle = HOVER_THROTTLE + (1.0 - HOVER_THROTTLE) * (thrust_newtons - weight_newtons) / (max_thrust_newtons - weight_newtons);
+                    // 悬停以上：线性从 hover_throttle 到 1.0
+                    throttle = hover_throttle + (1.0 - hover_throttle) * (thrust_newtons - weight_newtons) / (max_thrust_newtons - weight_newtons);
                 }
                 throttle = std::clamp(throttle, 0.0, 1.0);
 
-                // 4. 填充 MAVLink 消息（注意：不要再用原来的 target_height_pid 和 0.24+...）
-                target_pose.orientation.x = out_quat.x();
-                target_pose.orientation.y = out_quat.y();
-                target_pose.orientation.z = out_quat.z();
-                target_pose.orientation.w = out_quat.w();
-                target_pose.thrust = throttle;   // 直接使用映射后的油门
-                target_pose.type_mask = 1+2+4;
-                target_pose.header.stamp = node->now();
-                pose_pub->publish(target_pose);                         
+                // 4. 填充 MAVLink 消息
+                target_att_thrust.orientation.x = out_quat.x();
+                target_att_thrust.orientation.y = out_quat.y();
+                target_att_thrust.orientation.z = out_quat.z();
+                target_att_thrust.orientation.w = out_quat.w();
+                target_att_thrust.thrust = throttle;   // 直接使用映射后的油门
+                target_att_thrust.type_mask = 1+2+4;
+                target_att_thrust.header.stamp = node->now();
+                att_thrust_pub->publish(target_att_thrust);                         
             }
         }
     
         rclcpp::spin_some(node);
-        rate_main.sleep();
+        rate_control.sleep();
     }
     // Clean shutdown:
     // 1. Stop ROS2 first (makes rclcpp::ok() return false)

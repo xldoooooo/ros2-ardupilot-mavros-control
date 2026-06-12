@@ -1,0 +1,6 @@
+[2026-06-11T10:02:44.259Z] [INIT] Deep Copilot debug log started. file=/home/dministrator/ros2-ardupilot-mavros-control/.deep-copilot/logs/session-2026-06-11T10-02-44-259Z.log
+[2026-06-11T10:02:44.259Z] [ACTIVATE] {"version":"0.43.1"}
+[2026-06-11T10:02:44.260Z] [PROVIDERS_LOADED] {"count":4,"ids":["anthropic","custom","deepseek","openai"]}
+[2026-06-11T10:02:44.260Z] [TERMINAL_MONITOR_STARTED] {}
+[2026-06-11T10:02:44.260Z] [STATUSBAR_REGISTERED] {"id":"deepseekAgent.statusBar"}
+[2026-06-11T10:02:44.262Z] [INLINE_COMPLETION_REGISTERED]

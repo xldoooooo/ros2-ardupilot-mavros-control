@@ -41,11 +41,6 @@ echo "========================================="
 echo "Launching keyboard_vel_controller..."
 echo "========================================="
 
-# Run directly (not through launch) so stdin is the real terminal.
-# Launch doesn't forward keyboard input — use ros2 run + params file instead.
+# ros2 run keeps real stdin — required for keyboard input.
 PARAMS_FILE="$HOME/ros2-ardupilot-mavros-control/install/guided_sim/share/guided_sim/params/keyboard_vel_controller.yaml"
-if [ ! -f "$PARAMS_FILE" ]; then
-    # Fallback: try source tree path
-    PARAMS_FILE="$HOME/ros2-ardupilot-mavros-control/src/guided_sim/params/keyboard_vel_controller.yaml"
-fi
 ros2 run guided_sim keyboard_vel_controller --ros-args --params-file "$PARAMS_FILE"
