@@ -156,6 +156,13 @@ int turnDirection = 0;
 
 int control_frequency = 100;
 
+// 位姿/速度数据源选择 (通过 YAML 参数 use_odin_pose 控制)
+bool g_use_odin_pose = true;
+// 全局持有订阅器，防止局部变量析构导致回调失效
+rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr  g_pose_sub;
+rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr g_vel_sub;
+rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr          g_imu_sub;
+
 // ROS2 发布器
 rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr refTrajectoryPub;
 rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr referencePosePub;
@@ -205,6 +212,17 @@ void vel_cb(const geometry_msgs::msg::TwistStamped::ConstSharedPtr &msg){
     localVel.z = msg->twist.linear.z ;    
 } //接受当前速度的回调函数
 
+// 接收 extnav_bridge 输出的 FCU 位姿 (Odin SLAM → ENU)
+void odin_pose_cb(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg) {
+    pose_cb(msg);  // 复用 MAVROS 回调的赋值逻辑
+}
+
+// 接收 extnav_bridge 输出的 FCU 速度
+void odin_vel_cb(const geometry_msgs::msg::TwistStamped::ConstSharedPtr &msg) {
+    vel_cb(msg);
+}
+
+//接收当前加速度的回调函数
 xyz_double_def localAcc;  // 记录当前加速度 
 void imudata_cb(const sensor_msgs::msg::Imu::ConstSharedPtr &msg){
     localAcc.x = msg->linear_acceleration.x;
@@ -503,6 +521,8 @@ void read_param(rclcpp::Node *node){
     control_frequency = node->declare_parameter<int>   ("control_frequency", 100);
     hover_throttle    = node->declare_parameter<double>("hover_throttle",     0.5);
     thrust_ratio      = node->declare_parameter<double>("thrust_ratio",       2.5);
+    // 是否使用 extnav_bridge 输出的 FCU 坐标位姿 (Odin SLAM)
+    g_use_odin_pose   = node->declare_parameter<bool>("use_odin_pose", true);
 } // 读取launch文件中的所有参数
 
 int sh_getch(void) {
@@ -882,12 +902,25 @@ int main(int argc, char** argv){
     referencePosePub = node->create_publisher<geometry_msgs::msg::PoseStamped>(
         "reference/pose", 1);
 
-    // ROS2 订阅器（SensorDataQoS即best_effort，1即reliable）
-    auto pos_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/mavros/local_position/pose", rclcpp::SensorDataQoS(), pose_cb);
-    auto odom_sub = node->create_subscription<geometry_msgs::msg::TwistStamped>(
-        "/mavros/local_position/velocity_local", rclcpp::SensorDataQoS(), vel_cb);
-    auto imu_data = node->create_subscription<sensor_msgs::msg::Imu>(
+    // ROS2 订阅器 — 位姿/速度按 YAML 参数 use_odin_pose 选择数据源
+    // 用全局 shared_ptr 持有，防止局部变量析构后回调被切断
+    {
+        rclcpp::QoS qos_sensor = rclcpp::SensorDataQoS();
+        if (g_use_odin_pose) {
+            g_pose_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
+                "/extnav/pose_fcu", qos_sensor, odin_pose_cb);
+            g_vel_sub  = node->create_subscription<geometry_msgs::msg::TwistStamped>(
+                "/extnav/velocity_fcu", qos_sensor, odin_vel_cb);
+            RCLCPP_INFO(node->get_logger(), "Using Odin SLAM pose/vel from extnav_bridge");
+        } else {
+            g_pose_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
+                "/mavros/local_position/pose", qos_sensor, pose_cb);
+            g_vel_sub  = node->create_subscription<geometry_msgs::msg::TwistStamped>(
+                "/mavros/local_position/velocity_local", qos_sensor, vel_cb);
+            RCLCPP_INFO(node->get_logger(), "Using MAVROS local_position pose/vel");
+        }
+    }
+    g_imu_sub = node->create_subscription<sensor_msgs::msg::Imu>(
         "/mavros/imu/data", rclcpp::SensorDataQoS(), imudata_cb);
     auto state_sub = node->create_subscription<mavros_msgs::msg::State>(
         "/mavros/state", 1, mavrosState_cb);
@@ -2112,7 +2145,10 @@ int main(int argc, char** argv){
 
         }
         else if (controlMode == MODE_HOVER_CUSTOM){
-            // DOB persistent state — reset on every mode entry
+            // DOB persistent state — kept across mode switches.
+            // On very first hover entry, all zero is fine:
+            //   dob_u_z = -Kd*vel gives immediate velocity damping.
+            // On re-entry, converged state is preserved.
             static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;
             static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;
             static double dob_last_time = 0.0;
@@ -2132,6 +2168,9 @@ int main(int argc, char** argv){
                 // 抓拍当前偏航作为整个悬停期间的期望偏航
                 target_euler.yaw = atan2(2.0 * (localAtt.w * localAtt.z + localAtt.x * localAtt.y),
                                          1.0 - 2.0 * (localAtt.y * localAtt.y + localAtt.z * localAtt.z));
+
+                // 始终重置计时器，防止进入悬停的首帧 dt 尖峰
+                dob_last_time = node->now().seconds();
 
                 printf("hoverMode_CUSTOM x:%f y:%f z:%f\r\n",target_pose.pose.position.x,target_pose.pose.position.y,target_pose.pose.position.z);
                 pos_pub->publish(target_pose);
@@ -2159,12 +2198,12 @@ int main(int argc, char** argv){
 
                 double current_time = node->now().seconds();
                 double dt =  current_time - dob_last_time;
+
                 if (dt > 0.005) {
                     // Low-pass DOB on all axes: L/(s+L), DC gain = 1
                     dob_z_x = dob_z_x/(L_xy*dt+1) - L_xy*L_xy*dt*localVel.x/(L_xy*dt+1) - L_xy*dob_u_x*dt/(L_xy*dt+1);
                     dob_z_y = dob_z_y/(L_xy*dt+1) - L_xy*L_xy*dt*localVel.y/(L_xy*dt+1) - L_xy*dob_u_y*dt/(L_xy*dt+1);
                     dob_z_z = dob_z_z/(L_z*dt+1)  - L_z*L_z*dt*localVel.z/(L_z*dt+1)   - L_z*dob_u_z*dt/(L_z*dt+1);
-
                     dob_d_x_hat = dob_z_x + L_xy * localVel.x;
                     dob_d_y_hat = dob_z_y + L_xy * localVel.y;
                     dob_d_z_hat = dob_z_z + L_z  * localVel.z;

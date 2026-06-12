@@ -7,17 +7,18 @@
     target_y: 9.0
 
     # Physical parameters
-    uav_weight: 3.34
+    uav_weight: 1.7
     control_frequency: 100
-    hover_throttle: 0.5
+    hover_throttle: 0.15
     thrust_ratio: 2.5
+    use_odin_pose: false  # true = /extnav/pose_fcu (Odin SLAM), false = /mavros/local_position/pose
 
-    # Hover PD + DOB
-    hover_wn_xy: 1.0
-    hover_zeta_xy: 1.0
-    hover_wn_z: 2.0
-    hover_zeta_z: 1.0
-    dob_L_xy: 1.0
+    # Hover PD + DOB  (matched to -612 hardcoded: XY ωn=2.0/ζ=1.5, Z ωn=2.236/ζ=1.12, L_xy=2.0)
+    hover_wn_xy: 1.0 # 2.0
+    hover_zeta_xy: 1.0 # 1.5
+    hover_wn_z: 1.0 # 2.236
+    hover_zeta_z: 1.0 # 1.118
+    dob_L_xy: 1.0 # 2.0
     dob_L_z: 1.0
 
     # Position PID
@@ -53,23 +54,12 @@
     acc_Z_I: 0.0
     acc_Z_D: 0.0
 
-    # Lateral velocity PID
-    vel_X_T_P: 4.0
-    vel_X_T_I: 0.2
-    vel_X_T_D: 0.03
-    vel_Y_T_P: 4.0
-    vel_Y_T_I: 0.2
-    vel_Y_T_D: 0.03
-    vel_Z_T_P: 0.55
-    vel_Z_T_I: 0.2
-    vel_Z_T_D: 0.0
-
     # Velocity limits
-    vel_X_limit: 10.0
-    vel_Y_limit: 10.0
-    vel_Z_limit: 10.0
+    vel_X_limit: 2.0
+    vel_Y_limit: 2.0
+    vel_Z_limit: 2.0
 
     # Attitude limits
-    roll_limit: 30.0
-    pitch_limit: 30.0
-    high_limit: 30.0
+    roll_limit: 20.0
+    pitch_limit: 20.0
+    high_limit: 20.0

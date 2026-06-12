@@ -1,0 +1,266 @@
+[2026-06-12T12:43:48.463Z] [INIT] Deep Copilot debug log started. file=/home/dministrator/ros2-ardupilot-mavros-control/.deep-copilot/logs/session-2026-06-12T12-43-48-463Z.log
+[2026-06-12T12:43:48.463Z] [ACTIVATE] {"version":"0.43.1"}
+[2026-06-12T12:43:48.463Z] [PROVIDERS_LOADED] {"count":4,"ids":["anthropic","custom","deepseek","openai"]}
+[2026-06-12T12:43:48.464Z] [TERMINAL_MONITOR_STARTED] {}
+[2026-06-12T12:43:48.464Z] [STATUSBAR_REGISTERED] {"id":"deepseekAgent.statusBar"}
+[2026-06-12T12:43:48.470Z] [INLINE_COMPLETION_REGISTERED]
+[2026-06-12T12:45:47.096Z] [USER_SEND] {"sid":"s_mq8t2dza_60ae","len":44,"model":"deepseek-v4-pro","baseUrl":"","mode":"autopilot","text":"我觉得你改的不对，我说的只是初始进入hover模式要合理设置dob初值，后续进入就不用了"}
+[2026-06-12T12:45:47.097Z] [INTERACTION_MODE] {"mode":"agent"}
+[2026-06-12T12:45:47.099Z] [TIKTOKEN_UNAVAILABLE] {"reason":"Cannot find module 'js-tiktoken'\nRequire stack:\n- /home/dministrator/.vscode-server/extensions/zhouchaunge.deep-copilot-0.43.1/out/extension.js\n- /home/dministrator/.vscode-server/bin/cd4ee3b1c348a13bafd8f9ad8060705f6d4b9cba/out/vs/workbench/api/node/extensionHostProcess.js"}
+[2026-06-12T12:45:47.101Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":1,"msg_count":144,"est_tokens":86348}
+[2026-06-12T12:45:47.103Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":144}
+[2026-06-12T12:45:48.791Z] [THINK]
+The user is saying I got it wrong. They want:
+
+1. Only on the VERY FIRST entry into hover
+[/THINK]
+[2026-06-12T12:45:49.237Z] [THINK]
+ mode, set the DOB initial value to prevent altitude jump
+2. On subsequent re-entries to hover mode, DON'T reset/pre-fill — keep the DOB
+[/THINK]
+[2026-06-12T12:45:49.648Z] [THINK]
+ state as-is (it has already converged)
+
+This makes sense: after the first hover, the DOB has converged to the correct values. If you switch to velocity mode and then back
+[/THINK]
+[2026-06-12T12:45:50.080Z] [THINK]
+ to hover, you want to KEEP the converged DOB state, not reset it.
+
+So the distinction is:
+- First-ever entry: DOB state is garbage (zeros from static init
+[/THINK]
+[2026-06-12T12:45:50.518Z] [THINK]
+). Pre-fill to prevent jump.
+- Subsequent entries: DOB state is already converged. Don't touch it.
+
+How to detect "first-ever entry
+[/THINK]
+[2026-06-12T12:45:50.937Z] [THINK]
+"? Use a flag: `static bool dob_first_entry = true`. On first entry, pre-fill and set to false. On subsequent entries, skip pre-fill
+[/THINK]
+[2026-06-12T12:45:51.356Z] [THINK]
+.
+
+Let me re-read the current code in the main workspace to understand the flow.
+
+Current code in `!mode_int`:
+```
+// 重置
+[/THINK]
+[2026-06-12T12:45:51.761Z] [THINK]
+ DOB 状态...
+{
+    double Kd_xy = 2.0 * hover_zeta_xy * hover_wn_xy;
+    ...
+    dob_z_x = -(Kd_xy + L
+[/THINK]
+[2026-06-12T12:45:52.163Z] [THINK]
+_xy) * localVel.x;
+    ...
+    dob_u_x = 0.0; dob_u_y = 0.0; dob_u_z = 0.0;
+}
+dob_last_time = node->now().seconds();
+```
+
+The user wants this pre
+[/THINK]
+[2026-06-12T12:45:52.572Z] [THINK]
+-fill ONLY on first entry. On subsequent entries, just reset `dob_last_time` to avoid dt spike, but leave `dob_z_*`, `dob_d
+[/THINK]
+[2026-06-12T12:45:53.005Z] [THINK]
+_*_hat`, `dob_u_*` untouched.
+
+So the fix:
+
+```cpp
+static bool dob_first_entry = true;
+
+if(!mode_int){
+    // ... position capture ...
+    
+    if (
+[/THINK]
+[2026-06-12T12:45:53.421Z] [THINK]
+dob_first_entry) {
+        dob_first_entry = false;
+        // Pre-fill DOB state on first entry only
+        dob_z_x = -(Kd_xy + L_xy) * localVel.x;
+        ...
+        dob_u_x
+[/THINK]
+[2026-06-12T12:45:53.857Z] [THINK]
+ = 0.0; dob_u_y = 0.0; dob_u_z = 0.0;
+    }
+    // Always reset dob_last_time to avoid dt spike
+    dob_last_time = node->now().seconds();
+   
+[/THINK]
+[2026-06-12T12:45:54.261Z] [THINK]
+ mode_int = true;
+}
+```
+
+Wait, but the DOB state variables are `static` inside the MODE_HOVER_CUSTOM block. They persist across
+[/THINK]
+[2026-06-12T12:45:54.680Z] [THINK]
+ mode switches. The `dob_first_entry` flag needs to also be static.
+
+Actually wait, thinking more carefully: the user wants the first entry (
+[/THINK]
+[2026-06-12T12:45:55.110Z] [THINK]
+when DOB is uninitialized / garbage) to pre-fill. But on re-entry after switching modes and coming
+[/THINK]
+[2026-06-12T12:45:55.641Z] [THINK]
+ back, the DOB state should be preserved because it has already converged.
+
+The simplest fix: add a `static bool dob_first_entry = true` flag inside the MODE_HOVER_CUSTOM block, and only pre-fill when it's true.
+
+Let me implement
+[/THINK]
+[2026-06-12T12:45:56.079Z] [THINK]
+ this for both workspaces.
+[/THINK]
+[2026-06-12T12:45:57.507Z] [STREAM_DONE] {"elapsed_ms":10404,"ttfb_ms":822,"chunks":786,"tool_calls":1}
+[2026-06-12T12:45:57.507Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":1,"elapsed_ms":10406,"assistant_chars":128,"reasoning_chars":2390,"tool_calls":1,"usage":{"prompt_tokens":117319,"completion_tokens":837,"total_tokens":118156,"prompt_tokens_details":{"cached_tokens":117248},"completion_tokens_details":{"reasoning_tokens":655},"prompt_cache_hit_tokens":117248,"prompt_cache_miss_tokens":71}}
+[2026-06-12T12:45:57.507Z] [ASSISTANT] 明白了。你的意思是：DOB 状态是跨模式持久的——第一次进入悬停时 DOB 是未初始化的垃圾值，需要预填；后续从其他模式切回来时，DOB 已经收敛好了，不该清零重建。
+
+修复：加一个 `dob_first_entry` 标志，只在首次进入时预填，后续跳过。
+[2026-06-12T12:45:57.507Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":1,"hit":117248,"miss":71,"rate":0.9994}
+[2026-06-12T12:45:57.508Z] [TOOL_CALL] {"id":"call_00_Kl9JyhagV0BuswMVIX5t5289","name":"read_file","args":{"end_line":2190,"path":"/home/dministrator/ros2-ardupilot-mavros-control/src/guided_sim/src/keyboard_vel_controller.cpp","start_line":2147}}
+[2026-06-12T12:45:57.511Z] [TOOL_RESULT] {"id":"call_00_Kl9JyhagV0BuswMVIX5t5289","name":"read_file","elapsed_ms":3,"ok":true,"output":"2147:         else if (controlMode == MODE_HOVER_CUSTOM){\n2148:             // DOB persistent state — reset on every mode entry\n2149:             static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;\n2150:             static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;\n2151: \n2152:             static double dob_last_time = 0.0;\n2153:             static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;\n2154:             if(!mode_int){\n2155:                 target_pose.header.stamp = node->now();\n2156:                 target_pose.header.frame_id = \"map\";\n2157:                 target_pose.pose.position.x = localPos.x;\n2158:                 target_pose.pose.position.y = localPos.y;\n2159:                 target_pose.pose.position.z = localPos.z;\n2160: \n2161:                 target_pose.pose.orientation.x = localAtt.x ;\n2162:                 target_pose.pose.orientation.y = localAtt.y ;\n2163:                 target_pose.pose.orientation.z = localAtt.z ;\n2164:                 target_pose.pose.orientation.w = localAtt.w ;\n2165: \n2166:                 // 抓拍当前偏航作为整个悬停期间的期望偏航\n2167:                 target_euler.yaw = atan2(2.0 * (localAtt.w * localAtt.z + localAtt.x * localAtt.y),\n2168:                                          1.0 - 2.0 * (localAtt.y * localAtt.y + localAtt.z * localAtt.z));\n2169: \n2170:                 // 重置 DOB 状态，避免跨模式/二次进入残留 + 首帧 dt 尖峰\n2171:                 // 同时预填 dob_z/dob_d_hat 抵消当前速度阻尼项，\n2172:                 // 使得第一帧 dob_u_z=0，推力恰好 = hover_throttle，无需 dob_first_frame 跳过\n2173:                 {\n2174:                     double Kd_xy = 2.0 * hover_zeta_xy * hover_wn_xy;\n2175:                     double Kd_z  = 2.0 * hover_zeta_z  * hover_wn_z;\n2176:                     double L_xy  = dob_L_xy;\n2177:                     double L_z   = dob_L_z;\n2178: \n2179:                     dob_z_x = -(Kd_xy + L_xy) * localVel.x;\n2180:                     dob_z_y = -(Kd_xy + L_xy) * localVel.y;\n2181:                     dob_z_z = -(Kd_z  + L_z)  * lo"}
+[2026-06-12T12:45:57.513Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":2,"msg_count":146,"est_tokens":87207}
+[2026-06-12T12:45:57.513Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":146}
+[2026-06-12T12:45:59.026Z] [THINK]
+Now I need to:
+1. Add `static bool dob_first_entry = true;` to the static declarations
+2. Wrap the pre
+[/THINK]
+[2026-06-12T12:45:59.458Z] [THINK]
+-fill block with `if (dob_first_entry) { ... dob_first_entry = false;
+[/THINK]
+[2026-06-12T12:46:00.522Z] [THINK]
+ }`
+3. Keep `dob_last_time = node->now().seconds();` always (outside the if)
+[/THINK]
+[2026-06-12T12:46:05.613Z] [STREAM_DONE] {"elapsed_ms":8100,"ttfb_ms":735,"chunks":416,"tool_calls":1}
+[2026-06-12T12:46:05.614Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":2,"elapsed_ms":8101,"assistant_chars":93,"reasoning_chars":247,"tool_calls":1,"usage":{"prompt_tokens":118931,"completion_tokens":463,"total_tokens":119394,"prompt_tokens_details":{"cached_tokens":118144},"completion_tokens_details":{"reasoning_tokens":70},"prompt_cache_hit_tokens":118144,"prompt_cache_miss_tokens":787}}
+[2026-06-12T12:46:05.614Z] [ASSISTANT] Now fix the main workspace — pre-fill only on first entry, keep `dob_last_time` reset always.
+[2026-06-12T12:46:05.614Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":2,"hit":118144,"miss":787,"rate":0.9934}
+[2026-06-12T12:46:05.615Z] [TOOL_CALL] {"id":"call_00_kkIsjYsGiIyXx8bfoZLK0440","name":"str_replace_in_file","args":{"new_string":"            // DOB persistent state — persisted across mode switches\n            // Initialised on very first hover entry; subsequent re-entries\n            // keep the already-converged DOB state intact.\n            static bool   dob_first_entry = true;\n            static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;\n            static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;\n            static double dob_last_time = 0.0;\n            static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;","old_string":"            // DOB persistent state — reset on every mode entry\n            static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;\n            static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;\n\n            static double dob_last_time = 0.0;\n            static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;","path":"/home/dministrator/ros2-ardupilot-mavros-control/src/guided_sim/src/keyboard_vel_controller.cpp"}}
+[2026-06-12T12:46:06.127Z] [TOOL_RESULT] {"id":"call_00_kkIsjYsGiIyXx8bfoZLK0440","name":"str_replace_in_file","elapsed_ms":512,"ok":true,"output":"OK: 1 replacement(s) in /home/dministrator/ros2-ardupilot-mavros-control/src/guided_sim/src/keyboard_vel_controller.cpp (+190 chars)."}
+[2026-06-12T12:46:06.129Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":3,"msg_count":148,"est_tokens":87566}
+[2026-06-12T12:46:06.130Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":148}
+[2026-06-12T12:46:07.729Z] [THINK]
+Now wrap the pre-fill with the first-entry guard.
+[/THINK]
+[2026-06-12T12:46:12.749Z] [STREAM_DONE] {"elapsed_ms":6619,"ttfb_ms":734,"chunks":654,"tool_calls":1}
+[2026-06-12T12:46:12.749Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":3,"elapsed_ms":6620,"assistant_chars":0,"reasoning_chars":49,"tool_calls":1,"usage":{"prompt_tokens":119447,"completion_tokens":704,"total_tokens":120151,"prompt_tokens_details":{"cached_tokens":119296},"completion_tokens_details":{"reasoning_tokens":12},"prompt_cache_hit_tokens":119296,"prompt_cache_miss_tokens":151}}
+[2026-06-12T12:46:12.749Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":3,"hit":119296,"miss":151,"rate":0.9987}
+[2026-06-12T12:46:12.750Z] [TOOL_CALL] {"id":"call_00_2UhM61GJ8sxrbjFxLuuB9762","name":"str_replace_in_file","args":{"new_string":"                // 仅首次进入悬停时预填 DOB 初值，消除初始高度跳变。\n                // 后续重新进入时 DOB 已收敛，保留其状态即可。\n                if (dob_first_entry) {\n                    dob_first_entry = false;\n                    double Kd_xy = 2.0 * hover_zeta_xy * hover_wn_xy;\n                    double Kd_z  = 2.0 * hover_zeta_z  * hover_wn_z;\n                    double L_xy  = dob_L_xy;\n                    double L_z   = dob_L_z;\n\n                    dob_z_x = -(Kd_xy + L_xy) * localVel.x;\n                    dob_z_y = -(Kd_xy + L_xy) * localVel.y;\n                    dob_z_z = -(Kd_z  + L_z)  * localVel.z;\n\n                    dob_d_x_hat = -Kd_xy * localVel.x;\n                    dob_d_y_hat = -Kd_xy * localVel.y;\n                    dob_d_z_hat = -Kd_z  * localVel.z;\n\n                    dob_u_x = 0.0; dob_u_y = 0.0; dob_u_z = 0.0;\n                }\n                // 始终重置计时器，避免 dt 尖峰\n                dob_last_time = node->now().seconds();","old_string":"                // 重置 DOB 状态，避免跨模式/二次进入残留 + 首帧 dt 尖峰\n                // 同时预填 dob_z/dob_d_hat 抵消当前速度阻尼项，\n                // 使得第一帧 dob_u_z=0，推力恰好 = hover_throttle，无需 dob_first_frame 跳过\n                {\n                    double Kd_xy = 2.0 * hover_zeta_xy * hover_wn_xy;\n                    double Kd_z  = 2.0 * hover_zeta_z  * hover_wn_z;\n                    double L_xy  = dob_L_xy;\n                    double L_z   = dob_L_z;\n\n                    dob_z_x = -(Kd_xy + L_xy) * localVel.x;\n                    dob_z_y = -(Kd_xy + L_xy) * localVel.y;\n                    dob_z_z = -(Kd_z  + L_z)  * localVel.z;\n\n                    dob_d_x_hat = -Kd_xy * localVel.x;\n                    dob_d_y_hat = -Kd_xy * localVel.y;\n                    dob_d_z_hat = -Kd_z  * localVel.z;\n\n                    dob_u_x = 0.0; dob_u_y = 0.0; dob_u_z = 0.0;\n                }\n                dob_last_time = node->now().seconds();","path":"/home/dministrator/ros2-ardupilot-mavros-control/src/guided_sim/src/keyboard_vel_controller.cpp"}}
+[2026-06-12T12:46:13.257Z] [TOOL_RESULT] {"id":"call_00_2UhM61GJ8sxrbjFxLuuB9762","name":"str_replace_in_file","elapsed_ms":507,"ok":true,"output":"OK: 1 replacement(s) in /home/dministrator/ros2-ardupilot-mavros-control/src/guided_sim/src/keyboard_vel_controller.cpp (+10 chars)."}
+[2026-06-12T12:46:13.261Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":4,"msg_count":150,"est_tokens":88249}
+[2026-06-12T12:46:13.261Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":150}
+[2026-06-12T12:46:14.863Z] [THINK]
+Now do the same for the -612 workspace.
+[/THINK]
+[2026-06-12T12:46:15.429Z] [STREAM_DONE] {"elapsed_ms":2168,"ttfb_ms":647,"chunks":76,"tool_calls":1}
+[2026-06-12T12:46:15.429Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":4,"elapsed_ms":2168,"assistant_chars":24,"reasoning_chars":39,"tool_calls":1,"usage":{"prompt_tokens":120204,"completion_tokens":127,"total_tokens":120331,"prompt_tokens_details":{"cached_tokens":120064},"completion_tokens_details":{"reasoning_tokens":10},"prompt_cache_hit_tokens":120064,"prompt_cache_miss_tokens":140}}
+[2026-06-12T12:46:15.429Z] [ASSISTANT] Now the same for `-612`.
+[2026-06-12T12:46:15.429Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":4,"hit":120064,"miss":140,"rate":0.9988}
+[2026-06-12T12:46:15.430Z] [TOOL_CALL] {"id":"call_00_pLN4BEBdqNmIH4rzTjjL4143","name":"read_file","args":{"end_line":2505,"path":"/home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp","start_line":2462}}
+[2026-06-12T12:46:15.437Z] [TOOL_RESULT] {"id":"call_00_pLN4BEBdqNmIH4rzTjjL4143","name":"read_file","elapsed_ms":7,"ok":true,"output":"2462:         else if (controlMode == MODE_HOVER_CUSTOM){\n2463:             // DOB persistent state — reset timing on mode entry to avoid dt spike\n2464:             static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;\n2465:             static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;\n2466:             static double dob_last_time = 0.0;\n2467:             static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;\n2468:             if(!mode_int){\n2469:                 target_pose.header.stamp = node->now();\n2470:                 target_pose.header.frame_id = \"map\";\n2471:                 target_pose.pose.position.x = localPos.x;\n2472:                 target_pose.pose.position.y = localPos.y;\n2473:                 target_pose.pose.position.z = localPos.z;\n2474: \n2475:                 target_pose.pose.orientation.x = localAtt.x ;\n2476:                 target_pose.pose.orientation.y = localAtt.y ;\n2477:                 target_pose.pose.orientation.z = localAtt.z ;\n2478:                 target_pose.pose.orientation.w = localAtt.w ;\n2479: \n2480:                 target_vel_x_pid_last = 0.0f;  //速度 初始值\n2481:                 target_vel_y_pid_last = 0.0f;\n2482:                 target_vel_z_pid_last = 0.0f;\n2483: \n2484:                 target_acc_x_pid_last = 0.0f;  //加速度 初始值\n2485:                 target_acc_y_pid_last = 0.0f;\n2486:                 target_acc_z_pid_last = 0.0f;\n2487: \n2488:                 // Reset DOB state + pre-fill to cancel velocity damping on first frame\n2489:                 // 使第一帧 dob_u_z=0，推力 = hover_throttle，防止高度跳变\n2490:                 // Hardcoded PD/DOB gains: Kd_xy=6, Kd_z=5, L_xy=2, L_z=1\n2491:                 dob_z_x = -8.0 * localVel.x;\n2492:                 dob_z_y = -8.0 * localVel.y;\n2493:                 dob_z_z = -6.0 * localVel.z;\n2494: \n2495:                 dob_d_x_hat = -6.0 * localVel.x;\n2496:                 dob_d_y_hat = -6.0 * localVel.y;\n2497:                 dob_d_z_hat = -5.0 * localVel.z;\n2498: \n2499:      "}
+[2026-06-12T12:46:15.439Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":5,"msg_count":152,"est_tokens":89014}
+[2026-06-12T12:46:15.440Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":152}
+[2026-06-12T12:46:17.585Z] [THINK]
+Now apply the same pattern to -612:
+
+1. Add `static bool dob_first_entry = true;` to the declarations
+[/THINK]
+[2026-06-12T12:46:18.003Z] [THINK]
+
+2. Wrap the pre-fill with `if (dob_first_entry) { ... dob_first_entry = false; }`
+3. Keep `dob_last_time` reset outside
+[/THINK]
+[2026-06-12T12:46:20.695Z] [STREAM_DONE] {"elapsed_ms":5255,"ttfb_ms":621,"chunks":412,"tool_calls":1}
+[2026-06-12T12:46:20.695Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":5,"elapsed_ms":5256,"assistant_chars":0,"reasoning_chars":221,"tool_calls":1,"usage":{"prompt_tokens":121124,"completion_tokens":460,"total_tokens":121584,"prompt_tokens_details":{"cached_tokens":120320},"completion_tokens_details":{"reasoning_tokens":61},"prompt_cache_hit_tokens":120320,"prompt_cache_miss_tokens":804}}
+[2026-06-12T12:46:20.695Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":5,"hit":120320,"miss":804,"rate":0.9934}
+[2026-06-12T12:46:20.696Z] [TOOL_CALL] {"id":"call_00_I8X3wxSSJGBlQjzZuNoQ7524","name":"str_replace_in_file","args":{"new_string":"        else if (controlMode == MODE_HOVER_CUSTOM){\n            // DOB persistent state — first entry only: pre-fill to avoid altitude jump.\n            // Subsequent re-entries keep the converged DOB state intact.\n            static bool   dob_first_entry = true;\n            static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;\n            static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;\n            static double dob_last_time = 0.0;\n            static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;","old_string":"        else if (controlMode == MODE_HOVER_CUSTOM){\n            // DOB persistent state — reset timing on mode entry to avoid dt spike\n            static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;\n            static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;\n            static double dob_last_time = 0.0;\n            static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;","path":"/home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp"}}
+[2026-06-12T12:46:21.211Z] [TOOL_RESULT] {"id":"call_00_I8X3wxSSJGBlQjzZuNoQ7524","name":"str_replace_in_file","elapsed_ms":514,"ok":true,"output":"OK: 1 replacement(s) in /home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp (+130 chars)."}
+[2026-06-12T12:46:21.214Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":6,"msg_count":154,"est_tokens":89372}
+[2026-06-12T12:46:21.215Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":154}
+[2026-06-12T12:46:22.749Z] [THINK]
+Now wrap the pre-fill block.
+[/THINK]
+[2026-06-12T12:46:26.279Z] [STREAM_DONE] {"elapsed_ms":5064,"ttfb_ms":664,"chunks":483,"tool_calls":1}
+[2026-06-12T12:46:26.279Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":6,"elapsed_ms":5065,"assistant_chars":0,"reasoning_chars":28,"tool_calls":1,"usage":{"prompt_tokens":121639,"completion_tokens":533,"total_tokens":122172,"prompt_tokens_details":{"cached_tokens":121472},"completion_tokens_details":{"reasoning_tokens":8},"prompt_cache_hit_tokens":121472,"prompt_cache_miss_tokens":167}}
+[2026-06-12T12:46:26.279Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":6,"hit":121472,"miss":167,"rate":0.9986}
+[2026-06-12T12:46:26.280Z] [TOOL_CALL] {"id":"call_00_KLZUIF50FcVW8UDryonY8917","name":"str_replace_in_file","args":{"new_string":"                // 仅首次进入悬停时预填 DOB，后续复用已收敛的状态\n                if (dob_first_entry) {\n                    dob_first_entry = false;\n                    // Hardcoded PD/DOB gains: Kd_xy=6, Kd_z=5, L_xy=2, L_z=1\n                    dob_z_x = -8.0 * localVel.x;\n                    dob_z_y = -8.0 * localVel.y;\n                    dob_z_z = -6.0 * localVel.z;\n\n                    dob_d_x_hat = -6.0 * localVel.x;\n                    dob_d_y_hat = -6.0 * localVel.y;\n                    dob_d_z_hat = -5.0 * localVel.z;\n\n                    dob_u_x = 0.0; dob_u_y = 0.0; dob_u_z = 0.0;\n                }\n                // Always reset timing to avoid dt spike\n                dob_last_time = node->now().seconds();","old_string":"                // Reset DOB state + pre-fill to cancel velocity damping on first frame\n                // 使第一帧 dob_u_z=0，推力 = hover_throttle，防止高度跳变\n                // Hardcoded PD/DOB gains: Kd_xy=6, Kd_z=5, L_xy=2, L_z=1\n                dob_z_x = -8.0 * localVel.x;\n                dob_z_y = -8.0 * localVel.y;\n                dob_z_z = -6.0 * localVel.z;\n\n                dob_d_x_hat = -6.0 * localVel.x;\n                dob_d_y_hat = -6.0 * localVel.y;\n                dob_d_z_hat = -5.0 * localVel.z;\n\n                dob_u_x = 0.0; dob_u_y = 0.0; dob_u_z = 0.0;\n                dob_last_time = node->now().seconds();","path":"/home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp"}}
+[2026-06-12T12:46:26.791Z] [TOOL_RESULT] {"id":"call_00_KLZUIF50FcVW8UDryonY8917","name":"str_replace_in_file","elapsed_ms":511,"ok":true,"output":"OK: 1 replacement(s) in /home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp (+87 chars)."}
+[2026-06-12T12:46:26.797Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":7,"msg_count":156,"est_tokens":89868}
+[2026-06-12T12:46:26.798Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":156}
+[2026-06-12T12:46:28.380Z] [THINK]
+Now build both workspaces.
+[/THINK]
+[2026-06-12T12:46:29.411Z] [STREAM_DONE] {"elapsed_ms":2613,"ttfb_ms":618,"chunks":114,"tool_calls":2}
+[2026-06-12T12:46:29.411Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":7,"elapsed_ms":2614,"assistant_chars":15,"reasoning_chars":26,"tool_calls":2,"usage":{"prompt_tokens":122227,"completion_tokens":187,"total_tokens":122414,"prompt_tokens_details":{"cached_tokens":122112},"completion_tokens_details":{"reasoning_tokens":6},"prompt_cache_hit_tokens":122112,"prompt_cache_miss_tokens":115}}
+[2026-06-12T12:46:29.411Z] [ASSISTANT] 构建两个 workspace。
+[2026-06-12T12:46:29.411Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":7,"hit":122112,"miss":115,"rate":0.9991}
+[2026-06-12T12:46:29.411Z] [TOOL_CALL] {"id":"call_00_dOOzeBTLccRaJ4kuvGCP7881","name":"run_shell","args":{"command":"cd /home/dministrator/ros2-ardupilot-mavros-control && colcon build --packages-select guided_sim 2>&1","timeout_ms":60000}}
+[2026-06-12T12:46:29.413Z] [SHELL_MODE] {"mode":"silent","command":"cd /home/dministrator/ros2-ardupilot-mavros-control && colcon build --packages-select guided_sim 2>&1"}
+[2026-06-12T12:46:59.261Z] [TOOL_RESULT] {"id":"call_00_dOOzeBTLccRaJ4kuvGCP7881","name":"run_shell","elapsed_ms":29850,"ok":true,"output":"{\"command\":\"cd /home/dministrator/ros2-ardupilot-mavros-control && colcon build --packages-select guided_sim 2>&1\",\"exitCode\":0,\"stdout\":\"Starting >>> guided_sim\\nFinished <<< guided_sim [26.3s]\\n\\nSummary: 1 package finished [26.4s]\",\"stderr\":\"\",\"truncated\":false,\"text\":\"Starting >>> guided_sim\\nFinished <<< guided_sim [26.3s]\\n\\nSummary: 1 package finished [26.4s]\"}"}
+[2026-06-12T12:46:59.261Z] [TOOL_CALL] {"id":"call_01_whMp9GOa0wXxUHU3HaNp5626","name":"run_shell","args":{"command":"cd /home/dministrator/ros2-ardupilot-mavros-control-612 && colcon build --packages-select guided_sim 2>&1","timeout_ms":60000}}
+[2026-06-12T12:46:59.262Z] [SHELL_MODE] {"mode":"silent","command":"cd /home/dministrator/ros2-ardupilot-mavros-control-612 && colcon build --packages-select guided_sim 2>&1"}
+[2026-06-12T12:47:32.981Z] [TOOL_RESULT] {"id":"call_01_whMp9GOa0wXxUHU3HaNp5626","name":"run_shell","elapsed_ms":33720,"ok":true,"output":"{\"command\":\"cd /home/dministrator/ros2-ardupilot-mavros-control-612 && colcon build --packages-select guided_sim 2>&1\",\"exitCode\":0,\"stdout\":\"Starting >>> guided_sim\\n--- stderr: guided_sim\\n/home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp:206:75: warning: ‘geometry_msgs::msg::PoseStamped_<std::allocator<void> >::ConstPtr’ is deprecated [-Wdeprecated-declarations]\\n  206 | void odinPoseCallback(const geometry_msgs::msg::PoseStamped::ConstPtr &msg) {\\n      |                                                                           ^\\nIn file included from /opt/ros/humble/include/geometry_msgs/geometry_msgs/msg/pose_stamped.hpp:7,\\n                 from /home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp:6:\\n/opt/ros/humble/include/geometry_msgs/geometry_msgs/msg/detail/pose_stamped__struct.hpp:116:5: note: declared here\\n  116 |     ConstPtr;\\n      |     ^~~~~~~~\\n/home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp:217:75: warning: ‘geometry_msgs::msg::TwistStamped_<std::allocator<void> >::ConstPtr’ is deprecated [-Wdeprecated-declarations]\\n  217 | void odinVelCallback(const geometry_msgs::msg::TwistStamped::ConstPtr &msg) {\\n      |                                                                           ^\\nIn file included from /opt/ros/humble/include/geometry_msgs/geometry_msgs/msg/twist_stamped.hpp:7,\\n                 from /home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp:7:\\n/opt/ros/humble/include/geometry_msgs/geometry_msgs/msg/detail/twist_stamped__struct.hpp:116:5: note: declared here\\n  116 |     ConstPtr;\\n      |     ^~~~~~~~\\n/home/dministrator/ros2-ardupilot-mavros-control-612/src/guided_sim/src/keyboard_vel_controller.cpp:224:71: warning: ‘geometry_msgs::msg::PoseStamped_<std::allocator<void> >::ConstPtr’ is deprecated [-Wdeprecated-declarations]\\n  224 "}
+[2026-06-12T12:47:32.984Z] [AUTOCOMPACT] {"sid":"s_mq8t2dza_60ae","iter":8,"dropped":0,"truncated":0,"deduped":1}
+[2026-06-12T12:47:32.984Z] [ITER_START] {"sid":"s_mq8t2dza_60ae","iter":8,"msg_count":159,"est_tokens":97025}
+[2026-06-12T12:47:32.985Z] [HTTP_REQUEST] {"url":"https://api.deepseek.com","model":"deepseek-v4-pro","msg_count":159}
+[2026-06-12T12:47:39.720Z] [THINK]
+Both builds passed (warnings are pre-existing deprecation warnings).
+
+Summary of the final approach:
+
+**Problem**: DOB state
+[/THINK]
+[2026-06-12T12:47:40.156Z] [THINK]
+ variables are `static` inside the `MODE_HOVER_CUSTOM` block. On first entry, they're zero-initialized garbage. The
+[/THINK]
+[2026-06-12T12:47:40.560Z] [THINK]
+ pre-fill makes the initial thrust = `hover_throttle`. On re-entries (after switching to velocity mode and back), the DOB has
+[/THINK]
+[2026-06-12T12:47:40.976Z] [THINK]
+ already converged — resetting it would throw away that convergence and cause another transient.
+
+**Fix**: 
+- Added `static bool dob
+[/THINK]
+[2026-06-12T12:47:41.389Z] [THINK]
+_first_entry = true` flag
+- Pre-fill DOB state only on first entry (`if (dob_first_entry) { ... dob_first_entry = false; }`)
+- On subsequent entries
+[/THINK]
+[2026-06-12T12:47:41.832Z] [THINK]
+, only reset `dob_last_time` (to avoid dt spike), but keep `dob_z_*`, `dob_d_*_hat`, `dob_u_*` intact
+-
+[/THINK]
+[2026-06-12T12:47:42.252Z] [THINK]
+ This way: first hover is smooth (no jump), subsequent hovers reuse converged DOB state
+
+**Both works
+[/THINK]
+[2026-06-12T12:47:42.679Z] [THINK]
+paces updated:**
+- Main: uses YAML parameters for PD/DOB gains
+- -612: uses hardcoded gains (Kd_xy=6, Kd_z=5, L_xy=2, L_z=1)
+[/THINK]
+[2026-06-12T12:47:43.769Z] [STREAM_DONE] {"elapsed_ms":10784,"ttfb_ms":704,"chunks":367,"tool_calls":0}
+[2026-06-12T12:47:43.769Z] [ITER_END] {"sid":"s_mq8t2dza_60ae","iter":8,"elapsed_ms":10785,"assistant_chars":203,"reasoning_chars":972,"tool_calls":0,"usage":{"prompt_tokens":128886,"completion_tokens":366,"total_tokens":129252,"prompt_tokens_details":{"cached_tokens":78080},"completion_tokens_details":{"reasoning_tokens":268},"prompt_cache_hit_tokens":78080,"prompt_cache_miss_tokens":50806}}
+[2026-06-12T12:47:43.769Z] [ASSISTANT] 两个 workspace 都构建通过。
+
+最终逻辑：
+
+- **首次进入悬停**：`dob_first_entry == true` → 预填 DOB，消除高度跳变 → `dob_first_entry = false`
+- **后续重新进入悬停**（从速度模式切回来）：DOB 状态已经收敛好了，**不动它**，只重置 `dob_last_time` 防止 dt 尖峰
+
+这样首次不跳，后续不丢收敛状态。
+[2026-06-12T12:47:43.769Z] [CACHE_HIT_RATE] {"sid":"s_mq8t2dza_60ae","iter":8,"hit":78080,"miss":50806,"rate":0.6058}
+[2026-06-12T12:47:43.769Z] [SEND_END] {"sid":"s_mq8t2dza_60ae","iters":7,"asst_chars":463}
