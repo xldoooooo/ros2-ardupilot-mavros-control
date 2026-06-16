@@ -178,6 +178,9 @@ double target_acc_z_pid_last;
 double target_vel_x_pid_last;
 double target_vel_y_pid_last;
 double target_vel_z_pid_last;
+
+std::ofstream dob_log_file;          // DOB悬停数据记录文件
+bool dob_logging_active = false;     // 是否正在记录DOB数据
 //---------------------全局变量定义区域结束---------------------
 
 
@@ -953,6 +956,13 @@ int main(int argc, char** argv){
         rate.sleep();
     } // 等待加速度收到
 
+    // 等待 Odin / MAVROS 位姿有效
+    while ((localPos.x == 0 && localPos.y == 0 && localPos.z == 0) && rclcpp::ok()) {
+        printf("wait for pose~~~\r\n");
+        rclcpp::spin_some(node);
+        rate.sleep();
+    }
+
     target_twist.linear.x=0;
     target_twist.linear.y=0;
     target_twist.linear.z=0;
@@ -960,16 +970,20 @@ int main(int argc, char** argv){
     target_twist.angular.y=0;
     target_twist.angular.z=0;
     
-    target_pose.pose.position.x = 0;
-    target_pose.pose.position.y = 0;
-    target_pose.pose.position.z = 0;
-    target_pose.pose.orientation.w = 1.0;   // 单位四元数，保持当前航向不变
-    target_pose.pose.orientation.x = 0.0;   
-    target_pose.pose.orientation.y = 0.0;   
-    target_pose.pose.orientation.z = 0.0;  
+    // 初始化为当前位姿，不再发 (0,0,0)
+    target_pose.pose.position.x = localPos.x;
+    target_pose.pose.position.y = localPos.y;
+    target_pose.pose.position.z = localPos.z;
+    target_pose.pose.orientation.w = localAtt.w ? localAtt.w : 1.0;
+    target_pose.pose.orientation.x = localAtt.x;
+    target_pose.pose.orientation.y = localAtt.y;
+    target_pose.pose.orientation.z = localAtt.z;
     
-    // 先发几个点
+    // 先发几个点（用当前位姿）
     for(int i = 20; rclcpp::ok() && i > 0; --i){
+        target_pose.pose.position.x = localPos.x;
+        target_pose.pose.position.y = localPos.y;
+        target_pose.pose.position.z = localPos.z;
         rclcpp::spin_some(node);
         rate.sleep();
         pos_pub->publish(target_pose);
@@ -1034,33 +1048,20 @@ int main(int argc, char** argv){
     }
     printf("[Ready] Controller Mode On !\n");
 
-    // 尝试起飞（带重试）
+    // ---- 简单起飞：takeoff → 延时 → 进主循环 ----
+    // 调 takeoff 服务
     auto takeoff_req = std::make_shared<mavros_msgs::srv::CommandTOL::Request>();
-    for (int i = 0; i < 3; ++i) {
-        takeoff_req->altitude = 0.3;      // 提高到0.3米，避免高度过小被拒绝
-        takeoff_req->min_pitch = 0.0;
-        takeoff_req->yaw = 0.0;
-        auto takeoff_future = takeoff_client->async_send_request(takeoff_req);
-        rclcpp::spin_until_future_complete(node, takeoff_future);
-        if (takeoff_future.get()->success) {
-            RCLCPP_INFO(rclcpp::get_logger("guided_sim"), "Takeoff succeeded (altitude=1.0m)");
-            break;
-        } else {
-            RCLCPP_WARN(rclcpp::get_logger("guided_sim"), "Takeoff attempt %d failed, retrying...", i+1);
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+    takeoff_req->altitude = 0.3;
+    takeoff_req->min_pitch = 0.0;
+    takeoff_req->yaw = 0.0;
+    auto takeoff_future = takeoff_client->async_send_request(takeoff_req);
+    rclcpp::spin_until_future_complete(node, takeoff_future);
+    if (takeoff_future.get()->success) {
+        printf("Takeoff command accepted, waiting 5s...\n");
+    } else {
+        printf("Takeoff failed, proceeding anyway...\n");
     }
-
-    // 等待起飞完成
-    printf("Waiting for liftoff...\r\n");
-    int liftoff_timeout = 100;  // 10 seconds at 10Hz
-    while (rclcpp::ok() && localPos.z < 0.15 && --liftoff_timeout > 0) {
-        rclcpp::spin_some(node);
-        rate.sleep();
-    }
-    if (liftoff_timeout <= 0) {
-        printf("[WARN] Liftoff timeout — proceeding anyway\n");
-    }
+    std::this_thread::sleep_for(std::chrono::seconds(4));
     
     while(rclcpp::ok() && ctrlMode){
         if(current_state.mode != "GUIDED"){
@@ -2175,6 +2176,20 @@ int main(int argc, char** argv){
                 printf("hoverMode_CUSTOM x:%f y:%f z:%f\r\n",target_pose.pose.position.x,target_pose.pose.position.y,target_pose.pose.position.z);
                 pos_pub->publish(target_pose);
                 mode_int = true;
+
+                // 打开DOB悬停数据记录文件（时间戳命名）
+                if (!dob_logging_active) {
+                    auto now = std::chrono::system_clock::now();
+                    auto t = std::chrono::system_clock::to_time_t(now);
+                    char fname[128];
+                    std::strftime(fname, sizeof(fname), "dob_hover_log_%Y%m%d_%H%M%S.csv", std::localtime(&t));
+                    dob_log_file.open(fname);
+                    if (dob_log_file.is_open()) {
+                        dob_logging_active = true;
+                        dob_log_file << "timestamp,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,"
+                                     << "dob_d_x_hat,dob_d_y_hat,dob_d_z_hat,dob_u_x,dob_u_y,dob_u_z\n";
+                    }
+                }
             }else{
                 // PD + DOB:   ωₙ = natural frequency,  ζ = damping ratio
                 double err_x = target_pose.pose.position.x - localPos.x;
@@ -2207,6 +2222,16 @@ int main(int argc, char** argv){
                     dob_d_x_hat = dob_z_x + L_xy * localVel.x;
                     dob_d_y_hat = dob_z_y + L_xy * localVel.y;
                     dob_d_z_hat = dob_z_z + L_z  * localVel.z;
+
+                    // 写入DOB数据到CSV文件
+                    if (dob_logging_active && dob_log_file.is_open()) {
+                        dob_log_file << current_time << ","
+                                     << localPos.x << "," << localPos.y << "," << localPos.z << ","
+                                     << localVel.x << "," << localVel.y << "," << localVel.z << ","
+                                     << dob_d_x_hat << "," << dob_d_y_hat << "," << dob_d_z_hat << ","
+                                     << dob_u_x << "," << dob_u_y << "," << dob_u_z << "\n";
+                        dob_log_file.flush();
+                    }
 
                     dob_last_time = current_time;
                 }
@@ -2285,18 +2310,24 @@ int main(int argc, char** argv){
     // Clean shutdown:
     // 1. Stop ROS2 first (makes rclcpp::ok() return false)
     rclcpp::shutdown();
+    // 关闭DOB日志文件
+    if (dob_logging_active && dob_log_file.is_open()) {
+        dob_log_file.close();
+        dob_logging_active = false;
+    }
     // 2. Wake the keyboard thread from blocking getchar() using SIGUSR1.
-    //    This avoids pthread_cancel which can leave terminal in raw mode
-    //    and/or race with DDS resource destruction.
     if (th_created) {
         // Interrupt getchar() so sh_getch() restores terminal and returns EOF.
         // The keyboard thread's while(rclcpp::ok()) will then fail cleanly.
-        // Retry up to 2s (40*50ms) until the thread notices and exits.
         for (int i = 0; i < 40; i++) {
+            int ret = pthread_kill(th, 0);  // check if thread still exists
+            if (ret == ESRCH) break;        // thread already gone, stop signaling
             pthread_kill(th, SIGUSR1);
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        pthread_join(th, NULL);
+        // pthread_join may throw if thread already exited — guard it
+        try { pthread_join(th, NULL); }
+        catch (const std::system_error&) { /* thread already gone */ }
     }
     return 0;
 }

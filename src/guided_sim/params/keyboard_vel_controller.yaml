@@ -9,17 +9,17 @@
     # Physical parameters
     uav_weight: 1.7
     control_frequency: 100
-    hover_throttle: 0.15
+    hover_throttle: 0.2
     thrust_ratio: 2.5
     use_odin_pose: false  # true = /extnav/pose_fcu (Odin SLAM), false = /mavros/local_position/pose
 
     # Hover PD + DOB  (matched to -612 hardcoded: XY ωn=2.0/ζ=1.5, Z ωn=2.236/ζ=1.12, L_xy=2.0)
-    hover_wn_xy: 1.0 # 2.0
-    hover_zeta_xy: 1.0 # 1.5
-    hover_wn_z: 1.0 # 2.236
-    hover_zeta_z: 1.0 # 1.118
-    dob_L_xy: 1.0 # 2.0
-    dob_L_z: 1.0
+    hover_wn_xy: 2.236 # 2.0
+    hover_zeta_xy: 1.5 # 1.0
+    hover_wn_z: 2.236 # 2.236
+    hover_zeta_z: 0.6 # 1.118
+    dob_L_xy: 1.5 # 2.0
+    dob_L_z: 0.6
 
     # Position PID
     position_X_P: 1.0
