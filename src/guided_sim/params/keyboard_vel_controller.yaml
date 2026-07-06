@@ -15,7 +15,7 @@
 
     # Hover PD + DOB  (matched to -612 hardcoded: XY ωn=2.0/ζ=1.5, Z ωn=2.236/ζ=1.12, L_xy=2.0)
     hover_wn_xy: 2.236 # 2.0
-    hover_zeta_xy: 1.5 # 1.0
+    hover_zeta_xy: 1.4 # 1.0
     hover_wn_z: 2.236 # 2.236
     hover_zeta_z: 0.6 # 1.118
     dob_L_xy: 1.5 # 2.0
