@@ -7,11 +7,6 @@ sleep 5
 # 启动apm.launch
 ros2 launch mavros apm.launch fcu_url:=/dev/ttyTHS1:460800 &
 sleep 3
-# roslaunch livox_ros_driver2 msg_MID360.launch &
-# sleep 0.5
-# roslaunch fast_lio mapping_mid360.launch &
-
-
 
 echo "odin start success!"
 sleep 2
@@ -56,4 +51,3 @@ echo ""
 
 wait
 exit 0
-

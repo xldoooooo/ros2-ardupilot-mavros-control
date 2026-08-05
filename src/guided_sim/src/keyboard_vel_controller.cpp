@@ -51,6 +51,7 @@ enum fly_status{
     MODE_STRAIGHT       = 9,
     TEST_FLOOR_TRAJ     = 12,
     MODE_HOVER_CUSTOM   = 13,  //自定义悬停模式（统一悬停，PD+DOB）
+    MODE_CIRCLE         = 14,  //圆形飞行模式（半径1米，PD+DOB）
 };
 
 //键盘值
@@ -181,6 +182,8 @@ double target_vel_z_pid_last;
 
 std::ofstream dob_log_file;          // DOB悬停数据记录文件
 bool dob_logging_active = false;     // 是否正在记录DOB数据
+std::ofstream circle_log_file;       // 圆形飞行数据记录文件
+bool circle_logging_active = false;  // 是否正在记录圆形数据
 //---------------------全局变量定义区域结束---------------------
 
 
@@ -650,7 +653,7 @@ void *keyboard_listener(void *arg){
                         p: position control;\r\n \
                         a: track the trajectory of falio with position;\r\n \
                         s: straightly fly towards a postion;\r\n \
-                        f: fixed trajectory \r\n \
+                        f: fly in a circle (radius=1.0m); \r\n \
                         t: track the trajectory of falio; \r\n \
                         \r\n");
 
@@ -782,6 +785,11 @@ void *keyboard_listener(void *arg){
                                     printf("target Postition  setting canceled \r\n");
                                 }
                             }break;
+                            case KEY_F:{  //f->102 圆形飞行模式
+                                mode_int = false;
+                                controlMode = MODE_CIRCLE;
+                                printf("Current control mode: \"Circle\" (radius=1.0m)\r\n");
+                                }break;
                             default:{
                                 printf("[Warning!] Invalid selection, please press m and slelect again!: \n");
                             }break;
@@ -2145,6 +2153,174 @@ int main(int argc, char** argv){
             }
 
         }
+        else if (controlMode == MODE_CIRCLE){
+            // 圆形飞行模式：以当前位置为圆心，半径1米绕圈
+            // 使用与 MODE_HOVER_CUSTOM 相同的 PD+DOB 控制器
+            static double circle_angle = 0.0;
+            static double circle_cx = 0.0, circle_cy = 0.0, circle_cz = 0.0;
+
+            // DOB persistent state
+            static double dob_z_x = 0.0, dob_z_y = 0.0, dob_z_z = 0.0;
+            static double dob_d_x_hat = 0.0, dob_d_y_hat = 0.0, dob_d_z_hat = 0.0;
+            static double dob_last_time = 0.0;
+            static double dob_u_x = 0, dob_u_y = 0, dob_u_z = 0;
+
+            if(!mode_int){
+                circle_angle = 0.0;
+                circle_cx = localPos.x;
+                circle_cy = localPos.y;
+                circle_cz = localPos.z;
+
+                // 抓拍当前偏航作为整个圆形飞行期间的期望偏航
+                target_euler.yaw = atan2(2.0 * (localAtt.w * localAtt.z + localAtt.x * localAtt.y),
+                                         1.0 - 2.0 * (localAtt.y * localAtt.y + localAtt.z * localAtt.z));
+
+                dob_last_time = node->now().seconds();
+
+                printf("Circle mode: center [%.2f, %.2f, %.2f], radius=1.0m, start angle=0\r\n",
+                       circle_cx, circle_cy, circle_cz);
+
+                // 打开圆形飞行数据记录文件（时间戳命名）
+                if (!circle_logging_active) {
+                    auto now = std::chrono::system_clock::now();
+                    auto t = std::chrono::system_clock::to_time_t(now);
+                    char fname[128];
+                    std::strftime(fname, sizeof(fname), "circle_log_%Y%m%d_%H%M%S.csv", std::localtime(&t));
+                    circle_log_file.open(fname);
+                    if (circle_log_file.is_open()) {
+                        circle_logging_active = true;
+                        circle_log_file << "timestamp,circle_angle_deg,target_x,target_y,target_z,"
+                                        << "pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,"
+                                        << "err_x,err_y,err_z,"
+                                        << "acc_x_pid,acc_y_pid,acc_z_pid,"
+                                        << "dob_d_x_hat,dob_d_y_hat,dob_d_z_hat,"
+                                        << "dob_u_x,dob_u_y,dob_u_z,throttle\n";
+                    }
+                }
+
+                mode_int = true;
+            } else {
+                // 推进角度：用 vel_forward_set 作为切向线速度
+                double tangential_vel = vel_forward_set;
+                double omega = tangential_vel / 1.0;           // R = 1.0m
+                double dt_angle = 1.0 / control_frequency;
+                circle_angle += omega * dt_angle;
+                if(circle_angle > 2.0 * M_PI) circle_angle -= 2.0 * M_PI;
+
+                // 目标位置在圆上
+                double target_cx = circle_cx + 1.0 * cos(circle_angle);
+                double target_cy = circle_cy + 1.0 * sin(circle_angle);
+                double target_cz = circle_cz;
+
+                // PD (与 hover_custom 相同的参数)
+                double err_x = target_cx - localPos.x;
+                double err_y = target_cy - localPos.y;
+                double err_z = target_cz - localPos.z;
+
+                double Kp_xy = hover_wn_xy * hover_wn_xy;
+                double Kd_xy = 2.0 * hover_zeta_xy * hover_wn_xy;
+                double target_acc_x_pid = Kp_xy * err_x - Kd_xy * localVel.x;
+                double target_acc_y_pid = Kp_xy * err_y - Kd_xy * localVel.y;
+
+                double Kp_z_sq = hover_wn_z * hover_wn_z;
+                double Kd_z     = 2.0 * hover_zeta_z * hover_wn_z;
+                double target_acc_z_pid = Kp_z_sq * err_z - Kd_z * localVel.z;
+
+                // DOB
+                double L_xy = dob_L_xy;
+                double L_z  = dob_L_z;
+
+                double current_time = node->now().seconds();
+                double dt = current_time - dob_last_time;
+
+                if (dt > 0.005) {
+                    dob_z_x = dob_z_x/(L_xy*dt+1) - L_xy*L_xy*dt*localVel.x/(L_xy*dt+1) - L_xy*dob_u_x*dt/(L_xy*dt+1);
+                    dob_z_y = dob_z_y/(L_xy*dt+1) - L_xy*L_xy*dt*localVel.y/(L_xy*dt+1) - L_xy*dob_u_y*dt/(L_xy*dt+1);
+                    dob_z_z = dob_z_z/(L_z*dt+1)  - L_z*L_z*dt*localVel.z/(L_z*dt+1)   - L_z*dob_u_z*dt/(L_z*dt+1);
+                    dob_d_x_hat = dob_z_x + L_xy * localVel.x;
+                    dob_d_y_hat = dob_z_y + L_xy * localVel.y;
+                    dob_d_z_hat = dob_z_z + L_z  * localVel.z;
+
+                    dob_last_time = current_time;
+                }
+
+                dob_u_x = target_acc_x_pid - dob_d_x_hat;
+                dob_u_y = target_acc_y_pid - dob_d_y_hat;
+                dob_u_z = target_acc_z_pid - dob_d_z_hat;
+
+                // 构造总加速度（运动加速度 + 重力补偿）
+                Eigen::Vector3d accel_motion(dob_u_x, dob_u_y, dob_u_z);
+                Eigen::Vector3d gravity(0.0, 0.0, GRAVITY_ACC);
+                Eigen::Vector3d accel_total = accel_motion + gravity;
+
+                double acc_norm = accel_total.norm();
+                Eigen::Quaterniond out_quat;
+                const double eps = 1e-6;
+
+                double yaw_des = target_euler.yaw;
+
+                if (acc_norm < eps) {
+                    Eigen::AngleAxisd yaw_rot(yaw_des, Eigen::Vector3d::UnitZ());
+                    out_quat = Eigen::Quaterniond(yaw_rot);
+                } else {
+                    Eigen::Vector3d b_c = accel_total.normalized();
+                    Eigen::Vector3d t(std::cos(yaw_des), std::sin(yaw_des), 0.0);
+                    double dot = t.dot(b_c);
+                    Eigen::Vector3d X_c = t - dot * b_c;
+                    if (X_c.norm() < eps) X_c = Eigen::Vector3d(1.0, 0.0, 0.0);
+                    X_c.normalize();
+                    Eigen::Vector3d Y_c = b_c.cross(X_c);
+                    Y_c.normalize();
+                    Eigen::Matrix3d R;
+                    R.col(0) = X_c;
+                    R.col(1) = Y_c;
+                    R.col(2) = b_c;
+                    out_quat = Eigen::Quaterniond(R);
+                }
+                out_quat.normalize();
+
+                double thrust_newtons = uav_weight * acc_norm;
+                double weight_newtons = uav_weight * GRAVITY_ACC;
+                double max_thrust_newtons = weight_newtons * thrust_ratio;
+                double throttle;
+                if (thrust_newtons <= weight_newtons) {
+                    throttle = hover_throttle * (thrust_newtons / weight_newtons);
+                } else {
+                    throttle = hover_throttle + (1.0 - hover_throttle) * (thrust_newtons - weight_newtons) / (max_thrust_newtons - weight_newtons);
+                }
+                throttle = std::clamp(throttle, 0.0, 1.0);
+
+                target_att_thrust.orientation.x = out_quat.x();
+                target_att_thrust.orientation.y = out_quat.y();
+                target_att_thrust.orientation.z = out_quat.z();
+                target_att_thrust.orientation.w = out_quat.w();
+                target_att_thrust.thrust = throttle;
+                target_att_thrust.type_mask = 1+2+4;
+                target_att_thrust.header.stamp = node->now();
+                att_thrust_pub->publish(target_att_thrust);
+
+                // 写入圆形飞行数据到CSV文件
+                if (circle_logging_active && circle_log_file.is_open()) {
+                    circle_log_file << current_time << ","
+                                    << circle_angle * 180.0 / M_PI << ","
+                                    << target_cx << "," << target_cy << "," << target_cz << ","
+                                    << localPos.x << "," << localPos.y << "," << localPos.z << ","
+                                    << localVel.x << "," << localVel.y << "," << localVel.z << ","
+                                    << err_x << "," << err_y << "," << err_z << ","
+                                    << target_acc_x_pid << "," << target_acc_y_pid << "," << target_acc_z_pid << ","
+                                    << dob_d_x_hat << "," << dob_d_y_hat << "," << dob_d_z_hat << ","
+                                    << dob_u_x << "," << dob_u_y << "," << dob_u_z << ","
+                                    << throttle << "\n";
+                    circle_log_file.flush();
+                }
+
+                printf("Circle: angle=%.1f deg, target=[%.2f,%.2f,%.2f], pos=[%.2f,%.2f,%.2f], vel_xy=%.2f\r\n",
+                       circle_angle * 180.0 / M_PI,
+                       target_cx, target_cy, target_cz,
+                       localPos.x, localPos.y, localPos.z,
+                       sqrt(localVel.x*localVel.x + localVel.y*localVel.y));
+            }
+        }
         else if (controlMode == MODE_HOVER_CUSTOM){
             // DOB persistent state — kept across mode switches.
             // On very first hover entry, all zero is fine:
@@ -2314,6 +2490,11 @@ int main(int argc, char** argv){
     if (dob_logging_active && dob_log_file.is_open()) {
         dob_log_file.close();
         dob_logging_active = false;
+    }
+    // 关闭圆形飞行日志文件
+    if (circle_logging_active && circle_log_file.is_open()) {
+        circle_log_file.close();
+        circle_logging_active = false;
     }
     // 2. Wake the keyboard thread from blocking getchar() using SIGUSR1.
     if (th_created) {

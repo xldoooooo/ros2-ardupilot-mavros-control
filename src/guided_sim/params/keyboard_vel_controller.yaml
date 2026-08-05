@@ -14,10 +14,10 @@
     use_odin_pose: false  # true = /extnav/pose_fcu (Odin SLAM), false = /mavros/local_position/pose
 
     # Hover PD + DOB  (matched to -612 hardcoded: XY ωn=2.0/ζ=1.5, Z ωn=2.236/ζ=1.12, L_xy=2.0)
-    hover_wn_xy: 2.236 # 2.0
-    hover_zeta_xy: 1.4 # 1.0
+    hover_wn_xy: 2.236 # 2.236
+    hover_zeta_xy: 0.8 # 0.8
     hover_wn_z: 2.236 # 2.236
-    hover_zeta_z: 0.6 # 1.118
+    hover_zeta_z: 0.6 # 0.6
     dob_L_xy: 1.5 # 2.0
     dob_L_z: 0.6
 
