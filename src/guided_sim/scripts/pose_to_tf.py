@@ -8,14 +8,17 @@ model at the correct 3D pose in real time.
 """
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
 
 
 class PoseToTF(Node):
+    """把 MAVROS 本地位姿转换为 RViz 使用的 map → base_link TF。"""
 
     def __init__(self):
+        """创建 TF broadcaster 与 MAVROS 位姿订阅。"""
         super().__init__('pose_to_tf')
 
         # TF broadcaster
@@ -33,9 +36,12 @@ class PoseToTF(Node):
             ),
         )
 
-        self.get_logger().info('pose_to_tf node started — bridging /mavros/local_position/pose to TF')
+        self.get_logger().info(
+            'pose_to_tf node started — bridging /mavros/local_position/pose to TF'
+        )
 
     def pose_callback(self, msg: PoseStamped):
+        """逐帧转发位移和姿态，保留 MAVROS 原始时间戳。"""
         t = TransformStamped()
 
         t.header.stamp = msg.header.stamp
@@ -51,14 +57,24 @@ class PoseToTF(Node):
 
 
 def main(args=None):
+    """运行桥接节点，并在 ros2 launch 发送 SIGINT 时安静退出。"""
     rclpy.init(args=args)
     node = PoseToTF()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        # launch 可能连续转发 SIGINT；销毁阶段同样捕获，避免正常清理打印堆栈。
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
+        if rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except KeyboardInterrupt:
+                pass
 
 
 if __name__ == '__main__':

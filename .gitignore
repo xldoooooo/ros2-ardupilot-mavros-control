@@ -1,57 +1,111 @@
-# ROS2 Workspace - Build Artifacts
-# These folders are generated during colcon build and should not be committed
+# Repository ignore rules for generated ROS, Python, flight-controller, and local-tool files.
 
-# Colcon build outputs
+# ROS 2 / colcon build outputs and runtime state
 build/
 install/
 log/
+.colcon/
+.ros/
+rosbag2_*/
+*.bag
+*.bag.active
+*.db3
+*.mcap
 
-# Python cache files
+# Python bytecode, test caches, environments, and packaging outputs
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-
-# Virtual environments
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+*.egg-info/
+.eggs/
+dist/
 venv/
+.venv/
 env/
 ENV/
+.ipynb_checkpoints/
 
-# IDE and Editor files
+# ArduPilot SITL, MAVProxy, MAVLink, and flight-recording outputs
+logs/
+terrain/
+eeprom.bin
+*.tlog
+*.tlog.raw
+*.BIN
+LASTLOG.TXT
+*.parm
+*.ulg
+*.stg
+*.waypoints
+*.rally
+*.fence
+*_log_*.csv
+.mavproxy_history
+
+# Generic logs, crash dumps, and temporary files
+*.log
+*.log.*
+*.pid
+*.pid.lock
+core
+core.*
+*.stackdump
+*.tmp
+*.temp
+*.cache
+*.bak
+*.orig
+*.rej
+*~
+
+# Deep Copilot local state (cover common historical spellings)
+.deep-copilot/
+.deepcopilot/
+deep-copilot/
+deepcopilot/
+
+# Local agent instructions and installer artifacts
+/AGENTS.md
+/fishros
+
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-.DS_Store
 
-# ROS specific
-*.pyc
-*.pyo
-COLCON_IGNORE
-
-# Backup files
-*.bak
-*.orig
-*~
-
-# Compiled binaries
+# Compiled binaries and native build by-products
 *.exe
 *.out
 *.app
+*.o
+*.obj
+*.a
+*.dylib
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
 
-# Testing artifacts
-.pytest_cache/
-.coverage
-htmlcov/
-*.cover
-
-# Documentation builds
+# Generated documentation
 docs/_build/
 site/
 
-# OS generated files
+# Operating-system metadata
 .DS_Store
 .DS_Store?
 ._*
@@ -59,8 +113,3 @@ site/
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# Custom ignore (add project-specific files here if needed)
-# For example, if you have local test files:
-# test_output/
-# *.local

@@ -4,7 +4,7 @@ visualize.launch.py — Launch visualization tools for the quadcopter.
 Starts:
   - robot_state_publisher  (publishes URDF model joints to /tf_static)
   - pose_to_tf             (bridges /mavros/local_position/pose to TF map->base_link)
-  - rviz2                  (3D visualization, default config)
+  - rviz2                  (loads the packaged quadcopter.rviz config)
 
 Usage:
   ros2 launch guided_sim visualize.launch.py
@@ -12,11 +12,7 @@ Usage:
 Prerequisites:
   MAVROS must be running and publishing /mavros/local_position/pose.
 
-After RViz2 opens, add displays manually:
-  1. "Add" → "RobotModel" → set Description Topic to /robot_description
-  2. "Add" → "TF" (optional, to see frames)
-  3. "Add" → "Path" → set Topic to /mavros/local_position/pose
-  Set "Fixed Frame" to "map" in Global Options.
+The packaged RViz config preselects the map fixed frame, RobotModel and TF.
 """
 
 import os
@@ -26,10 +22,12 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
+    """Launch the URDF publisher, MAVROS pose bridge and configured RViz2."""
     pkg_share = get_package_share_directory('guided_sim')
 
     # Paths
     urdf_path = os.path.join(pkg_share, 'urdf', 'quadcopter.urdf')
+    rviz_config = os.path.join(pkg_share, 'rviz', 'quadcopter.rviz')
 
     # Read URDF content for robot_state_publisher
     with open(urdf_path, 'r') as f:
@@ -55,12 +53,13 @@ def generate_launch_description():
         output='screen',
     )
 
-    # rviz2 — no config file, starts with clean defaults
+    # rviz2 — load package config (RobotModel + TF + Fixed Frame=map)
     rviz2 = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         output='screen',
+        arguments=['-d', rviz_config],
     )
 
     return LaunchDescription([
