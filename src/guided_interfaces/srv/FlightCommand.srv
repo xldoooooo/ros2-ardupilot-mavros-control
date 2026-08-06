@@ -1,0 +1,16 @@
+# 起降、悬停、取消和维护命令的统一请求接口。
+uint8 COMMAND_TAKEOFF=1
+uint8 COMMAND_LAND=2
+uint8 COMMAND_HOVER=3
+uint8 COMMAND_CANCEL=4
+uint8 COMMAND_CONFIGURE_RATES=5
+
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+uint32 ttl_ms
+uint8 command
+float64 value
+---
+bool accepted
+string message

@@ -1,4 +1,4 @@
-"""地面站路径、飞控参数和外部环境配置。"""
+"""地面站薄客户端、共享接口和本地 SITL 环境配置。"""
 
 from __future__ import annotations
 
@@ -11,71 +11,25 @@ from typing import Iterable
 # 仓库根目录；所有项目内路径均从此处推导，避免依赖启动目录。
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SETUP = PROJECT_ROOT / "install" / "setup.bash"
-PARAM_FILE = (
+ONBOARD_PARAM_FILE = (
     PROJECT_ROOT
     / "src"
-    / "guided_sim"
-    / "params"
-    / "keyboard_vel_controller.yaml"
+    / "onboard_control"
+    / "config"
+    / "control.yaml"
 )
 
-# GUI 飞行控制默认值。
-VELOCITY_SCALE = 0.2  # 每次按键累加的速度步长，单位 m/s（偏航为 rad/s）。
-PUBLISH_TOPIC = "/mavros/setpoint_velocity/cmd_vel_unstamped"
-PUBLISH_RATE_HZ = 100.0
+# GUI 只产生高层意图；所有连续控制参数均在机载 C++ 参数文件中维护。
+VELOCITY_SCALE = 0.2  # 每次按键发送的速度增量，单位 m/s（偏航为 rad/s）。
 TAKEOFF_ALTITUDE = 0.3  # 默认起飞高度，单位 m。
-GRAVITY_ACC = 9.8  # 与原 C++ 控制器保持一致的重力加速度，单位 m/s²。
-
-# MAVLink 消息 ID 及期望频率：LOCAL_POSITION_NED、ATTITUDE_QUATERNION、HIGHRES_IMU。
-MESSAGE_INTERVALS = ((32, 100.0), (31, 100.0), (105, 100.0))
-
-# 实机链路保留 odin1.sh 的默认值，并允许部署机通过环境变量覆盖路径。
-ODIN_SETUP = Path(
-    os.environ.get("GROUND_STATION_ODIN_SETUP", "~/ws/install/setup.bash")
-).expanduser()
-EXTNAV_SETUP = Path(
-    os.environ.get("GROUND_STATION_EXTNAV_SETUP", "~/vrpn_mavros/install/setup.bash")
-).expanduser()
-REAL_FCU_URL = os.environ.get(
-    "GROUND_STATION_REAL_FCU_URL", "/dev/ttyTHS1:460800"
-)
+INTERFACE_PREFIX = os.environ.get("GROUND_STATION_INTERFACE_PREFIX", "/onboard_control")
+COMMAND_TTL_MS = 1500  # 高层离散命令和按键意图的网络有效期。
+LEASE_DURATION_MS = 1500  # 控制权需由 5 Hz 心跳持续续租。
+HEARTBEAT_PERIOD_SECONDS = 0.2
+INTERFACE_VERSION = "1.0"
 
 # GUI 中 GPS 原点的原有默认坐标。
 DEFAULT_GPS_ORIGIN = (30.2489634, 120.2052342, 488.0)
-
-# PD+DOB 悬停默认参数；运行时优先复用项目 YAML。
-HOVER_PARAM_DEFAULTS = {
-    "hover_wn_xy": 2.236,
-    "hover_zeta_xy": 0.8,
-    "hover_wn_z": 2.236,
-    "hover_zeta_z": 0.6,
-    "dob_L_xy": 1.5,
-    "dob_L_z": 0.6,
-    "hover_throttle": 0.2,
-    "thrust_ratio": 2.5,
-    "uav_weight": 1.7,
-}
-
-
-def load_hover_params() -> dict[str, float]:
-    """读取项目 YAML 中的悬停参数，缺项或解析失败时使用安全默认值。"""
-    merged = dict(HOVER_PARAM_DEFAULTS)
-    if not PARAM_FILE.is_file():
-        return merged
-
-    try:
-        import yaml
-
-        with PARAM_FILE.open("r", encoding="utf-8") as stream:
-            data = yaml.safe_load(stream) or {}
-        root = data.get("/**", data) if isinstance(data, dict) else {}
-        params = root.get("ros__parameters", root) if isinstance(root, dict) else {}
-        for key in HOVER_PARAM_DEFAULTS:
-            if key in params:
-                merged[key] = float(params[key])
-    except (OSError, TypeError, ValueError, ImportError) as exc:
-        print(f"[GS] 读取悬停参数失败 ({PARAM_FILE}): {exc}", flush=True)
-    return merged
 
 
 def ros_setup_files(extra: Iterable[Path] = ()) -> tuple[Path, ...]:

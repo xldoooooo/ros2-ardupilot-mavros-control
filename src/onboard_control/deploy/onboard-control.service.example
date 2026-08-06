@@ -1,0 +1,18 @@
+# Example systemd unit for the UAV companion computer; replace WORKSPACE before installation.
+[Unit]
+Description=ROS 2 ArduPilot onboard control service
+After=network-online.target mavros.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nvidia
+EnvironmentFile=-/etc/ros2-ardupilot/onboard.env
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source WORKSPACE/install/setup.bash && exec ros2 launch onboard_control control.launch.py'
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

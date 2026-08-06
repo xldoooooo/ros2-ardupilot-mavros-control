@@ -1,4 +1,4 @@
-"""地面站跨模块共享的不可变数据模型。"""
+"""地面站薄客户端跨 GUI、ROS 与环境编排共享的不可变模型。"""
 
 from __future__ import annotations
 
@@ -7,18 +7,23 @@ from enum import Enum
 
 
 class FlightMode(str, Enum):
-    """GUI 层的互斥飞行控制模式。"""
+    """由机载状态消息报告、GUI 只读展示的控制模式。"""
 
     IDLE = "待机"
-    TAKEOFF_LAND = "起飞/降落"
-    KEYBOARD = "键盘控制"
+    TAKEOFF = "起飞"
+    KEYBOARD = "键盘 PD+DOB"
+    HOVER = "悬停 PD+DOB"
     WAYPOINT = "航点飞行"
+    LAND = "降落"
+    FAILSAFE = "失联保护"
 
 
 @dataclass(frozen=True)
 class VehicleSnapshot:
-    """来自 MAVROS 回调的飞行器状态快照。"""
+    """来自机载聚合状态接口的飞行器、租约和控制诊断快照。"""
 
+    onboard_available: bool = False
+    interface_version: str = ""
     connected: bool = False
     armed: bool = False
     autopilot_mode: str = ""
@@ -30,16 +35,39 @@ class VehicleSnapshot:
     vy: float = 0.0
     vz: float = 0.0
     local_position_valid: bool = False
+    active_mode: FlightMode = FlightMode.IDLE
+    controller_active: bool = False
+    target_x: float = 0.0
+    target_y: float = 0.0
+    target_z: float = 0.0
+    target_yaw: float = 0.0
+    target_vx: float = 0.0
+    target_vy: float = 0.0
+    target_vz: float = 0.0
+    target_yaw_rate: float = 0.0
+    lease_owner: str = ""
+    lease_active: bool = False
+    control_authority: bool = False
+    waypoint_index: int = 0
+    waypoint_count: int = 0
+    message_rates_configured: bool = False
+    thrust_mode_verified: bool = False
+    hover_throttle: float = 0.0
+    setpoint_conflict: bool = False
+    failsafe_reason: str = ""
+    status_message: str = ""
+    control_rate_hz: float = 0.0
+    max_jitter_ms: float = 0.0
+    deadline_miss_count: int = 0
 
 
 @dataclass(frozen=True)
 class CommandRequest:
-    """从 GUI 投递到 ROS 后台线程的命令。"""
+    """从 GUI 投递给地面站 ROS 客户端线程的高层请求。"""
 
     ticket: int
     name: str
     argument: object = None
-    flight_action: int = 0
 
 
 @dataclass(frozen=True)

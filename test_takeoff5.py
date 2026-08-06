@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""共享起飞模式的命令行回归入口，不再复制地面站起飞实现。"""
+"""通过共享高层协议请求机载服务起飞的命令行回归入口。"""
 
 from __future__ import annotations
 
@@ -22,17 +22,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def wait_for_connection(
     controller: GroundStationRosController, timeout: float
 ) -> bool:
-    """等待地面站节点收到新鲜的 MAVROS connected 状态。"""
+    """等待机载服务、飞控状态与本客户端控制租约全部就绪。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if controller.snapshot().connected:
+        snapshot = controller.snapshot()
+        if (
+            snapshot.onboard_available
+            and snapshot.connected
+            and snapshot.control_authority
+        ):
             return True
         time.sleep(0.1)
-    return controller.snapshot().connected
+    snapshot = controller.snapshot()
+    return (
+        snapshot.onboard_available
+        and snapshot.connected
+        and snapshot.control_authority
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    """设置消息频率并执行与 GUI 完全相同的起飞流程。"""
+    """通过机载端设置消息频率并执行与 GUI 相同的起飞请求。"""
     args = parse_args(argv)
     if args.altitude <= 0.0:
         print("[TEST] FAIL: altitude must be greater than zero", flush=True)
@@ -44,9 +54,16 @@ def main(argv: list[str] | None = None) -> int:
         if not controller.ready:
             print(f"[TEST] FAIL: ROS node unavailable: {controller.error}", flush=True)
             return 1
-        print("[TEST] waiting for MAVROS connection...", flush=True)
+        controller.enable_control()
+        print("[TEST] waiting for onboard service, FCU and control lease...", flush=True)
         if not wait_for_connection(controller, args.connection_timeout):
-            print("[TEST] FAIL: MAVROS flight controller not connected", flush=True)
+            snapshot = controller.snapshot()
+            print(
+                "[TEST] FAIL: onboard/FCU/lease not ready "
+                f"(onboard={snapshot.onboard_available}, fcu={snapshot.connected}, "
+                f"owner={snapshot.lease_owner or '--'})",
+                flush=True,
+            )
             return 1
 
         rate_ticket = controller.request_set_rates()

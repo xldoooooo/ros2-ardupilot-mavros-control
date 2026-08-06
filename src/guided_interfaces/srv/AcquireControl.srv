@@ -1,0 +1,11 @@
+# 获取、续租或主动释放单一地面站控制权。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+uint32 lease_duration_ms
+bool release
+---
+bool granted
+string owner
+uint32 lease_remaining_ms
+string message

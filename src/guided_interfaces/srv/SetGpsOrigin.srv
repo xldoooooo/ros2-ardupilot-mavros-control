@@ -1,0 +1,9 @@
+# 由机载服务校验并转发给本机 MAVROS 的 GPS 原点维护接口。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+uint32 ttl_ms
+geographic_msgs/GeoPoint origin
+---
+bool accepted
+string message

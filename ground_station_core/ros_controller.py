@@ -1,159 +1,204 @@
-"""ROS 2 后台桥接：状态订阅、服务命令队列与互斥飞行模式输出。"""
+"""地面站 ROS 2 薄客户端：租约、命令协议、机载状态与结果桥接。"""
 
 from __future__ import annotations
 
+import os
 import queue
+import socket
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import replace
 
-from .config import MESSAGE_INTERVALS, PUBLISH_RATE_HZ, PUBLISH_TOPIC, load_hover_params
-from .dob_controller import DobGains
-from .flight_modes import KeyboardControlMode, TakeoffLandMode, WaypointFlightMode
-from .mode_manager import FlightModeManager
+from .config import (
+    COMMAND_TTL_MS,
+    HEARTBEAT_PERIOD_SECONDS,
+    INTERFACE_PREFIX,
+    INTERFACE_VERSION,
+    LEASE_DURATION_MS,
+)
 from .models import CommandRequest, CommandResult, FlightMode, VehicleSnapshot
-from .ros_services import RosServiceHelper
+
+
+_REMOTE_MODE_MAP = {
+    0: FlightMode.IDLE,
+    1: FlightMode.TAKEOFF,
+    2: FlightMode.KEYBOARD,
+    3: FlightMode.HOVER,
+    4: FlightMode.WAYPOINT,
+    5: FlightMode.LAND,
+    6: FlightMode.FAILSAFE,
+}
 
 
 class _VehicleStateStore:
-    """合并多个 ROS 回调，并让 GUI 获取一致的状态快照。"""
+    """将机载聚合状态转换为线程安全快照，并处理链路新鲜度。"""
 
-    _CONNECTION_STALE_SECONDS = 2.5
+    _STATUS_STALE_SECONDS = 2.5
 
-    def __init__(self) -> None:
+    def __init__(self, source_id: str) -> None:
+        self._source_id = source_id
         self._lock = threading.RLock()
         self._snapshot = VehicleSnapshot()
-        self._last_state_time = 0.0
-        self._last_pose_time = 0.0
+        self._last_status_time = 0.0
 
-    def update_fcu(self, *, connected: bool, armed: bool, mode: str) -> None:
-        """更新飞控状态并记录消息新鲜度。"""
+    def update(self, message) -> None:
+        """用一条 ControlStatus 原子替换完整快照。"""
+        mode = _REMOTE_MODE_MAP.get(int(message.control_mode), FlightMode.IDLE)
+        snapshot = VehicleSnapshot(
+            onboard_available=True,
+            interface_version=message.interface_version,
+            connected=message.fcu_connected,
+            armed=message.armed,
+            autopilot_mode=message.autopilot_mode,
+            x=message.position.x,
+            y=message.position.y,
+            z=message.position.z,
+            yaw=message.yaw,
+            vx=message.velocity.x,
+            vy=message.velocity.y,
+            vz=message.velocity.z,
+            local_position_valid=message.local_position_valid,
+            active_mode=mode,
+            controller_active=message.controller_active,
+            target_x=message.target_position.x,
+            target_y=message.target_position.y,
+            target_z=message.target_position.z,
+            target_yaw=message.target_yaw,
+            target_vx=message.target_velocity.x,
+            target_vy=message.target_velocity.y,
+            target_vz=message.target_velocity.z,
+            target_yaw_rate=message.target_yaw_rate,
+            lease_owner=message.lease_owner,
+            lease_active=message.lease_active,
+            control_authority=(
+                message.lease_active and message.lease_owner == self._source_id
+            ),
+            waypoint_index=message.waypoint_index,
+            waypoint_count=message.waypoint_count,
+            message_rates_configured=message.message_rates_configured,
+            thrust_mode_verified=message.thrust_mode_verified,
+            hover_throttle=message.hover_throttle,
+            setpoint_conflict=message.setpoint_conflict,
+            failsafe_reason=message.failsafe_reason,
+            status_message=message.status_message,
+            control_rate_hz=message.control_rate_hz,
+            max_jitter_ms=message.max_jitter_ms,
+            deadline_miss_count=message.deadline_miss_count,
+        )
         with self._lock:
-            self._snapshot = replace(
-                self._snapshot,
-                connected=connected,
-                armed=armed,
-                autopilot_mode=mode,
-            )
-            self._last_state_time = time.monotonic()
-
-    def update_pose(self, *, x: float, y: float, z: float, yaw: float) -> None:
-        """更新本地 ENU 位姿。"""
-        with self._lock:
-            self._snapshot = replace(
-                self._snapshot,
-                x=x,
-                y=y,
-                z=z,
-                yaw=yaw,
-                local_position_valid=True,
-            )
-            self._last_pose_time = time.monotonic()
-
-    def update_velocity(self, *, vx: float, vy: float, vz: float) -> None:
-        """更新本地 ENU 速度。"""
-        with self._lock:
-            self._snapshot = replace(self._snapshot, vx=vx, vy=vy, vz=vz)
+            self._snapshot = snapshot
+            self._last_status_time = time.monotonic()
 
     def mark_disconnected(self) -> None:
-        """环境清理后立即清除连接/武装状态，避免使用旧回调数据。"""
+        """本地仿真清理后立即清除旧机载/飞控连接状态。"""
         with self._lock:
-            self._snapshot = replace(
-                self._snapshot,
-                connected=False,
-                armed=False,
-                autopilot_mode="",
-                local_position_valid=False,
-            )
-            self._last_state_time = 0.0
-            self._last_pose_time = 0.0
+            self._snapshot = VehicleSnapshot()
+            self._last_status_time = 0.0
 
     def snapshot(self) -> VehicleSnapshot:
-        """返回快照；若状态话题已超时则将连接状态视为断开。"""
+        """返回快照；状态话题超时后不继续显示虚假的连接或控制权。"""
         with self._lock:
             snapshot = self._snapshot
-            last_state_time = self._last_state_time
-            last_pose_time = self._last_pose_time
-        if (
-            snapshot.connected
-            and time.monotonic() - last_state_time > self._CONNECTION_STALE_SECONDS
+            last_status_time = self._last_status_time
+        if snapshot.onboard_available and (
+            time.monotonic() - last_status_time > self._STATUS_STALE_SECONDS
         ):
-            snapshot = replace(
-                snapshot, connected=False, armed=False, autopilot_mode=""
+            return replace(
+                snapshot,
+                onboard_available=False,
+                connected=False,
+                armed=False,
+                local_position_valid=False,
+                active_mode=FlightMode.IDLE,
+                controller_active=False,
+                lease_active=False,
+                control_authority=False,
             )
-        if (
-            snapshot.local_position_valid
-            and time.monotonic() - last_pose_time > self._CONNECTION_STALE_SECONDS
-        ):
-            snapshot = replace(snapshot, local_position_valid=False)
         return snapshot
 
 
 class GroundStationRosController:
-    """在独立线程运行 rclpy，并将三个飞行模式暴露为稳定的 GUI API。"""
+    """仅发送高层意图并显示机载结果，不创建任何 MAVROS setpoint 发布器。"""
 
-    def __init__(self) -> None:
-        """初始化状态存储、模式模块、命令队列与结果通道。"""
-        self._state = _VehicleStateStore()
-        self._mode_manager = FlightModeManager()
-        gains = DobGains.from_mapping(load_hover_params())
-        self._keyboard_mode = KeyboardControlMode(self._mode_manager, gains)
-        self._takeoff_land_mode = TakeoffLandMode(self._mode_manager)
-        self._waypoint_mode = WaypointFlightMode(
-            self._mode_manager, gains, self._emit_waypoint_result
+    def __init__(self, source_id: str | None = None) -> None:
+        """创建客户端身份、命令/结果队列与状态存储。"""
+        default_source = (
+            f"gcs-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         )
-        self._mode_manager.add_listener(self._on_mode_changed)
-
+        self._source_id = source_id or os.environ.get(
+            "GROUND_STATION_SOURCE_ID", default_source
+        )
+        self._state = _VehicleStateStore(self._source_id)
         self._running = False
         self._ready = False
         self._error: str | None = None
+        self._lease_error = ""
         self._thread: threading.Thread | None = None
         self._command_queue: queue.Queue[CommandRequest] = queue.Queue()
         self._ticket_lock = threading.Lock()
         self._next_ticket = 1
-        self._flight_action_lock = threading.RLock()
-        self._flight_action_sequence = 0
 
         self._result_condition = threading.Condition()
         self._result_sequence = 0
-        self._results: deque[CommandResult] = deque(maxlen=256)
+        self._results: deque[CommandResult] = deque(maxlen=512)
         self._ticket_results: dict[int, CommandResult] = {}
-        self._zero_velocity_pending = threading.Event()
+
+        self._release_requested = threading.Event()
+        self._release_finished = threading.Event()
+
+    @property
+    def source_id(self) -> str:
+        """返回本次地面站进程的唯一控制来源标识。"""
+        return self._source_id
 
     @property
     def ready(self) -> bool:
-        """指示 ROS 节点是否创建完成。"""
+        """指示本地 ROS 2 客户端节点是否已创建。"""
         return self._ready
 
     @property
     def error(self) -> str | None:
-        """返回 ROS 后台线程最后一次致命错误。"""
+        """返回客户端线程最后一次致命错误。"""
         return self._error
 
     @property
+    def lease_error(self) -> str:
+        """返回最近一次控制权申请失败原因。"""
+        return self._lease_error
+
+    @property
     def active_mode(self) -> FlightMode:
-        """返回当前互斥飞行模式。"""
-        return self._mode_manager.current
+        """返回机载服务报告的实际控制模式。"""
+        return self.snapshot().active_mode
 
     @property
     def velocity(self) -> tuple[float, float, float, float]:
-        """返回键盘模式当前累加速度。"""
-        return self._keyboard_mode.velocity
+        """返回机载运动参考，而非地面站保存的持续控制状态。"""
+        snapshot = self.snapshot()
+        return (
+            snapshot.target_vx,
+            snapshot.target_vy,
+            snapshot.target_vz,
+            snapshot.target_yaw_rate,
+        )
 
     def snapshot(self) -> VehicleSnapshot:
-        """返回最新飞行器状态快照。"""
+        """返回最新机载聚合状态。"""
         return self._state.snapshot()
 
     def start(self, timeout: float = 5.0) -> None:
-        """启动 ROS 后台线程，并短暂等待节点就绪或失败。"""
+        """启动常驻客户端线程，并等待节点就绪或明确失败。"""
         if self._running:
             return
         self._running = True
         self._ready = False
         self._error = None
+        self._release_requested.clear()
+        self._release_finished.clear()
         self._thread = threading.Thread(
-            target=self._spin, name="ground-station-ros", daemon=True
+            target=self._spin, name="ground-station-ros-client", daemon=True
         )
         self._thread.start()
         deadline = time.monotonic() + timeout
@@ -161,107 +206,86 @@ class GroundStationRosController:
             time.sleep(0.05)
 
     def stop(self) -> None:
-        """停止发布、关闭 rclpy 上下文并等待后台线程退出。"""
-        self.reset_controls()
+        """先主动释放远端控制租约，再关闭本地 ROS 客户端。"""
+        if not self._running:
+            return
+        self.release_control(timeout=1.5)
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         self._ready = False
         self._state.mark_disconnected()
 
+    def enable_control(self) -> None:
+        """允许客户端自动申请控制租约，用于开始仿真或连接实机。"""
+        self._release_finished.clear()
+        self._release_requested.clear()
+
+    def release_control(self, timeout: float = 1.5) -> bool:
+        """主动释放租约但保持状态订阅运行，实机进程不受影响。"""
+        if not self._running:
+            return True
+        self._release_finished.clear()
+        self._release_requested.set()
+        return self._release_finished.wait(timeout=timeout)
+
     def mark_environment_stopped(self) -> None:
-        """由环境管理器在关闭外部 ROS 进程后复位飞行状态。"""
-        self.reset_controls()
+        """本地仿真被终止后立刻丢弃其旧状态。"""
         self._state.mark_disconnected()
 
     def reset_controls(self) -> None:
-        """取消模式、丢弃未执行命令并安排一次零速度发布。"""
-        with self._flight_action_lock:
-            self._flight_action_sequence += 1
-            self._mode_manager.clear()
-            self._keyboard_mode.reset()
-            self._waypoint_mode.reset()
-        self._zero_velocity_pending.set()
-        while True:
-            try:
-                self._command_queue.get_nowait()
-            except queue.Empty:
-                break
+        """请求机载端取消当前任务；实际安全状态仍由机载端裁决。"""
+        self._enqueue("cancel")
 
-    # ---- GUI 直接模式按键 ----
+    def adjust_velocity(
+        self, vx: float, vy: float, vz: float, yaw_rate: float
+    ) -> int:
+        """发送一次有序速度增量意图，累加与限幅均在机载端执行。"""
+        return self._enqueue("motion", (vx, vy, vz, yaw_rate))
 
-    def adjust_velocity(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
-        """由方向按钮激活键盘模式并累加速度。"""
-        with self._flight_action_lock:
-            self._flight_action_sequence += 1
-            self._keyboard_mode.adjust(vx, vy, vz, yaw_rate)
-
-    def request_hover(self) -> None:
-        """由悬停按钮激活键盘模式并抓取当前位置。"""
-        with self._flight_action_lock:
-            self._flight_action_sequence += 1
-            self._keyboard_mode.hover(self.snapshot())
-
-    # ---- 后台服务命令 ----
+    def request_hover(self) -> int:
+        """请求机载端抓取当前位置并切换统一 PD+DOB 悬停。"""
+        return self._enqueue("hover")
 
     def request_takeoff(self, altitude: float) -> int:
-        """排队执行起飞流程并返回结果票据。"""
-        return self._enqueue("takeoff", float(altitude), flight_mode=True)
+        """请求机载端完成 GUIDED、武装、起飞与高度确认。"""
+        return self._enqueue("takeoff", float(altitude))
 
     def request_land(self) -> int:
-        """排队发送 LAND 模式。"""
-        return self._enqueue("land", flight_mode=True)
+        """请求机载端切换 LAND。"""
+        return self._enqueue("land")
 
     def request_set_rates(self) -> int:
-        """排队设置 MAVLink 消息频率。"""
+        """请求机载 MAVROS 配置必要高频消息。"""
         return self._enqueue("set_rates")
 
     def request_waypoints(self, waypoints) -> int:
-        """排队启动航点任务。"""
-        return self._enqueue("waypoints", tuple(waypoints), flight_mode=True)
+        """上传航点副本；进度、到达保持和终点状态均由机载端维护。"""
+        return self._enqueue("waypoints", tuple(waypoints))
 
-    def request_set_gp_origin(self, latitude: float, longitude: float, altitude: float) -> int:
-        """排队发布 GPS 原点。"""
+    def request_set_gp_origin(
+        self, latitude: float, longitude: float, altitude: float
+    ) -> int:
+        """请求机载端向其本机 MAVROS 发布 GPS 原点。"""
         return self._enqueue("set_gp_origin", (latitude, longitude, altitude))
 
-    def _enqueue(self, name: str, argument=None, *, flight_mode: bool = False) -> int:
-        """生成唯一票据并投递命令。"""
+    def _enqueue(self, name: str, argument=None) -> int:
+        """为所有高层输入分配同一单调序号并投递给 ROS 线程。"""
         with self._ticket_lock:
             ticket = self._next_ticket
             self._next_ticket += 1
-        if flight_mode:
-            with self._flight_action_lock:
-                self._flight_action_sequence += 1
-                action = self._flight_action_sequence
-                self._command_queue.put(
-                    CommandRequest(ticket, name, argument, flight_action=action)
-                )
-        else:
-            self._command_queue.put(CommandRequest(ticket, name, argument))
+        self._command_queue.put(CommandRequest(ticket, name, argument))
         return ticket
 
-    def _flight_action_is_current(self, sequence: int) -> bool:
-        """判断排队命令是否仍是用户最后一次飞行模式输入。"""
-        with self._flight_action_lock:
-            return sequence == self._flight_action_sequence
-
-    def _claim_flight_action(self, command: CommandRequest, activate) -> bool:
-        """原子检查输入顺序并激活模式，消除旧队列命令反向覆盖新按键的竞态。"""
-        with self._flight_action_lock:
-            if command.flight_action != self._flight_action_sequence:
-                return False
-            activate()
-            return True
-
     def results_after(self, sequence: int) -> list[CommandResult]:
-        """返回指定序号之后尚未被 GUI 消费的结果。"""
+        """返回指定本地结果序号之后的增量事件。"""
         with self._result_condition:
             return [result for result in self._results if result.sequence > sequence]
 
     def wait_for_result(
         self, ticket: int, timeout: float, require_final: bool = True
     ) -> CommandResult | None:
-        """供初始化流程和 CLI 测试等待指定票据结果。"""
+        """供初始化流程与 CLI 等待机载命令的终态或进度。"""
         deadline = time.monotonic() + timeout
         with self._result_condition:
             while True:
@@ -281,7 +305,7 @@ class GroundStationRosController:
         message: str,
         final: bool = True,
     ) -> None:
-        """保存结果、唤醒同步等待者，并供 GUI 增量读取。"""
+        """统一保存本地传输错误与远端可靠命令结果。"""
         with self._result_condition:
             self._result_sequence += 1
             result = CommandResult(
@@ -291,134 +315,129 @@ class GroundStationRosController:
             self._ticket_results[ticket] = result
             self._result_condition.notify_all()
 
-    def _emit_waypoint_result(
-        self, ticket: int, success: bool, message: str, final: bool
-    ) -> None:
-        """接收航点模式的异步进度与完成事件。"""
-        self._emit_result(ticket, "waypoints", success, message, final)
-
-    def _on_mode_changed(self, previous: FlightMode, current: FlightMode) -> None:
-        """模式覆盖时安排零速度帧，清除 MAVROS 中可能残留的速度设定点。"""
-        if previous is FlightMode.KEYBOARD and current is not FlightMode.KEYBOARD:
-            self._zero_velocity_pending.set()
-
-    # ---- ROS 线程 ----
-
     def _spin(self) -> None:
-        """创建 ROS 实体并循环处理服务命令及当前模式输出。"""
+        """创建高层协议实体，处理租约、服务 future 和状态订阅。"""
         context = None
         node = None
         try:
-            import math
             import rclpy
-            from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
-            from mavros_msgs.msg import AttitudeTarget, State
-            from mavros_msgs.srv import CommandBool, CommandTOL, MessageInterval, SetMode
+            from guided_interfaces.msg import (
+                CommandResult as RemoteCommandResult,
+                ControlHeartbeat,
+                ControlStatus,
+                MotionIntent,
+                Waypoint,
+            )
+            from guided_interfaces.srv import (
+                AcquireControl,
+                ExecuteWaypoints,
+                FlightCommand,
+                SetGpsOrigin,
+            )
 
-            # 地面站进程只创建这一个 rclpy 上下文；使用默认上下文可确保
-            # rclpy.spin_once() 与节点使用同一个全局执行器（Jazzy 要求）。
             rclpy.init(args=["--ros-args", "--log-level", "warn"])
             context = rclpy.get_default_context()
-            node = rclpy.create_node("ground_station_node")
-            velocity_publisher = node.create_publisher(Twist, PUBLISH_TOPIC, 10)
-            position_publisher = node.create_publisher(
-                PoseStamped, "/mavros/setpoint_position/local", 10
-            )
-            attitude_publisher = node.create_publisher(
-                AttitudeTarget, "/mavros/setpoint_raw/attitude", 10
-            )
+            node = rclpy.create_node("ground_station_client")
 
+            heartbeat_publisher = node.create_publisher(
+                ControlHeartbeat, f"{INTERFACE_PREFIX}/heartbeat", 10
+            )
+            motion_publisher = node.create_publisher(
+                MotionIntent, f"{INTERFACE_PREFIX}/motion_intent", 20
+            )
             clients = {
-                "takeoff": node.create_client(CommandTOL, "/mavros/cmd/takeoff"),
-                "set_mode": node.create_client(SetMode, "/mavros/set_mode"),
-                "arming": node.create_client(CommandBool, "/mavros/cmd/arming"),
-                "message_interval": node.create_client(
-                    MessageInterval, "/mavros/set_message_interval"
+                "lease": node.create_client(
+                    AcquireControl, f"{INTERFACE_PREFIX}/acquire_control"
+                ),
+                "flight": node.create_client(
+                    FlightCommand, f"{INTERFACE_PREFIX}/flight_command"
+                ),
+                "waypoints": node.create_client(
+                    ExecuteWaypoints, f"{INTERFACE_PREFIX}/execute_waypoints"
+                ),
+                "origin": node.create_client(
+                    SetGpsOrigin, f"{INTERFACE_PREFIX}/set_gps_origin"
                 ),
             }
 
-            def state_callback(message: State) -> None:
-                self._state.update_fcu(
-                    connected=message.connected,
-                    armed=message.armed,
-                    mode=message.mode,
+            def status_callback(message: ControlStatus) -> None:
+                self._state.update(message)
+
+            def result_callback(message: RemoteCommandResult) -> None:
+                if message.source_id != self._source_id:
+                    return
+                successful = message.status in (
+                    RemoteCommandResult.STATUS_RUNNING,
+                    RemoteCommandResult.STATUS_SUCCEEDED,
+                )
+                self._emit_result(
+                    int(message.sequence),
+                    message.command,
+                    successful,
+                    message.message,
+                    message.final,
                 )
 
-            def pose_callback(message: PoseStamped) -> None:
-                orientation = message.pose.orientation
-                sine = 2.0 * (
-                    orientation.w * orientation.z + orientation.x * orientation.y
-                )
-                cosine = 1.0 - 2.0 * (
-                    orientation.y * orientation.y + orientation.z * orientation.z
-                )
-                self._state.update_pose(
-                    x=message.pose.position.x,
-                    y=message.pose.position.y,
-                    z=message.pose.position.z,
-                    yaw=math.atan2(sine, cosine),
-                )
-
-            def velocity_callback(message: TwistStamped) -> None:
-                self._state.update_velocity(
-                    vx=message.twist.linear.x,
-                    vy=message.twist.linear.y,
-                    vz=message.twist.linear.z,
-                )
-
-            node.create_subscription(State, "/mavros/state", state_callback, 10)
-            best_effort = rclpy.qos.QoSProfile(
+            status_qos = rclpy.qos.QoSProfile(
                 depth=1,
                 reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
             )
-            node.create_subscription(
-                PoseStamped,
-                "/mavros/local_position/pose",
-                pose_callback,
-                best_effort,
-            )
-            node.create_subscription(
-                TwistStamped,
-                "/mavros/local_position/velocity_local",
-                velocity_callback,
-                best_effort,
+            subscriptions = (
+                node.create_subscription(
+                    ControlStatus,
+                    f"{INTERFACE_PREFIX}/status",
+                    status_callback,
+                    status_qos,
+                ),
+                node.create_subscription(
+                    RemoteCommandResult,
+                    f"{INTERFACE_PREFIX}/command_result",
+                    result_callback,
+                    50,
+                ),
             )
 
+            ros_entities = {
+                "node": node,
+                "clients": clients,
+                "motion_publisher": motion_publisher,
+                "heartbeat_publisher": heartbeat_publisher,
+                "AcquireControl": AcquireControl,
+                "ControlHeartbeat": ControlHeartbeat,
+                "MotionIntent": MotionIntent,
+                "Waypoint": Waypoint,
+                "FlightCommand": FlightCommand,
+                "ExecuteWaypoints": ExecuteWaypoints,
+                "SetGpsOrigin": SetGpsOrigin,
+                "subscriptions": subscriptions,
+            }
+            pending_services: dict[int, tuple] = {}
+            lease_state = {
+                "sequence": 0,
+                "future": None,
+                "last_attempt": 0.0,
+                "last_heartbeat": 0.0,
+                "granted_hint": False,
+                "release_future": None,
+            }
             self._ready = True
-            period = 1.0 / PUBLISH_RATE_HZ
+
             while self._running and context.ok():
-                self._process_one_command(node, clients)
-                snapshot = self.snapshot()
+                rclpy.spin_once(node, timeout_sec=0.02)
+                self._poll_pending_services(pending_services)
+                self._update_lease(ros_entities, lease_state)
+                self._process_one_command(ros_entities, pending_services)
 
-                if self._zero_velocity_pending.is_set():
-                    velocity_publisher.publish(Twist())
-                    self._zero_velocity_pending.clear()
-
-                active_mode = self._mode_manager.current
-                if active_mode is FlightMode.KEYBOARD:
-                    self._keyboard_mode.publish(
-                        node,
-                        velocity_publisher,
-                        attitude_publisher,
-                        position_publisher,
-                        snapshot,
-                    )
-                elif active_mode is FlightMode.WAYPOINT:
-                    self._waypoint_mode.publish(
-                        node, attitude_publisher, position_publisher, snapshot
-                    )
-                rclpy.spin_once(node, timeout_sec=period)
-
-            velocity_publisher.publish(Twist())
-            rclpy.spin_once(node, timeout_sec=0.05)
-        except Exception as exc:  # ROS 初始化/运行失败必须传回 GUI，而不是静默退出。
+            self._release_finished.set()
+        except Exception as exc:
             import traceback
 
             self._error = str(exc)
-            print(f"[GS] ROS2 后台线程异常: {exc}", flush=True)
+            print(f"[GS] ROS2 客户端线程异常: {exc}", flush=True)
             traceback.print_exc()
         finally:
             self._ready = False
+            self._release_finished.set()
             if node is not None:
                 try:
                     node.destroy_node()
@@ -433,185 +452,237 @@ class GroundStationRosController:
                 except Exception:
                     pass
 
-    def _process_one_command(self, node, clients: dict[str, object]) -> None:
-        """每个主循环最多执行一条命令，避免 GUI 请求饿死订阅回调。"""
+    def _update_lease(self, ros_entities: dict[str, object], state: dict) -> None:
+        """自动申请/续租控制权，并在关闭前主动释放。"""
+        node = ros_entities["node"]
+        client = ros_entities["clients"]["lease"]
+        now = time.monotonic()
+
+        release_future = state["release_future"]
+        if release_future is not None and release_future.done():
+            state["granted_hint"] = False
+            self._release_finished.set()
+            state["release_future"] = None
+
+        if self._release_requested.is_set():
+            if state["release_future"] is None and client.service_is_ready():
+                request = ros_entities["AcquireControl"].Request()
+                state["sequence"] += 1
+                request.stamp = node.get_clock().now().to_msg()
+                request.source_id = self._source_id
+                request.sequence = state["sequence"]
+                request.lease_duration_ms = LEASE_DURATION_MS
+                request.release = True
+                state["release_future"] = client.call_async(request)
+            elif state["release_future"] is None:
+                state["granted_hint"] = False
+                self._release_finished.set()
+            return
+
+        snapshot = self.snapshot()
+        compatible = (
+            snapshot.onboard_available
+            and snapshot.interface_version == INTERFACE_VERSION
+        )
+        if snapshot.interface_version and snapshot.interface_version != INTERFACE_VERSION:
+            self._lease_error = (
+                f"接口版本不兼容：地面站 {INTERFACE_VERSION} / "
+                f"机载端 {snapshot.interface_version}"
+            )
+            return
+
+        lease_future = state["future"]
+        if lease_future is not None and lease_future.done():
+            try:
+                response = lease_future.result()
+                state["granted_hint"] = bool(response and response.granted)
+                self._lease_error = "" if state["granted_hint"] else response.message
+            except Exception as exc:
+                state["granted_hint"] = False
+                self._lease_error = f"控制权申请异常: {exc}"
+            state["future"] = None
+
+        owns_control = snapshot.control_authority or state["granted_hint"]
+        if owns_control and now - state["last_heartbeat"] >= HEARTBEAT_PERIOD_SECONDS:
+            heartbeat = ros_entities["ControlHeartbeat"]()
+            state["sequence"] += 1
+            heartbeat.header.stamp = node.get_clock().now().to_msg()
+            heartbeat.source_id = self._source_id
+            heartbeat.sequence = state["sequence"]
+            heartbeat.lease_duration_ms = LEASE_DURATION_MS
+            ros_entities["heartbeat_publisher"].publish(heartbeat)
+            state["last_heartbeat"] = now
+
+        if (
+            compatible
+            and not owns_control
+            and state["future"] is None
+            and client.service_is_ready()
+            and now - state["last_attempt"] >= 1.0
+        ):
+            request = ros_entities["AcquireControl"].Request()
+            state["sequence"] += 1
+            request.stamp = node.get_clock().now().to_msg()
+            request.source_id = self._source_id
+            request.sequence = state["sequence"]
+            request.lease_duration_ms = LEASE_DURATION_MS
+            request.release = False
+            state["future"] = client.call_async(request)
+            state["last_attempt"] = now
+
+    def _process_one_command(
+        self, ros_entities: dict[str, object], pending_services: dict[int, tuple]
+    ) -> None:
+        """每轮最多发送一个高层请求，保持客户端事件循环可响应。"""
         try:
             command = self._command_queue.get_nowait()
         except queue.Empty:
             return
 
-        helper = RosServiceHelper(node, self.snapshot, lambda: self._running)
-        try:
-            if command.name == "takeoff":
-                if not self._claim_flight_action(
-                    command, self._takeoff_land_mode.activate
-                ):
-                    self._emit_result(
-                        command.ticket,
-                        command.name,
-                        False,
-                        "起飞命令已被后续飞行模式按键覆盖",
-                    )
-                    return
-                mode_helper = RosServiceHelper(
-                    node,
-                    self.snapshot,
-                    lambda: self._running
-                    and self._mode_manager.current is FlightMode.TAKEOFF_LAND
-                    and self._flight_action_is_current(command.flight_action),
-                )
-                success, message = self._takeoff_land_mode.execute_takeoff(
-                    command.argument,
-                    mode_helper,
-                    self.snapshot,
-                    clients["takeoff"],
-                    clients["set_mode"],
-                    clients["arming"],
-                )
-                self._emit_result(
-                    command.ticket, command.name, success, message, final=True
-                )
-            elif command.name == "land":
-                if not self._claim_flight_action(
-                    command, self._takeoff_land_mode.activate
-                ):
-                    self._emit_result(
-                        command.ticket,
-                        command.name,
-                        False,
-                        "降落命令已被后续飞行模式按键覆盖",
-                    )
-                    return
-                mode_helper = RosServiceHelper(
-                    node,
-                    self.snapshot,
-                    lambda: self._running
-                    and self._mode_manager.current is FlightMode.TAKEOFF_LAND
-                    and self._flight_action_is_current(command.flight_action),
-                )
-                success, message = self._takeoff_land_mode.execute_land(
-                    mode_helper, clients["set_mode"]
-                )
-                self._emit_result(command.ticket, command.name, success, message)
-            elif command.name == "set_rates":
-                success, message = self._set_message_rates(
-                    helper, clients["message_interval"]
-                )
-                self._emit_result(command.ticket, command.name, success, message)
-            elif command.name == "set_gp_origin":
-                success, message = self._set_gp_origin(node, command.argument)
-                self._emit_result(command.ticket, command.name, success, message)
-            elif command.name == "waypoints":
-                self._start_waypoint_command(command, node, clients)
-            else:
-                self._emit_result(
-                    command.ticket, command.name, False, f"未知命令: {command.name}"
-                )
-        except Exception as exc:
+        snapshot = self.snapshot()
+        if not snapshot.onboard_available:
             self._emit_result(
-                command.ticket, command.name, False, f"{command.name} 执行异常: {exc}"
+                command.ticket, command.name, False, "机载控制服务不可用"
             )
-
-    def _set_message_rates(self, helper: RosServiceHelper, client) -> tuple[bool, str]:
-        """依次设置本地位置、姿态和高频 IMU 的 MAVLink 消息频率。"""
-        from mavros_msgs.srv import MessageInterval
-
-        if not client.wait_for_service(timeout_sec=5.0):
-            return False, "MAVROS 消息频率服务不可用"
-        for message_id, rate in MESSAGE_INTERVALS:
-            request = MessageInterval.Request()
-            request.message_id = message_id
-            request.message_rate = rate
-            future = client.call_async(request)
-            if not helper.wait_future(future, 5.0, f"设置消息 {message_id} 频率"):
-                return False, f"消息 {message_id} 频率设置超时"
-            response = future.result()
-            if response is None or not response.success:
-                return False, f"飞控拒绝消息 {message_id} 的频率设置"
-        return True, "消息频率已设置 (local position/attitude/IMU = 100Hz)"
-
-    def _set_gp_origin(self, node, origin) -> tuple[bool, str]:
-        """多次发布 GeographicLib GPS 原点，降低发现阶段丢包概率。"""
-        import rclpy
-        from geographic_msgs.msg import GeoPointStamped
-
-        latitude, longitude, altitude = (float(value) for value in origin)
-        publisher = node.create_publisher(
-            GeoPointStamped, "/mavros/global_position/set_gp_origin", 10
-        )
-        try:
-            message = GeoPointStamped()
-            message.header.frame_id = "map"
-            message.position.latitude = latitude
-            message.position.longitude = longitude
-            message.position.altitude = altitude
-            for _ in range(5):
-                message.header.stamp = node.get_clock().now().to_msg()
-                publisher.publish(message)
-                rclpy.spin_once(node, timeout_sec=0.05)
-        finally:
-            node.destroy_publisher(publisher)
-        return (
-            True,
-            f"GPS 原点已设置 (lat={latitude:.7f}, lon={longitude:.7f}, alt={altitude:.1f})",
-        )
-
-    def _start_waypoint_command(self, command: CommandRequest, node, clients) -> None:
-        """确保 GUIDED/武装后启动航点模式，并允许键盘按键中途覆盖。"""
-        if not self._claim_flight_action(
-            command, lambda: self._mode_manager.activate(FlightMode.WAYPOINT)
-        ):
+            return
+        if snapshot.interface_version != INTERFACE_VERSION:
             self._emit_result(
                 command.ticket,
                 command.name,
                 False,
-                "航点命令已被后续飞行模式按键覆盖",
+                f"接口版本不兼容：期望 {INTERFACE_VERSION}，收到 "
+                f"{snapshot.interface_version or '--'}",
             )
             return
-        if not command.argument:
-            self._mode_manager.clear()
-            self._emit_result(command.ticket, command.name, False, "航点列表为空")
-            return
-        if not self.snapshot().connected:
-            self._mode_manager.clear()
-            self._emit_result(command.ticket, command.name, False, "飞控未连接，无法执行航点任务")
-            return
-
-        helper = RosServiceHelper(
-            node,
-            self.snapshot,
-            lambda: self._running
-            and self._mode_manager.current is FlightMode.WAYPOINT
-            and self._flight_action_is_current(command.flight_action),
-        )
-        success, message = helper.ensure_guided(clients["set_mode"])
-        if success:
-            success, message = helper.ensure_armed(clients["arming"])
-        action_is_current = self._flight_action_is_current(command.flight_action)
-        if (
-            not success
-            or self._mode_manager.current is not FlightMode.WAYPOINT
-            or not action_is_current
-        ):
-            if (
-                self._mode_manager.current is FlightMode.WAYPOINT
-                and action_is_current
-            ):
-                self._mode_manager.clear()
-            message = (
-                "航点任务已被其他飞行模式覆盖"
-                if not action_is_current
-                or (self._mode_manager.current is not FlightMode.IDLE and success)
-                else message
+        if not snapshot.control_authority:
+            owner = snapshot.lease_owner or "无"
+            self._emit_result(
+                command.ticket,
+                command.name,
+                False,
+                f"地面站未持有控制权（当前持有者: {owner}）",
             )
-            self._emit_result(command.ticket, command.name, False, message)
             return
 
-        self._waypoint_mode.start(command.ticket, command.argument)
-        self._emit_result(
-            command.ticket,
-            command.name,
-            True,
-            f"航点任务已启动 — 共 {len(command.argument)} 个航点",
-            final=False,
-        )
+        node = ros_entities["node"]
+        clients = ros_entities["clients"]
+        try:
+            if command.name == "motion":
+                message = ros_entities["MotionIntent"]()
+                message.header.stamp = node.get_clock().now().to_msg()
+                message.source_id = self._source_id
+                message.sequence = command.ticket
+                message.ttl_ms = COMMAND_TTL_MS
+                (
+                    message.velocity_delta.x,
+                    message.velocity_delta.y,
+                    message.velocity_delta.z,
+                    message.yaw_rate_delta,
+                ) = (float(value) for value in command.argument)
+                ros_entities["motion_publisher"].publish(message)
+                self._emit_result(
+                    command.ticket,
+                    command.name,
+                    True,
+                    "运动意图已发送，等待机载确认",
+                    final=False,
+                )
+                return
+
+            if command.name == "waypoints":
+                client = clients["waypoints"]
+                if not client.service_is_ready():
+                    raise RuntimeError("机载航点服务不可用")
+                request = ros_entities["ExecuteWaypoints"].Request()
+                request.stamp = node.get_clock().now().to_msg()
+                request.source_id = self._source_id
+                request.sequence = command.ticket
+                request.ttl_ms = COMMAND_TTL_MS
+                for values in command.argument:
+                    waypoint = ros_entities["Waypoint"]()
+                    waypoint.position.x = float(values[0])
+                    waypoint.position.y = float(values[1])
+                    waypoint.position.z = float(values[2])
+                    waypoint.yaw = float(values[3])
+                    request.waypoints.append(waypoint)
+                future = client.call_async(request)
+            elif command.name == "set_gp_origin":
+                client = clients["origin"]
+                if not client.service_is_ready():
+                    raise RuntimeError("机载 GPS 原点服务不可用")
+                request = ros_entities["SetGpsOrigin"].Request()
+                request.stamp = node.get_clock().now().to_msg()
+                request.source_id = self._source_id
+                request.sequence = command.ticket
+                request.ttl_ms = COMMAND_TTL_MS
+                (
+                    request.origin.latitude,
+                    request.origin.longitude,
+                    request.origin.altitude,
+                ) = (float(value) for value in command.argument)
+                future = client.call_async(request)
+            else:
+                client = clients["flight"]
+                if not client.service_is_ready():
+                    raise RuntimeError("机载飞行命令服务不可用")
+                command_codes = {
+                    "takeoff": ros_entities["FlightCommand"].Request.COMMAND_TAKEOFF,
+                    "land": ros_entities["FlightCommand"].Request.COMMAND_LAND,
+                    "hover": ros_entities["FlightCommand"].Request.COMMAND_HOVER,
+                    "cancel": ros_entities["FlightCommand"].Request.COMMAND_CANCEL,
+                    "set_rates": (
+                        ros_entities["FlightCommand"].Request.COMMAND_CONFIGURE_RATES
+                    ),
+                }
+                if command.name not in command_codes:
+                    raise RuntimeError(f"未知命令: {command.name}")
+                request = ros_entities["FlightCommand"].Request()
+                request.stamp = node.get_clock().now().to_msg()
+                request.source_id = self._source_id
+                request.sequence = command.ticket
+                request.ttl_ms = COMMAND_TTL_MS
+                request.command = command_codes[command.name]
+                request.value = float(command.argument or 0.0)
+                future = client.call_async(request)
+
+            pending_services[command.ticket] = (
+                future,
+                command,
+                time.monotonic() + 6.0,
+            )
+        except Exception as exc:
+            self._emit_result(
+                command.ticket, command.name, False, f"发送 {command.name} 失败: {exc}"
+            )
+
+    def _poll_pending_services(self, pending_services: dict[int, tuple]) -> None:
+        """将服务级拒绝/超时转换为 GUI 可见终态；执行结果由机载话题返回。"""
+        now = time.monotonic()
+        for ticket, (future, command, deadline) in tuple(pending_services.items()):
+            if future.done():
+                try:
+                    response = future.result()
+                    accepted = bool(response and response.accepted)
+                    if not accepted:
+                        message = response.message if response else "机载服务无响应"
+                        self._emit_result(
+                            ticket, command.name, False, message, final=True
+                        )
+                except Exception as exc:
+                    self._emit_result(
+                        ticket,
+                        command.name,
+                        False,
+                        f"机载服务调用异常: {exc}",
+                        final=True,
+                    )
+                pending_services.pop(ticket, None)
+            elif now >= deadline:
+                self._emit_result(
+                    ticket,
+                    command.name,
+                    False,
+                    "等待机载服务接收确认超时",
+                    final=True,
+                )
+                pending_services.pop(ticket, None)

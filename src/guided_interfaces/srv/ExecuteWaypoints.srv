@@ -1,0 +1,9 @@
+# 上传一份由机载端独立执行的本地 ENU 航点任务。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+uint32 ttl_ms
+guided_interfaces/Waypoint[] waypoints
+---
+bool accepted
+string message
