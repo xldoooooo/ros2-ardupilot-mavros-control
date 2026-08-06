@@ -10,8 +10,6 @@ from tkinter import messagebox
 
 from .config import (
     DEFAULT_GPS_ORIGIN,
-    PUBLISH_RATE_HZ,
-    PUBLISH_TOPIC,
     TAKEOFF_ALTITUDE,
     VELOCITY_SCALE,
 )
@@ -104,7 +102,7 @@ class GroundStationApp:
         self._simulation_button.pack(fill="x", padx=20, pady=(0, 4))
         self._hardware_button = tk.Button(
             parent,
-            text="初始化实机环境",
+            text="连接实机机载服务",
             bg="#1a5a8a",
             activebackground="#2070a0",
             command=self._initialize_hardware,
@@ -197,14 +195,11 @@ class GroundStationApp:
         ).pack(side="left", padx=6)
 
     def _build_keyboard_panel(self, parent: tk.Frame) -> None:
-        """构建键盘控制模式的方向及悬停按钮。"""
-        self._section_title(parent, "── 键盘控制模式 / Velocity ──")
+        """构建只发送速度增量意图的方向及悬停按钮。"""
+        self._section_title(parent, "── 键盘高层意图 / Motion Intent ──")
         tk.Label(
             parent,
-            text=(
-                f"Topic: {PUBLISH_TOPIC}  |  步长: {VELOCITY_SCALE}  |  "
-                f"{PUBLISH_RATE_HZ:.0f} Hz"
-            ),
+            text=f"增量: {VELOCITY_SCALE} m/s · 机载 100 Hz C++ PD+DOB",
             font=("Helvetica", 8),
             fg="#666666",
             bg=self._BACKGROUND,
@@ -272,12 +267,12 @@ class GroundStationApp:
         ).pack()
 
     def _build_process_panel(self, parent: tk.Frame) -> None:
-        """构建彻底清理与退出按钮及主状态文本。"""
+        """构建本地仿真清理、控制权释放与退出按钮。"""
         row = tk.Frame(parent, bg=self._BACKGROUND)
         row.pack(pady=(0, 4))
         self._cleanup_button = tk.Button(
             row,
-            text="关闭所有进程",
+            text="断开并关闭本地仿真",
             font=("Helvetica", 10),
             bg="#8b3a1a",
             fg="#ffffff",
@@ -325,7 +320,7 @@ class GroundStationApp:
         ).pack(pady=(10, 6))
         tk.Label(
             parent,
-            text="本地 ENU 坐标 · 直接飞行 · PD+DOB 跟踪",
+            text="本地 ENU 航点 · 上传机载执行 · C++ PD+DOB 跟踪",
             font=("Helvetica", 9),
             fg="#777777",
             bg=self._BACKGROUND,
@@ -449,7 +444,7 @@ class GroundStationApp:
             self._set_environment_buttons(True)
 
     def _initialize_hardware(self) -> None:
-        """读取 GPS 原点并启动完整实机初始化工作流。"""
+        """读取 GPS 原点并连接局域网中的独立机载服务。"""
         origin = self._read_origin()
         if origin is None:
             return
@@ -469,12 +464,14 @@ class GroundStationApp:
         self._ui_events.put(("done", success, message))
 
     def _cleanup_all(self) -> None:
-        """后台执行彻底清理，保持 GUI 可响应并允许后续重新初始化。"""
+        """后台释放租约并清理本地仿真；远端机载服务继续独立运行。"""
         if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
             return
         self._set_environment_buttons(False)
         self._cleanup_button.config(state="disabled")
-        self._main_status.config(text="正在终止并校验所有 ROS/SITL 进程...", fg="#ccaa00")
+        self._main_status.config(
+            text="正在释放控制权并终止本项目本地仿真进程...", fg="#ccaa00"
+        )
 
         def worker() -> None:
             report = self._environment.cleanup()
@@ -498,14 +495,14 @@ class GroundStationApp:
         self._ros.request_land()
 
     def _on_direction(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
-        """按下方向键，选择键盘模式并累加一次速度。"""
+        """按下方向键，向机载端发送一次有序速度增量意图。"""
         self._ros.adjust_velocity(vx, vy, vz, yaw_rate)
-        self._main_status.config(text="键盘控制模式已接管", fg="#00cc66")
+        self._main_status.config(text="运动意图已发送，等待机载确认", fg="#ccaa00")
 
     def _hover(self) -> None:
-        """按下悬停键，选择键盘模式的 PD+DOB 分支。"""
+        """请求机载端抓取当前位置并执行 PD+DOB 悬停。"""
         self._ros.request_hover()
-        self._main_status.config(text="键盘控制模式 — PD+DOB 悬停", fg="#00cc66")
+        self._main_status.config(text="悬停请求已发送，等待机载确认", fg="#ccaa00")
 
     def _set_origin(self) -> None:
         """手动发布当前输入的 GPS 原点。"""
@@ -600,10 +597,14 @@ class GroundStationApp:
         if self._closing:
             return
         snapshot = self._ros.snapshot()
-        if self._ros.ready:
-            self._ros_status.config(text="ROS2: 已连接", fg="#00cc66")
-        elif self._ros.error:
+        if self._ros.error:
             self._ros_status.config(text=f"ROS2: 错误 {self._ros.error[:45]}", fg="#cc3333")
+        elif snapshot.onboard_available and snapshot.control_authority:
+            self._ros_status.config(text="机载: 已连接/有控制权", fg="#00cc66")
+        elif snapshot.onboard_available:
+            self._ros_status.config(text="机载: 已连接/只读", fg="#ccaa00")
+        elif self._ros.ready:
+            self._ros_status.config(text="ROS2: 等待机载服务", fg="#ccaa00")
         else:
             self._ros_status.config(text="ROS2: 连接中...", fg="#ccaa00")
         self._fc_status.config(
@@ -611,12 +612,17 @@ class GroundStationApp:
             fg="#00cc66" if snapshot.connected else "#ccaa00",
         )
         mode = self._ros.active_mode
+        mode_color = (
+            "#cc3333"
+            if mode is FlightMode.FAILSAFE
+            else "#00cc66" if mode is not FlightMode.IDLE else "#888888"
+        )
         self._mode_status.config(
-            text=f"模式: {mode.value}", fg="#00cc66" if mode is not FlightMode.IDLE else "#888888"
+            text=f"模式: {mode.value}", fg=mode_color
         )
         vx, vy, vz, yaw_rate = self._ros.velocity
         self._velocity_status.config(
-            text=f"Vx: {vx:+.2f}  Vy: {vy:+.2f}  Vz: {vz:+.2f}  Yaw: {yaw_rate:+.2f}"
+            text=f"目标 Vx:{vx:+.2f} Vy:{vy:+.2f} Vz:{vz:+.2f} Yaw:{yaw_rate:+.2f}"
         )
         self._position_status.config(
             text=f"X: {snapshot.x:+.2f}  Y: {snapshot.y:+.2f}  Z: {snapshot.z:+.2f}  "
@@ -659,8 +665,8 @@ class GroundStationApp:
                 report: CleanupReport = event[1]
                 if report.success:
                     message = (
-                        f"清理完成：终止 {report.managed_stopped} 个受管进程、"
-                        f"{len(report.stale_stopped)} 个历史残留；已验证无 ROS/SITL 残余"
+                        f"本地清理完成：终止 {report.managed_stopped} 个受管进程、"
+                        f"{len(report.stale_stopped)} 个项目残留；远端机载服务未终止"
                     )
                     color = "#00cc66"
                 else:

@@ -86,22 +86,14 @@ def build_sourced_environment(
 
 
 class ProcessSupervisor:
-    """跟踪地面站子进程，并清理 GUI 启动或历史脚本遗留的 ROS 进程。"""
+    """跟踪并清理本项目本地仿真进程，不扫描或终止任意 ROS 工作负载。"""
 
-    # 精确进程名覆盖本项目所有脚本功能及 ros2 launch 的常见子节点。
-    _ROS_EXECUTABLES = {
-        "ArduCopter",
-        "MAVProxy.py",
-        "arducopter",
-        "extnav_to_vision_pose",
+    # 只有本项目独有的节点名可以直接匹配；MAVROS/RViz/SITL 等通用进程
+    # 必须再带本项目参数，避免在共享开发机上误杀其他 ROS 工作负载。
+    _PROJECT_EXECUTABLES = {
         "keyboard_vel_controller",
-        "mavproxy.py",
-        "mavros_node",
-        "odin_ros_driver",
+        "onboard_control_node",
         "pose_to_tf.py",
-        "robot_state_publisher",
-        "rviz2",
-        "sim_vehicle.py",
     }
 
     def __init__(self) -> None:
@@ -233,19 +225,6 @@ class ProcessSupervisor:
         stale_pids = tuple(pid for pid, _ in self.find_related_processes())
         self._terminate_pids(stale_pids, errors)
 
-        # 关闭 ROS 2 discovery daemon；失败不掩盖真正的节点残留验证。
-        try:
-            subprocess.run(
-                ["ros2", "daemon", "stop"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5.0,
-                check=False,
-                env=os.environ.copy(),
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
         remaining = tuple(self.find_related_processes())
         return CleanupReport(
             managed_stopped=managed_stopped,
@@ -287,20 +266,31 @@ class ProcessSupervisor:
         basenames = [Path(token).name for token in argv]
         if "ground_station.py" in basenames:
             return False
-        if any(name in cls._ROS_EXECUTABLES for name in basenames):
+        if any(name in cls._PROJECT_EXECUTABLES for name in basenames):
             return True
 
-        for index, name in enumerate(basenames):
-            if name == "ros2" and index + 1 < len(argv):
-                if argv[index + 1] in {"launch", "run", "daemon"}:
-                    return True
+        command_line = " ".join(argv)
+        if "sim_vehicle.py" in basenames and "GUID_OPTIONS=8" in command_line:
+            return True
+        if any(name in {"MAVProxy.py", "mavproxy.py"} for name in basenames):
+            return "127.0.0.1:5762" in command_line
+        if "mavros_node" in basenames:
+            return "fcu_url:=tcp://127.0.0.1:5762" in command_line
+        if any(name in {"rviz2", "robot_state_publisher"} for name in basenames):
+            return "guided_sim" in command_line or "quadcopter.rviz" in command_line
 
-        # ros2 launch 生成的原生节点通常直接从 ROS/colcon 的 lib 目录执行。
-        for token in argv:
-            normalized = token.replace("\\", "/")
-            if "/lib/" not in normalized:
+        # 只识别本项目独有的包；通用 MAVROS 还必须匹配本地 SITL 端点。
+        local_packages = {"guided_sim", "onboard_control"}
+        for index, name in enumerate(basenames):
+            if name != "ros2" or index + 2 >= len(argv):
                 continue
-            if "/opt/ros/" in normalized or "/install/" in normalized:
+            if argv[index + 1] in {"launch", "run"} and argv[index + 2] in local_packages:
+                return True
+            if (
+                argv[index + 1] in {"launch", "run"}
+                and argv[index + 2] == "mavros"
+                and "fcu_url:=tcp://127.0.0.1:5762" in command_line
+            ):
                 return True
         return False
 

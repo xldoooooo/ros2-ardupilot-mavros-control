@@ -1,31 +1,21 @@
 <?xml version="1.0"?>
-<!-- 感谢徐斌、朱灶旭老师的帮助 -->
+<!-- 仅包含 SITL/RViz 模型和 TF 桥的无控制逻辑仿真可视化包。 -->
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>guided_sim</name>
-  <version>0.0.0</version>
-  <description>The guided_sim package (ROS2)</description>
+  <version>1.0.0</version>
+  <description>SITL visualization assets separated from the onboard flight controller.</description>
   <maintainer email="xld@todo.todo">xld</maintainer>
-  <license>TODO</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>rosidl_default_generators</buildtool_depend>
-
-  <depend>rclcpp</depend>
-  <depend>geometry_msgs</depend>
-  <depend>mavros_msgs</depend>
-  <depend>std_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>tf2</depend>
-  <depend>tf2_geometry_msgs</depend>
-  <depend>tf2_ros</depend>
-  <depend>eigen3_cmake_module</depend>
-  <depend>eigen</depend>
-
-  <exec_depend>rosidl_default_runtime</exec_depend>
-
-  <member_of_group>rosidl_interface_packages</member_of_group>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

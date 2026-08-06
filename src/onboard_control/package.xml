@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- 独立于 GUI 生命周期运行的机载任务管理与 100 Hz PD+DOB 控制包。 -->
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>onboard_control</name>
+  <version>1.0.0</version>
+  <description>Onboard command arbitration, waypoint execution, failsafe and C++ PD+DOB control.</description>
+  <maintainer email="xld@todo.todo">xld</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>eigen</depend>
+  <depend>eigen3_cmake_module</depend>
+  <depend>geographic_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>guided_interfaces</depend>
+  <depend>mavros_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

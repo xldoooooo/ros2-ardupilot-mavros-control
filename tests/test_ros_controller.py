@@ -1,12 +1,17 @@
-"""ROS 后台控制器的启动、失败反馈与干净停止测试。"""
+"""地面站高层协议客户端的排队、状态映射与无服务失败测试。"""
+
+from types import SimpleNamespace
 
 from ground_station_core.models import FlightMode
-from ground_station_core.ros_controller import GroundStationRosController
+from ground_station_core.ros_controller import (
+    GroundStationRosController,
+    _VehicleStateStore,
+)
 
 
-def test_controller_rejects_takeoff_without_fcu_and_stops() -> None:
-    """未连接飞控时起飞应快速失败，ROS 线程仍能正常关闭。"""
-    controller = GroundStationRosController()
+def test_controller_rejects_takeoff_without_onboard_and_stops() -> None:
+    """机载服务不存在时必须明确失败，不能退回地面站本地控制。"""
+    controller = GroundStationRosController(source_id="pytest-no-onboard")
     controller.start()
     try:
         assert controller.ready
@@ -14,8 +19,7 @@ def test_controller_rejects_takeoff_without_fcu_and_stops() -> None:
         result = controller.wait_for_result(ticket, timeout=3.0)
         assert result is not None
         assert not result.success
-        assert "飞控未连接" in result.message
-        assert controller.active_mode is FlightMode.TAKEOFF_LAND
+        assert "机载控制服务不可用" in result.message
     finally:
         controller.stop()
 
@@ -23,13 +27,58 @@ def test_controller_rejects_takeoff_without_fcu_and_stops() -> None:
     assert controller.active_mode is FlightMode.IDLE
 
 
-def test_queued_old_command_cannot_override_new_keyboard_input() -> None:
-    """较早排队的起飞命令不能在稍后执行时反向覆盖新方向键。"""
-    controller = GroundStationRosController()
-    controller.request_takeoff(0.3)
-    command = controller._command_queue.get_nowait()
-    controller.adjust_velocity(0.2, 0.0, 0.0, 0.0)
+def test_all_flight_inputs_share_monotonic_sequence() -> None:
+    """服务命令与方向意图必须共享同一序号，供机载端拒绝旧输入。"""
+    controller = GroundStationRosController(source_id="pytest-order")
+    takeoff = controller.request_takeoff(0.3)
+    motion = controller.adjust_velocity(0.2, 0.0, 0.0, 0.0)
+    waypoint = controller.request_waypoints(((1.0, 0.0, 1.0, 0.0),))
 
-    activated = controller._claim_flight_action(command, lambda: None)
-    assert not activated
-    assert controller.active_mode is FlightMode.KEYBOARD
+    queued = [controller._command_queue.get_nowait() for _ in range(3)]
+    assert [item.ticket for item in queued] == [takeoff, motion, waypoint]
+    assert [item.name for item in queued] == ["takeoff", "motion", "waypoints"]
+    assert takeoff < motion < waypoint
+
+
+def test_status_store_maps_remote_mode_and_lease_owner() -> None:
+    """GUI 展示必须来自机载聚合状态，而不是本地猜测。"""
+    store = _VehicleStateStore("gcs-test")
+    vector = SimpleNamespace(x=1.0, y=2.0, z=3.0)
+    message = SimpleNamespace(
+        interface_version="1.0",
+        fcu_connected=True,
+        armed=True,
+        autopilot_mode="GUIDED",
+        local_position_valid=True,
+        position=vector,
+        velocity=SimpleNamespace(x=0.1, y=0.2, z=0.3),
+        yaw=0.4,
+        control_mode=4,
+        controller_active=True,
+        target_position=vector,
+        target_velocity=SimpleNamespace(x=0.5, y=0.0, z=0.0),
+        target_yaw=0.6,
+        target_yaw_rate=0.1,
+        lease_owner="gcs-test",
+        lease_active=True,
+        waypoint_index=2,
+        waypoint_count=3,
+        message_rates_configured=True,
+        thrust_mode_verified=True,
+        hover_throttle=0.39,
+        setpoint_conflict=False,
+        failsafe_reason="",
+        status_message="执行中",
+        control_rate_hz=99.8,
+        max_jitter_ms=1.2,
+        deadline_miss_count=2,
+    )
+    store.update(message)
+    snapshot = store.snapshot()
+
+    assert snapshot.onboard_available
+    assert snapshot.active_mode is FlightMode.WAYPOINT
+    assert snapshot.control_authority
+    assert snapshot.waypoint_index == 2
+    assert snapshot.control_rate_hz == 99.8
+    assert snapshot.hover_throttle == 0.39
