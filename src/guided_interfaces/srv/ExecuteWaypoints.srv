@@ -4,6 +4,12 @@ string source_id
 uint64 sequence
 uint32 ttl_ms
 guided_interfaces/Waypoint[] waypoints
+# 航点飞行策略。当前机载仅实现 STRATEGY_STRAIGHT；
+# STRATEGY_AVOID / STRATEGY_HOVER_ON_OBSTACLE 为预留接口，暂按直线飞行执行。
+uint8 STRATEGY_STRAIGHT=0
+uint8 STRATEGY_AVOID=1
+uint8 STRATEGY_HOVER_ON_OBSTACLE=2
+uint8 flight_strategy 0
 ---
 bool accepted
 string message

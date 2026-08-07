@@ -75,8 +75,8 @@ class _FakeRosController:
     def adjust_velocity(self, *values: float) -> int:
         return self._record("motion", values)
 
-    def request_waypoints(self, waypoints: object) -> int:
-        return self._record("waypoints", tuple(waypoints))
+    def request_waypoints(self, waypoints: object, strategy: object = 0) -> int:
+        return self._record("waypoints", (tuple(waypoints), strategy))
 
     def request_set_gp_origin(self, *origin: float) -> int:
         return self._record("set_gp_origin", origin)
@@ -417,6 +417,8 @@ def test_input_focus_blocks_keyboard_flight_shortcut() -> None:
 
 def test_waypoint_confirmation_and_responsive_three_column_splitters() -> None:
     """航点上传需确认，最小与放大尺寸下三栏和日志均同时可见。"""
+    from ground_station_core.models import WaypointFlightStrategy
+
     window, ros = _window(_operational_snapshot(armed=True))
     try:
         window._environment_active = True
@@ -428,14 +430,23 @@ def test_waypoint_confirmation_and_responsive_three_column_splitters() -> None:
         window.waypoints.add_button.click()
         window._refresh()
         assert window.waypoints.send_button.isEnabled()
+        assert window.waypoints.strategy_combo.isEnabled()
+        assert window.waypoints.strategy_combo.count() == 3
+        assert window.waypoints.selected_strategy() is WaypointFlightStrategy.STRAIGHT
 
         window._confirm_action = lambda *_args, **_kwargs: False
         window._send_waypoints(window.waypoints.waypoints)
         assert not ros.calls
         window._confirm_action = lambda *_args, **_kwargs: True
-        window._send_waypoints(window.waypoints.waypoints)
+        window.waypoints.strategy_combo.setCurrentIndex(1)  # 自动避障（预留）
+        window._send_waypoints(
+            window.waypoints.waypoints, window.waypoints.selected_strategy()
+        )
         assert ros.calls[-1][0] == "waypoints"
-        assert len(ros.calls[-1][1]) == 2
+        waypoints_arg, strategy_arg = ros.calls[-1][1]
+        assert len(waypoints_arg) == 2
+        # 界面可选避障，但当前实现路径仍传递所选策略枚举；执行侧按直线处理。
+        assert strategy_arg is WaypointFlightStrategy.AVOID
 
         for width, height in ((1180, 700), (1800, 1000)):
             window.resize(width, height)

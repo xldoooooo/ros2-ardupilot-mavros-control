@@ -7,6 +7,7 @@ import math
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..models import VehicleSnapshot
+from ..models import VehicleSnapshot, WaypointFlightStrategy
 from .state import UiAvailability
 from .widgets import Card, NoWheelDoubleSpinBox
 
@@ -27,7 +28,8 @@ from .widgets import Card, NoWheelDoubleSpinBox
 class WaypointPanel(QWidget):
     """维护尚未上传的本地航点副本，并把最终列表作为单一信号发出。"""
 
-    send_requested = Signal(object)
+    # 参数为 (waypoints_tuple, WaypointFlightStrategy)。
+    send_requested = Signal(object, object)
     clear_requested = Signal()
     waypoints_changed = Signal(str)
 
@@ -157,12 +159,39 @@ class WaypointPanel(QWidget):
         self.status_label.setObjectName("mutedLabel")
         self.status_label.setWordWrap(True)
         card.content_layout.addWidget(self.status_label)
+
+        # 左：发送执行；右：飞行策略（避障类仅预留，当前均按直线飞行）。
+        send_row = QHBoxLayout()
+        send_row.setSpacing(8)
         self.send_button = self._button("发送并执行航点", "success", "sendWaypointButton")
-        self.send_button.clicked.connect(
-            lambda: self.send_requested.emit(tuple(self._waypoints))
+        self.send_button.clicked.connect(self._emit_send_requested)
+        self.strategy_combo = QComboBox()
+        self.strategy_combo.setObjectName("waypointStrategyCombo")
+        self.strategy_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        card.content_layout.addWidget(self.send_button)
+        self.strategy_combo.setToolTip(
+            "航点飞行策略。当前仅实现「直线飞行」；"
+            "「自动避障」与「遇到障碍悬停」为预留选项，发送后仍按直线飞行执行。"
+        )
+        for strategy in WaypointFlightStrategy:
+            self.strategy_combo.addItem(strategy.label, strategy)
+        self.strategy_combo.setCurrentIndex(0)
+        send_row.addWidget(self.send_button, 1)
+        send_row.addWidget(self.strategy_combo, 1)
+        card.content_layout.addLayout(send_row)
         return card
+
+    def selected_strategy(self) -> WaypointFlightStrategy:
+        """返回当前下拉框选中的航点飞行策略。"""
+        data = self.strategy_combo.currentData()
+        if isinstance(data, WaypointFlightStrategy):
+            return data
+        return WaypointFlightStrategy.from_value(data)
+
+    def _emit_send_requested(self) -> None:
+        """发出航点列表与所选策略（策略尚未实现时仍按直线飞行）。"""
+        self.send_requested.emit(tuple(self._waypoints), self.selected_strategy())
 
     @staticmethod
     def _coordinate_input(
@@ -288,6 +317,7 @@ class WaypointPanel(QWidget):
             self.z_input,
             self.yaw_input,
             self.add_button,
+            self.strategy_combo,
         ):
             control.setEnabled(state.waypoint_edit)
         self.table.setEnabled(state.waypoint_edit)
@@ -309,11 +339,16 @@ class WaypointPanel(QWidget):
                 self.down_button,
                 self.clear_button,
                 self.table,
+                self.strategy_combo,
                 self.send_button,
             ):
                 control.setToolTip(edit_tip)
         else:
             self.send_button.setToolTip(state.flight_reason)
+            self.strategy_combo.setToolTip(
+                "航点飞行策略。当前仅实现「直线飞行」；"
+                "「自动避障」与「遇到障碍悬停」为预留选项，发送后仍按直线飞行执行。"
+            )
         self._update_local_controls()
 
     def update_progress(self, snapshot: VehicleSnapshot) -> None:

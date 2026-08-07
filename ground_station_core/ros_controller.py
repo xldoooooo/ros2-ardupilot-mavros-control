@@ -280,9 +280,18 @@ class GroundStationRosController:
         """请求机载 MAVROS 配置必要高频消息。"""
         return self._enqueue("set_rates")
 
-    def request_waypoints(self, waypoints) -> int:
-        """上传航点副本；进度、到达保持和终点状态均由机载端维护。"""
-        return self._enqueue("waypoints", tuple(waypoints))
+    def request_waypoints(self, waypoints, strategy: int | object = 0) -> int:
+        """上传航点副本与飞行策略；进度/到达/终点由机载端维护。
+
+        strategy 对齐 ExecuteWaypoints.flight_strategy；未实现的策略机载会按直线飞行。
+        """
+        from .models import WaypointFlightStrategy
+
+        strategy_value = int(WaypointFlightStrategy.from_value(strategy))
+        return self._enqueue(
+            "waypoints",
+            {"waypoints": tuple(waypoints), "strategy": strategy_value},
+        )
 
     def request_set_gp_origin(
         self, latitude: float, longitude: float, altitude: float
@@ -683,12 +692,21 @@ class GroundStationRosController:
                 client = clients["waypoints"]
                 if not client.service_is_ready():
                     raise RuntimeError("机载航点服务不可用")
+                # 兼容旧调用：纯航点序列；新调用：{waypoints, strategy}。
+                payload = command.argument
+                if isinstance(payload, dict):
+                    waypoint_values = payload.get("waypoints", ())
+                    strategy_value = int(payload.get("strategy", 0))
+                else:
+                    waypoint_values = payload
+                    strategy_value = 0
                 request = ros_entities["ExecuteWaypoints"].Request()
                 request.stamp = node.get_clock().now().to_msg()
                 request.source_id = self._source_id
                 request.sequence = command.ticket
                 request.ttl_ms = COMMAND_TTL_MS
-                for values in command.argument:
+                request.flight_strategy = strategy_value
+                for values in waypoint_values:
                     waypoint = ros_entities["Waypoint"]()
                     waypoint.position.x = float(values[0])
                     waypoint.position.y = float(values[1])
