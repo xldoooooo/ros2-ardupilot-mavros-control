@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROS2-ArduPilot 地面站 GUI 入口。"""
+"""ROS2-ArduPilot PySide6/Qt 地面站单文件入口。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from ground_station_core.bootstrap import (
 
 
 def main() -> None:
-    """自动加载工作空间后创建 Tk 根窗口并运行事件循环。"""
+    """自动加载工作空间后创建 Qt 应用和地面站主窗口。"""
     try:
         ensure_workspace_environment(Path(__file__))
     except WorkspaceBootstrapError as error:
@@ -44,13 +44,27 @@ def main() -> None:
         )
         return
 
-    import tkinter as tk
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ModuleNotFoundError as error:
+        print(
+            "[GS] 缺少 PySide6。请执行："
+            "python3 -m pip install -r requirements-gui.txt",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(4) from error
 
-    from ground_station_core.gui import GroundStationApp
+    from ground_station_core.qt_ui import GroundStationWindow
+    from ground_station_core.qt_ui.theme import apply_theme
 
-    root = tk.Tk()
-    GroundStationApp(root)
-    root.mainloop()
+    application = QApplication(sys.argv)
+    application.setApplicationName("ArduPilot ROS 2 Ground Station")
+    application.setOrganizationName("ros2-ardupilot-mavros-control")
+    apply_theme(application)
+    window = GroundStationWindow()
+    window.show()
+    raise SystemExit(application.exec())
 
 
 if __name__ == "__main__":

@@ -16,11 +16,12 @@ from .config import (
     mavros_apm_config,
     ros_setup_files,
 )
+from .event_log import EventLog, LogLevel
 from .process_manager import CleanupReport, ManagedProcess, ProcessSupervisor
 from .ros_controller import GroundStationRosController
 
 
-StatusCallback = Callable[[str], None]
+StatusCallback = Callable[[LogLevel, str], None]
 DoneCallback = Callable[[bool, str], None]
 
 
@@ -39,10 +40,12 @@ class EnvironmentInitializer:
         self,
         ros_controller: GroundStationRosController,
         supervisor: ProcessSupervisor | None = None,
+        event_log: EventLog | None = None,
     ) -> None:
         """绑定地面站客户端及仅用于本地仿真的进程管理器。"""
         self._ros = ros_controller
-        self._supervisor = supervisor or ProcessSupervisor()
+        self._events = event_log or ros_controller.event_log
+        self._supervisor = supervisor or ProcessSupervisor(self._events)
         self._state_lock = threading.RLock()
         self._cleanup_lock = threading.Lock()
         self._workflow_thread: threading.Thread | None = None
@@ -88,6 +91,7 @@ class EnvironmentInitializer:
         """保证同一时刻只有一个环境工作流。"""
         with self._state_lock:
             if self._workflow_thread is not None and self._workflow_thread.is_alive():
+                self._events.warn("environment", "已有初始化/连接流程正在执行")
                 done(False, "已有初始化/连接流程正在执行")
                 return False
             self._cancel_event = threading.Event()
@@ -96,20 +100,34 @@ class EnvironmentInitializer:
                 try:
                     message = workflow()
                 except _PreflightFailed as exc:
-                    done(False, f"初始化前检查失败: {exc}")
+                    message = f"初始化前检查失败: {exc}"
+                    self._events.error("environment", message)
+                    done(False, message)
                 except _WorkflowCancelled:
                     report = self._terminate_local_processes()
-                    done(
-                        False,
+                    message = (
                         "操作已取消，本地仿真进程与控制租约已清理"
                         if report.success
-                        else f"操作已取消，但本地清理仍有残留: {report.remaining}",
+                        else f"操作已取消，但本地清理仍有残留: {report.remaining}"
                     )
+                    self._events.emit(
+                        LogLevel.WARN if report.success else LogLevel.ERROR,
+                        "environment",
+                        message,
+                    )
+                    done(False, message)
                 except Exception as exc:
-                    status(f"初始化/连接失败，正在清理本地环境: {exc}")
+                    self._publish_status(
+                        status,
+                        LogLevel.WARN,
+                        f"初始化/连接失败，正在清理本地环境: {exc}",
+                    )
                     report = self._terminate_local_processes()
-                    done(False, f"初始化/连接失败: {exc}{self._cleanup_suffix(report)}")
+                    message = f"初始化/连接失败: {exc}{self._cleanup_suffix(report)}"
+                    self._events.error("environment", message)
+                    done(False, message)
                 else:
+                    self._events.info("environment", message)
                     done(True, message)
 
             self._workflow_thread = threading.Thread(
@@ -122,6 +140,7 @@ class EnvironmentInitializer:
 
     def cleanup(self) -> CleanupReport:
         """释放控制租约并只结束本机仿真进程，不触碰远端机载服务。"""
+        self._events.info("environment", "请求断开并清理本地仿真环境")
         with self._state_lock:
             self._cancel_event.set()
             workflow_thread = self._workflow_thread
@@ -158,14 +177,16 @@ class EnvironmentInitializer:
         except Exception as exc:
             raise _PreflightFailed(str(exc)) from exc
 
-        status("正在释放旧租约并清理本地仿真环境...")
+        self._publish_status(
+            status, LogLevel.INFO, "正在释放旧租约并清理本地仿真环境..."
+        )
         cleanup = self._terminate_local_processes()
         if cleanup.remaining:
             raise RuntimeError(f"旧进程清理不完整: {cleanup.remaining}")
         self._ros.enable_control()
         self._check_cancelled()
 
-        status("1/5 正在启动 ArduPilot SITL...")
+        self._publish_status(status, LogLevel.INFO, "1/5 正在启动 ArduPilot SITL...")
         sitl = self._supervisor.start(
             "sitl",
             [
@@ -181,7 +202,7 @@ class EnvironmentInitializer:
         if not self._wait_tcp("127.0.0.1", 5762, 35.0, sitl):
             raise RuntimeError(f"SITL 未开放 TCP 5762；日志: {sitl.log_path}")
 
-        status("2/5 正在启动仿真 MAVROS...")
+        self._publish_status(status, LogLevel.INFO, "2/5 正在启动仿真 MAVROS...")
         mavros = self._supervisor.start(
             "mavros_sim",
             [
@@ -199,7 +220,9 @@ class EnvironmentInitializer:
         )
         self._wait_process_stable(mavros, 1.0)
 
-        status("3/5 正在启动独立机载 C++ 控制服务...")
+        self._publish_status(
+            status, LogLevel.INFO, "3/5 正在启动独立机载 C++ 控制服务..."
+        )
         onboard = self._supervisor.start(
             "onboard_control",
             [
@@ -218,7 +241,9 @@ class EnvironmentInitializer:
         self._wait_thrust_mode(35.0, onboard)
         self._wait_control_authority(12.0, onboard)
 
-        status("4/5 正在由机载服务配置消息频率并等待 EKF...")
+        self._publish_status(
+            status, LogLevel.INFO, "4/5 正在由机载服务配置消息频率并等待 EKF..."
+        )
         rate_result = self._wait_ticket(self._ros.request_set_rates(), 25.0)
         if rate_result is None:
             raise RuntimeError("消息频率配置等待超时")
@@ -226,7 +251,7 @@ class EnvironmentInitializer:
             raise RuntimeError(rate_result.message)
         self._wait_local_position(45.0, onboard)
 
-        status("5/5 正在启动 RViz...")
+        self._publish_status(status, LogLevel.INFO, "5/5 正在启动 RViz...")
         rviz = self._supervisor.start(
             "rviz",
             ["ros2", "launch", "guided_sim", "visualize.launch.py"],
@@ -251,14 +276,20 @@ class EnvironmentInitializer:
         except Exception as exc:
             raise _PreflightFailed(str(exc)) from exc
 
-        status("正在停止本地仿真；远端无人机进程不会被地面站终止...")
+        self._publish_status(
+            status,
+            LogLevel.INFO,
+            "正在停止本地仿真；远端无人机进程不会被地面站终止...",
+        )
         cleanup = self._terminate_local_processes()
         if cleanup.remaining:
             raise RuntimeError(f"本地仿真清理不完整: {cleanup.remaining}")
         self._ros.enable_control()
         self._check_cancelled()
 
-        status("1/4 正在等待局域网机载控制服务...")
+        self._publish_status(
+            status, LogLevel.INFO, "1/4 正在等待局域网机载控制服务..."
+        )
         self._wait_onboard(30.0)
         snapshot = self._ros.snapshot()
         if snapshot.interface_version != INTERFACE_VERSION:
@@ -267,12 +298,18 @@ class EnvironmentInitializer:
                 f"机载端 {snapshot.interface_version or '--'}"
             )
 
-        status("2/4 正在申请单一控制权并等待飞控连接...")
+        self._publish_status(
+            status, LogLevel.INFO, "2/4 正在申请单一控制权并等待飞控连接..."
+        )
         self._wait_control_authority(15.0)
         self._wait_connected(35.0)
         self._wait_thrust_mode(35.0)
 
-        status("3/4 正在由机载 MAVROS 配置消息频率和 GPS 原点...")
+        self._publish_status(
+            status,
+            LogLevel.INFO,
+            "3/4 正在由机载 MAVROS 配置消息频率和 GPS 原点...",
+        )
         rate_result = self._wait_ticket(self._ros.request_set_rates(), 25.0)
         if rate_result is None or not rate_result.success:
             raise RuntimeError(
@@ -286,7 +323,9 @@ class EnvironmentInitializer:
                 origin_result.message if origin_result is not None else "GPS 原点设置超时"
             )
 
-        status("4/4 正在等待远端本地位置就绪...")
+        self._publish_status(
+            status, LogLevel.INFO, "4/4 正在等待远端本地位置就绪..."
+        )
         self._wait_local_position(40.0)
         return (
             "实机机载服务连接完成；地面站仅持有高层命令租约，"
@@ -430,6 +469,13 @@ class EnvironmentInitializer:
             report = self._supervisor.terminate_all()
             self._ros.mark_environment_stopped()
             return report
+
+    def _publish_status(
+        self, callback: StatusCallback, level: LogLevel, message: str
+    ) -> None:
+        """由环境源端同步生成等级，再把同一事件转交界面状态栏。"""
+        self._events.emit(level, "environment", message)
+        callback(level, message)
 
     @staticmethod
     def _cleanup_suffix(report: CleanupReport) -> str:

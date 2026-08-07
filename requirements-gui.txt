@@ -1,0 +1,2 @@
+# PySide6/Qt 地面站运行依赖；ROS 2 Python 包继续由系统和 colcon overlay 提供。
+PySide6>=6.7,<7
