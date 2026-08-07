@@ -799,27 +799,48 @@ class GroundStationWindow(QMainWindow):
         self._events.info("operator", "操作者请求悬停")
         self.activity_banner.set_message("悬停请求已发送。", LogLevel.INFO)
 
-    def _send_waypoints(self, waypoints: object) -> None:
-        """确认列表摘要后上传不可变航点副本。"""
+    def _send_waypoints(
+        self, waypoints: object, strategy: object | None = None
+    ) -> None:
+        """确认列表摘要后上传不可变航点副本与飞行策略。"""
+        from ..models import WaypointFlightStrategy
+
         values = tuple(waypoints)
         if not values or not self._availability.waypoint_send:
             return
+        selected = (
+            strategy
+            if strategy is not None
+            else self.waypoints.selected_strategy()
+        )
+        flight_strategy = WaypointFlightStrategy.from_value(selected)
         first = values[0]
         last = values[-1]
+        strategy_note = ""
+        if flight_strategy is not WaypointFlightStrategy.STRAIGHT:
+            strategy_note = (
+                f"所选策略「{flight_strategy.label}」尚未实现，"
+                "将按「直线飞行」执行。\n"
+            )
         if not self._confirm_action(
             "确认执行航点任务",
             f"即将上传并执行 {len(values)} 个本地 ENU 航点。\n"
+            f"飞行策略：{flight_strategy.label}\n"
+            f"{strategy_note}"
             f"首点 ({first[0]:+.1f}, {first[1]:+.1f}, {first[2]:+.1f})，"
             f"末点 ({last[0]:+.1f}, {last[1]:+.1f}, {last[2]:+.1f})。\n\n"
             "任务执行将覆盖当前手动/悬停模式，确认继续吗？",
             critical=True,
         ):
             return
-        self._events.warn("operator", f"操作者确认执行 {len(values)} 个航点")
+        self._events.warn(
+            "operator",
+            f"操作者确认执行 {len(values)} 个航点（策略={flight_strategy.label}）",
+        )
         self._waypoint_running = True
         self._pending_commands.add("waypoints")
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
-        self._ros.request_waypoints(values)
+        self._ros.request_waypoints(values, flight_strategy)
         self._refresh()
 
     def _confirm_clear_waypoints(self) -> None:

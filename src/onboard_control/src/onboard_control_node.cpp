@@ -569,6 +569,16 @@ void OnboardControlNode::on_execute_waypoints(
     }
   }
 
+  // 策略接口已预留；仅 STRAIGHT 有实现，其余暂按直线飞行。
+  waypoint_flight_strategy_ = request->flight_strategy;
+  if (waypoint_flight_strategy_ != ExecuteWaypoints::Request::STRATEGY_STRAIGHT) {
+    RCLCPP_WARN(
+      get_logger(),
+      "航点飞行策略 %u 尚未实现，按直线飞行执行",
+      static_cast<unsigned>(waypoint_flight_strategy_));
+    waypoint_flight_strategy_ = ExecuteWaypoints::Request::STRATEGY_STRAIGHT;
+  }
+
   CommandIdentity command{request->source_id, request->sequence, "waypoints"};
   cancel_active_task("旧任务已被新的航点任务覆盖");
   start_waypoint_task(command, request->waypoints);

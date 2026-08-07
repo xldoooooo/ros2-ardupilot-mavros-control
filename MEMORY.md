@@ -26,7 +26,7 @@
 
 ## 重构后的部署边界
 
-- `src/guided_interfaces/` 是上位机与机载计算机唯一共享的 ROS 2 高层协议，接口版本为 `1.0`。
+- `src/guided_interfaces/` 是上位机与机载计算机唯一共享的 ROS 2 高层协议，接口版本为 `1.0`。`ExecuteWaypoints.flight_strategy` 预留直线/自动避障/遇障悬停；当前机载仅实现直线飞行，其余值会告警并按直线执行。
 - `src/onboard_control/` 是无 GUI 的机载 C++ 服务：控制权仲裁、起降编排、航点推进、失联保护、100 Hz PD+DOB、姿态/推力输出和 MAVROS 网关全部在此。
 - `ground_station_core/ros_controller.py` 是薄客户端，只发布心跳/运动意图并调用高层服务；地面站不创建任何 MAVROS setpoint 发布器，也不保存安全关键的持续控制状态。
 - `ground_station_core/environment.py` 的仿真路径会在本机启动 SITL、MAVROS、同款机载 C++ 节点和 RViz；实机路径只连接局域网中的远端机载服务，不启动或终止远端 MAVROS、Odin、extnav 或控制节点。

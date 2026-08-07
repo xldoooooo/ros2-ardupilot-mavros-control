@@ -18,6 +18,35 @@ class FlightMode(str, Enum):
     FAILSAFE = "失联保护"
 
 
+class WaypointFlightStrategy(int, Enum):
+    """航点任务飞行策略；数值与 ExecuteWaypoints.srv 常量对齐。
+
+    当前机载端仅实现 STRAIGHT；AVOID / HOVER_ON_OBSTACLE 为预留，
+    地面站与机载均按直线飞行执行，直至避障能力落地。
+    """
+
+    STRAIGHT = 0
+    AVOID = 1
+    HOVER_ON_OBSTACLE = 2
+
+    @property
+    def label(self) -> str:
+        """返回设置菜单与下拉框使用的中文名称。"""
+        return {
+            WaypointFlightStrategy.STRAIGHT: "直线飞行",
+            WaypointFlightStrategy.AVOID: "自动避障",
+            WaypointFlightStrategy.HOVER_ON_OBSTACLE: "遇到障碍悬停",
+        }[self]
+
+    @classmethod
+    def from_value(cls, value: object) -> "WaypointFlightStrategy":
+        """将任意整型/枚举值规范为已知策略，未知值回退为直线飞行。"""
+        try:
+            return cls(int(value))
+        except (TypeError, ValueError):
+            return cls.STRAIGHT
+
+
 @dataclass(frozen=True)
 class VehicleSnapshot:
     """来自机载聚合状态接口的飞行器、租约和控制诊断快照。"""

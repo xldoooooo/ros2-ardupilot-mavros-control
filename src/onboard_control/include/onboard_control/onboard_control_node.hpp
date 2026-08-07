@@ -207,6 +207,8 @@ private:
   std::vector<guided_interfaces::msg::Waypoint> waypoints_;
   std::size_t waypoint_index_{0};
   std::optional<SteadyTime> waypoint_arrival_started_;
+  // ExecuteWaypoints.flight_strategy；非 STRAIGHT 时预留，当前仍走直线飞行。
+  std::uint8_t waypoint_flight_strategy_{0};
 
   // Lease, replay protection and link-loss state.
   std::string lease_owner_;

@@ -32,11 +32,15 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
     controller = GroundStationRosController(source_id="pytest-order")
     takeoff = controller.request_takeoff(0.3)
     motion = controller.adjust_velocity(0.2, 0.0, 0.0, 0.0)
-    waypoint = controller.request_waypoints(((1.0, 0.0, 1.0, 0.0),))
+    waypoint = controller.request_waypoints(((1.0, 0.0, 1.0, 0.0),), strategy=1)
 
     queued = [controller._command_queue.get_nowait() for _ in range(3)]
     assert [item.ticket for item in queued] == [takeoff, motion, waypoint]
     assert [item.name for item in queued] == ["takeoff", "motion", "waypoints"]
+    assert queued[2].argument == {
+        "waypoints": ((1.0, 0.0, 1.0, 0.0),),
+        "strategy": 1,
+    }
     assert takeoff < motion < waypoint
 
 
