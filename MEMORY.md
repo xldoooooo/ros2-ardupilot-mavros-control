@@ -3,11 +3,23 @@
 ## 环境、入口与构建
 
 - 开发机为 Ubuntu 24.04、ROS 2 Jazzy；已安装 MAVROS 与 ArduPilot SITL。
-- 地面站入口仍为仓库根目录 `ground_station.py`，Tk GUI 与薄客户端实现位于 `ground_station_core/`；没有引入 PyQt 或浏览器。入口会在未手动 source 时自动加载 `/opt/ros/<distro>/setup.bash` 和本仓库 `install/setup.bash` 后原位重启，因此构建完成后可直接运行 `python ground_station.py`。
+- 地面站入口仍为仓库根目录 `ground_station.py`；任务 04 已用 PySide6/Qt 6 完整替换 Tkinter。模块化界面位于 `ground_station_core/qt_ui/`，结构化日志位于 `ground_station_core/event_log.py`；没有浏览器/Web GUI。入口会在未手动 source 时自动加载 `/opt/ros/<distro>/setup.bash` 和本仓库 `install/setup.bash` 后原位重启，因此构建完成并安装 `requirements-gui.txt` 后可直接运行 `python ground_station.py`。
 - 工作空间需构建 `guided_interfaces`、`onboard_control`、`guided_sim`：`source /opt/ros/jazzy/setup.bash && colcon build --packages-select guided_interfaces onboard_control guided_sim`。
-- `test_takeoff5.py <高度>` 走与 GUI 相同的高层机载协议，不含独立控制算法。
-- `python ground_station.py --check-environment` 可在不创建窗口的情况下验证自动 overlay、`guided_interfaces` 和地面站 ROS 客户端线程。
+- 仓库历史中的 `test_takeoff5.py <高度>` 走与 GUI 相同的高层机载协议，不含独立控制算法；任务 04 开始前该文件已在用户工作树中删除，本任务未恢复或改动该用户状态。
+- `python ground_station.py --check-environment` 可在不导入或创建 Qt 窗口的情况下验证自动 overlay、`guided_interfaces` 和地面站 ROS 客户端线程。
 - 外部仿真日志写入 `/tmp/ros2_ardupilot_ground_station/`。
+
+## PySide6/Qt GUI（任务 04/05）
+
+- 界面采用浅色低饱和工程主题；任务 05 删除大标题，把环境、机载链路、飞行器、控制模式、控制健康和最近动态压成单行状态带。主内容为连接/飞行动作、手动控制/遥测、航点左中右三栏同时显示，底部为可拖动实时日志。
+- `ground_station_core/qt_ui/state.py` 是按钮状态的统一策略：只有显式完成环境连接且 ROS、飞控、租约、位姿、推力语义和发布者诊断通过时才开放相应飞控；LAND 作为安全动作保留较少门控。
+- 实机连接、GPS 原点、起降、航点、断开、清空和飞行中退出均有默认取消的确认框；退出与清理在后台执行，Qt 主线程不阻塞。
+- `EventLog` 在事件产生处保存 DEBUG/INFO/WARN/ERROR、来源、时间和序号。SITL/MAVROS/机载/RViz stdout 会实时 tee 到同一日志和原磁盘文件；Qt 只筛选已有等级，不按文本猜测。四个等级现为独立复选框，可任意组合显示。
+- GPS 与航点共七个数值框统一禁止鼠标滚轮改值，并使用自带 SVG 的明确上下箭头；航点清空会停止 GUI 进度跟踪，避免机载端旧任务快照恢复已清空进度。
+- 菜单栏提供文件、设置、帮助；右上“终端”通过 `QProcess.startDetached()` 在当前目录启动首个可用系统终端，不经过 shell。2026-08-07 追加修复后，完整顶层窗口（菜单、内容、状态栏）使用 frameless + 透明留边 + `outerWindowFrame`，具有连续四边轮廓和 Qt 自绘阴影；同时提供最小化、最大化/还原、关闭、菜单空白拖动及四边/四角缩放。
+- 确认、警告、帮助和关于统一使用 `ShadowMessageBox`：保留模态和默认取消语义，并添加自绘标题栏、关闭按钮、四边轮廓、圆角和阴影；不要重新使用静态 `QMessageBox.information/about/warning` 绕过统一外框。
+- Qt 依赖为 `PySide6>=6.7,<7`；本机验证为 6.11.1。生产 Python 代码已无 Tkinter 或旧 `ground_station_core.gui` 引用。
+- 1600×920 为默认尺寸，1180×700 为最小尺寸；三栏各自使用滚动区，工作区宽度和日志高度均可用 splitter 调整，设置菜单可恢复默认比例。
 
 ## 重构后的部署边界
 
@@ -51,6 +63,29 @@
 - 独立失联试验通过：释放租约后立即机载悬停，10 秒宽限期后自主 LAND 并解锁。
 - 非实时 Ubuntu 上完整飞行期间记录过 1 次 deadline miss、最大调度间隔抖动 `203.404 ms`；平均频率与飞行未受影响，但实机部署应继续做 CPU/调度隔离和长时间统计，不能宣称硬实时。
 - 无真机可用，因此远端伴随计算机、物理飞控、Odin/extnav 和真实 Wi-Fi 端到端尚未验证；详细使用、调试、证据和限制见 `agent/report/report-2026-08-06.md` 的任务 03 章节。
+
+## 已验证基线（任务 04，2026-08-06）
+
+- PySide6/Qt 自动回归为 14 passed；覆盖结构化日志、子进程实时 tee、状态门控、危险确认、输入焦点、航点和 900×650/1600×1000 布局。
+- `colcon build` 三包成功，`colcon test-result --verbose` 为 5 tests、0 errors/failures；环境诊断、compileall、flake8 F 类和 `git diff --check` 均通过。
+- 真实 Qt 按钮信号驱动完整 SITL：初始化、起飞、前后左右上下、左右偏航、悬停、单航点、LAND、清理和异步退出全部通过；本轮统一日志 642 条，WARN 精确筛选 12 条。
+- 航点结束三维误差约 `0.041 m`，控制频率约 `100.18 Hz`，setpoint conflict 为 false；记录 1 次 deadline miss、最大抖动约 `5.09 ms`，不能宣称硬实时。
+- 清理后无 SITL、MAVROS、onboard_control、guided_sim 或 RViz 残留。详细设计、测试、使用和限制见 `agent/report/report-2026-08-06-task04-qt.md`。
+
+## 已验证基线（任务 05，2026-08-06）
+
+- Python 全量回归 18 passed；覆盖七个数值框禁用滚轮、日志多等级组合、三栏最小/放大布局、旧机载进度隔离、菜单/终端参数和窗口阴影。
+- `colcon build` 三包成功，`colcon test-result --verbose` 为 5 tests、0 errors/failures；compileall、flake8 致命错误/行长检查和 `git diff --check` 均通过。
+- 真实 Qt→SITL 通过环境初始化、起飞、单航点、清空旧 `1/1` 进度、LAND/解锁与清理；清空后 GUI 保持 `尚未执行`，即使机载快照仍为 `1/1`。
+- 真实回归停止 4 个受管进程且无残留；控制频率 100.00 Hz，记录 1 次 deadline miss 和最大抖动 323.31 ms，不能宣称硬实时。offscreen 环境下 RViz 因无显示后端退出，不影响控制链路。
+- 任务 05 详细改动、截图、构建缓存处理和限制见 `agent/report/report-2026-08-06-task05-beautify.md`。
+
+## 窗口外框追加验证（2026-08-07）
+
+- 主窗口阴影已从中央内容卡片迁移到完整 `outerWindowFrame`；最大化自动取消阴影留边，还原后恢复。Qt 全量回归为 20 passed。
+- 所有当前消息提示入口统一为 `ShadowMessageBox`，测试覆盖标题、关闭按钮、默认 Cancel、430×180 最小可读面积和独立阴影表面。
+- `colcon test-result --verbose` 仍为 5 tests、0 errors/failures；环境诊断、compileall、flake8 致命错误/行长检查和 `git diff --check` 通过。
+- 视觉证据为 `/tmp/task05-main-outer-shadow-v2.png` 和 `/tmp/task05-dialog-shadow-v2.png`；详细说明见 `agent/report/report-2026-08-07-window-shadow.md`。
 
 ## 版本库卫生
 

@@ -18,6 +18,7 @@ from .config import (
     INTERFACE_VERSION,
     LEASE_DURATION_MS,
 )
+from .event_log import EventLog
 from .models import CommandRequest, CommandResult, FlightMode, VehicleSnapshot
 
 
@@ -122,7 +123,9 @@ class _VehicleStateStore:
 class GroundStationRosController:
     """仅发送高层意图并显示机载结果，不创建任何 MAVROS setpoint 发布器。"""
 
-    def __init__(self, source_id: str | None = None) -> None:
+    def __init__(
+        self, source_id: str | None = None, event_log: EventLog | None = None
+    ) -> None:
         """创建客户端身份、命令/结果队列与状态存储。"""
         default_source = (
             f"gcs-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -130,6 +133,7 @@ class GroundStationRosController:
         self._source_id = source_id or os.environ.get(
             "GROUND_STATION_SOURCE_ID", default_source
         )
+        self._events = event_log or EventLog()
         self._state = _VehicleStateStore(self._source_id)
         self._running = False
         self._ready = False
@@ -152,6 +156,11 @@ class GroundStationRosController:
     def source_id(self) -> str:
         """返回本次地面站进程的唯一控制来源标识。"""
         return self._source_id
+
+    @property
+    def event_log(self) -> EventLog:
+        """返回 ROS 客户端与 GUI 共用的结构化日志总线。"""
+        return self._events
 
     @property
     def ready(self) -> bool:
@@ -192,6 +201,7 @@ class GroundStationRosController:
         """启动常驻客户端线程，并等待节点就绪或明确失败。"""
         if self._running:
             return
+        self._events.info("ros", f"正在启动 ROS 2 客户端：{self._source_id}")
         self._running = True
         self._ready = False
         self._error = None
@@ -204,30 +214,41 @@ class GroundStationRosController:
         deadline = time.monotonic() + timeout
         while not self._ready and self._error is None and time.monotonic() < deadline:
             time.sleep(0.05)
+        if self._ready:
+            self._events.info("ros", "ROS 2 客户端已就绪，等待机载控制服务")
+        elif self._error is None:
+            self._events.warn("ros", f"ROS 2 客户端在 {timeout:.1f}s 内未就绪")
 
     def stop(self) -> None:
         """先主动释放远端控制租约，再关闭本地 ROS 客户端。"""
         if not self._running:
             return
+        self._events.info("ros", "正在释放控制租约并停止 ROS 2 客户端")
         self.release_control(timeout=1.5)
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         self._ready = False
         self._state.mark_disconnected()
+        self._events.info("ros", "ROS 2 客户端已停止")
 
     def enable_control(self) -> None:
         """允许客户端自动申请控制租约，用于开始仿真或连接实机。"""
         self._release_finished.clear()
         self._release_requested.clear()
+        self._events.debug("lease", "已允许自动申请机载控制租约")
 
     def release_control(self, timeout: float = 1.5) -> bool:
         """主动释放租约但保持状态订阅运行，实机进程不受影响。"""
         if not self._running:
             return True
+        self._events.info("lease", "正在主动释放机载控制租约")
         self._release_finished.clear()
         self._release_requested.set()
-        return self._release_finished.wait(timeout=timeout)
+        released = self._release_finished.wait(timeout=timeout)
+        if not released:
+            self._events.warn("lease", "等待控制租约释放确认超时")
+        return released
 
     def mark_environment_stopped(self) -> None:
         """本地仿真被终止后立刻丢弃其旧状态。"""
@@ -275,6 +296,7 @@ class GroundStationRosController:
             ticket = self._next_ticket
             self._next_ticket += 1
         self._command_queue.put(CommandRequest(ticket, name, argument))
+        self._events.debug("command", f"命令已排队：{name} (ticket={ticket})")
         return ticket
 
     def results_after(self, sequence: int) -> list[CommandResult]:
@@ -314,6 +336,13 @@ class GroundStationRosController:
             self._results.append(result)
             self._ticket_results[ticket] = result
             self._result_condition.notify_all()
+        detail = f"{command} (ticket={ticket})：{message}"
+        if not success:
+            self._events.error("command", detail)
+        elif final or command != "motion":
+            self._events.info("command", detail)
+        else:
+            self._events.debug("command", detail)
 
     def _spin(self) -> None:
         """创建高层协议实体，处理租约、服务 future 和状态订阅。"""
@@ -421,9 +450,13 @@ class GroundStationRosController:
                 "release_future": None,
             }
             self._ready = True
+            last_logged_snapshot = VehicleSnapshot()
 
             while self._running and context.ok():
                 rclpy.spin_once(node, timeout_sec=0.02)
+                current_snapshot = self.snapshot()
+                self._log_status_transitions(last_logged_snapshot, current_snapshot)
+                last_logged_snapshot = current_snapshot
                 self._poll_pending_services(pending_services)
                 self._update_lease(ros_entities, lease_state)
                 self._process_one_command(ros_entities, pending_services)
@@ -433,6 +466,7 @@ class GroundStationRosController:
             import traceback
 
             self._error = str(exc)
+            self._events.error("ros", f"ROS 2 客户端线程异常：{exc}")
             print(f"[GS] ROS2 客户端线程异常: {exc}", flush=True)
             traceback.print_exc()
         finally:
@@ -451,6 +485,62 @@ class GroundStationRosController:
                         rclpy.shutdown()
                 except Exception:
                     pass
+
+    def _log_status_transitions(
+        self, previous: VehicleSnapshot, current: VehicleSnapshot
+    ) -> None:
+        """在 ROS 源端将关键权威状态变化转换为已分级日志事件。"""
+        if previous.onboard_available != current.onboard_available:
+            if current.onboard_available:
+                self._events.info(
+                    "onboard",
+                    f"机载控制服务已发现，接口版本 {current.interface_version or '--'}",
+                )
+            else:
+                self._events.warn("onboard", "机载状态超时，连接已标记为不可用")
+        if (
+            current.interface_version
+            and current.interface_version != INTERFACE_VERSION
+            and current.interface_version != previous.interface_version
+        ):
+            self._events.error(
+                "onboard",
+                f"接口版本不兼容：地面站 {INTERFACE_VERSION} / "
+                f"机载端 {current.interface_version}",
+            )
+        if previous.connected != current.connected:
+            if current.connected:
+                self._events.info("flight-controller", "飞控链路已连接")
+            else:
+                self._events.warn("flight-controller", "飞控链路已断开")
+        if previous.control_authority != current.control_authority:
+            if current.control_authority:
+                self._events.info("lease", "已获得机载控制权")
+            else:
+                owner = current.lease_owner or "无"
+                self._events.warn("lease", f"已失去机载控制权（当前持有者：{owner}）")
+        if previous.armed != current.armed:
+            if current.armed:
+                self._events.warn("flight-controller", "飞行器已武装")
+            else:
+                self._events.info("flight-controller", "飞行器已解除武装")
+        if previous.active_mode is not current.active_mode:
+            if current.active_mode is FlightMode.FAILSAFE:
+                self._events.error("onboard", "机载控制进入失联保护模式")
+            else:
+                self._events.info("onboard", f"控制模式：{current.active_mode.value}")
+        if not previous.setpoint_conflict and current.setpoint_conflict:
+            self._events.error("onboard", "检测到姿态 setpoint 多发布者冲突")
+        if current.failsafe_reason and current.failsafe_reason != previous.failsafe_reason:
+            self._events.error("onboard", f"失联保护原因：{current.failsafe_reason}")
+        if current.status_message and current.status_message != previous.status_message:
+            self._events.debug("onboard", current.status_message)
+        if current.deadline_miss_count > previous.deadline_miss_count:
+            self._events.warn(
+                "controller",
+                f"控制周期超期累计 {current.deadline_miss_count} 次，"
+                f"最大抖动 {current.max_jitter_ms:.3f} ms",
+            )
 
     def _update_lease(self, ros_entities: dict[str, object], state: dict) -> None:
         """自动申请/续租控制权，并在关闭前主动释放。"""

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable, TextIO
 
 from .config import PROJECT_ROOT
+from .event_log import EventLog, LogLevel
 
 
 LOG_DIRECTORY = Path("/tmp/ros2_ardupilot_ground_station")
@@ -27,6 +28,7 @@ class ManagedProcess:
     command: tuple[str, ...]
     log_path: Path
     log_stream: TextIO
+    output_thread: threading.Thread | None = None
 
     @property
     def running(self) -> bool:
@@ -96,11 +98,17 @@ class ProcessSupervisor:
         "pose_to_tf.py",
     }
 
-    def __init__(self) -> None:
-        """创建线程安全的进程表和共享日志目录。"""
+    def __init__(self, event_log: EventLog | None = None) -> None:
+        """创建线程安全的进程表、共享日志目录和实时日志出口。"""
         self._lock = threading.RLock()
         self._managed: dict[str, ManagedProcess] = {}
+        self._events = event_log or EventLog()
         LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def event_log(self) -> EventLog:
+        """返回受管进程输出所使用的结构化日志总线。"""
+        return self._events
 
     @property
     def log_directory(self) -> Path:
@@ -142,6 +150,7 @@ class ProcessSupervisor:
                 f"\n--- {name} started {datetime.now().isoformat(timespec='seconds')} ---\n"
             )
             log_stream.write("command: " + " ".join(argv) + "\n")
+            self._events.info(name, f"启动进程：{' '.join(argv)}")
             try:
                 process = subprocess.Popen(
                     argv,
@@ -150,15 +159,24 @@ class ProcessSupervisor:
                     # sim_vehicle.py 启动的 MAVProxy 把 EOF 视为退出命令；该流程
                     # 使用保持打开的管道复刻原终端输入，其余后台节点仍用 DEVNULL。
                     stdin=subprocess.PIPE if keep_stdin_open else subprocess.DEVNULL,
-                    stdout=log_stream,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                     text=True,
+                    bufsize=1,
                 )
-            except Exception:
+            except Exception as exc:
                 log_stream.close()
+                self._events.error(name, f"进程启动失败：{exc}")
                 raise
             record = ManagedProcess(name, process, argv, log_path, log_stream)
+            record.output_thread = threading.Thread(
+                target=self._capture_output,
+                args=(record,),
+                name=f"ground-station-{name}-log",
+                daemon=True,
+            )
+            record.output_thread.start()
             self._managed[name] = record
             return record
 
@@ -170,8 +188,10 @@ class ProcessSupervisor:
         timeout: float = 10.0,
     ) -> subprocess.CompletedProcess[str]:
         """在相同 source 环境中执行短命令，用于初始化前依赖检查。"""
-        return subprocess.run(
-            tuple(str(part) for part in command),
+        argv = tuple(str(part) for part in command)
+        self._events.debug("preflight", f"执行检查：{' '.join(argv)}")
+        result = subprocess.run(
+            argv,
             cwd=PROJECT_ROOT,
             env=build_sourced_environment(setup_files),
             text=True,
@@ -180,6 +200,12 @@ class ProcessSupervisor:
             timeout=timeout,
             check=False,
         )
+        if result.returncode != 0:
+            detail = result.stdout.strip() or "无输出"
+            self._events.error(
+                "preflight", f"检查失败 (code={result.returncode})：{detail}"
+            )
+        return result
 
     def get(self, name: str) -> ManagedProcess | None:
         """返回指定受管进程记录。"""
@@ -188,6 +214,7 @@ class ProcessSupervisor:
 
     def terminate_all(self) -> CleanupReport:
         """分三阶段结束受管进程及历史残留，并在返回前再次扫描验证。"""
+        self._events.info("process", "开始清理本项目本地仿真进程")
         errors: list[str] = []
         with self._lock:
             records = tuple(self._managed.values())
@@ -226,12 +253,49 @@ class ProcessSupervisor:
         self._terminate_pids(stale_pids, errors)
 
         remaining = tuple(self.find_related_processes())
-        return CleanupReport(
+        report = CleanupReport(
             managed_stopped=managed_stopped,
             stale_stopped=stale_pids,
             remaining=remaining,
             errors=tuple(errors),
         )
+        if report.success:
+            self._events.info(
+                "process",
+                f"清理完成：受管进程 {managed_stopped}，历史残留 {len(stale_pids)}",
+            )
+        else:
+            self._events.error(
+                "process",
+                f"清理不完整：残留={report.remaining}，错误={report.errors}",
+            )
+        return report
+
+    def _capture_output(self, record: ManagedProcess) -> None:
+        """将子进程输出同时写入磁盘和结构化实时日志。"""
+        if record.process.stdout is None:
+            return
+        try:
+            for raw_line in record.process.stdout:
+                record.log_stream.write(raw_line)
+                line = raw_line.rstrip("\r\n")
+                if line:
+                    self._events.emit(self._explicit_output_level(line), record.name, line)
+        except (OSError, ValueError) as exc:
+            if record.running:
+                self._events.warn(record.name, f"读取进程日志中断：{exc}")
+
+    @staticmethod
+    def _explicit_output_level(line: str) -> LogLevel:
+        """只映射输出自带的标准等级标记；无标记输出按 INFO 记录。"""
+        normalized = line.upper()
+        if any(marker in normalized for marker in ("[FATAL]", "[ERROR]")):
+            return LogLevel.ERROR
+        if any(marker in normalized for marker in ("[WARN]", "[WARNING]")):
+            return LogLevel.WARN
+        if "[DEBUG]" in normalized:
+            return LogLevel.DEBUG
+        return LogLevel.INFO
 
     @classmethod
     def find_related_processes(cls) -> list[tuple[int, str]]:
@@ -388,14 +452,29 @@ class ProcessSupervisor:
             return False
         return len(fields) > 2 and fields[2] != "Z"
 
-    @staticmethod
-    def _close_record(record: ManagedProcess) -> None:
+    def _close_record(self, record: ManagedProcess) -> None:
         """关闭记录对应的日志文件。"""
         if record.process.stdin is not None:
             try:
                 record.process.stdin.close()
             except OSError:
                 pass
+        if (
+            record.output_thread is not None
+            and record.output_thread is not threading.current_thread()
+        ):
+            record.output_thread.join(timeout=1.0)
+        try:
+            if record.process.stdout is not None:
+                record.process.stdout.close()
+        except OSError:
+            pass
+        if (
+            record.output_thread is not None
+            and record.output_thread.is_alive()
+            and record.output_thread is not threading.current_thread()
+        ):
+            record.output_thread.join(timeout=0.2)
         try:
             record.log_stream.flush()
             record.log_stream.close()
