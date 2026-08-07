@@ -1,11 +1,14 @@
-"""环境、GPS、起降、手动意图和遥测操作面板。"""
+"""环境、起降、手动意图和遥测操作面板。"""
 
 from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -21,14 +24,86 @@ from .state import UiAvailability
 from .widgets import Card, NoWheelDoubleSpinBox
 
 
+class OriginConfigDialog(QDialog):
+    """配置 EKF/飞控原点；仅保存本地值，不在此刻写入飞控。"""
+
+    def __init__(
+        self,
+        origin: tuple[float, float, float],
+        parent: QWidget | None = None,
+    ) -> None:
+        """用当前缓存原点填充表单。"""
+        super().__init__(parent)
+        self.setObjectName("originConfigDialog")
+        self.setWindowTitle("配置飞控原点")
+        self.setModal(True)
+        self.setMinimumWidth(360)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(10)
+        hint = QLabel(
+            "本机不使用 GNSS。此处原点仅满足 ArduPilot EKF 启动要求，"
+            "在点击「启动本地仿真」或「连接实机服务」时一并写入。"
+        )
+        hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        form = QFormLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+        self.latitude_input = self._spin_box(-90.0, 90.0, 7, " °")
+        self.longitude_input = self._spin_box(-180.0, 180.0, 7, " °")
+        self.altitude_input = self._spin_box(-1000.0, 10000.0, 1, " m")
+        self.latitude_input.setValue(origin[0])
+        self.longitude_input.setValue(origin[1])
+        self.altitude_input.setValue(origin[2])
+        form.addRow("纬度", self.latitude_input)
+        form.addRow("经度", self.longitude_input)
+        form.addRow("海拔", self.altitude_input)
+        root.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    @staticmethod
+    def _spin_box(
+        minimum: float, maximum: float, decimals: int, suffix: str
+    ) -> NoWheelDoubleSpinBox:
+        """创建与主面板一致的无滚轮数值框。"""
+        control = NoWheelDoubleSpinBox()
+        control.setRange(minimum, maximum)
+        control.setDecimals(decimals)
+        control.setSingleStep(10 ** (-min(decimals, 3)))
+        control.setSuffix(suffix)
+        control.setKeyboardTracking(False)
+        return control
+
+    def origin(self) -> tuple[float, float, float]:
+        """返回对话框中当前编辑的原点。"""
+        return (
+            self.latitude_input.value(),
+            self.longitude_input.value(),
+            self.altitude_input.value(),
+        )
+
+
 class OperationsPanel(QWidget):
     """提供独立的连接栏和手动栏，并发出不含后端依赖的 UI 意图。"""
 
     simulation_requested = Signal()
     hardware_requested = Signal()
-    cleanup_requested = Signal()
+    stop_simulation_requested = Signal()
+    disconnect_hardware_requested = Signal()
     exit_requested = Signal()
-    origin_requested = Signal()
     takeoff_requested = Signal()
     land_requested = Signal()
     hover_requested = Signal()
@@ -38,6 +113,7 @@ class OperationsPanel(QWidget):
         """构建可被主窗口分别放入左栏和中栏的两个操作面板。"""
         super().__init__(parent)
         self.setMinimumWidth(330)
+        self._origin = tuple(DEFAULT_GPS_ORIGIN)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 4, 0)
         root.setSpacing(10)
@@ -55,10 +131,11 @@ class OperationsPanel(QWidget):
         manual_layout.addStretch(1)
 
     def _build_environment_card(self) -> Card:
-        """创建仿真/实机入口、GPS 原点和断开操作。"""
+        """创建仿真/实机入口、原点配置齿轮与断开操作。"""
         card = Card(
             "环境与连接",
-            "仿真仅管理本机进程；实机连接不会远程启动或终止机载服务。",
+            "仿真仅管理本机进程；实机连接不会远程启动或终止机载服务。"
+            "飞控原点在启动时自动写入。",
         )
         action_row = QHBoxLayout()
         self.simulation_button = self._button(
@@ -67,67 +144,79 @@ class OperationsPanel(QWidget):
         self.hardware_button = self._button(
             "连接实机服务", "primary", "hardwareButton"
         )
+        # 正方形齿轮：边长跟随左侧主按钮实际高度。
+        self.origin_settings_button = self._button(
+            "⚙", "neutral", "originSettingsButton"
+        )
+        self.origin_settings_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.origin_settings_button.setToolTip(
+            "配置飞控/EKF 原点（仅本地保存；启动仿真或连接实机时写入）"
+        )
         self.simulation_button.clicked.connect(self.simulation_requested)
         self.hardware_button.clicked.connect(self.hardware_requested)
-        action_row.addWidget(self.simulation_button)
-        action_row.addWidget(self.hardware_button)
+        self.origin_settings_button.clicked.connect(self._open_origin_settings)
+        self.simulation_button.installEventFilter(self)
+        action_row.addWidget(self.simulation_button, 1)
+        action_row.addWidget(self.hardware_button, 1)
+        action_row.addWidget(
+            self.origin_settings_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
         card.content_layout.addLayout(action_row)
+        self._sync_origin_settings_square()
 
-        origin_title = QLabel("GPS 原点（WGS84）")
-        origin_title.setObjectName("mutedLabel")
-        card.content_layout.addWidget(origin_title)
-        origin_grid = QGridLayout()
-        origin_grid.setHorizontalSpacing(8)
-        origin_grid.setVerticalSpacing(6)
-        self.latitude_input = self._spin_box(-90.0, 90.0, 7, " °")
-        self.longitude_input = self._spin_box(-180.0, 180.0, 7, " °")
-        self.altitude_input = self._spin_box(-1000.0, 10000.0, 1, " m")
-        self.latitude_input.setValue(DEFAULT_GPS_ORIGIN[0])
-        self.longitude_input.setValue(DEFAULT_GPS_ORIGIN[1])
-        self.altitude_input.setValue(DEFAULT_GPS_ORIGIN[2])
-        for column, (label, control) in enumerate(
-            (
-                ("纬度", self.latitude_input),
-                ("经度", self.longitude_input),
-                ("海拔", self.altitude_input),
-            )
-        ):
-            origin_grid.addWidget(QLabel(label), 0, column)
-            origin_grid.addWidget(control, 1, column)
-            origin_grid.setColumnStretch(column, 1)
-        self.origin_button = self._button("写入飞控原点", "primary", "originButton")
-        self.origin_button.clicked.connect(self.origin_requested)
-        origin_grid.addWidget(self.origin_button, 2, 0, 1, 3)
-        card.content_layout.addLayout(origin_grid)
+        self.origin_summary = QLabel()
+        self.origin_summary.setObjectName("mutedLabel")
+        self.origin_summary.setWordWrap(True)
+        self._refresh_origin_summary()
+        card.content_layout.addWidget(self.origin_summary)
 
         process_row = QHBoxLayout()
-        self.cleanup_button = self._button(
-            "断开 / 关闭本地仿真", "danger", "cleanupButton"
+        self.stop_simulation_button = self._button(
+            "关闭本地仿真", "danger", "stopSimulationButton"
+        )
+        self.disconnect_hardware_button = self._button(
+            "断开实机连接", "danger", "disconnectHardwareButton"
         )
         self.exit_button = self._button("退出地面站", "neutral", "exitButton")
-        self.cleanup_button.clicked.connect(self.cleanup_requested)
+        self.stop_simulation_button.clicked.connect(self.stop_simulation_requested)
+        self.disconnect_hardware_button.clicked.connect(
+            self.disconnect_hardware_requested
+        )
         self.exit_button.clicked.connect(self.exit_requested)
-        process_row.addWidget(self.cleanup_button, 1)
+        process_row.addWidget(self.stop_simulation_button, 1)
+        process_row.addWidget(self.disconnect_hardware_button, 1)
         process_row.addWidget(self.exit_button)
         card.content_layout.addLayout(process_row)
         return card
 
     def _build_flight_card(self) -> Card:
-        """创建起飞和降落的高风险动作区。"""
+        """创建起飞（含高度设定）与降落的高风险动作区。"""
         card = Card(
             "飞行动作",
             "按钮只发送高层请求，GUIDED、武装、起降与安全状态由机载服务裁决。",
         )
-        row = QHBoxLayout()
-        self.takeoff_button = self._button(
-            f"起飞至 {TAKEOFF_ALTITUDE:.1f} m", "success", "takeoffButton"
-        )
-        self.land_button = self._button("降落", "danger", "landButton")
+        takeoff_row = QHBoxLayout()
+        takeoff_row.setSpacing(8)
+        self.takeoff_button = self._button("起飞", "success", "takeoffButton")
         self.takeoff_button.clicked.connect(self.takeoff_requested)
+        altitude_label = QLabel("高度")
+        altitude_label.setObjectName("mutedLabel")
+        self.takeoff_altitude_input = self._spin_box(0.1, 50.0, 1, " m")
+        self.takeoff_altitude_input.setObjectName("takeoffAltitudeInput")
+        self.takeoff_altitude_input.setValue(TAKEOFF_ALTITUDE)
+        self.takeoff_altitude_input.setSingleStep(0.1)
+        self.takeoff_altitude_input.setToolTip("起飞目标高度（相对起飞点）")
+        self.takeoff_altitude_input.setMaximumWidth(120)
+        takeoff_row.addWidget(self.takeoff_button, 1)
+        takeoff_row.addWidget(altitude_label)
+        takeoff_row.addWidget(self.takeoff_altitude_input)
+        card.content_layout.addLayout(takeoff_row)
+
+        self.land_button = self._button("降落", "danger", "landButton")
         self.land_button.clicked.connect(self.land_requested)
-        row.addWidget(self.takeoff_button, 2)
-        row.addWidget(self.land_button, 1)
-        card.content_layout.addLayout(row)
+        card.content_layout.addWidget(self.land_button)
         return card
 
     def _build_manual_card(self) -> Card:
@@ -239,13 +328,51 @@ class OperationsPanel(QWidget):
         self.motion_buttons[name] = button
         return button
 
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        """左侧主按钮尺寸变化时保持齿轮为正方形。"""
+        if watched is self.simulation_button and event.type() in {
+            QEvent.Type.Show,
+            QEvent.Type.Resize,
+            QEvent.Type.LayoutRequest,
+        }:
+            self._sync_origin_settings_square()
+        return super().eventFilter(watched, event)
+
+    def _sync_origin_settings_square(self) -> None:
+        """把齿轮边长设为与「启动本地仿真」按钮相同的高度。"""
+        height = self.simulation_button.height()
+        if height <= 1:
+            height = max(
+                self.simulation_button.sizeHint().height(),
+                self.simulation_button.minimumSizeHint().height(),
+                34,
+            )
+        if self.origin_settings_button.width() != height or (
+            self.origin_settings_button.height() != height
+        ):
+            self.origin_settings_button.setFixedSize(height, height)
+
     def origin(self) -> tuple[float, float, float]:
-        """返回已由 QDoubleSpinBox 范围约束的 GPS 原点。"""
-        return (
-            self.latitude_input.value(),
-            self.longitude_input.value(),
-            self.altitude_input.value(),
+        """返回启动流程将写入飞控的本地缓存原点。"""
+        return self._origin
+
+    def takeoff_altitude(self) -> float:
+        """返回当前起飞设定高度（米）。"""
+        return float(self.takeoff_altitude_input.value())
+
+    def _refresh_origin_summary(self) -> None:
+        """在环境卡片展示当前缓存原点摘要。"""
+        lat, lon, alt = self._origin
+        self.origin_summary.setText(
+            f"启动时写入原点 · Lat {lat:.7f}  Lon {lon:.7f}  Alt {alt:.1f} m"
         )
+
+    def _open_origin_settings(self) -> None:
+        """打开原点配置对话框；确认后只更新本地缓存。"""
+        dialog = OriginConfigDialog(self._origin, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._origin = dialog.origin()
+            self._refresh_origin_summary()
 
     def update_snapshot(self, snapshot: VehicleSnapshot) -> None:
         """只读展示机载聚合状态，不在 GUI 推导控制状态。"""
@@ -276,17 +403,63 @@ class OperationsPanel(QWidget):
         """统一应用状态机计算结果，避免按钮各自维护零散条件。"""
         self.simulation_button.setEnabled(state.start_environment)
         self.hardware_button.setEnabled(state.start_environment)
-        self.cleanup_button.setEnabled(state.cleanup)
+        self.origin_settings_button.setEnabled(state.origin_settings)
+        self.stop_simulation_button.setEnabled(state.stop_simulation)
+        self.disconnect_hardware_button.setEnabled(state.disconnect_hardware)
         self.exit_button.setEnabled(not closing)
-        self.origin_button.setEnabled(state.set_origin)
         self.takeoff_button.setEnabled(state.takeoff)
+        # 高度可随时预置；起飞按钮仍受飞行门控。
+        self.takeoff_altitude_input.setEnabled(not closing)
         self.land_button.setEnabled(state.land)
         self.hover_button.setEnabled(state.hover)
         for button in self.motion_buttons.values():
             button.setEnabled(state.motion)
 
+        if state.start_environment:
+            self.simulation_button.setToolTip(
+                "启动本机 SITL、MAVROS、机载节点与 RViz，并写入已配置原点"
+            )
+            self.hardware_button.setToolTip(
+                "连接局域网远端机载服务，并写入已配置飞控原点"
+            )
+        else:
+            env_tip = (
+                "当前已有仿真或机载会话，请先关闭仿真/断开实机后再切换"
+                if not closing
+                else "地面站正在安全退出"
+            )
+            self.simulation_button.setToolTip(env_tip)
+            self.hardware_button.setToolTip(env_tip)
+
+        if state.origin_settings:
+            self.origin_settings_button.setToolTip(
+                "配置飞控/EKF 原点（仅本地保存；连接实机时写入）"
+            )
+        elif closing:
+            self.origin_settings_button.setToolTip("地面站正在安全退出")
+        else:
+            self.origin_settings_button.setToolTip(
+                "仿真运行中或已连接实机时不可修改原点；请先关闭仿真/断开实机"
+            )
+
+        if state.stop_simulation:
+            self.stop_simulation_button.setToolTip(
+                "释放控制权并结束本项目启动的本地 SITL/MAVROS/机载/RViz 进程"
+            )
+        else:
+            self.stop_simulation_button.setToolTip(
+                "仅在本地仿真会话（或正在启动仿真）时可用"
+            )
+        if state.disconnect_hardware:
+            self.disconnect_hardware_button.setToolTip(
+                "释放实机控制租约；不会远程终止机载服务进程"
+            )
+        else:
+            self.disconnect_hardware_button.setToolTip(
+                "仅在实机连接会话（或正在连接实机）时可用"
+            )
+
         for button in (
-            self.origin_button,
             self.takeoff_button,
             self.land_button,
             self.hover_button,

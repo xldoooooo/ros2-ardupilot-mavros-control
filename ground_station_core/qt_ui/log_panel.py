@@ -40,6 +40,8 @@ class LogPanel(QFrame):
         self._events: list[LogEvent] = []
         self._last_sequence = 0
         self._hidden_before_sequence = 0
+        # 重建时强制跟随末尾，不受自动滚动开关影响。
+        self._force_scroll_on_append = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 10, 12, 10)
@@ -70,7 +72,9 @@ class LogPanel(QFrame):
         toolbar.addWidget(self.search_input, 1)
 
         self.auto_scroll = QCheckBox("自动滚动")
+        self.auto_scroll.setObjectName("logAutoScroll")
         self.auto_scroll.setChecked(True)
+        self.auto_scroll.setToolTip("关闭后保留当前阅读位置，新日志不再强制滚到底部")
         toolbar.addWidget(self.auto_scroll)
         self.counter_label = QLabel("D 0 · I 0 · W 0 · E 0")
         self.counter_label.setObjectName("mutedLabel")
@@ -105,8 +109,6 @@ class LogPanel(QFrame):
             if self._matches(event):
                 self._append_event(event)
         self._update_counts()
-        if self.auto_scroll.isChecked():
-            self._scroll_to_latest()
         return len(incoming)
 
     def clear_display(self) -> None:
@@ -147,21 +149,37 @@ class LogPanel(QFrame):
             f'<span style="color:#355269">[{source}]</span> '
             f'<span style="color:{color}">{message}</span>'
         )
-        horizontal_position = self.viewer.horizontalScrollBar().value()
+        # 关闭自动滚动时必须保留原滚动位置；setTextCursor(End) 会强制跳底。
+        horizontal = self.viewer.horizontalScrollBar()
+        vertical = self.viewer.verticalScrollBar()
+        horizontal_position = horizontal.value()
+        vertical_position = vertical.value()
+        follow = self._force_scroll_on_append or self.auto_scroll.isChecked()
+
         cursor = self.viewer.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         if not self.viewer.document().isEmpty():
             cursor.insertBlock()
         cursor.insertHtml(line)
-        self.viewer.setTextCursor(cursor)
-        self.viewer.horizontalScrollBar().setValue(horizontal_position)
+        if follow:
+            self.viewer.setTextCursor(cursor)
+            self._scroll_to_latest()
+        else:
+            vertical.setValue(vertical_position)
+        horizontal.setValue(horizontal_position)
 
     def _rebuild(self, _unused: object = None) -> None:
         """筛选条件变化时从本地事件副本重建可见文本。"""
         self.viewer.clear()
-        for event in self._events:
-            if self._matches(event):
-                self._append_event(event)
+        previous = self._force_scroll_on_append
+        # 重建时始终贴底一次，避免空白视口；之后仍尊重自动滚动开关。
+        self._force_scroll_on_append = True
+        try:
+            for event in self._events:
+                if self._matches(event):
+                    self._append_event(event)
+        finally:
+            self._force_scroll_on_append = previous
         if self.auto_scroll.isChecked():
             self._scroll_to_latest()
 

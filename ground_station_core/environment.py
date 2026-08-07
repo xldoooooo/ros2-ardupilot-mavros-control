@@ -60,14 +60,23 @@ class EnvironmentInitializer:
     def busy(self) -> bool:
         """指示连接/初始化线程是否仍在执行。"""
         with self._state_lock:
-            return self._workflow_thread is not None and self._workflow_thread.is_alive()
+            thread = self._workflow_thread
+            return thread is not None and thread.is_alive()
 
     def initialize_simulation(
         self, status: StatusCallback, done: DoneCallback
     ) -> bool:
-        """异步启动 SITL、MAVROS、同款机载 C++ 服务与 RViz。"""
+        """异步启动 SITL、MAVROS、同款机载 C++ 服务与 RViz。
+
+        仿真不调用 set_gp_origin：SITL 使用自身 Home（默认 CMAC）建立 EKF
+        原点，本地位姿应在原点附近。强制写入与 SITL Home 不一致的经纬高
+        会导致 local ENU 偏移达数百万米，GUI/RViz 位姿发散。
+        """
         return self._start_workflow(
-            "simulation", lambda: self._simulation_workflow(status), status, done
+            "simulation",
+            lambda: self._simulation_workflow(status),
+            status,
+            done,
         )
 
     def initialize_hardware(
@@ -153,7 +162,7 @@ class EnvironmentInitializer:
         return self._terminate_local_processes()
 
     def _simulation_workflow(self, status: StatusCallback) -> str:
-        """执行可取消的完整闭环仿真初始化。"""
+        """执行可取消的完整闭环仿真初始化（不写 GPS 原点，沿用 SITL Home）。"""
         try:
             if not self._ros.ready:
                 raise RuntimeError(
@@ -249,6 +258,8 @@ class EnvironmentInitializer:
             raise RuntimeError("消息频率配置等待超时")
         if not rate_result.success:
             raise RuntimeError(rate_result.message)
+        # 故意不调用 set_gp_origin：SITL Home 与 GUI 缓存经纬高通常不一致，
+        # 写入错误原点会使 /mavros/local_position 偏移数百万米。
         self._wait_local_position(45.0, onboard)
 
         self._publish_status(status, LogLevel.INFO, "5/5 正在启动 RViz...")
@@ -308,7 +319,7 @@ class EnvironmentInitializer:
         self._publish_status(
             status,
             LogLevel.INFO,
-            "3/4 正在由机载 MAVROS 配置消息频率和 GPS 原点...",
+            "3/4 正在由机载 MAVROS 配置消息频率并写入飞控原点...",
         )
         rate_result = self._wait_ticket(self._ros.request_set_rates(), 25.0)
         if rate_result is None or not rate_result.success:
@@ -320,7 +331,9 @@ class EnvironmentInitializer:
         )
         if origin_result is None or not origin_result.success:
             raise RuntimeError(
-                origin_result.message if origin_result is not None else "GPS 原点设置超时"
+                origin_result.message
+                if origin_result is not None
+                else "飞控原点设置超时"
             )
 
         self._publish_status(

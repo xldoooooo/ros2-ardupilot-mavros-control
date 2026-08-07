@@ -90,13 +90,16 @@ class _FakeEnvironment:
         self.mode = "none"
 
     def initialize_simulation(self, status, done) -> bool:
+        # 仿真不接收/不写入 GPS 原点；与 EnvironmentInitializer 一致。
         self.mode = "simulation"
+        self.last_origin = None
         status(LogLevel.INFO, "仿真测试环境已启动")
         done(True, "仿真测试环境完成")
         return True
 
     def initialize_hardware(self, origin, status, done) -> bool:
         self.mode = "hardware"
+        self.last_origin = tuple(origin)
         status(LogLevel.INFO, f"实机测试连接：{origin[0]:.3f}")
         done(True, "实机测试连接完成")
         return True
@@ -166,11 +169,18 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
         busy=False,
         closing=False,
         environment_active=False,
+        connection_mode="none",
         waypoint_count=2,
         waypoint_running=False,
     )
+    assert offline.start_environment
+    assert offline.origin_settings
+    assert not offline.stop_simulation
+    assert not offline.disconnect_hardware
     assert not offline.motion
     assert not offline.land
+    assert not offline.waypoint_edit
+    assert not offline.waypoint_send
 
     ready = derive_availability(
         snapshot,
@@ -178,10 +188,32 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
         busy=False,
         closing=False,
         environment_active=True,
+        connection_mode="simulation",
         waypoint_count=2,
         waypoint_running=False,
     )
+    # 会话已建立后禁止再次启动仿真/连接实机，并锁定原点齿轮。
+    assert not ready.start_environment
+    assert not ready.origin_settings
+    assert ready.stop_simulation
+    assert not ready.disconnect_hardware
+    assert ready.waypoint_edit
     assert ready.motion and ready.hover and ready.land and ready.waypoint_send
+
+    hardware = derive_availability(
+        snapshot,
+        ros_ready=True,
+        busy=False,
+        closing=False,
+        environment_active=True,
+        connection_mode="hardware",
+        waypoint_count=2,
+        waypoint_running=False,
+    )
+    assert not hardware.start_environment
+    assert not hardware.origin_settings
+    assert not hardware.stop_simulation
+    assert hardware.disconnect_hardware
 
     conflict = derive_availability(
         replace(snapshot, setpoint_conflict=True),
@@ -189,11 +221,53 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
         busy=False,
         closing=False,
         environment_active=True,
+        connection_mode="simulation",
         waypoint_count=2,
         waypoint_running=False,
     )
+    assert not conflict.start_environment
     assert not conflict.motion
     assert conflict.land
+
+
+def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
+    """无会话时航点组件全禁用；会话建立后禁用双启动入口、原点齿轮并互斥启用关闭按钮。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    try:
+        assert window.operations.simulation_button.isEnabled()
+        assert window.operations.hardware_button.isEnabled()
+        assert window.operations.origin_settings_button.isEnabled()
+        assert not window.operations.stop_simulation_button.isEnabled()
+        assert not window.operations.disconnect_hardware_button.isEnabled()
+        assert not window.waypoints.x_input.isEnabled()
+        assert not window.waypoints.add_button.isEnabled()
+        assert not window.waypoints.send_button.isEnabled()
+        assert not window.waypoints.table.isEnabled()
+
+        window._initialize_simulation()
+        window._refresh()
+        assert window._environment_active
+        assert window._connection_mode == "simulation"
+        assert not window.operations.simulation_button.isEnabled()
+        assert not window.operations.hardware_button.isEnabled()
+        assert not window.operations.origin_settings_button.isEnabled()
+        assert window.operations.stop_simulation_button.isEnabled()
+        assert not window.operations.disconnect_hardware_button.isEnabled()
+        assert window.waypoints.x_input.isEnabled()
+        assert window.waypoints.add_button.isEnabled()
+        assert not window.waypoints.send_button.isEnabled()
+    finally:
+        _close_window(window)
+
+
+def test_success_buttons_declare_hover_style() -> None:
+    """绿色 success 按钮样式表须包含 hover 变深规则，与 primary/danger 一致。"""
+    from ground_station_core.qt_ui.theme import COLORS, STYLE_SHEET
+
+    assert "success_hover" in COLORS
+    assert COLORS["success_hover"] != COLORS["success"]
+    assert 'QPushButton[role="success"]:hover' in STYLE_SHEET
+    assert COLORS["success_hover"] in STYLE_SHEET
 
 
 def test_log_panel_combines_independent_source_generated_levels() -> None:
@@ -222,20 +296,28 @@ def test_log_panel_combines_independent_source_generated_levels() -> None:
 
 
 def test_all_coordinate_inputs_ignore_mouse_wheel() -> None:
-    """GPS 与航点共七个数值框都不得因滚轮悬停而改变数值。"""
+    """航点数值框与原点配置对话框内的数值框都不得因滚轮改变数值。"""
+    from ground_station_core.qt_ui.operations_panel import OriginConfigDialog
+
     window, _ros = _window(_operational_snapshot(armed=False))
+    dialog = OriginConfigDialog(window.operations.origin(), parent=window)
     try:
+        # 航点数值框仅在环境会话建立后启用，否则滚轮事件会被 Qt 禁用控件吞掉。
+        window._environment_active = True
+        window._refresh()
         controls = (
-            window.operations.latitude_input,
-            window.operations.longitude_input,
-            window.operations.altitude_input,
+            dialog.latitude_input,
+            dialog.longitude_input,
+            dialog.altitude_input,
+            window.operations.takeoff_altitude_input,
             window.waypoints.x_input,
             window.waypoints.y_input,
             window.waypoints.z_input,
             window.waypoints.yaw_input,
         )
-        assert len(controls) == 7
+        assert len(controls) == 8
         for control in controls:
+            assert control.isEnabled()
             original = control.value()
             local_position = QPointF(control.rect().center())
             global_position = QPointF(control.mapToGlobal(QPoint(5, 5)))
@@ -253,6 +335,36 @@ def test_all_coordinate_inputs_ignore_mouse_wheel() -> None:
             assert control.value() == original
             assert not event.isAccepted()
     finally:
+        dialog.close()
+        _close_window(window)
+
+
+def test_origin_settings_are_local_and_applied_on_hardware_only() -> None:
+    """齿轮仅缓存原点；仿真启动不写原点，实机连接才传入缓存原点。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    try:
+        assert window.operations.origin_settings_button.isVisible()
+        assert not hasattr(window.operations, "origin_button")
+
+        custom = (31.0, 121.0, 10.0)
+        window.operations._origin = custom
+        window.operations._refresh_origin_summary()
+        assert window.operations.origin() == custom
+
+        # 仿真：不得把 GUI 缓存原点塞进工作流（避免与 SITL Home 冲突）。
+        window._initialize_simulation()
+        env = window._environment
+        assert env.mode == "simulation"
+        assert env.last_origin is None
+
+        # 实机：确认后才使用缓存原点。
+        window._environment_active = False
+        window._connection_mode = "none"
+        window._confirm_action = lambda *_args, **_kwargs: True
+        window._initialize_hardware()
+        assert env.mode == "hardware"
+        assert env.last_origin == custom
+    finally:
         _close_window(window)
 
 
@@ -269,9 +381,10 @@ def test_environment_gate_and_takeoff_confirmation() -> None:
         window._takeoff()
         assert not ros.calls
 
+        window.operations.takeoff_altitude_input.setValue(0.5)
         window._confirm_action = lambda *_args, **_kwargs: True
         window._takeoff()
-        assert ros.calls == [("takeoff", 0.3)]
+        assert ros.calls == [("takeoff", 0.5)]
         assert not window.operations.takeoff_button.isEnabled()
     finally:
         _close_window(window)
@@ -308,6 +421,8 @@ def test_waypoint_confirmation_and_responsive_three_column_splitters() -> None:
     try:
         window._environment_active = True
         window._connection_mode = "simulation"
+        window._refresh()
+        assert window.waypoints.add_button.isEnabled()
         window.waypoints.add_button.click()
         window.waypoints.x_input.setValue(2.0)
         window.waypoints.add_button.click()
@@ -367,9 +482,12 @@ def test_compact_status_menu_shadow_and_terminal_entry_are_present() -> None:
     try:
         assert window.findChild(type(window.connection_label), "windowTitle") is None
         assert [action.text() for action in window.menuBar().actions()] == [
-            "文件",
             "设置",
             "帮助",
+        ]
+        assert [action.text() for action in window.settings_menu.actions()] == [
+            "显示实时日志",
+            "恢复默认布局",
         ]
         assert window.terminal_button.isVisible()
         assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
@@ -480,3 +598,33 @@ def test_terminal_launcher_uses_current_directory_without_shell() -> None:
         assert "已启动当前目录终端" in window.activity_banner.message_label.text()
     finally:
         _close_window(window)
+
+
+def test_log_auto_scroll_can_be_disabled() -> None:
+    """关闭自动滚动后，追加日志不得把视口强制拉到底部。"""
+    application = _application()
+    events = EventLog()
+    panel = LogPanel(events)
+    panel.resize(640, 240)
+    panel.show()
+    application.processEvents()
+
+    for index in range(80):
+        events.info("source", f"seed line {index:03d} " + ("x" * 40))
+    panel.poll()
+    application.processEvents()
+
+    vertical = panel.viewer.verticalScrollBar()
+    assert vertical.maximum() > 0
+    vertical.setValue(0)
+    panel.auto_scroll.setChecked(False)
+    application.processEvents()
+    assert vertical.value() == 0
+
+    events.info("source", "new line while auto-scroll disabled " + ("y" * 40))
+    panel.poll()
+    application.processEvents()
+    # 允许 1px 量级布局误差，但绝不能跳到末尾。
+    assert vertical.value() <= 2
+    assert vertical.value() < vertical.maximum()
+    panel.close()

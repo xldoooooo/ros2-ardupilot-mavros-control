@@ -146,9 +146,8 @@ class ProcessSupervisor:
                 environment.update(extra_environment)
             log_path = LOG_DIRECTORY / f"{name}.log"
             log_stream = log_path.open("a", encoding="utf-8", buffering=1)
-            log_stream.write(
-                f"\n--- {name} started {datetime.now().isoformat(timespec='seconds')} ---\n"
-            )
+            started_at = datetime.now().isoformat(timespec="seconds")
+            log_stream.write(f"\n--- {name} started {started_at} ---\n")
             log_stream.write("command: " + " ".join(argv) + "\n")
             self._events.info(name, f"启动进程：{' '.join(argv)}")
             try:
@@ -280,14 +279,66 @@ class ProcessSupervisor:
                 record.log_stream.write(raw_line)
                 line = raw_line.rstrip("\r\n")
                 if line:
-                    self._events.emit(self._explicit_output_level(line), record.name, line)
+                    level = self._explicit_output_level(line, record.name)
+                    self._events.emit(level, record.name, line)
         except (OSError, ValueError) as exc:
             if record.running:
                 self._events.warn(record.name, f"读取进程日志中断：{exc}")
 
-    @staticmethod
-    def _explicit_output_level(line: str) -> LogLevel:
-        """只映射输出自带的标准等级标记；无标记输出按 INFO 记录。"""
+    # SITL/MAVROS 启动期大量例行输出；降为 DEBUG 以免淹没操作事件。
+    _VERBOSE_OUTPUT_MARKERS = (
+        "embedding file",
+        "loaded default parameter file",
+        "validate_structures:",
+        "included file",
+        "param file",
+        "using defaults from",
+        "home location",
+        "bind port",
+        "waiting for heartbeat",
+        "fcu url:",
+        "gcs bridge",
+        "plugin loaded",
+        "plugin package:",
+        "built-in base_node on",
+        "built-in static_transform_publisher",
+        "udpreclisten",
+        "serial1:",
+        "serial2:",
+        "serial3:",
+        "serial4:",
+        "log directory:",
+        "frame_id set to",
+        "time offset",
+        "imu: high resolution",
+        "imu: setup",
+        "gps: store",
+        "gp_origin",
+        "version: capabilities",
+        "command: ",
+        "mode: set mode",
+        "component_manager",
+        "subscription connected",
+        "publisher connected",
+        "service response",
+        "discovered namespace",
+    )
+
+    # 这些源在启动和稳态时都会刷屏，默认只保留 WARN/ERROR 为更高可见等级。
+    _CHATTY_SOURCES = frozenset(
+        {
+            "sitl",
+            "mavros",
+            "mavproxy",
+            "onboard",
+            "rviz",
+            "guided_sim",
+        }
+    )
+
+    @classmethod
+    def _explicit_output_level(cls, line: str, source: str = "") -> LogLevel:
+        """映射子进程输出等级；显式 WARN/ERROR 优先，启动噪音降为 DEBUG。"""
         normalized = line.upper()
         if any(marker in normalized for marker in ("[FATAL]", "[ERROR]")):
             return LogLevel.ERROR
@@ -295,7 +346,69 @@ class ProcessSupervisor:
             return LogLevel.WARN
         if "[DEBUG]" in normalized:
             return LogLevel.DEBUG
+        lowered = line.casefold()
+        if any(marker in lowered for marker in cls._VERBOSE_OUTPUT_MARKERS):
+            return LogLevel.DEBUG
+        # ROS 形如 [INFO] [stamp] [node]: msg 的常规启动信息，对 chatty 源降级。
+        if source.casefold() in cls._CHATTY_SOURCES and (
+            "[info]" in lowered or "[info " in lowered
+        ):
+            return LogLevel.DEBUG
+        if source.casefold() in cls._CHATTY_SOURCES and cls._looks_like_startup_noise(
+            lowered
+        ):
+            return LogLevel.DEBUG
         return LogLevel.INFO
+
+    @staticmethod
+    def _looks_like_startup_noise(lowered_line: str) -> bool:
+        """识别无等级标记但仍属启动刷屏的 SITL/MAVROS 行。"""
+        noise_prefixes = (
+            "embedding ",
+            "loaded ",
+            "loading ",
+            "init ",
+            "initialis",
+            "initializ",
+            "starting ",
+            "started ",
+            "created ",
+            "create ",
+            "setup ",
+            "config ",
+            "configure ",
+            "add_server",
+            "advertise",
+            "subscribed",
+            "publishing",
+            "published",
+            "register",
+            "waiting ",
+            "connecting ",
+            "connected ",
+            "detected ",
+            "using ",
+            "found ",
+            "open ",
+            "opened ",
+            "bind ",
+            "listen ",
+            "calibrat",
+            "ekf3 ",
+            "ekf2 ",
+            "ahrs:",
+            "rcout:",
+            "ins:",
+            "baro:",
+            "compass:",
+            "arsp:",
+            "flow:",
+            "rangefinder:",
+            "battery:",
+            "scheduler:",
+        )
+        stripped = lowered_line.lstrip()
+        return any(stripped.startswith(prefix) for prefix in noise_prefixes)
 
     @classmethod
     def find_related_processes(cls) -> list[tuple[int, str]]:
@@ -348,7 +461,10 @@ class ProcessSupervisor:
         for index, name in enumerate(basenames):
             if name != "ros2" or index + 2 >= len(argv):
                 continue
-            if argv[index + 1] in {"launch", "run"} and argv[index + 2] in local_packages:
+            if (
+                argv[index + 1] in {"launch", "run"}
+                and argv[index + 2] in local_packages
+            ):
                 return True
             if (
                 argv[index + 1] in {"launch", "run"}
