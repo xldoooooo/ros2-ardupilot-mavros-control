@@ -9,14 +9,17 @@
 - `python ground_station.py --check-environment` 可在不导入或创建 Qt 窗口的情况下验证自动 overlay、`guided_interfaces` 和地面站 ROS 客户端线程。
 - 外部仿真日志写入 `/tmp/ros2_ardupilot_ground_station/`。
 
-## PySide6/Qt GUI（任务 04/05）
+## PySide6/Qt GUI（任务 04/05/07）
 
 - 界面采用浅色低饱和工程主题；任务 05 删除大标题，把环境、机载链路、飞行器、控制模式、控制健康和最近动态压成单行状态带。主内容为连接/飞行动作、手动控制/遥测、航点左中右三栏同时显示，底部为可拖动实时日志。
-- `ground_station_core/qt_ui/state.py` 是按钮状态的统一策略：只有显式完成环境连接且 ROS、飞控、租约、位姿、推力语义和发布者诊断通过时才开放相应飞控；LAND 作为安全动作保留较少门控。
-- 实机连接、GPS 原点、起降、航点、断开、清空和飞行中退出均有默认取消的确认框；退出与清理在后台执行，Qt 主线程不阻塞。
+- `ground_station_core/qt_ui/state.py` 是按钮状态的统一策略：只有显式完成环境连接且 ROS、飞控、租约、位姿、推力语义和发布者诊断通过时才开放相应飞控；LAND 作为安全动作保留较少门控。仿真或实机会话已建立时禁用“启动本地仿真/连接实机服务”（须先关闭/断开）；无会话时禁用全部航点编辑与发送组件。关闭入口拆为“关闭本地仿真”与“断开实机连接”，按 `connection_mode`/`pending_mode` 互斥启用（仿真会话只能关仿真，实机会话只能断实机）。原点齿轮在会话建立或环境工作流进行中禁用，仅空闲时可改本地缓存。
+- 实机连接、起降、航点、断开、清空和飞行中退出均有默认取消的确认框；退出与清理在后台执行，Qt 主线程不阻塞。飞控/EKF 原点：齿轮仅改本地缓存；**仅实机连接**工作流会 `set_gp_origin`。**本地仿真禁止**写入 GUI 缓存原点——SITL 使用自身 Home（默认 CMAC 一带）建立 EKF，本地位姿应在米级；若把与 SITL Home 不一致的经纬高（如杭州默认缓存）写入，local ENU 会偏移数百万米，GUI 实际位姿与 RViz TF 会发散。
+- 按钮角色样式：`primary`/`success`/`danger` 均有 hover 变深（`accent_hover`/`success_hover`/`danger_hover`），与中性按钮悬停反馈一致。
 - `EventLog` 在事件产生处保存 DEBUG/INFO/WARN/ERROR、来源、时间和序号。SITL/MAVROS/机载/RViz stdout 会实时 tee 到同一日志和原磁盘文件；Qt 只筛选已有等级，不按文本猜测。四个等级现为独立复选框，可任意组合显示。
+- 任务 07（日志部分保留）：`ProcessSupervisor._explicit_output_level` 将 SITL/MAVROS 等 chatty 源的启动刷屏（如 `Embedding file ...`、ROS `[INFO]` 插件加载）降为 DEBUG；显式 WARN/ERROR 不变。日志“自动滚动”关闭后必须保留视口位置，禁止 `setTextCursor(End)` 强制跳底。
 - GPS 与航点共七个数值框统一禁止鼠标滚轮改值，并使用自带 SVG 的明确上下箭头；航点清空会停止 GUI 进度跟踪，避免机载端旧任务快照恢复已清空进度。
-- 菜单栏提供文件、设置、帮助；右上“终端”通过 `QProcess.startDetached()` 在当前目录启动首个可用系统终端，不经过 shell。2026-08-07 追加修复后，完整顶层窗口（菜单、内容、状态栏）使用 frameless + 透明留边 + `outerWindowFrame`，具有连续四边轮廓和 Qt 自绘阴影；同时提供最小化、最大化/还原、关闭、菜单空白拖动及四边/四角缩放。
+- 菜单栏仅“设置”“帮助”：设置为“显示实时日志”“恢复默认布局”；日志自动滚动/清空在日志面板工具栏操作，不在菜单重复。右上“终端”通过 `QProcess.startDetached()` 在当前目录启动系统终端。
+- 完整顶层窗口使用 frameless + 透明留边 + `outerWindowFrame`，具有连续四边轮廓和 Qt 自绘阴影；最小化、最大化/还原、关闭、菜单空白拖动及四边/四角缩放。
 - 确认、警告、帮助和关于统一使用 `ShadowMessageBox`：保留模态和默认取消语义，并添加自绘标题栏、关闭按钮、四边轮廓、圆角和阴影；不要重新使用静态 `QMessageBox.information/about/warning` 绕过统一外框。
 - Qt 依赖为 `PySide6>=6.7,<7`；本机验证为 6.11.1。生产 Python 代码已无 Tkinter 或旧 `ground_station_core.gui` 引用。
 - 1600×920 为默认尺寸，1180×700 为最小尺寸；三栏各自使用滚动区，工作区宽度和日志高度均可用 splitter 调整，设置菜单可恢复默认比例。
@@ -86,6 +89,12 @@
 - 所有当前消息提示入口统一为 `ShadowMessageBox`，测试覆盖标题、关闭按钮、默认 Cancel、430×180 最小可读面积和独立阴影表面。
 - `colcon test-result --verbose` 仍为 5 tests、0 errors/failures；环境诊断、compileall、flake8 致命错误/行长检查和 `git diff --check` 通过。
 - 视觉证据为 `/tmp/task05-main-outer-shadow-v2.png` 和 `/tmp/task05-dialog-shadow-v2.png`；详细说明见 `agent/report/report-2026-08-07-window-shadow.md`。
+
+## 已验证基线（任务 07 日志部分 + 终端撤销，2026-08-07）
+
+- 任务 07 的集成终端已按用户反馈撤销；外部终端入口保留为右上“终端”按钮。
+- 保留：SITL/MAVROS 启动刷屏降为 DEBUG；日志面板内“自动滚动”可关闭且不强制跳底。
+- Python 回归应覆盖外部终端入口、自动滚动关闭、Embedding 降 DEBUG；详见当日撤销报告。
 
 ## 版本库卫生
 

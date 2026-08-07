@@ -28,7 +28,7 @@ LEASE_DURATION_MS = 1500  # 控制权需由 5 Hz 心跳持续续租。
 HEARTBEAT_PERIOD_SECONDS = 0.2
 INTERFACE_VERSION = "1.0"
 
-# GUI 中 GPS 原点的原有默认坐标。
+# 实机连接时写入飞控的默认虚拟原点（无 GNSS 场景）。本地 SITL 仿真不使用该值建 EKF。
 DEFAULT_GPS_ORIGIN = (30.2489634, 120.2052342, 488.0)
 
 

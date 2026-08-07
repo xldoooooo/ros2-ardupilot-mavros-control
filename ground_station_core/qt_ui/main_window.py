@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import INTERFACE_VERSION, TAKEOFF_ALTITUDE, VELOCITY_SCALE
+from ..config import INTERFACE_VERSION, VELOCITY_SCALE
 from ..environment import EnvironmentInitializer
 from ..event_log import EventLog, LogLevel
 from ..models import FlightMode, VehicleSnapshot
@@ -104,6 +104,8 @@ class GroundStationWindow(QMainWindow):
             busy=False,
             closing=False,
             environment_active=False,
+            connection_mode="none",
+            pending_mode="none",
             waypoint_count=0,
             waypoint_running=False,
         )
@@ -370,43 +372,22 @@ class GroundStationWindow(QMainWindow):
         )
 
     def _build_menu_bar(self) -> None:
-        """用系统菜单承载常用工具、显示设置和操作说明。"""
+        """构建设置/帮助菜单与右上角窗口控制条。"""
         menu_bar = self.menuBar()
         menu_bar.setNativeMenuBar(False)
         menu_bar.setMouseTracking(True)
         menu_bar.installEventFilter(self)
         self._drag_menu_bar = menu_bar
 
-        file_menu = menu_bar.addMenu("文件")
-        self.terminal_action = QAction("在当前目录打开终端", self)
-        self.terminal_action.setShortcut(QKeySequence("Ctrl+Alt+T"))
-        self.terminal_action.triggered.connect(self._open_terminal)
-        file_menu.addAction(self.terminal_action)
-        file_menu.addSeparator()
-        exit_action = QAction("退出地面站", self)
-        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        settings_menu = menu_bar.addMenu("设置")
-        self.auto_scroll_action = QAction("日志自动滚动", self)
-        self.auto_scroll_action.setCheckable(True)
-        self.auto_scroll_action.setChecked(self.log_panel.auto_scroll.isChecked())
-        self.auto_scroll_action.toggled.connect(self.log_panel.auto_scroll.setChecked)
-        self.log_panel.auto_scroll.toggled.connect(self.auto_scroll_action.setChecked)
-        settings_menu.addAction(self.auto_scroll_action)
+        self.settings_menu = menu_bar.addMenu("设置")
         self.show_log_action = QAction("显示实时日志", self)
         self.show_log_action.setCheckable(True)
         self.show_log_action.setChecked(True)
         self.show_log_action.toggled.connect(self.log_panel.setVisible)
-        settings_menu.addAction(self.show_log_action)
-        settings_menu.addSeparator()
+        self.settings_menu.addAction(self.show_log_action)
         reset_layout_action = QAction("恢复默认布局", self)
         reset_layout_action.triggered.connect(self._reset_layout)
-        settings_menu.addAction(reset_layout_action)
-        clear_log_action = QAction("清空日志显示", self)
-        clear_log_action.triggered.connect(self.log_panel.clear_display)
-        settings_menu.addAction(clear_log_action)
+        self.settings_menu.addAction(reset_layout_action)
 
         help_menu = menu_bar.addMenu("帮助")
         shortcut_action = QAction("键盘控制说明", self)
@@ -551,9 +532,11 @@ class GroundStationWindow(QMainWindow):
         """连接面板意图、线程桥和主窗口业务槽。"""
         self.operations.simulation_requested.connect(self._initialize_simulation)
         self.operations.hardware_requested.connect(self._initialize_hardware)
-        self.operations.cleanup_requested.connect(self._cleanup_all)
+        self.operations.stop_simulation_requested.connect(self._stop_simulation)
+        self.operations.disconnect_hardware_requested.connect(
+            self._disconnect_hardware
+        )
         self.operations.exit_requested.connect(self.close)
-        self.operations.origin_requested.connect(self._set_origin)
         self.operations.takeoff_requested.connect(self._takeoff)
         self.operations.land_requested.connect(self._land)
         self.operations.hover_requested.connect(self._hover)
@@ -609,7 +592,7 @@ class GroundStationWindow(QMainWindow):
     # ---- 环境工作流 ----
 
     def _initialize_simulation(self) -> None:
-        """选择本地仿真工作流，切换已有环境时要求二次确认。"""
+        """选择本地仿真工作流；SITL 使用自身 Home，不写 GUI 缓存原点。"""
         if self._environment_active and not self._confirm_action(
             "切换为本地仿真",
             "当前环境将断开并释放控制权，本项目启动的本地进程会被清理。"
@@ -631,7 +614,9 @@ class GroundStationWindow(QMainWindow):
         message = (
             "即将连接可能对应真实飞行器的机载服务并申请控制权。\n\n"
             "请确认飞行区域已隔离、飞行器当前安全且操作者具备接管条件；"
-            f"GPS 原点将设为 {origin[0]:.7f}, {origin[1]:.7f}, {origin[2]:.1f} m。"
+            f"启动时将写入飞控原点 "
+            f"{origin[0]:.7f}, {origin[1]:.7f}, {origin[2]:.1f} m"
+            "（本机无 GNSS，仅满足 EKF/飞控要求）。"
         )
         if not self._confirm_action("连接实机服务", message, critical=True):
             return
@@ -674,9 +659,45 @@ class GroundStationWindow(QMainWindow):
         )
         self._refresh()
 
-    def _cleanup_all(self) -> None:
-        """确认后在后台释放租约并只清理本项目本地仿真。"""
+    def _stop_simulation(self) -> None:
+        """确认后关闭本地 SITL 会话并释放控制权。"""
+        self._begin_session_teardown(
+            kind="simulation",
+            title="关闭本地仿真",
+            progress="正在释放控制权并关闭本地仿真进程…",
+            confirm_body=(
+                "确认关闭本项目启动的本地 SITL、MAVROS、机载节点与 RViz 吗？"
+                "控制租约将被释放。"
+            ),
+        )
+
+    def _disconnect_hardware(self) -> None:
+        """确认后断开实机机载连接；不远程终止机载进程。"""
+        self._begin_session_teardown(
+            kind="hardware",
+            title="断开实机连接",
+            progress="正在释放控制权并断开实机机载服务…",
+            confirm_body=(
+                "确认断开与远端机载服务的连接并释放控制租约吗？"
+                "远端机载进程不会被终止；本机若有残留仿真进程也会一并清理。"
+            ),
+        )
+
+    def _begin_session_teardown(
+        self,
+        *,
+        kind: str,
+        title: str,
+        progress: str,
+        confirm_body: str,
+    ) -> None:
+        """后台执行统一清理：释放租约 + 仅终止本机受管仿真进程。"""
         if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
+            return
+        active = self._connection_mode == kind or (
+            self._workflow_busy and self._pending_environment_mode == kind
+        )
+        if not active:
             return
         snapshot = self._ros.snapshot()
         risk = (
@@ -686,18 +707,14 @@ class GroundStationWindow(QMainWindow):
             else ""
         )
         if not self._confirm_action(
-            "断开并清理",
-            risk
-            + "确认断开当前地面站并关闭本项目启动的本地仿真进程吗？"
-            "远端机载服务不会被终止。",
+            title,
+            risk + confirm_body,
             critical=snapshot.armed,
         ):
             return
-        self._events.warn("operator", "操作者确认断开并清理本地环境")
+        self._events.warn("operator", f"操作者确认：{title}")
         self._workflow_busy = True
-        self.activity_banner.set_message(
-            "正在释放控制权并清理本地仿真进程…", LogLevel.WARN
-        )
+        self.activity_banner.set_message(progress, LogLevel.WARN)
 
         def worker() -> None:
             try:
@@ -718,6 +735,7 @@ class GroundStationWindow(QMainWindow):
         self._workflow_busy = False
         self._environment_active = False
         self._connection_mode = "none"
+        self._pending_environment_mode = "none"
         if report.success:
             message = (
                 f"断开完成：终止 {report.managed_stopped} 个受管进程、"
@@ -732,33 +750,19 @@ class GroundStationWindow(QMainWindow):
 
     # ---- 飞行动作 ----
 
-    def _set_origin(self) -> None:
-        """确认坐标后发送机载 GPS 原点维护请求。"""
-        origin = self.operations.origin()
-        if not self._confirm_action(
-            "写入 GPS 原点",
-            f"确认把飞控 GPS 原点设置为：\n"
-            f"Lat {origin[0]:.7f}\nLon {origin[1]:.7f}\nAlt {origin[2]:.1f} m？",
-        ):
-            return
-        self._events.warn("operator", "操作者确认写入 GPS 原点")
-        self._pending_commands.add("set_gp_origin")
-        self._ros.request_set_gp_origin(*origin)
-        self.activity_banner.set_message("GPS 原点请求已发送。", LogLevel.INFO)
-        self._refresh()
-
     def _takeoff(self) -> None:
         """在高风险确认后请求机载端完成起飞流程。"""
+        altitude = self.operations.takeoff_altitude()
         if not self._confirm_action(
             "确认起飞",
-            f"飞行器将尝试切换 GUIDED、武装并起飞至 {TAKEOFF_ALTITUDE:.1f} m。\n\n"
+            f"飞行器将尝试切换 GUIDED、武装并起飞至 {altitude:.1f} m。\n\n"
             "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
             critical=True,
         ):
             return
-        self._events.warn("operator", f"操作者确认起飞至 {TAKEOFF_ALTITUDE:.1f} m")
+        self._events.warn("operator", f"操作者确认起飞至 {altitude:.1f} m")
         self._pending_commands.add("takeoff")
-        self._ros.request_takeoff(TAKEOFF_ALTITUDE)
+        self._ros.request_takeoff(altitude)
         self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN)
         self._refresh()
 
@@ -847,6 +851,8 @@ class GroundStationWindow(QMainWindow):
             busy=busy,
             closing=self._shutting_down,
             environment_active=self._environment_active,
+            connection_mode=self._connection_mode,
+            pending_mode=self._pending_environment_mode,
             waypoint_count=len(self.waypoints.waypoints),
             waypoint_running=self._waypoint_running,
         )
@@ -855,9 +861,9 @@ class GroundStationWindow(QMainWindow):
         )
         self.waypoints.apply_availability(self._availability)
         if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
-            self.operations.cleanup_button.setEnabled(False)
+            self.operations.stop_simulation_button.setEnabled(False)
+            self.operations.disconnect_hardware_button.setEnabled(False)
         for command, button in (
-            ("set_gp_origin", self.operations.origin_button),
             ("takeoff", self.operations.takeoff_button),
             ("land", self.operations.land_button),
         ):

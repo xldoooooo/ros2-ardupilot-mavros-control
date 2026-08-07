@@ -36,7 +36,9 @@ def test_process_output_is_teed_to_file_and_structured_log() -> None:
     process.output_thread.join(timeout=2.0)
     report = supervisor.terminate_all()
 
-    output_events = [event for event in events.snapshot() if event.source == process.name]
+    output_events = [
+        event for event in events.snapshot() if event.source == process.name
+    ]
     assert any(
         event.level is LogLevel.WARN and "source warning" in event.message
         for event in output_events
@@ -47,3 +49,25 @@ def test_process_output_is_teed_to_file_and_structured_log() -> None:
     )
     assert "plain information" in process.log_path.read_text(encoding="utf-8")
     assert report.success
+
+
+def test_sitl_mavros_startup_noise_is_demoted_to_debug() -> None:
+    """SITL/MAVROS 启动刷屏降为 DEBUG，显式 WARN/ERROR 仍保持高可见度。"""
+    classify = ProcessSupervisor._explicit_output_level
+    embedding = (
+        "Embedding file default_params/quadplane.parm:"
+        "Tools/autotest/default_params/quadplane.parm"
+    )
+    assert classify(embedding, "sitl") is LogLevel.DEBUG
+    assert classify(embedding, "mavros") is LogLevel.DEBUG
+    assert (
+        classify(
+            "[INFO] [1723000000.1] [mavros]: plugin loaded: sys",
+            "mavros",
+        )
+        is LogLevel.DEBUG
+    )
+    assert classify("[WARN] link down", "mavros") is LogLevel.WARN
+    assert classify("[ERROR] fcu crashed", "sitl") is LogLevel.ERROR
+    # 非 chatty 源的普通输出仍为 INFO。
+    assert classify("mission accepted", "operator") is LogLevel.INFO

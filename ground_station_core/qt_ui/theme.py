@@ -20,6 +20,7 @@ COLORS = {
     "accent": "#245f87",
     "accent_hover": "#194d70",
     "success": "#247457",
+    "success_hover": "#1b5c44",
     "success_soft": "#e7f2ed",
     "warning": "#946200",
     "warning_soft": "#fff4d6",
@@ -171,18 +172,28 @@ QPushButton[role="primary"] {{
     background: {COLORS['accent']};
     border-color: {COLORS['accent']};
 }}
-QPushButton[role="primary"]:hover {{ background: {COLORS['accent_hover']}; }}
 QPushButton[role="success"] {{
     color: white;
     background: {COLORS['success']};
     border-color: {COLORS['success']};
+}}
+QPushButton[role="success"]:hover {{
+    background: {COLORS['success_hover']};
+    border-color: {COLORS['success_hover']};
 }}
 QPushButton[role="danger"] {{
     color: white;
     background: {COLORS['danger']};
     border-color: {COLORS['danger']};
 }}
-QPushButton[role="danger"]:hover {{ background: {COLORS['danger_hover']}; }}
+QPushButton[role="danger"]:hover {{
+    background: {COLORS['danger_hover']};
+    border-color: {COLORS['danger_hover']};
+}}
+QPushButton[role="primary"]:hover {{
+    background: {COLORS['accent_hover']};
+    border-color: {COLORS['accent_hover']};
+}}
 QPushButton[role="primary"]:disabled,
 QPushButton[role="success"]:disabled,
 QPushButton[role="danger"]:disabled {{
@@ -191,6 +202,12 @@ QPushButton[role="danger"]:disabled {{
     border-color: #dbe0e5;
 }}
 QPushButton[compact="true"] {{ min-height: 28px; padding: 2px 9px; }}
+QPushButton#originSettingsButton {{
+    min-width: 34px;
+    min-height: 34px;
+    padding: 0;
+    font-size: 14pt;
+}}
 QPushButton[windowControl="true"] {{
     min-height: 25px;
     max-height: 25px;
