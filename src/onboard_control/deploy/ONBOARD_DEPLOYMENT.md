@@ -41,6 +41,23 @@ src/onboard_control/
 
 不要复制开发机的 `build/` 或 `install/`。目标机必须针对 Humble/aarch64 原生编译。
 
+### GitHub 直连超时时
+
+当前无人机能解析 `github.com`，但实测 HTTPS 443 直连可能超时。不要写入永久系统代理，也不要复制包含地面站历史的完整 Git bundle。可从能够访问 GitHub 的地面机建立仅绑定无人机 localhost、只在当前 SSH 会话存活的反向动态 SOCKS 隧道：
+
+```bash
+ssh -R 127.0.0.1:19080 xld@192.168.112.186
+```
+
+然后在这个 SSH 会话内临时设置：
+
+```bash
+export HTTPS_PROXY=socks5h://127.0.0.1:19080
+export HTTP_PROXY=socks5h://127.0.0.1:19080
+```
+
+再执行本节的 `git clone`，或执行后文的 `onboard_workspace.sh update`。退出 SSH 后隧道自动消失；不要把代理写入 `/home/xld/.gitconfig`、shell 启动文件或 systemd 环境。
+
 ## 2. 无系统修改的依赖检查
 
 ```bash

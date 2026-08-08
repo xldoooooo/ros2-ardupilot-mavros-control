@@ -103,6 +103,15 @@
 - 原点对话框、环境卡、摘要和仿真按钮 tooltip 统一说明：缓存原点仅在实机连接时写入，本地 SITL 使用自身 Home。
 - Python 全量为 27 passed；三包构建成功；ROS/C++ 为 5 tests、0 errors/failures；环境诊断、修改范围 flake8、compileall 和 `git diff --check` 通过。
 
+## 任务 08 机载最小部署基线（2026-08-08）
+
+- 真机为 Ubuntu 22.04/Humble/aarch64；新工作区固定为 `/home/onboard/ros2-ardupilot-mavros-control`，父目录保持 `root:root`，仓库目录为 `xld:xld`。使用 partial clone + non-cone sparse checkout，只检出 `src/guided_interfaces/` 与 `src/onboard_control/`；禁止把地面站、`guided_sim` 或开发机 build/install 复制到机载端。
+- `src/onboard_control/deploy/onboard_workspace.sh` 提供 `update/deps-check/build/test/smoke/verify`。默认依赖检查不调用 apt/sudo/rosdep 初始化；Humble 烟雾测试固定使用非零 domain 231、`ROS_LOCALHOST_ONLY=1`、独立 `/_task08_smoke_mavros` 前缀，不发送命令，并验证接口 2.0、FCU 未连接、未武装以及 2 秒窗口内零姿态 setpoint。
+- Humble 编译暴露 `Clock::now()` const API 差异；已改用 Humble/Jazzy 都支持的 `Node::now()`，不改变控制逻辑。最终真机 Release 构建成功，5 tests、0 failures；aarch64 动态库在 source Humble + overlay 后全部解析，隔离烟雾通过且无进程残留。
+- `/home/xld` 旧仓库保持 `dad9067` 且工作树干净，`odin.sh`、旧 `odin1.sh`、`start_mavros_real.sh` 的部署前后 SHA-256 一致；未安装/启用 systemd，旧启动流程继续作为回退。
+- 真机对 GitHub HTTPS 直连会超时；部署文档提供只在当前 SSH 会话存活的 localhost 反向动态 SOCKS 隧道。不得把代理永久写入 `/home/xld`、系统环境或服务配置。
+- 本任务没有启动真实 MAVROS/Odin/extnav，没有连接飞控、申请租约、写原点、设置消息频率、解锁或起飞。Humble/Jazzy 跨发行版 DDS 不受 ROS 官方保证，仍需按只读 DDS→MAVROS 只读→同机状态链的顺序做独立台架验证，不能据本轮结果宣称可实飞。
+
 ## 版本库卫生
 
 - `.gitignore` 排除 Python/colcon 产物、rosbag、ArduPilot/MAVProxy 日志、EEPROM、飞行记录和通用临时文件。

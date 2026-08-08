@@ -112,7 +112,8 @@ update_checkout() {
   [[ -z "$(git -C "${WORKSPACE_ROOT}" status --porcelain)" ]] ||
     die "refusing update: Git worktree has local changes"
 
-  git -C "${WORKSPACE_ROOT}" sparse-checkout set --no-cone \
+  # The checkout was initialized in non-cone mode; older Git treats --no-cone here as a path.
+  git -C "${WORKSPACE_ROOT}" sparse-checkout set \
     "${GUIDED_SPARSE_PATH}" "${ONBOARD_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"
   validate_workspace_layout
