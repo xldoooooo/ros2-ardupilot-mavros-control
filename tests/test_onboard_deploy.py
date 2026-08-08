@@ -47,6 +47,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         assert sparse_path in guide
     assert "/ground_station_core/" not in script
     assert "/src/guided_sim/" not in script
+    assert "sparse-checkout set --no-cone" not in script
 
     assert 'DEFAULT_SMOKE_DOMAIN_ID="231"' in script
     assert "SMOKE_DOMAIN_ID >= 1" in script
@@ -55,6 +56,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     assert 'SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"' in script
     assert "^armed: false$" in script
     assert "setpoint_messages=0" in script
+    assert "socks5h://127.0.0.1:19080" in guide
 
     # 部署助手不得包含解锁、起飞、强制覆盖或系统安装操作。
     for forbidden in (
