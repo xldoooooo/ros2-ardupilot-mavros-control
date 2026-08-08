@@ -52,7 +52,7 @@ def test_process_output_is_teed_to_file_and_structured_log() -> None:
 
 
 def test_sitl_mavros_startup_noise_is_demoted_to_debug() -> None:
-    """SITL/MAVROS 启动刷屏降为 DEBUG，显式 WARN/ERROR 仍保持高可见度。"""
+    """生产源名的 SITL/MAVROS 刷屏降级，显式告警仍保持高可见度。"""
     classify = ProcessSupervisor._explicit_output_level
     embedding = (
         "Embedding file default_params/quadplane.parm:"
@@ -60,14 +60,15 @@ def test_sitl_mavros_startup_noise_is_demoted_to_debug() -> None:
     )
     assert classify(embedding, "sitl") is LogLevel.DEBUG
     assert classify(embedding, "mavros") is LogLevel.DEBUG
+    # EnvironmentInitializer 的真实受管进程名是 mavros_sim，不能只测别名。
     assert (
         classify(
-            "[INFO] [1723000000.1] [mavros]: plugin loaded: sys",
-            "mavros",
+            "[INFO] [1723000000.1] [mavros_node]: Starting mavros_node container",
+            "mavros_sim",
         )
         is LogLevel.DEBUG
     )
-    assert classify("[WARN] link down", "mavros") is LogLevel.WARN
+    assert classify("[WARN] link down", "mavros_sim") is LogLevel.WARN
     assert classify("[ERROR] fcu crashed", "sitl") is LogLevel.ERROR
     # 非 chatty 源的普通输出仍为 INFO。
     assert classify("mission accepted", "operator") is LogLevel.INFO

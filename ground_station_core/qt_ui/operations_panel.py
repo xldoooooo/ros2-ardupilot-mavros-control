@@ -43,8 +43,8 @@ class OriginConfigDialog(QDialog):
         root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(10)
         hint = QLabel(
-            "本机不使用 GNSS。此处原点仅满足 ArduPilot EKF 启动要求，"
-            "在点击「启动本地仿真」或「连接实机服务」时一并写入。"
+            "此处仅缓存实机飞控/EKF 原点，并在连接实机服务时写入。"
+            "本地 SITL 使用自身 Home，不使用该缓存原点。"
         )
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
@@ -135,7 +135,7 @@ class OperationsPanel(QWidget):
         card = Card(
             "环境与连接",
             "仿真仅管理本机进程；实机连接不会远程启动或终止机载服务。"
-            "飞控原点在启动时自动写入。",
+            "缓存原点仅在连接实机时写入；本地 SITL 使用自身 Home。",
         )
         action_row = QHBoxLayout()
         self.simulation_button = self._button(
@@ -152,7 +152,7 @@ class OperationsPanel(QWidget):
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         self.origin_settings_button.setToolTip(
-            "配置飞控/EKF 原点（仅本地保存；启动仿真或连接实机时写入）"
+            "配置实机飞控/EKF 原点（仅本地保存；连接实机时写入）"
         )
         self.simulation_button.clicked.connect(self.simulation_requested)
         self.hardware_button.clicked.connect(self.hardware_requested)
@@ -353,7 +353,7 @@ class OperationsPanel(QWidget):
             self.origin_settings_button.setFixedSize(height, height)
 
     def origin(self) -> tuple[float, float, float]:
-        """返回启动流程将写入飞控的本地缓存原点。"""
+        """返回仅供实机连接工作流写入飞控的本地缓存原点。"""
         return self._origin
 
     def takeoff_altitude(self) -> float:
@@ -364,7 +364,7 @@ class OperationsPanel(QWidget):
         """在环境卡片展示当前缓存原点摘要。"""
         lat, lon, alt = self._origin
         self.origin_summary.setText(
-            f"启动时写入原点 · Lat {lat:.7f}  Lon {lon:.7f}  Alt {alt:.1f} m"
+            f"实机连接原点 · Lat {lat:.7f}  Lon {lon:.7f}  Alt {alt:.1f} m"
         )
 
     def _open_origin_settings(self) -> None:
@@ -417,7 +417,7 @@ class OperationsPanel(QWidget):
 
         if state.start_environment:
             self.simulation_button.setToolTip(
-                "启动本机 SITL、MAVROS、机载节点与 RViz，并写入已配置原点"
+                "启动本机 SITL、MAVROS、机载节点与 RViz；使用 SITL 自身 Home"
             )
             self.hardware_button.setToolTip(
                 "连接局域网远端机载服务，并写入已配置飞控原点"

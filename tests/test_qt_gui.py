@@ -13,8 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 
+from ground_station_core.config import INTERFACE_VERSION  # noqa: E402
 from ground_station_core.event_log import EventLog, LogLevel  # noqa: E402
 from ground_station_core.models import (  # noqa: E402
     CommandResult,
@@ -120,7 +121,7 @@ def _operational_snapshot(*, armed: bool) -> VehicleSnapshot:
     """返回通过全部链路门控的可控快照。"""
     return VehicleSnapshot(
         onboard_available=True,
-        interface_version="1.0",
+        interface_version=INTERFACE_VERSION,
         connected=True,
         armed=armed,
         autopilot_mode="GUIDED",
@@ -350,6 +351,14 @@ def test_origin_settings_are_local_and_applied_on_hardware_only() -> None:
         window.operations._origin = custom
         window.operations._refresh_origin_summary()
         assert window.operations.origin() == custom
+        assert "实机连接原点" in window.operations.origin_summary.text()
+        assert "使用 SITL 自身 Home" in window.operations.simulation_button.toolTip()
+
+        visible_copy = " ".join(
+            label.text() for label in window.operations.findChildren(QLabel)
+        )
+        assert "本地 SITL 使用自身 Home" in visible_copy
+        assert "启动本地仿真」或「连接实机服务」时一并写入" not in visible_copy
 
         # 仿真：不得把 GUI 缓存原点塞进工作流（避免与 SITL Home 冲突）。
         window._initialize_simulation()

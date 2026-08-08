@@ -329,6 +329,7 @@ class ProcessSupervisor:
         {
             "sitl",
             "mavros",
+            "mavros_sim",
             "mavproxy",
             "onboard",
             "rviz",
