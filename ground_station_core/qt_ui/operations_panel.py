@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -25,7 +27,7 @@ from .widgets import Card, NoWheelDoubleSpinBox
 
 
 class OriginConfigDialog(QDialog):
-    """配置 EKF/飞控原点；仅保存本地值，不在此刻写入飞控。"""
+    """配置完整实机连接使用的 EKF/飞控原点，仅在本地保存。"""
 
     def __init__(
         self,
@@ -43,8 +45,8 @@ class OriginConfigDialog(QDialog):
         root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(10)
         hint = QLabel(
-            "此处仅缓存实机飞控/EKF 原点，并在连接实机服务时写入。"
-            "本地 SITL 使用自身 Home，不使用该缓存原点。"
+            "此处仅缓存实机飞控/EKF 原点，完整连接实机服务时才写入。"
+            "本地 SITL 使用自身 Home，Wi-Fi 通讯检测也不会写入该值。"
         )
         hint.setObjectName("mutedLabel")
         hint.setWordWrap(True)
@@ -99,8 +101,12 @@ class OriginConfigDialog(QDialog):
 class OperationsPanel(QWidget):
     """提供独立的连接栏和手动栏，并发出不含后端依赖的 UI 意图。"""
 
+    # 齿轮与 Wi-Fi 均使用紧凑正方形，给最小窗口下的两个文字按钮保留宽度。
+    _AUXILIARY_BUTTON_SIZE = 36
+
     simulation_requested = Signal()
     hardware_requested = Signal()
+    communication_test_requested = Signal()
     stop_simulation_requested = Signal()
     disconnect_hardware_requested = Signal()
     exit_requested = Signal()
@@ -131,20 +137,21 @@ class OperationsPanel(QWidget):
         manual_layout.addStretch(1)
 
     def _build_environment_card(self) -> Card:
-        """创建仿真/实机入口、原点配置齿轮与断开操作。"""
+        """创建仿真/实机入口、原点齿轮、零命令通讯检测与断开操作。"""
         card = Card(
             "环境与连接",
-            "仿真仅管理本机进程；实机连接不会远程启动或终止机载服务。"
-            "缓存原点仅在连接实机时写入；本地 SITL 使用自身 Home。",
+            "仿真仅管理本机进程；连接实机会申请控制租约并执行连接维护，"
+            "但不会远程启动或终止机载服务。右侧 Wi-Fi 按钮仅检测通讯；"
+            "本地 SITL 使用自身 Home。",
         )
         action_row = QHBoxLayout()
         self.simulation_button = self._button(
-            "启动本地仿真", "primary", "simulationButton"
+            "启动仿真", "primary", "simulationButton"
         )
         self.hardware_button = self._button(
-            "连接实机服务", "primary", "hardwareButton"
+            "连接实机", "primary", "hardwareButton"
         )
-        # 正方形齿轮：边长跟随左侧主按钮实际高度。
+        # 正方形齿轮与通讯图标保持同一紧凑尺寸。
         self.origin_settings_button = self._button(
             "⚙", "neutral", "originSettingsButton"
         )
@@ -152,19 +159,38 @@ class OperationsPanel(QWidget):
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         self.origin_settings_button.setToolTip(
-            "配置实机飞控/EKF 原点（仅本地保存；连接实机时写入）"
+            "配置实机飞控/EKF 原点（仅本地保存；完整连接实机时写入）"
+        )
+        # 独立 Wi-Fi 按钮只触发纯订阅检测，位置固定在原点齿轮右侧。
+        self.communication_test_button = self._button(
+            "", "neutral", "communicationTestButton"
+        )
+        wifi_icon = Path(__file__).resolve().parent / "assets" / "wifi.svg"
+        self.communication_test_button.setIcon(QIcon(str(wifi_icon)))
+        self.communication_test_button.setIconSize(QSize(20, 20))
+        self.communication_test_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.communication_test_button.setAccessibleName("检测实机通讯链路")
+        self.communication_test_button.setAccessibleDescription(
+            "只接收状态与日志，不申请控制租约或发送命令"
         )
         self.simulation_button.clicked.connect(self.simulation_requested)
         self.hardware_button.clicked.connect(self.hardware_requested)
         self.origin_settings_button.clicked.connect(self._open_origin_settings)
-        self.simulation_button.installEventFilter(self)
+        self.communication_test_button.clicked.connect(
+            self.communication_test_requested
+        )
         action_row.addWidget(self.simulation_button, 1)
         action_row.addWidget(self.hardware_button, 1)
         action_row.addWidget(
             self.origin_settings_button, 0, Qt.AlignmentFlag.AlignVCenter
         )
+        action_row.addWidget(
+            self.communication_test_button, 0, Qt.AlignmentFlag.AlignVCenter
+        )
         card.content_layout.addLayout(action_row)
-        self._sync_origin_settings_square()
+        self._size_auxiliary_buttons()
 
         self.origin_summary = QLabel()
         self.origin_summary.setObjectName("mutedLabel")
@@ -328,32 +354,19 @@ class OperationsPanel(QWidget):
         self.motion_buttons[name] = button
         return button
 
-    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
-        """左侧主按钮尺寸变化时保持齿轮为正方形。"""
-        if watched is self.simulation_button and event.type() in {
-            QEvent.Type.Show,
-            QEvent.Type.Resize,
-            QEvent.Type.LayoutRequest,
-        }:
-            self._sync_origin_settings_square()
-        return super().eventFilter(watched, event)
-
-    def _sync_origin_settings_square(self) -> None:
-        """把齿轮边长设为与「启动本地仿真」按钮相同的高度。"""
-        height = self.simulation_button.height()
-        if height <= 1:
-            height = max(
-                self.simulation_button.sizeHint().height(),
-                self.simulation_button.minimumSizeHint().height(),
-                34,
-            )
-        if self.origin_settings_button.width() != height or (
-            self.origin_settings_button.height() != height
+    def _size_auxiliary_buttons(self) -> None:
+        """把齿轮与 Wi-Fi 按钮固定为一致的紧凑正方形。"""
+        for button in (
+            self.origin_settings_button,
+            self.communication_test_button,
         ):
-            self.origin_settings_button.setFixedSize(height, height)
+            button.setFixedSize(
+                self._AUXILIARY_BUTTON_SIZE,
+                self._AUXILIARY_BUTTON_SIZE,
+            )
 
     def origin(self) -> tuple[float, float, float]:
-        """返回仅供实机连接工作流写入飞控的本地缓存原点。"""
+        """返回仅供完整实机连接工作流写入飞控的本地缓存原点。"""
         return self._origin
 
     def takeoff_altitude(self) -> float:
@@ -403,6 +416,7 @@ class OperationsPanel(QWidget):
         """统一应用状态机计算结果，避免按钮各自维护零散条件。"""
         self.simulation_button.setEnabled(state.start_environment)
         self.hardware_button.setEnabled(state.start_environment)
+        self.communication_test_button.setEnabled(state.communication_test)
         self.origin_settings_button.setEnabled(state.origin_settings)
         self.stop_simulation_button.setEnabled(state.stop_simulation)
         self.disconnect_hardware_button.setEnabled(state.disconnect_hardware)
@@ -420,7 +434,7 @@ class OperationsPanel(QWidget):
                 "启动本机 SITL、MAVROS、机载节点与 RViz；使用 SITL 自身 Home"
             )
             self.hardware_button.setToolTip(
-                "连接局域网远端机载服务，并写入已配置飞控原点"
+                "连接远端机载服务：申请控制租约、配置消息频率并写入飞控原点"
             )
         else:
             env_tip = (
@@ -431,9 +445,21 @@ class OperationsPanel(QWidget):
             self.simulation_button.setToolTip(env_tip)
             self.hardware_button.setToolTip(env_tip)
 
+        if state.communication_test:
+            self.communication_test_button.setToolTip(
+                "检测实机通讯链路：只接收状态与日志，不申请租约、不发送命令、"
+                "不启动或停止任何机载服务"
+            )
+        elif closing:
+            self.communication_test_button.setToolTip("地面站正在安全退出")
+        else:
+            self.communication_test_button.setToolTip(
+                "已有环境会话或工作流正在执行，请先完成或断开后再检测通讯"
+            )
+
         if state.origin_settings:
             self.origin_settings_button.setToolTip(
-                "配置飞控/EKF 原点（仅本地保存；连接实机时写入）"
+                "配置飞控/EKF 原点（仅本地保存；完整连接实机时写入）"
             )
         elif closing:
             self.origin_settings_button.setToolTip("地面站正在安全退出")

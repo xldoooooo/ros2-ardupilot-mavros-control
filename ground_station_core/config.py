@@ -29,7 +29,7 @@ HEARTBEAT_PERIOD_SECONDS = 0.2
 # ExecuteWaypoints 请求结构加入 flight_strategy 后不再与 1.0 线级兼容。
 INTERFACE_VERSION = "2.0"
 
-# 实机连接时写入飞控的默认虚拟原点（无 GNSS 场景）。本地 SITL 仿真不使用该值建 EKF。
+# 完整实机连接时写入飞控的默认虚拟原点；本地 SITL 与 Wi-Fi 通讯检测不使用。
 DEFAULT_GPS_ORIGIN = (30.2489634, 120.2052342, 488.0)
 
 

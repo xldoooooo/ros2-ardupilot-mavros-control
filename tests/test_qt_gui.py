@@ -89,6 +89,8 @@ class _FakeEnvironment:
     def __init__(self) -> None:
         self.busy = False
         self.mode = "none"
+        self.last_origin = None
+        self.communication_tests = 0
 
     def initialize_simulation(self, status, done) -> bool:
         # 仿真不接收/不写入 GPS 原点；与 EnvironmentInitializer 一致。
@@ -101,8 +103,15 @@ class _FakeEnvironment:
     def initialize_hardware(self, origin, status, done) -> bool:
         self.mode = "hardware"
         self.last_origin = tuple(origin)
-        status(LogLevel.INFO, f"实机测试连接：{origin[0]:.3f}")
+        status(LogLevel.INFO, "实机完整测试连接")
         done(True, "实机测试连接完成")
+        return True
+
+    def test_hardware_communication(self, status, done) -> bool:
+        """同步模拟独立诊断；不改变已建立环境的 mode。"""
+        self.communication_tests += 1
+        status(LogLevel.INFO, "实机通讯零命令检测")
+        done(True, "实机通讯链路检测通过；未发送命令")
         return True
 
     def cleanup(self) -> CleanupReport:
@@ -175,6 +184,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
         waypoint_running=False,
     )
     assert offline.start_environment
+    assert offline.communication_test
     assert offline.origin_settings
     assert not offline.stop_simulation
     assert not offline.disconnect_hardware
@@ -195,6 +205,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     )
     # 会话已建立后禁止再次启动仿真/连接实机，并锁定原点齿轮。
     assert not ready.start_environment
+    assert not ready.communication_test
     assert not ready.origin_settings
     assert ready.stop_simulation
     assert not ready.disconnect_hardware
@@ -215,6 +226,13 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert not hardware.origin_settings
     assert not hardware.stop_simulation
     assert hardware.disconnect_hardware
+    # 完整实机会话与仿真使用相同控制门控，保持原连接按钮的完整功能。
+    assert not hardware.takeoff
+    assert hardware.land
+    assert hardware.motion
+    assert hardware.hover
+    assert hardware.waypoint_send
+    assert hardware.flight_reason == "飞行控制链路已就绪"
 
     conflict = derive_availability(
         replace(snapshot, setpoint_conflict=True),
@@ -237,6 +255,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
     try:
         assert window.operations.simulation_button.isEnabled()
         assert window.operations.hardware_button.isEnabled()
+        assert window.operations.communication_test_button.isEnabled()
         assert window.operations.origin_settings_button.isEnabled()
         assert not window.operations.stop_simulation_button.isEnabled()
         assert not window.operations.disconnect_hardware_button.isEnabled()
@@ -251,6 +270,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert window._connection_mode == "simulation"
         assert not window.operations.simulation_button.isEnabled()
         assert not window.operations.hardware_button.isEnabled()
+        assert not window.operations.communication_test_button.isEnabled()
         assert not window.operations.origin_settings_button.isEnabled()
         assert window.operations.stop_simulation_button.isEnabled()
         assert not window.operations.disconnect_hardware_button.isEnabled()
@@ -340,8 +360,8 @@ def test_all_coordinate_inputs_ignore_mouse_wheel() -> None:
         _close_window(window)
 
 
-def test_origin_settings_are_local_and_applied_on_hardware_only() -> None:
-    """齿轮仅缓存原点；仿真启动不写原点，实机连接才传入缓存原点。"""
+def test_origin_settings_feed_full_hardware_connection_but_not_simulation() -> None:
+    """齿轮只缓存本地值；完整实机连接接收原点，仿真仍使用自身 Home。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         assert window.operations.origin_settings_button.isVisible()
@@ -358,7 +378,7 @@ def test_origin_settings_are_local_and_applied_on_hardware_only() -> None:
             label.text() for label in window.operations.findChildren(QLabel)
         )
         assert "本地 SITL 使用自身 Home" in visible_copy
-        assert "启动本地仿真」或「连接实机服务」时一并写入" not in visible_copy
+        assert "Wi-Fi 按钮仅检测通讯" in visible_copy
 
         # 仿真：不得把 GUI 缓存原点塞进工作流（避免与 SITL Home 冲突）。
         window._initialize_simulation()
@@ -366,13 +386,53 @@ def test_origin_settings_are_local_and_applied_on_hardware_only() -> None:
         assert env.mode == "simulation"
         assert env.last_origin is None
 
-        # 实机：确认后才使用缓存原点。
+        # 实机：恢复完整连接，确认文案必须明示租约/维护以及独立起飞确认。
         window._environment_active = False
         window._connection_mode = "none"
-        window._confirm_action = lambda *_args, **_kwargs: True
+        confirmations: list[tuple[str, str]] = []
+
+        def confirm(title: str, message: str, **_kwargs) -> bool:
+            confirmations.append((title, message))
+            return True
+
+        window._confirm_action = confirm
         window._initialize_hardware()
         assert env.mode == "hardware"
         assert env.last_origin == custom
+        assert confirmations
+        assert "申请控制租约" in confirmations[-1][1]
+        assert "控制心跳" in confirmations[-1][1]
+        assert "写入飞控原点" in confirmations[-1][1]
+        assert "连接动作本身不会解锁或起飞" in confirmations[-1][1]
+    finally:
+        _close_window(window)
+
+
+def test_wifi_button_is_right_of_gear_and_does_not_create_control_session() -> None:
+    """独立 Wi-Fi 图标位于齿轮右侧，点击只跑诊断且不改变环境状态。"""
+    window, ros = _window(_operational_snapshot(armed=False))
+    try:
+        gear = window.operations.origin_settings_button
+        wifi = window.operations.communication_test_button
+        assert gear.isVisible() and wifi.isVisible()
+        assert not wifi.icon().isNull()
+        assert wifi.accessibleName() == "检测实机通讯链路"
+        assert wifi.x() > gear.x()
+        assert wifi.size() == gear.size()
+        assert "不申请租约" in wifi.toolTip()
+        assert "不发送命令" in wifi.toolTip()
+
+        env = window._environment
+        QTest.mouseClick(wifi, Qt.MouseButton.LeftButton)
+        _application().processEvents()
+
+        assert env.communication_tests == 1
+        assert env.mode == "none"
+        assert env.last_origin is None
+        assert not window._environment_active
+        assert window._connection_mode == "none"
+        assert not ros.calls
+        assert "未发送命令" in window.activity_banner.message_label.text()
     finally:
         _close_window(window)
 

@@ -1,0 +1,9 @@
+<!-- 实机纯订阅通讯检测按钮使用的 Wi-Fi 矢量标志。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g fill="none" stroke="#40556a" stroke-width="2" stroke-linecap="round">
+    <path d="M3.5 9.3a13.2 13.2 0 0 1 17 0"/>
+    <path d="M6.8 12.7a8.2 8.2 0 0 1 10.4 0"/>
+    <path d="M10.1 16.1a3.1 3.1 0 0 1 3.8 0"/>
+  </g>
+  <circle cx="12" cy="19" r="1.35" fill="#40556a"/>
+</svg>

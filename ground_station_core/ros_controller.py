@@ -39,10 +39,14 @@ class _VehicleStateStore:
     _STATUS_STALE_SECONDS = 2.5
 
     def __init__(self, source_id: str) -> None:
+        """创建权威快照及用于链路诊断的有界接收统计。"""
         self._source_id = source_id
         self._lock = threading.RLock()
         self._snapshot = VehicleSnapshot()
         self._last_status_time = 0.0
+        self._status_count = 0
+        # 仅保留最近 1024 个本地单调时钟时间戳，足够覆盖数十秒 10 Hz 状态流。
+        self._status_times: deque[float] = deque(maxlen=1024)
 
     def update(self, message) -> None:
         """用一条 ControlStatus 原子替换完整快照。"""
@@ -88,15 +92,25 @@ class _VehicleStateStore:
             max_jitter_ms=message.max_jitter_ms,
             deadline_miss_count=message.deadline_miss_count,
         )
+        received_at = time.monotonic()
         with self._lock:
             self._snapshot = snapshot
-            self._last_status_time = time.monotonic()
+            self._last_status_time = received_at
+            self._status_count += 1
+            self._status_times.append(received_at)
 
     def mark_disconnected(self) -> None:
         """本地仿真清理后立即清除旧机载/飞控连接状态。"""
         with self._lock:
             self._snapshot = VehicleSnapshot()
             self._last_status_time = 0.0
+            self._status_count = 0
+            self._status_times.clear()
+
+    def observation(self) -> tuple[int, tuple[float, ...]]:
+        """返回累计状态数与近期接收时刻，供纯订阅链路检测计算频率/间隔。"""
+        with self._lock:
+            return self._status_count, tuple(self._status_times)
 
     def snapshot(self) -> VehicleSnapshot:
         """返回快照；状态话题超时后不继续显示虚假的连接或控制权。"""
@@ -151,6 +165,10 @@ class GroundStationRosController:
 
         self._release_requested = threading.Event()
         self._release_finished = threading.Event()
+        # ROS 客户端默认只观察；完整仿真/实机工作流明确开启后才允许申请租约。
+        self._control_enabled = threading.Event()
+        # 远端 rosout 仅在实机会话或通讯检测中进入 GUI，避免本地仿真日志重复。
+        self._remote_logs_enabled = threading.Event()
 
     @property
     def source_id(self) -> str:
@@ -178,6 +196,11 @@ class GroundStationRosController:
         return self._lease_error
 
     @property
+    def control_enabled(self) -> bool:
+        """指示客户端是否获准申请/续租；新客户端默认仅观察。"""
+        return self._control_enabled.is_set()
+
+    @property
     def active_mode(self) -> FlightMode:
         """返回机载服务报告的实际控制模式。"""
         return self.snapshot().active_mode
@@ -197,8 +220,12 @@ class GroundStationRosController:
         """返回最新机载聚合状态。"""
         return self._state.snapshot()
 
+    def status_observation(self) -> tuple[int, tuple[float, ...]]:
+        """返回状态接收统计；读取本地内存，不产生任何 ROS 传输。"""
+        return self._state.observation()
+
     def start(self, timeout: float = 5.0) -> None:
-        """启动常驻客户端线程，并等待节点就绪或明确失败。"""
+        """以仅观察模式启动常驻客户端线程，并等待节点就绪或明确失败。"""
         if self._running:
             return
         self._events.info("ros", f"正在启动 ROS 2 客户端：{self._source_id}")
@@ -207,6 +234,8 @@ class GroundStationRosController:
         self._error = None
         self._release_requested.clear()
         self._release_finished.clear()
+        self._control_enabled.clear()
+        self._remote_logs_enabled.clear()
         self._thread = threading.Thread(
             target=self._spin, name="ground-station-ros-client", daemon=True
         )
@@ -229,18 +258,37 @@ class GroundStationRosController:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         self._ready = False
+        self._remote_logs_enabled.clear()
         self._state.mark_disconnected()
         self._events.info("ros", "ROS 2 客户端已停止")
 
     def enable_control(self) -> None:
-        """允许客户端自动申请控制租约，用于开始仿真或连接实机。"""
+        """允许客户端自动申请控制租约；完整仿真/实机工作流显式调用。"""
         self._release_finished.clear()
         self._release_requested.clear()
+        self._control_enabled.set()
         self._events.debug("lease", "已允许自动申请机载控制租约")
+
+    def enable_remote_logs(self) -> None:
+        """在实机会话或通讯检测中接收远端 ROS 日志，不改变远端状态。"""
+        self._remote_logs_enabled.set()
+        self._events.debug("ros", "已启用实机 ROS 日志只读接收")
+
+    def disable_remote_logs(self) -> None:
+        """停止把后续远端 ROS 日志写入 GUI 事件总线。"""
+        self._remote_logs_enabled.clear()
 
     def release_control(self, timeout: float = 1.5) -> bool:
         """主动释放租约但保持状态订阅运行，实机进程不受影响。"""
         if not self._running:
+            self._control_enabled.clear()
+            return True
+        was_enabled = self._control_enabled.is_set()
+        self._control_enabled.clear()
+        if not was_enabled and not self.snapshot().control_authority:
+            # 仅观察会话从未持有租约，断开时不得发送多余 release 请求。
+            self._release_finished.set()
+            self._events.debug("lease", "仅观察会话没有控制租约，无需发送释放请求")
             return True
         self._events.info("lease", "正在主动释放机载控制租约")
         self._release_finished.clear()
@@ -372,6 +420,7 @@ class GroundStationRosController:
                 FlightCommand,
                 SetGpsOrigin,
             )
+            from rcl_interfaces.msg import Log as RosLog
 
             rclpy.init(args=["--ros-args", "--log-level", "warn"])
             context = rclpy.get_default_context()
@@ -416,9 +465,17 @@ class GroundStationRosController:
                     message.final,
                 )
 
+            def rosout_callback(message: RosLog) -> None:
+                self._ingest_remote_rosout(message)
+
             status_qos = rclpy.qos.QoSProfile(
                 depth=1,
                 reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            )
+            rosout_qos = rclpy.qos.QoSProfile(
+                depth=1000,
+                reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+                durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
             )
             subscriptions = (
                 node.create_subscription(
@@ -434,6 +491,7 @@ class GroundStationRosController:
                     50,
                 ),
             )
+            rosout_subscription = None
 
             ros_entities = {
                 "node": node,
@@ -462,6 +520,21 @@ class GroundStationRosController:
             last_logged_snapshot = VehicleSnapshot()
 
             while self._running and context.ok():
+                # 仅实机会话/通讯检测创建 rosout 订阅；TRANSIENT_LOCAL 会补发远端
+                # 节点启动日志，仿真会话则完全不订阅以避免本地 tee 日志重复。
+                if self._remote_logs_enabled.is_set() and rosout_subscription is None:
+                    rosout_subscription = node.create_subscription(
+                        RosLog,
+                        "/rosout",
+                        rosout_callback,
+                        rosout_qos,
+                    )
+                elif (
+                    not self._remote_logs_enabled.is_set()
+                    and rosout_subscription is not None
+                ):
+                    node.destroy_subscription(rosout_subscription)
+                    rosout_subscription = None
                 rclpy.spin_once(node, timeout_sec=0.02)
                 current_snapshot = self.snapshot()
                 self._log_status_transitions(last_logged_snapshot, current_snapshot)
@@ -551,8 +624,30 @@ class GroundStationRosController:
                 f"最大抖动 {current.max_jitter_ms:.3f} ms",
             )
 
+    def _ingest_remote_rosout(self, message) -> None:
+        """原样接收实机会话 rosout 文本，并映射 ROS 原生严重度。"""
+        if not self._remote_logs_enabled.is_set():
+            return
+        logger_name = str(getattr(message, "name", "") or "unknown").strip("/")
+        if logger_name == "ground_station_client":
+            return
+        ros_level = int(getattr(message, "level", 20))
+        if ros_level >= 40:
+            level = 40
+        elif ros_level >= 30:
+            level = 30
+        elif ros_level >= 20:
+            level = 20
+        else:
+            level = 10
+        self._events.emit(
+            level,
+            f"remote-rosout:{logger_name}",
+            str(getattr(message, "msg", "")),
+        )
+
     def _update_lease(self, ros_entities: dict[str, object], state: dict) -> None:
-        """自动申请/续租控制权，并在关闭前主动释放。"""
+        """仅在明确授权后申请/续租，并在关闭前主动释放。"""
         node = ros_entities["node"]
         client = ros_entities["clients"]["lease"]
         now = time.monotonic()
@@ -561,22 +656,8 @@ class GroundStationRosController:
         if release_future is not None and release_future.done():
             state["granted_hint"] = False
             self._release_finished.set()
+            self._release_requested.clear()
             state["release_future"] = None
-
-        if self._release_requested.is_set():
-            if state["release_future"] is None and client.service_is_ready():
-                request = ros_entities["AcquireControl"].Request()
-                state["sequence"] += 1
-                request.stamp = node.get_clock().now().to_msg()
-                request.source_id = self._source_id
-                request.sequence = state["sequence"]
-                request.lease_duration_ms = LEASE_DURATION_MS
-                request.release = True
-                state["release_future"] = client.call_async(request)
-            elif state["release_future"] is None:
-                state["granted_hint"] = False
-                self._release_finished.set()
-            return
 
         snapshot = self.snapshot()
         compatible = (
@@ -600,6 +681,34 @@ class GroundStationRosController:
                 state["granted_hint"] = False
                 self._lease_error = f"控制权申请异常: {exc}"
             state["future"] = None
+
+        if self._release_requested.is_set():
+            # 等待正在途中的 acquire 完成，避免刚获租约便在本地误判为无需释放。
+            if state["future"] is not None:
+                return
+            owns_control = snapshot.control_authority or state["granted_hint"]
+            if (
+                owns_control
+                and state["release_future"] is None
+                and client.service_is_ready()
+            ):
+                request = ros_entities["AcquireControl"].Request()
+                state["sequence"] += 1
+                request.stamp = node.get_clock().now().to_msg()
+                request.source_id = self._source_id
+                request.sequence = state["sequence"]
+                request.lease_duration_ms = LEASE_DURATION_MS
+                request.release = True
+                state["release_future"] = client.call_async(request)
+            elif state["release_future"] is None:
+                state["granted_hint"] = False
+                self._release_requested.clear()
+                self._release_finished.set()
+            return
+
+        # 默认仅观察：即便发现兼容服务，也不申请租约或发布心跳。
+        if not self._control_enabled.is_set():
+            return
 
         owns_control = snapshot.control_authority or state["granted_hint"]
         if owns_control and now - state["last_heartbeat"] >= HEARTBEAT_PERIOD_SECONDS:
@@ -651,6 +760,14 @@ class GroundStationRosController:
                 False,
                 f"接口版本不兼容：期望 {INTERFACE_VERSION}，收到 "
                 f"{snapshot.interface_version or '--'}",
+            )
+            return
+        if not self._control_enabled.is_set():
+            self._emit_result(
+                command.ticket,
+                command.name,
+                False,
+                "客户端尚未启用控制会话",
             )
             return
         if not snapshot.control_authority:

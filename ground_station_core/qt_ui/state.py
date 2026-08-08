@@ -14,6 +14,7 @@ class UiAvailability:
     start_environment: bool
     stop_simulation: bool
     disconnect_hardware: bool
+    communication_test: bool
     origin_settings: bool
     takeoff: bool
     land: bool
@@ -47,6 +48,8 @@ def derive_availability(
     start_environment = (
         ros_ready and not busy and not closing and not environment_active
     )
+    # Wi-Fi 检测与环境初始化互斥，避免在既有租约会话中伪装成零命令诊断。
+    communication_test = start_environment
     # 仅本会话类型可关：仿真中禁用“断开实机”，实机中禁用“关闭仿真”。
     stop_simulation = not closing and simulation_session
     disconnect_hardware = not closing and hardware_session
@@ -56,7 +59,7 @@ def derive_availability(
     if closing:
         reason = "地面站正在安全退出"
     elif busy:
-        reason = "环境工作流正在执行"
+        reason = "环境或通讯工作流正在执行"
     elif not ros_ready:
         reason = "ROS 2 客户端尚未就绪"
     elif not environment_active:
@@ -101,6 +104,7 @@ def derive_availability(
         start_environment=start_environment,
         stop_simulation=stop_simulation,
         disconnect_hardware=disconnect_hardware,
+        communication_test=communication_test,
         origin_settings=origin_settings,
         takeoff=(
             control_ready
