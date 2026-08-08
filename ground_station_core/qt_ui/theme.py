@@ -202,10 +202,15 @@ QPushButton[role="danger"]:disabled {{
     border-color: #dbe0e5;
 }}
 QPushButton[compact="true"] {{ min-height: 28px; padding: 2px 9px; }}
-QPushButton#originSettingsButton {{
-    min-width: 34px;
-    min-height: 34px;
+QPushButton#simulationButton,
+QPushButton#hardwareButton {{
+    padding: 4px;
+}}
+QPushButton#originSettingsButton,
+QPushButton#communicationTestButton {{
     padding: 0;
+}}
+QPushButton#originSettingsButton {{
     font-size: 14pt;
 }}
 QPushButton[windowControl="true"] {{

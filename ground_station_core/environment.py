@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import (
@@ -17,12 +18,28 @@ from .config import (
     ros_setup_files,
 )
 from .event_log import EventLog, LogLevel
+from .models import VehicleSnapshot
 from .process_manager import CleanupReport, ManagedProcess, ProcessSupervisor
 from .ros_controller import GroundStationRosController
 
 
 StatusCallback = Callable[[LogLevel, str], None]
 DoneCallback = Callable[[bool, str], None]
+
+# 机载 ControlStatus 默认 10 Hz；诊断要求至少 5 Hz 且最长断流不超过 0.5 秒。
+_COMMUNICATION_OBSERVATION_SECONDS = 3.0
+_COMMUNICATION_MIN_RATE_HZ = 5.0
+_COMMUNICATION_MAX_GAP_SECONDS = 0.5
+
+
+@dataclass(frozen=True)
+class _CommunicationMetrics:
+    """一次纯订阅通讯检测的状态样本、速率、最大间隔与最终快照。"""
+
+    snapshot: VehicleSnapshot
+    samples: int
+    rate_hz: float
+    max_gap_seconds: float
 
 
 class _WorkflowCancelled(RuntimeError):
@@ -34,7 +51,7 @@ class _PreflightFailed(RuntimeError):
 
 
 class EnvironmentInitializer:
-    """仿真时管理本地进程，实机时只连接远端机载服务。"""
+    """管理本地 SITL、完整实机连接及零命令实机通讯检测。"""
 
     def __init__(
         self,
@@ -85,9 +102,27 @@ class EnvironmentInitializer:
         status: StatusCallback,
         done: DoneCallback,
     ) -> bool:
-        """异步连接局域网中的机载服务，不远程管理无人机进程。"""
+        """异步完整连接局域网机载服务，不远程管理无人机进程。"""
         return self._start_workflow(
-            "hardware", lambda: self._hardware_workflow(origin, status), status, done
+            "hardware",
+            lambda: self._hardware_workflow(origin, status),
+            status,
+            done,
+        )
+
+    def test_hardware_communication(
+        self,
+        status: StatusCallback,
+        done: DoneCallback,
+    ) -> bool:
+        """异步检测实机状态/日志链路，不申请租约、发命令或管理进程。"""
+        return self._start_workflow(
+            "communication",
+            lambda: self._communication_workflow(status),
+            status,
+            done,
+            cleanup_on_failure=False,
+            operation_label="通讯检测",
         )
 
     def _start_workflow(
@@ -96,8 +131,11 @@ class EnvironmentInitializer:
         workflow: Callable[[], str],
         status: StatusCallback,
         done: DoneCallback,
+        *,
+        cleanup_on_failure: bool = True,
+        operation_label: str = "初始化/连接",
     ) -> bool:
-        """保证同一时刻只有一个环境工作流。"""
+        """保证工作流互斥，并让纯诊断失败时跳过任何环境清理动作。"""
         with self._state_lock:
             if self._workflow_thread is not None and self._workflow_thread.is_alive():
                 self._events.warn("environment", "已有初始化/连接流程正在执行")
@@ -109,30 +147,46 @@ class EnvironmentInitializer:
                 try:
                     message = workflow()
                 except _PreflightFailed as exc:
-                    message = f"初始化前检查失败: {exc}"
+                    message = f"{operation_label}前检查失败: {exc}"
                     self._events.error("environment", message)
                     done(False, message)
                 except _WorkflowCancelled:
-                    report = self._terminate_local_processes()
-                    message = (
-                        "操作已取消，本地仿真进程与控制租约已清理"
-                        if report.success
-                        else f"操作已取消，但本地清理仍有残留: {report.remaining}"
-                    )
-                    self._events.emit(
-                        LogLevel.WARN if report.success else LogLevel.ERROR,
-                        "environment",
-                        message,
-                    )
+                    if cleanup_on_failure:
+                        report = self._terminate_local_processes()
+                        message = (
+                            "操作已取消，本地仿真进程与控制租约已清理"
+                            if report.success
+                            else "操作已取消，但本地清理仍有残留: "
+                            f"{report.remaining}"
+                        )
+                        level = LogLevel.WARN if report.success else LogLevel.ERROR
+                    else:
+                        self._ros.disable_remote_logs()
+                        message = (
+                            f"{operation_label}已取消；未申请控制权、未发送命令，"
+                            "未管理任何进程"
+                        )
+                        level = LogLevel.WARN
+                    self._events.emit(level, "environment", message)
                     done(False, message)
                 except Exception as exc:
-                    self._publish_status(
-                        status,
-                        LogLevel.WARN,
-                        f"初始化/连接失败，正在清理本地环境: {exc}",
-                    )
-                    report = self._terminate_local_processes()
-                    message = f"初始化/连接失败: {exc}{self._cleanup_suffix(report)}"
+                    if cleanup_on_failure:
+                        self._publish_status(
+                            status,
+                            LogLevel.WARN,
+                            f"{operation_label}失败，正在清理本地环境: {exc}",
+                        )
+                        report = self._terminate_local_processes()
+                        message = (
+                            f"{operation_label}失败: {exc}"
+                            f"{self._cleanup_suffix(report)}"
+                        )
+                    else:
+                        self._ros.disable_remote_logs()
+                        message = (
+                            f"{operation_label}失败: {exc}；未申请控制权、"
+                            "未发送命令，未启动/停止任何进程"
+                        )
                     self._events.error("environment", message)
                     done(False, message)
                 else:
@@ -277,7 +331,7 @@ class EnvironmentInitializer:
     def _hardware_workflow(
         self, origin: tuple[float, float, float], status: StatusCallback
     ) -> str:
-        """连接远端机载服务，校验接口/租约/飞控并执行维护命令。"""
+        """完整连接远端机载服务，校验租约/飞控并执行连接维护命令。"""
         try:
             if not self._ros.ready:
                 raise RuntimeError(
@@ -295,6 +349,7 @@ class EnvironmentInitializer:
         cleanup = self._terminate_local_processes()
         if cleanup.remaining:
             raise RuntimeError(f"本地仿真清理不完整: {cleanup.remaining}")
+        self._ros.enable_remote_logs()
         self._ros.enable_control()
         self._check_cancelled()
 
@@ -341,9 +396,105 @@ class EnvironmentInitializer:
         )
         self._wait_local_position(40.0)
         return (
-            "实机机载服务连接完成；地面站仅持有高层命令租约，"
+            "实机机载服务连接完成；地面站已持有高层命令租约，"
             "MAVROS/驱动/控制循环均在无人机上运行"
         )
+
+    def _communication_workflow(self, status: StatusCallback) -> str:
+        """仅订阅并测量实机状态/日志链路，禁止任何控制或进程生命周期调用。"""
+        try:
+            if not self._ros.ready:
+                raise RuntimeError(
+                    f"地面站 ROS 客户端未就绪: {self._ros.error or '未知原因'}"
+                )
+            snapshot = self._ros.snapshot()
+            if self._ros.control_enabled or snapshot.control_authority:
+                raise RuntimeError("当前客户端已有控制会话，请先正常断开后再检测")
+        except Exception as exc:
+            raise _PreflightFailed(str(exc)) from exc
+
+        existing_events = self._events.snapshot()
+        starting_log_sequence = existing_events[-1].sequence if existing_events else 0
+        self._ros.enable_remote_logs()
+        try:
+            self._publish_status(
+                status,
+                LogLevel.INFO,
+                "1/2 正在被动等待机载 ControlStatus；不申请租约或发送命令...",
+            )
+            self._wait_onboard(15.0)
+            snapshot = self._ros.snapshot()
+            if snapshot.interface_version != INTERFACE_VERSION:
+                raise RuntimeError(
+                    f"接口版本不兼容：地面站 {INTERFACE_VERSION} / "
+                    f"机载端 {snapshot.interface_version or '--'}"
+                )
+
+            self._publish_status(
+                status,
+                LogLevel.INFO,
+                "2/2 正在测量 3 秒状态流并接收远端日志；全程零控制命令...",
+            )
+            metrics = self._observe_communication_link(
+                _COMMUNICATION_OBSERVATION_SECONDS
+            )
+            remote_log_count = sum(
+                event.source.startswith("remote-rosout:")
+                for event in self._events.events_after(starting_log_sequence)
+            )
+            armed_state = "已武装（仅观测）" if metrics.snapshot.armed else "未武装"
+            fcu_state = "已连接" if metrics.snapshot.connected else "未连接"
+            lease_state = metrics.snapshot.lease_owner or "无"
+            return (
+                "实机通讯链路检测通过："
+                f"ControlStatus {metrics.samples} 条 / {metrics.rate_hz:.2f} Hz，"
+                f"最大接收间隔 {metrics.max_gap_seconds * 1000.0:.1f} ms；"
+                f"飞控{fcu_state}、{armed_state}，租约持有者 {lease_state}，"
+                f"检测窗收到远端日志 {remote_log_count} 条；"
+                "未申请控制权、未发送心跳/维护/飞行指令，未管理任何进程"
+            )
+        finally:
+            self._ros.disable_remote_logs()
+
+    def _observe_communication_link(self, duration: float) -> _CommunicationMetrics:
+        """在有界窗口内只读统计新状态样本，持续验证未进入本客户端控制态。"""
+        start_count, _ = self._ros.status_observation()
+        started_at = time.monotonic()
+        deadline = started_at + duration
+        latest = self._ros.snapshot()
+        while time.monotonic() < deadline:
+            self._check_cancelled()
+            latest = self._ros.snapshot()
+            if not latest.onboard_available:
+                raise RuntimeError("检测期间机载 ControlStatus 中断")
+            if self._ros.control_enabled or latest.control_authority:
+                raise RuntimeError("通讯检测期间客户端意外进入控制态，已立即中止")
+            self._cancel_event.wait(0.05)
+
+        ended_at = time.monotonic()
+        end_count, receive_times = self._ros.status_observation()
+        samples = max(0, end_count - start_count)
+        elapsed = max(ended_at - started_at, 1e-6)
+        window_times = [
+            stamp for stamp in receive_times if started_at <= stamp <= ended_at
+        ]
+        gap_points = [started_at, *window_times, ended_at]
+        max_gap = max(
+            later - earlier for earlier, later in zip(gap_points, gap_points[1:])
+        )
+        rate_hz = samples / elapsed
+        minimum_samples = max(3, int(elapsed * _COMMUNICATION_MIN_RATE_HZ + 0.999))
+        if samples < minimum_samples:
+            raise RuntimeError(
+                f"状态接收频率过低：{samples} 条/{elapsed:.2f}s "
+                f"({rate_hz:.2f} Hz)，要求至少 {_COMMUNICATION_MIN_RATE_HZ:.1f} Hz"
+            )
+        if max_gap > _COMMUNICATION_MAX_GAP_SECONDS:
+            raise RuntimeError(
+                f"状态接收出现 {max_gap * 1000.0:.1f} ms 断流，"
+                f"上限 {_COMMUNICATION_MAX_GAP_SECONDS * 1000.0:.0f} ms"
+            )
+        return _CommunicationMetrics(latest, samples, rate_hz, max_gap)
 
     def _verify_ros_package(self, package: str, setup_files: tuple[Path, ...]) -> None:
         """在指定 overlay 中验证所需 ROS 包。"""
@@ -478,6 +629,7 @@ class EnvironmentInitializer:
     def _terminate_local_processes(self) -> CleanupReport:
         """串行释放租约并清理本项目本地仿真进程。"""
         with self._cleanup_lock:
+            self._ros.disable_remote_logs()
             self._ros.release_control(timeout=1.0)
             report = self._supervisor.terminate_all()
             self._ros.mark_environment_stopped()

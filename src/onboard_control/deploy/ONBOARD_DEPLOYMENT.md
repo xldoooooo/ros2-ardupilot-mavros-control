@@ -124,14 +124,19 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 
 ROS 官方不保证 Humble 与 Jazzy 跨发行版通信。即使状态话题和服务在台架测试中可见，也只能视为当前版本组合的实测结果，不能据此宣称适合实飞。
 
+任务 09 在 Humble `rmw_fastrtps_cpp 6.2.10` 与 Jazzy `8.4.3` 间实测时，
+稳定收到自定义状态话题，但两端在发现部分跨发行版端点时反复输出
+`sequence size exceeds remaining buffer`。这属于仍未解决的兼容性告警；在统一
+ROS 发行版/DDS 版本或加入受支持桥接并复验之前，禁止把当前结果解释为完整 ROS 图兼容。
+
 ## 6. 下一步通信测试顺序
 
 所有测试均保持螺旋桨拆除、飞控不解锁，并由低风险到高风险逐级进行：
 
-1. **DDS 协议测试**：不启动 MAVROS，只启动新机载节点；地面站只读取 `/onboard_control/status`，确认接口 `2.0`、`armed=false`。不要点击 GUI 的“连接实机服务”，因为该工作流会申请租约、配置消息频率并写 GPS 原点。
-2. **MAVROS 只读测试**：沿用旧流程单独启动 Odin、MAVROS 和 extnav；只读取 `/mavros/state`、本地位姿和速度，确认 `armed=false`，不调用任何模式、解锁、起飞、原点或消息频率服务。
-3. **同机链路测试**：启动新机载节点，只观察其聚合状态是否正确反映飞控连接、位姿、`GUID_OPTIONS` 与 setpoint 发布者冲突；不申请控制租约、不发送 `FlightCommand`/`MotionIntent`/航点。
-4. **维护命令测试**：只有前三步均通过且另行确认后，才评估设置消息频率和 GPS 原点。它们会改变飞控运行状态，不属于只读测试。
+1. **DDS 协议测试**：不启动 MAVROS，只启动新机载节点；地面站先只读取 `/onboard_control/status`，确认接口 `2.0`、`armed=false`。GUI 中齿轮右侧的独立 Wi-Fi 图标只订阅状态与远端 `/rosout`，测量状态频率和最大接收间隔；它不会申请租约、配置消息频率、写 GPS 原点或建立控制会话。
+2. **MAVROS 只读测试**：只单独启动 MAVROS 并读取 `/mavros/state`，确认 `armed=false`；不要直接运行旧 `odin.sh`，因为该脚本会调用三次 `/mavros/set_message_interval`。Odin/extnav 应留到单独评审后的外部定位测试，不调用任何模式、解锁、起飞、原点或消息频率服务。
+3. **同机链路测试**：启动新机载节点，只观察其聚合状态是否正确反映飞控连接、位姿、`GUID_OPTIONS` 与 setpoint 发布者冲突；使用独立 Wi-Fi 图标，不点击“连接实机服务”，不发送 `FlightCommand`/`MotionIntent`/航点。
+4. **完整连接与维护测试**：原“连接实机服务”按钮保留正式功能，会在明确风险确认后申请控制租约、发送心跳、配置消息频率并写 GPS 原点，连接成功后按权威状态开放控制按钮。只有前三步均通过并单独完成安全评审后才可测试；该按钮本身不会发送解锁或起飞请求，但不属于零命令通讯检测。
 5. **飞行控制测试**：本任务明确禁止，不能进行解锁、起飞或实机姿态/推力控制。
 
 ## 7. systemd 示例

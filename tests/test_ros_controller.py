@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 from ground_station_core.config import INTERFACE_VERSION
+from ground_station_core.event_log import EventLog, LogLevel
 from ground_station_core.models import FlightMode, VehicleSnapshot
 from ground_station_core.ros_controller import (
     GroundStationRosController,
@@ -81,6 +82,7 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
     )
     store.update(message)
     snapshot = store.snapshot()
+    status_count, receive_times = store.observation()
 
     assert snapshot.onboard_available
     assert snapshot.active_mode is FlightMode.WAYPOINT
@@ -88,6 +90,11 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
     assert snapshot.waypoint_index == 2
     assert snapshot.control_rate_hz == 99.8
     assert snapshot.hover_throttle == 0.39
+    assert status_count == 1
+    assert len(receive_times) == 1
+
+    store.mark_disconnected()
+    assert store.observation() == (0, ())
 
 
 def test_previous_interface_version_is_rejected_before_command_transport() -> None:
@@ -110,3 +117,92 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message
+
+
+def test_compatible_onboard_is_passive_until_control_is_explicitly_enabled() -> None:
+    """仅发现兼容机载端时不得自动申请租约或发布心跳。"""
+
+    class FakeClient:
+        """记录租约服务调用，不执行任何 ROS 传输。"""
+
+        def __init__(self) -> None:
+            self.requests: list[object] = []
+
+        @staticmethod
+        def service_is_ready() -> bool:
+            return True
+
+        def call_async(self, request: object) -> object:
+            self.requests.append(request)
+            return SimpleNamespace(done=lambda: False)
+
+    class FakeNow:
+        """提供最小 ROS 时钟消息接口。"""
+
+        @staticmethod
+        def to_msg() -> object:
+            return object()
+
+    client = FakeClient()
+    controller = GroundStationRosController(source_id="gcs-passive-default")
+    controller._state._snapshot = VehicleSnapshot(
+        onboard_available=True,
+        interface_version=INTERFACE_VERSION,
+    )
+    controller._state._last_status_time = time.monotonic()
+    entities = {
+        "node": SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(now=lambda: FakeNow())
+        ),
+        "clients": {"lease": client},
+        "AcquireControl": SimpleNamespace(Request=SimpleNamespace),
+    }
+    state = {
+        "sequence": 0,
+        "future": None,
+        "last_attempt": 0.0,
+        "last_heartbeat": 0.0,
+        "granted_hint": False,
+        "release_future": None,
+    }
+
+    controller._update_lease(entities, state)
+    assert not controller.control_enabled
+    assert client.requests == []
+
+    # 即便构造出兼容状态，默认观察态也会在读取传输实体前拒绝排队命令。
+    ticket = controller.request_takeoff(0.3)
+    controller._process_one_command({}, {})
+    rejected = controller.wait_for_result(ticket, timeout=0.1)
+    assert rejected is not None
+    assert not rejected.success
+    assert "尚未启用控制会话" in rejected.message
+
+    controller.enable_control()
+    controller._update_lease(entities, state)
+    assert controller.control_enabled
+    assert len(client.requests) == 1
+    assert client.requests[0].release is False
+
+
+def test_remote_rosout_is_verbatim_and_only_enabled_for_explicit_real_link() -> None:
+    """远端日志须保留原文/来源/等级，且默认不进入 GUI 事件总线。"""
+    events = EventLog()
+    controller = GroundStationRosController(
+        source_id="gcs-rosout", event_log=events
+    )
+    message = SimpleNamespace(
+        name="/onboard_control_node",
+        level=30,
+        msg="机载只读日志：armed=false",
+    )
+
+    controller._ingest_remote_rosout(message)
+    assert events.snapshot() == ()
+
+    controller.enable_remote_logs()
+    controller._ingest_remote_rosout(message)
+    received = events.snapshot()[-1]
+    assert received.level is LogLevel.WARN
+    assert received.source == "remote-rosout:onboard_control_node"
+    assert received.message == message.msg

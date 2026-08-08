@@ -57,6 +57,7 @@ class _ThreadBridge(QObject):
 
     environment_status = Signal(object, str)
     environment_done = Signal(bool, str)
+    communication_done = Signal(bool, str)
     cleanup_done = Signal(object)
     shutdown_done = Signal(object)
 
@@ -90,6 +91,7 @@ class GroundStationWindow(QMainWindow):
         self._connection_mode = "none"
         self._pending_environment_mode = "none"
         self._workflow_busy = False
+        self._communication_busy = False
         self._waypoint_running = False
         self._pending_commands: set[str] = set()
         self._last_result_sequence = 0
@@ -532,6 +534,9 @@ class GroundStationWindow(QMainWindow):
         """连接面板意图、线程桥和主窗口业务槽。"""
         self.operations.simulation_requested.connect(self._initialize_simulation)
         self.operations.hardware_requested.connect(self._initialize_hardware)
+        self.operations.communication_test_requested.connect(
+            self._test_hardware_communication
+        )
         self.operations.stop_simulation_requested.connect(self._stop_simulation)
         self.operations.disconnect_hardware_requested.connect(
             self._disconnect_hardware
@@ -548,6 +553,7 @@ class GroundStationWindow(QMainWindow):
         )
         self._bridge.environment_status.connect(self._on_environment_status)
         self._bridge.environment_done.connect(self._on_environment_done)
+        self._bridge.communication_done.connect(self._on_communication_done)
         self._bridge.cleanup_done.connect(self._on_cleanup_done)
         self._bridge.shutdown_done.connect(self._on_shutdown_done)
 
@@ -609,24 +615,42 @@ class GroundStationWindow(QMainWindow):
             self._refresh()
 
     def _initialize_hardware(self) -> None:
-        """经过明确实机风险确认后连接远端机载高层服务。"""
+        """经过明确实机风险确认后建立可正常控制的远端连接。"""
         origin = self.operations.origin()
         message = (
-            "即将连接可能对应真实飞行器的机载服务并申请控制权。\n\n"
-            "请确认飞行区域已隔离、飞行器当前安全且操作者具备接管条件；"
-            f"启动时将写入飞控原点 "
-            f"{origin[0]:.7f}, {origin[1]:.7f}, {origin[2]:.1f} m"
-            "（本机无 GNSS，仅满足 EKF/飞控要求）。"
+            "即将连接可能对应真实飞行器的机载服务并申请控制租约。\n\n"
+            "连接流程会发送控制心跳、配置飞控消息频率，并写入飞控原点 "
+            f"{origin[0]:.7f}, {origin[1]:.7f}, {origin[2]:.1f} m；"
+            "完成后将开放地面站控制功能。连接动作本身不会解锁或起飞，"
+            "解锁/起飞仍须操作者另行确认。"
         )
         if not self._confirm_action("连接实机服务", message, critical=True):
             return
-        self._events.warn("operator", "操作者确认连接实机机载服务")
+        self._events.warn("operator", "操作者确认完整连接实机机载服务")
         self._begin_environment_workflow("hardware", "正在连接实机机载服务…")
         started = self._environment.initialize_hardware(
             origin, self._queue_environment_status, self._queue_environment_done
         )
         if not started:
             self._workflow_busy = False
+            self._refresh()
+
+    def _test_hardware_communication(self) -> None:
+        """执行独立 Wi-Fi 纯订阅检测，不创建环境会话或发送控制指令。"""
+        if not self._availability.communication_test:
+            return
+        self._events.info("operator", "操作者请求检测实机通讯链路（零控制命令）")
+        self._communication_busy = True
+        self.activity_banner.set_message(
+            "正在被动检测实机状态与日志链路…", LogLevel.INFO
+        )
+        self._refresh()
+        started = self._environment.test_hardware_communication(
+            self._queue_environment_status,
+            self._queue_communication_done,
+        )
+        if not started:
+            self._communication_busy = False
             self._refresh()
 
     def _begin_environment_workflow(self, mode: str, message: str) -> None:
@@ -644,6 +668,10 @@ class GroundStationWindow(QMainWindow):
         """供环境工作线程投递最终状态。"""
         self._bridge.environment_done.emit(success, message)
 
+    def _queue_communication_done(self, success: bool, message: str) -> None:
+        """供通讯检测线程投递结果，不复用会建立会话的完成信号。"""
+        self._bridge.communication_done.emit(success, message)
+
     def _on_environment_status(self, level: LogLevel, message: str) -> None:
         """在主线程显示源端已经标级的环境进度。"""
         self.activity_banner.set_message(message, level)
@@ -654,6 +682,14 @@ class GroundStationWindow(QMainWindow):
         self._environment_active = success
         self._connection_mode = self._pending_environment_mode if success else "none"
         self._pending_environment_mode = "none"
+        self.activity_banner.set_message(
+            message, LogLevel.INFO if success else LogLevel.ERROR
+        )
+        self._refresh()
+
+    def _on_communication_done(self, success: bool, message: str) -> None:
+        """显示 Wi-Fi 检测结果，保持环境与连接模式不变。"""
+        self._communication_busy = False
         self.activity_banner.set_message(
             message, LogLevel.INFO if success else LogLevel.ERROR
         )
@@ -672,7 +708,7 @@ class GroundStationWindow(QMainWindow):
         )
 
     def _disconnect_hardware(self) -> None:
-        """确认后断开实机机载连接；不远程终止机载进程。"""
+        """确认后释放实机控制租约；不远程终止机载进程。"""
         self._begin_session_teardown(
             kind="hardware",
             title="断开实机连接",
@@ -701,8 +737,8 @@ class GroundStationWindow(QMainWindow):
             return
         snapshot = self._ros.snapshot()
         risk = (
-            "飞行器当前已武装。断开会释放控制租约，机载端将按失联策略先悬停，"
-            "宽限期后自动降落；该操作不是立即降落命令。\n\n"
+            "飞行器当前已武装。断开会释放控制租约，机载端将按失联策略"
+            "先悬停、宽限期后自动降落；该操作不是立即降落命令。\n\n"
             if snapshot.armed
             else ""
         )
@@ -865,7 +901,11 @@ class GroundStationWindow(QMainWindow):
         self.waypoints.update_progress(snapshot)
         self._consume_results()
 
-        busy = self._workflow_busy or bool(getattr(self._environment, "busy", False))
+        busy = (
+            self._workflow_busy
+            or self._communication_busy
+            or bool(getattr(self._environment, "busy", False))
+        )
         self._availability = derive_availability(
             snapshot,
             ros_ready=bool(self._ros.ready),
