@@ -233,7 +233,8 @@ bool OnboardControlNode::validate_envelope(
     reason = "命令时间戳无效";
     return false;
   }
-  const double age_seconds = (get_clock()->now() - sent_time).seconds();
+  // Node::now() is const in both Humble and Jazzy; Humble's const Clock cannot call now().
+  const double age_seconds = (now() - sent_time).seconds();
   if (age_seconds < -max_clock_skew_seconds_) {
     reason = "命令时间戳来自未来，请检查两端时间同步";
     return false;
