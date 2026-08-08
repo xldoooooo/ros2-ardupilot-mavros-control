@@ -111,10 +111,79 @@ QLabel#cardTitle {{
     font-weight: 700;
     color: {COLORS['text']};
 }}
+QLabel#cardHelpIcon {{
+    color: {COLORS['accent']};
+    background: #e8f1f7;
+    border: 1px solid #9dbbd0;
+    border-radius: 9px;
+    font-size: 9pt;
+    font-weight: 700;
+}}
 QLabel#metricValue {{
     font-family: "DejaVu Sans Mono", monospace;
     font-size: 10pt;
     font-weight: 600;
+}}
+QLabel#manualStatusChip {{
+    min-height: 25px;
+    padding: 2px 8px;
+    background: {COLORS['surface_alt']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 3px;
+    font-size: 9pt;
+    font-weight: 700;
+}}
+QLabel#manualStatusChip[tone="good"] {{
+    color: {COLORS['success']};
+    background: {COLORS['success_soft']};
+    border-color: #a8cbbb;
+}}
+QLabel#manualStatusChip[tone="bad"] {{
+    color: {COLORS['danger']};
+    background: {COLORS['danger_soft']};
+    border-color: #dda69f;
+}}
+QFrame[joystickDeck="true"] {{
+    background: #f8fafb;
+    border: 1px solid {COLORS['border_strong']};
+    border-radius: 16px;
+}}
+QWidget#joystickCenterControls {{
+    background: transparent;
+}}
+QPushButton[manualActive="true"] {{
+    color: white;
+    background: {COLORS['accent']};
+    border-color: {COLORS['accent_hover']};
+}}
+QFrame#manualSummaryMetric {{
+    background: #f5f8fa;
+    border: 1px solid {COLORS['border']};
+    border-radius: 4px;
+}}
+QLabel#manualSummaryTitle, QLabel#manualSummaryUnit {{
+    color: {COLORS['muted']};
+    font-size: 8.5pt;
+}}
+QLabel#manualSummaryValue {{
+    color: {COLORS['accent']};
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 16pt;
+    font-weight: 700;
+}}
+QToolButton#engineeringTelemetryToggle {{
+    min-height: 24px;
+    padding: 2px 7px;
+    color: {COLORS['muted']};
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-weight: 600;
+}}
+QToolButton#engineeringTelemetryToggle:hover {{
+    color: {COLORS['accent']};
+    background: #e8f1f7;
+    border-color: #b9cfdf;
 }}
 QLabel#shortcutHint {{
     color: {COLORS['muted']};
@@ -210,6 +279,29 @@ QPushButton#originSettingsButton,
 QPushButton#communicationTestButton {{
     padding: 0;
 }}
+QPushButton#moveWaypointUpButton,
+QPushButton#moveWaypointDownButton,
+QPushButton#removeWaypointButton {{
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0;
+}}
+QPushButton#addWaypointButton {{
+    min-height: 26px;
+    max-height: 26px;
+    min-width: 26px;
+    max-width: 26px;
+    padding: 0;
+    background: white;
+    font-size: 14pt;
+    font-weight: 700;
+}}
+QPushButton#addWaypointButton:hover {{ background: #edf3f7; }}
+QPushButton#addWaypointButton:disabled {{
+    color: {COLORS['disabled']};
+    background: #edf0f2;
+    border-color: #dbe0e5;
+}}
 QPushButton#originSettingsButton {{
     font-size: 14pt;
 }}
@@ -240,6 +332,18 @@ QLineEdit, QComboBox {{
     border-radius: 3px;
     selection-background-color: {COLORS['accent']};
 }}
+QComboBox#manualCoordinateMode {{
+    min-height: 26px;
+    max-height: 26px;
+    min-width: 96px;
+}}
+QComboBox[sensitivityControl="true"] {{
+    min-height: 24px;
+    max-height: 24px;
+    padding: 1px 5px;
+    font-size: 8.5pt;
+}}
+QLineEdit#logSearchInput {{ min-height: 28px; max-height: 28px; }}
 QDoubleSpinBox {{
     min-height: 30px;
     padding: 2px 25px 2px 7px;
@@ -247,6 +351,15 @@ QDoubleSpinBox {{
     border: 1px solid {COLORS['border_strong']};
     border-radius: 3px;
     selection-background-color: {COLORS['accent']};
+}}
+QDoubleSpinBox[waypointCoordinate="true"] {{
+    min-height: 22px;
+    max-height: 22px;
+}}
+QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled {{
+    color: {COLORS['disabled']};
+    background: #edf0f2;
+    border-color: #dbe0e5;
 }}
 QLineEdit:focus, QComboBox:focus {{
     border: 2px solid {COLORS['accent']};
@@ -287,6 +400,25 @@ QDoubleSpinBox::down-arrow {{
     width: 12px;
     height: 8px;
 }}
+QDoubleSpinBox[compactValueInput="true"] {{
+    padding: 2px 3px;
+    font-size: 9pt;
+}}
+QDoubleSpinBox[compactValueInput="true"]:focus {{
+    padding: 1px 2px;
+}}
+QDoubleSpinBox[compactValueInput="true"]::up-button,
+QDoubleSpinBox[compactValueInput="true"]::down-button {{ width: 13px; }}
+QDoubleSpinBox[compactValueInput="true"]::up-arrow,
+QDoubleSpinBox[compactValueInput="true"]::down-arrow {{
+    width: 9px;
+    height: 6px;
+}}
+QDoubleSpinBox:disabled::up-button,
+QDoubleSpinBox:disabled::down-button {{
+    background: #e3e7ea;
+    border-color: #dbe0e5;
+}}
 QCheckBox {{ spacing: 5px; }}
 QCheckBox#logLevelDebug, QCheckBox#logLevelInfo,
 QCheckBox#logLevelWarn, QCheckBox#logLevelError {{
@@ -309,6 +441,10 @@ QProgressBar {{
     text-align: center;
 }}
 QProgressBar::chunk {{ background: {COLORS['accent']}; border-radius: 2px; }}
+QProgressBar#waypointProgress::chunk {{
+    background: {COLORS['success']};
+    border-radius: 2px;
+}}
 QTableWidget, QTextEdit {{
     background: white;
     alternate-background-color: {COLORS['surface_alt']};
@@ -325,6 +461,20 @@ QHeaderView::section {{
     border-bottom: 1px solid {COLORS['border_strong']};
     padding: 7px;
     font-weight: 700;
+}}
+QTableWidget#waypointTable QHeaderView::section {{ padding: 2px 5px; }}
+QMenu#downwardComboPopup {{
+    background: white;
+    border: 1px solid {COLORS['border_strong']};
+    padding: 2px;
+}}
+QMenu#downwardComboPopup::item {{
+    min-height: 24px;
+    padding: 5px 22px 5px 9px;
+}}
+QMenu#downwardComboPopup::item:selected {{
+    background: #dcebf5;
+    color: {COLORS['text']};
 }}
 QScrollArea {{ border: none; background: transparent; }}
 QTabWidget::pane {{

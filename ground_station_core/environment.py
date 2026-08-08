@@ -66,6 +66,7 @@ class EnvironmentInitializer:
         self._state_lock = threading.RLock()
         self._cleanup_lock = threading.Lock()
         self._workflow_thread: threading.Thread | None = None
+        self._workflow_name: str | None = None
         self._cancel_event = threading.Event()
 
     @property
@@ -125,6 +126,20 @@ class EnvironmentInitializer:
             operation_label="通讯检测",
         )
 
+    def cancel_hardware_communication_test(self) -> bool:
+        """只请求结束纯订阅检测，不释放租约或触碰任何受管进程。"""
+        with self._state_lock:
+            thread = self._workflow_thread
+            if (
+                self._workflow_name != "communication"
+                or thread is None
+                or not thread.is_alive()
+            ):
+                return False
+            self._cancel_event.set()
+        self._events.warn("environment", "操作者请求终止实机通讯检测")
+        return True
+
     def _start_workflow(
         self,
         name: str,
@@ -142,6 +157,7 @@ class EnvironmentInitializer:
                 done(False, "已有初始化/连接流程正在执行")
                 return False
             self._cancel_event = threading.Event()
+            self._workflow_name = name
 
             def runner() -> None:
                 try:
@@ -192,6 +208,10 @@ class EnvironmentInitializer:
                 else:
                     self._events.info("environment", message)
                     done(True, message)
+                finally:
+                    with self._state_lock:
+                        if self._workflow_thread is threading.current_thread():
+                            self._workflow_name = None
 
             self._workflow_thread = threading.Thread(
                 target=runner,

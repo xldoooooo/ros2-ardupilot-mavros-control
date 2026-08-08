@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QMouseEvent, QResizeEvent, QShowEvent, QWheelEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFrame,
     QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -161,27 +163,96 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
         event.ignore()
 
 
+class DownwardComboBox(QComboBox):
+    """用完整菜单替代会被桌面样式裁切的原生组合框弹层。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """创建复用弹出菜单，并将选择结果同步回组合框索引。"""
+        super().__init__(parent)
+        self._popup_menu = QMenu(self)
+        self._popup_menu.setObjectName("downwardComboPopup")
+        self._popup_menu.triggered.connect(self._select_popup_action)
+
+    @property
+    def popup_menu(self) -> QMenu:
+        """暴露实际弹层，供几何回归和无障碍检查使用。"""
+        return self._popup_menu
+
+    def showPopup(self) -> None:  # noqa: N802 - Qt API
+        """在控件正下方一次显示全部条目，不创建滚动视口。"""
+        if self.count() <= 0:
+            return
+        self._popup_menu.clear()
+        for index in range(self.count()):
+            action = self._popup_menu.addAction(self.itemText(index))
+            action.setData(index)
+            action.setCheckable(True)
+            action.setChecked(index == self.currentIndex())
+            model_index = self.model().index(index, self.modelColumn())
+            action.setEnabled(
+                bool(self.model().flags(model_index) & Qt.ItemFlag.ItemIsEnabled)
+            )
+        self._popup_menu.ensurePolished()
+        self._popup_menu.setMinimumWidth(
+            max(self.width(), self._popup_menu.sizeHint().width())
+        )
+        self._popup_menu.popup(self.mapToGlobal(QPoint(0, self.height())))
+        self._move_popup_below()
+        # 窗口系统可能在 popup() 后再次约束位置，下一事件周期再校正。
+        QTimer.singleShot(0, self._move_popup_below)
+
+    def hidePopup(self) -> None:  # noqa: N802 - Qt API
+        """关闭自定义完整菜单。"""
+        self._popup_menu.hide()
+
+    def _select_popup_action(self, action: object) -> None:
+        """把菜单条目索引写回组合框，并保留用户激活信号语义。"""
+        data = action.data() if hasattr(action, "data") else None
+        if not isinstance(data, int) or not 0 <= data < self.count():
+            return
+        self.setCurrentIndex(data)
+        self.activated.emit(data)
+        self.textActivated.emit(self.itemText(data))
+        self.hidePopup()
+
+    def _move_popup_below(self) -> None:
+        """把完整菜单左上角固定到组合框左下角。"""
+        if not self._popup_menu.isVisible():
+            return
+        self._popup_menu.move(self.mapToGlobal(QPoint(0, self.height())))
+
+
 class Card(QFrame):
-    """带标题、可选副标题和统一内容边距的工程卡片。"""
+    """带标题、可选悬停帮助和统一内容边距的工程卡片。"""
 
     def __init__(
         self, title: str, subtitle: str = "", parent: QWidget | None = None
     ) -> None:
-        """创建卡片并暴露 content_layout 供业务面板填充。"""
+        """创建卡片；说明文字收进标题旁问号，释放纵向操作空间。"""
         super().__init__(parent)
         self.setObjectName("card")
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 16)
         root.setSpacing(10)
 
-        title_label = QLabel(title)
-        title_label.setObjectName("cardTitle")
-        root.addWidget(title_label)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("cardTitle")
+        title_row.addWidget(self.title_label)
+        self.help_icon: QLabel | None = None
         if subtitle:
-            subtitle_label = QLabel(subtitle)
-            subtitle_label.setObjectName("cardSubtitle")
-            subtitle_label.setWordWrap(True)
-            root.addWidget(subtitle_label)
+            help_icon = QLabel("?")
+            help_icon.setObjectName("cardHelpIcon")
+            help_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            help_icon.setFixedSize(18, 18)
+            help_icon.setToolTip(subtitle)
+            help_icon.setAccessibleName(f"{title}帮助")
+            help_icon.setAccessibleDescription(subtitle)
+            title_row.addWidget(help_icon)
+            self.help_icon = help_icon
+        title_row.addStretch(1)
+        root.addLayout(title_row)
 
         self.content_layout = QVBoxLayout()
         self.content_layout.setSpacing(9)

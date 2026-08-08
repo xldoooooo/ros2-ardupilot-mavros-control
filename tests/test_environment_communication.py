@@ -218,6 +218,41 @@ def test_communication_failure_does_not_cleanup_or_send_release() -> None:
     assert supervisor.terminate_calls == 0
 
 
+def test_communication_cancel_only_stops_observation_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户取消 Wi-Fi 检测时只能置取消事件，不能进入通用进程/租约清理。"""
+    monkeypatch.setattr(
+        "ground_station_core.environment._COMMUNICATION_OBSERVATION_SECONDS", 5.0
+    )
+    events = EventLog()
+    ros = _DiagnosticRos(_connected_snapshot(), events)
+    supervisor = _TrackingSupervisor(forbid_process_calls=True)
+    initializer = EnvironmentInitializer(
+        ros, supervisor=supervisor, event_log=events
+    )
+    finished = threading.Event()
+    result: list[tuple[bool, str]] = []
+
+    assert initializer.test_hardware_communication(
+        lambda *_args: None,
+        lambda success, message: (result.append((success, message)), finished.set()),
+    )
+    deadline = time.monotonic() + 1.0
+    while not ros.remote_logs_enabled and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ros.remote_logs_enabled
+    assert initializer.cancel_hardware_communication_test()
+    assert finished.wait(2.0)
+
+    assert result and not result[0][0]
+    assert "已取消" in result[0][1]
+    assert "未申请控制权" in result[0][1]
+    assert not ros.remote_logs_enabled
+    assert supervisor.run_calls == 0
+    assert supervisor.terminate_calls == 0
+
+
 def test_communication_rejects_existing_control_session_without_side_effects() -> None:
     """已有本客户端控制会话时应前置拒绝，不能假称执行零命令检测。"""
     events = EventLog()

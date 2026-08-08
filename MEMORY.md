@@ -13,12 +13,12 @@
 
 - 界面采用浅色低饱和工程主题；任务 05 删除大标题，把环境、机载链路、飞行器、控制模式、控制健康和最近动态压成单行状态带。主内容为连接/飞行动作、手动控制/遥测、航点左中右三栏同时显示，底部为可拖动实时日志。
 - `ground_station_core/qt_ui/state.py` 是按钮状态的统一策略：只有显式完成环境连接且 ROS、飞控、租约、位姿、推力语义和发布者诊断通过时才开放相应飞控；LAND 作为安全动作保留较少门控。仿真或实机会话已建立时禁用“启动本地仿真/连接实机服务”（须先关闭/断开）；无会话时禁用全部航点编辑与发送组件。关闭入口拆为“关闭本地仿真”与“断开实机连接”，按 `connection_mode`/`pending_mode` 互斥启用（仿真会话只能关仿真，实机会话只能断实机）。原点齿轮在会话建立或环境工作流进行中禁用，仅空闲时可改本地缓存。
-- 实机连接、起降、航点、断开、清空和飞行中退出均有默认取消的确认框；退出与清理在后台执行，Qt 主线程不阻塞。飞控/EKF 原点齿轮只保存本地缓存：完整“连接实机服务”会申请控制租约、配置消息频率并写入该原点；齿轮右侧独立 Wi-Fi 图标只检测状态/日志通讯，不申请租约、不发命令、不管理进程，也不使用原点。**本地仿真禁止**写入 GUI 缓存原点——SITL 使用自身 Home（默认 CMAC 一带）建立 EKF，本地位姿应在米级；若把与 SITL Home 不一致的经纬高（如杭州默认缓存）写入，local ENU 会偏移数百万米，GUI 实际位姿与 RViz TF 会发散。
+- 实机连接、真机起降/航点、仿真终止、实机断开、航点清空和任何退出均有默认取消的确认框；只有仿真会话的起飞、降落、发送航点按任务 10 要求免二次确认。退出与清理在后台执行，Qt 主线程不阻塞。飞控/EKF 原点齿轮只保存本地缓存：完整“连接实机服务”会申请控制租约、配置消息频率并写入该原点；齿轮右侧独立 Wi-Fi 图标只检测状态/日志通讯，不申请租约、不发命令、不管理进程，也不使用原点。**本地仿真禁止**写入 GUI 缓存原点——SITL 使用自身 Home（默认 CMAC 一带）建立 EKF，本地位姿应在米级；若把与 SITL Home 不一致的经纬高（如杭州默认缓存）写入，local ENU 会偏移数百万米，GUI 实际位姿与 RViz TF 会发散。
 - 按钮角色样式：`primary`/`success`/`danger` 均有 hover 变深（`accent_hover`/`success_hover`/`danger_hover`），与中性按钮悬停反馈一致。
 - `EventLog` 在事件产生处保存 DEBUG/INFO/WARN/ERROR、来源、时间和序号。SITL/MAVROS/机载/RViz stdout 会实时 tee 到同一日志和原磁盘文件；Qt 只筛选已有等级，不按文本猜测。四个等级现为独立复选框，可任意组合显示。
 - 任务 07（日志部分保留）：`ProcessSupervisor._explicit_output_level` 将 SITL/MAVROS 等 chatty 源的启动刷屏（如 `Embedding file ...`、ROS `[INFO]` 插件加载）降为 DEBUG；生产仿真进程名是 `mavros_sim`，分类规则和测试必须直接覆盖该名称。显式 WARN/ERROR 不变。日志“自动滚动”关闭后必须保留视口位置，禁止 `setTextCursor(End)` 强制跳底。
-- GPS 与航点共七个数值框统一禁止鼠标滚轮改值，并使用自带 SVG 的明确上下箭头；航点清空会停止 GUI 进度跟踪，避免机载端旧任务快照恢复已清空进度。
-- 菜单栏仅“设置”“帮助”：设置为“显示实时日志”“恢复默认布局”；日志自动滚动/清空在日志面板工具栏操作，不在菜单重复。右上“终端”通过 `QProcess.startDetached()` 在当前目录启动系统终端。
+- 原点 3 个、起降参数 3 个与航点 4 个数值框共 10 个控件统一禁止鼠标滚轮改值。任务 10 追加修复后，起降与航点共 7 个紧凑输入恢复窄型上下步进箭头，并显示 `m`/`m/s`/`°` 后缀；起飞参数跟随起飞按钮、降落速度跟随降落按钮、航点参数跟随航点编辑状态同步禁用和变灰。航点清空会停止 GUI 进度跟踪，避免机载端旧任务快照恢复已清空进度。
+- 菜单栏仅“设置”“帮助”：设置为“显示实时日志”“恢复默认布局”；日志自动滚动/清空在日志面板工具栏操作，不在菜单重复。右上“在此处打开终端”通过 `QProcess.startDetached()` 在当前目录启动系统终端，其右侧为红色“退出地面站”入口。
 - 完整顶层窗口使用 frameless + 透明留边 + `outerWindowFrame`，具有连续四边轮廓和 Qt 自绘阴影；最小化、最大化/还原、关闭、菜单空白拖动及四边/四角缩放。
 - 确认、警告、帮助和关于统一使用 `ShadowMessageBox`：保留模态和默认取消语义，并添加自绘标题栏、关闭按钮、四边轮廓、圆角和阴影；不要重新使用静态 `QMessageBox.information/about/warning` 绕过统一外框。
 - Qt 依赖为 `PySide6>=6.7,<7`；本机验证为 6.11.1。生产 Python 代码已无 Tkinter 或旧 `ground_station_core.gui` 引用。
@@ -123,6 +123,33 @@
 - 2026-08-09 已在真机伴随计算机上点击调整后的真实 Qt Wi-Fi 按钮复验：两次检测均收 30 条状态（9.98 Hz），最大接收间隔分别 102.2/101.0 ms；第二次逐字接收真机 Humble 端安全发布的 8 条测试 rosout。全程 `armed=false`、`environment=false/mode=none`、`control_enabled=false`、无控制权/租约/命令结果，飞行按钮全禁用。为隔离按钮职责只启动新 `onboard_control_node`，未启动 MAVROS/Odin/extnav，故结果正确报告 FCU 未连接；未点击正式“连接实机”。结束后进程零残留、systemd inactive、串口无人占用、两套真机仓库仍干净。详见 `agent/report/report-2026-08-09-task09-real-wifi-button-validation.md`。
 - Humble `rmw_fastrtps_cpp 6.2.10` 与 Jazzy `8.4.3` 发现部分跨发行版端点时反复报告 `sequence size exceeds remaining buffer`；Jazzy 图中 Humble 发布者节点名未知且 type hash 为 `INVALID`。已测数据路径稳定不等于整个 ROS 图兼容，统一发行版/DDS 或受支持桥接并复验前禁止据此实飞。
 - 测试后真机 MAVROS/onboard/Odin/extnav 零残留，串口无占用，systemd 仍 inactive；旧仓库 `dad9067`、新仓库 `c8abad9`、工作树与三个旧脚本哈希均保持不变。详细证据见 `agent/report/report-2026-08-08-task09-communication.md`。
+
+## 任务 10 UI 精修基线（2026-08-09）
+
+- 卡片长说明统一收进标题右侧圆形问号；日志默认隐藏 DEBUG，并删除“等级”标签。右上角依次为“在此处打开终端”、红色“退出地面站”和窗口控件；任何退出均须默认取消的二次确认。
+- Wi-Fi 纯订阅检测运行时按钮改为红色终止方块。专用取消只设置当前 `communication` 工作流的取消事件，不复用会释放租约或终止进程的通用清理路径；取消完成按 WARN 展示。
+- 仿真会话的起飞、降落、发送航点不再二次确认；真机对应操作及其他危险确认保持。起飞 `2.5 m/s`、降落 `0.5 m/s` 是依据本机 ArduPilot `WP_SPD_UP_DEFAULT`/`LAND_SPD_MS_DEFAULT` 的 **UI 预设**，按用户要求没有加入 ROS 协议、机载 C++ 或飞控参数写入，不能宣称已影响实际速度。
+- 航点编辑采用 XYZYaw + 白色“+”单行、28 px 输入/表头/正文行高、上/下/红色减号/清空操作。策略选择不再依赖会被桌面样式裁切的原生 combo popup，而使用固定移到控件下方的三 action `QMenu`，一次完整显示三项且没有滚动视口；发送按钮为蓝色，航点进度 chunk 为绿色。
+- 同一航点任务的后续 RUNNING 结果不得重新显示“等待机载任务进度”；只有发送新任务时才重置进度，从而兼顾防闪烁和新旧任务隔离。
+- Python 全量为 44 passed；三包构建成功；ROS/C++ 为 5 tests、0 errors/failures；环境自检、compileall、致命级 flake8、修改范围 `git diff --check` 通过。初版说明见 `agent/report/report-2026-08-09-task10-refine-2.md`；箭头/单位、完整策略菜单、“+”与输入门控追加修复见 `agent/report/report-2026-08-09-task10-refine-2-followup.md`，视觉证据为 `agent/codex/task10-refine-2-followup-minimum.png` 和 `task10-refine-2-strategy-menu.png`。
+
+## 任务 11 手动操作模式 UI 基线（2026-08-09）
+
+- 主工作区由三栏改为两栏：左侧组合操作区、右侧航点区。左侧第一排为“环境与连接”和“飞行动作”左右并排，第二排“手动操纵”横跨整行；1180×700 最小窗口通过既有纵向滚动访问堆叠内容。
+- 手动操纵按美国手排列成两个十字键组：左组 W/S 升降、A/D 左右偏航，右组 I/K 前后、J/L 左右平移；Space 悬停独立居中。卡片内旧灰色快捷键说明已删除，实际位姿、目标速度/位姿、控制周期和安全门控位于左下。
+- 本次仅调整 Qt 组件层次与布局，八个运动按钮的 `vx/vy/vz/yaw_rate` 增量映射不变；未修改 ROS、C++ 控制、协议或飞控逻辑。
+- 加载 Jazzy 与本仓库 overlay 后 Python 全量为 45 passed；任务 11 定向回归为 2 passed。compileall、致命级 flake8 和修改范围 `git diff --check` 通过。视觉证据为 `agent/codex/task11-mode-main.png` 与 `agent/codex/task11-mode-minimum.png`，详细说明见 `agent/report/report-2026-08-09-task11-mode.md`。
+
+## 任务 12 手动操纵美化基线（2026-08-09）
+
+- 左右十字按键现位于独立圆角方形摇杆底盘，中央圆盘实时显示按压偏移；鼠标按住或键盘触发时按钮蓝色高亮，结束后回中。左/右底盘分别贴近卡片两侧，中间保留间隔。
+- 两个摇杆各有低 `0.5×`、中 `1.0×`、高 `2.0×` 独立灵敏度，默认 `1.0×` 保持 `VELOCITY_SCALE=0.2` 的原基准。左倍率作用于升降/偏航，右倍率作用于前后/左右；鼠标与键盘必须共用 `OperationsPanel.trigger_motion()`，不得恢复两套硬编码命令。
+- 手动 XY 默认使用“机体坐标”：GUI 依据最新 `VehicleSnapshot.yaw` 把每次右摇杆机体增量旋转为本地 ENU 后沿既有 `MotionIntent` 发送；可切换“本地 ENU”直通。协议与机载 C++ 未变化，机载仍累计 ENU 增量。
+- 手动区常驻显示坐标系、控制权和最近手动指令年龄；“悬停”已改为“制动并悬停  SPACE”。主遥测为实际高度/航向和目标水平/升降/偏航大数字摘要，完整 XYZ、目标位姿、jitter、deadline miss、安全门控默认折叠在“工程信息”。
+- “环境与连接”和“飞行动作”卡片内部显式顶对齐，标题左上角一致。任务未包含且未实现手动输入锁、ARM/DISARM、RTL、自动回中、输入超时或游戏手柄。
+- Qt 全量为 24 passed；加载 Jazzy 与 overlay 后 Python 全量为 46 passed；compileall、致命级 flake8、修改范围 `git diff --check` 与新增差异行长度检查通过。视觉证据为 `agent/codex/task12-beautify-2-main.png`、`task12-beautify-2-active.png`、`task12-beautify-2-expanded.png` 和 `task12-beautify-2-minimum.png`，详细说明见 `agent/report/report-2026-08-09-task12-beautify-2.md`。
+- 任务 12 追加修正：坐标系实际切换会写入 `INFO/operator` 日志并说明机体旋转或 ENU 固定轴语义；坐标系与左右灵敏度三个选择器统一复用航点策略的 `DownwardComboBox`，完整菜单固定向下显示且无裁切。全量仍为 46 passed，视觉证据为 `agent/codex/task12-coordinate-menu.png`，详见 `agent/report/report-2026-08-09-task12-coordinate-dropdown-fix.md`。
+- 任务 12 第二次追加调整：坐标系与左右灵敏度选择器现和手动运动按钮共用 `UiAvailability.motion` 门控，禁用时显示统一 `flight_reason`，恢复后还原原始 tooltip；双摇杆布局使用响应式外侧留白、可伸缩底盘和固定 24 px 中缝。1600×920 时两侧留白各 101 px，1180×700 时约 35 px，不再贴边或形成过大中央空洞。全量仍为 46 passed，详见 `agent/report/report-2026-08-09-task12-manual-control-gating-responsive-spacing.md`。
 
 ## 版本库卫生
 

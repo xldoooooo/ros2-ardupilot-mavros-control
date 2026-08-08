@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import INTERFACE_VERSION, VELOCITY_SCALE
+from ..config import INTERFACE_VERSION
 from ..environment import EnvironmentInitializer
 from ..event_log import EventLog, LogLevel
 from ..models import FlightMode, VehicleSnapshot
@@ -92,6 +92,7 @@ class GroundStationWindow(QMainWindow):
         self._pending_environment_mode = "none"
         self._workflow_busy = False
         self._communication_busy = False
+        self._communication_cancel_pending = False
         self._waypoint_running = False
         self._pending_commands: set[str] = set()
         self._last_result_sequence = 0
@@ -283,7 +284,7 @@ class GroundStationWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _build_ui(self) -> None:
-        """在完整窗口外框内构建状态带、三栏工作区和底部日志。"""
+        """在完整窗口外框内构建状态带、双栏工作区和底部日志。"""
         central = QWidget()
         central.setObjectName("centralRoot")
         self.setCentralWidget(central)
@@ -336,14 +337,6 @@ class GroundStationWindow(QMainWindow):
         )
         operations_scroll.setFrameShape(QFrame.Shape.NoFrame)
         operations_scroll.setWidget(self.operations)
-        manual_scroll = QScrollArea()
-        manual_scroll.setObjectName("manualOperationsScroll")
-        manual_scroll.setWidgetResizable(True)
-        manual_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        manual_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        manual_scroll.setWidget(self.operations.manual_panel)
         self.waypoints = WaypointPanel()
         waypoints_scroll = QScrollArea()
         waypoints_scroll.setObjectName("waypointsScroll")
@@ -354,12 +347,10 @@ class GroundStationWindow(QMainWindow):
         waypoints_scroll.setFrameShape(QFrame.Shape.NoFrame)
         waypoints_scroll.setWidget(self.waypoints)
         self.workspace_splitter.addWidget(operations_scroll)
-        self.workspace_splitter.addWidget(manual_scroll)
         self.workspace_splitter.addWidget(waypoints_scroll)
-        self.workspace_splitter.setStretchFactor(0, 9)
-        self.workspace_splitter.setStretchFactor(1, 10)
-        self.workspace_splitter.setStretchFactor(2, 11)
-        self.workspace_splitter.setSizes((420, 460, 500))
+        self.workspace_splitter.setStretchFactor(0, 7)
+        self.workspace_splitter.setStretchFactor(1, 5)
+        self.workspace_splitter.setSizes((720, 500))
 
         self.log_panel = LogPanel(self._events)
         self.main_splitter.addWidget(self.workspace_splitter)
@@ -405,12 +396,19 @@ class GroundStationWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 4, 0)
         controls_layout.setSpacing(3)
-        self.terminal_button = QPushButton("终端")
+        self.terminal_button = QPushButton("在此处打开终端")
         self.terminal_button.setObjectName("terminalButton")
         self.terminal_button.setProperty("compact", True)
         self.terminal_button.setToolTip("在地面站当前工作目录打开系统终端")
         self.terminal_button.clicked.connect(self._open_terminal)
         controls_layout.addWidget(self.terminal_button)
+        self.exit_button = QPushButton("退出地面站")
+        self.exit_button.setObjectName("exitButton")
+        self.exit_button.setProperty("role", "danger")
+        self.exit_button.setProperty("compact", True)
+        self.exit_button.setToolTip("安全退出地面站")
+        self.exit_button.clicked.connect(self.close)
+        controls_layout.addWidget(self.exit_button)
         self.minimize_button = self._window_control_button("—", "最小化")
         self.maximize_button = self._window_control_button("□", "最大化")
         self.close_button = self._window_control_button("×", "关闭", close=True)
@@ -436,8 +434,8 @@ class GroundStationWindow(QMainWindow):
         return button
 
     def _reset_layout(self) -> None:
-        """恢复三栏与日志区域的默认比例并确保日志可见。"""
-        self.workspace_splitter.setSizes((420, 460, 500))
+        """恢复双栏与日志区域的默认比例并确保日志可见。"""
+        self.workspace_splitter.setSizes((720, 500))
         self.main_splitter.setSizes((670, 170))
         self.log_panel.show()
         self.show_log_action.setChecked(True)
@@ -541,11 +539,13 @@ class GroundStationWindow(QMainWindow):
         self.operations.disconnect_hardware_requested.connect(
             self._disconnect_hardware
         )
-        self.operations.exit_requested.connect(self.close)
         self.operations.takeoff_requested.connect(self._takeoff)
         self.operations.land_requested.connect(self._land)
         self.operations.hover_requested.connect(self._hover)
         self.operations.motion_requested.connect(self._send_motion)
+        self.operations.coordinate_mode_changed.connect(
+            self._log_coordinate_mode_change
+        )
         self.waypoints.send_requested.connect(self._send_waypoints)
         self.waypoints.clear_requested.connect(self._confirm_clear_waypoints)
         self.waypoints.waypoints_changed.connect(
@@ -560,23 +560,21 @@ class GroundStationWindow(QMainWindow):
     def _setup_shortcuts(self) -> None:
         """注册原功能键位；输入控件聚焦时由槽函数主动忽略。"""
         definitions = {
-            "W": ("up", (0.0, 0.0, VELOCITY_SCALE, 0.0)),
-            "S": ("down", (0.0, 0.0, -VELOCITY_SCALE, 0.0)),
-            "I": ("forward", (VELOCITY_SCALE, 0.0, 0.0, 0.0)),
-            "K": ("back", (-VELOCITY_SCALE, 0.0, 0.0, 0.0)),
-            "J": ("left", (0.0, VELOCITY_SCALE, 0.0, 0.0)),
-            "L": ("right", (0.0, -VELOCITY_SCALE, 0.0, 0.0)),
-            "A": ("yaw_left", (0.0, 0.0, 0.0, VELOCITY_SCALE)),
-            "D": ("yaw_right", (0.0, 0.0, 0.0, -VELOCITY_SCALE)),
+            "W": "up",
+            "S": "down",
+            "I": "forward",
+            "K": "back",
+            "J": "left",
+            "L": "right",
+            "A": "yaw_left",
+            "D": "yaw_right",
         }
         self._shortcuts: list[QShortcut] = []
-        for key, (name, values) in definitions.items():
+        for key, name in definitions.items():
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(
-                lambda button_name=name, command=values: self._shortcut_motion(
-                    button_name, command
-                )
+                lambda button_name=name: self._shortcut_motion(button_name)
             )
             self._shortcuts.append(shortcut)
         hover_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
@@ -636,11 +634,15 @@ class GroundStationWindow(QMainWindow):
             self._refresh()
 
     def _test_hardware_communication(self) -> None:
-        """执行独立 Wi-Fi 纯订阅检测，不创建环境会话或发送控制指令。"""
+        """启动纯订阅检测；检测期间同一按钮切换为显式终止入口。"""
+        if self._communication_busy:
+            self._cancel_hardware_communication_test()
+            return
         if not self._availability.communication_test:
             return
         self._events.info("operator", "操作者请求检测实机通讯链路（零控制命令）")
         self._communication_busy = True
+        self._communication_cancel_pending = False
         self.activity_banner.set_message(
             "正在被动检测实机状态与日志链路…", LogLevel.INFO
         )
@@ -651,7 +653,25 @@ class GroundStationWindow(QMainWindow):
         )
         if not started:
             self._communication_busy = False
+            self._communication_cancel_pending = False
             self._refresh()
+
+    def _cancel_hardware_communication_test(self) -> None:
+        """请求环境线程停止检测，且不复用会清理进程/租约的通用断开路径。"""
+        if self._communication_cancel_pending:
+            return
+        cancel = getattr(
+            self._environment, "cancel_hardware_communication_test", None
+        )
+        if cancel is None or not cancel():
+            self.activity_banner.set_message(
+                "通讯检测已结束或暂时无法终止。", LogLevel.WARN
+            )
+            return
+        self._communication_cancel_pending = True
+        self._events.warn("operator", "操作者请求终止实机通讯检测")
+        self.activity_banner.set_message("正在终止实机通讯检测…", LogLevel.WARN)
+        self._refresh()
 
     def _begin_environment_workflow(self, mode: str, message: str) -> None:
         """原子锁定互斥入口并记录待完成环境类型。"""
@@ -689,20 +709,26 @@ class GroundStationWindow(QMainWindow):
 
     def _on_communication_done(self, success: bool, message: str) -> None:
         """显示 Wi-Fi 检测结果，保持环境与连接模式不变。"""
+        was_cancelled = self._communication_cancel_pending or "已取消" in message
         self._communication_busy = False
-        self.activity_banner.set_message(
-            message, LogLevel.INFO if success else LogLevel.ERROR
-        )
+        self._communication_cancel_pending = False
+        if success:
+            level = LogLevel.INFO
+        elif was_cancelled:
+            level = LogLevel.WARN
+        else:
+            level = LogLevel.ERROR
+        self.activity_banner.set_message(message, level)
         self._refresh()
 
     def _stop_simulation(self) -> None:
-        """确认后关闭本地 SITL 会话并释放控制权。"""
+        """确认后终止本地 SITL 会话并释放控制权。"""
         self._begin_session_teardown(
             kind="simulation",
-            title="关闭本地仿真",
-            progress="正在释放控制权并关闭本地仿真进程…",
+            title="终止本地仿真",
+            progress="正在释放控制权并终止本地仿真进程…",
             confirm_body=(
-                "确认关闭本项目启动的本地 SITL、MAVROS、机载节点与 RViz 吗？"
+                "确认终止本项目启动的本地 SITL、MAVROS、机载节点与 RViz 吗？"
                 "控制租约将被释放。"
             ),
         )
@@ -786,31 +812,50 @@ class GroundStationWindow(QMainWindow):
 
     # ---- 飞行动作 ----
 
+    def _log_coordinate_mode_change(self, mode: str, label: str) -> None:
+        """将操作者切换的手动坐标系及其输入语义写入结构化日志。"""
+        detail = (
+            "右摇杆增量按最新机头航向旋转到本地 ENU"
+            if mode == "body"
+            else "右摇杆增量沿本地 ENU 固定 X/Y 轴发送"
+        )
+        self._events.info(
+            "operator", f"手动操纵坐标系切换为「{label}」：{detail}"
+        )
+
     def _takeoff(self) -> None:
-        """在高风险确认后请求机载端完成起飞流程。"""
+        """仿真直接请求起飞；实机仍须高风险确认。"""
         altitude = self.operations.takeoff_altitude()
-        if not self._confirm_action(
-            "确认起飞",
-            f"飞行器将尝试切换 GUIDED、武装并起飞至 {altitude:.1f} m。\n\n"
-            "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
-            critical=True,
-        ):
-            return
-        self._events.warn("operator", f"操作者确认起飞至 {altitude:.1f} m")
+        simulation = self._connection_mode == "simulation"
+        if not simulation:
+            if not self._confirm_action(
+                "确认起飞",
+                f"飞行器将尝试切换 GUIDED、武装并起飞至 {altitude:.1f} m。\n\n"
+                "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
+                critical=True,
+            ):
+                return
+            self._events.warn("operator", f"操作者确认起飞至 {altitude:.1f} m")
+        else:
+            self._events.info("operator", f"仿真模式请求起飞至 {altitude:.1f} m")
         self._pending_commands.add("takeoff")
         self._ros.request_takeoff(altitude)
         self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN)
         self._refresh()
 
     def _land(self) -> None:
-        """确认后请求 ArduPilot LAND。"""
-        if not self._confirm_action(
-            "确认降落",
-            "飞行器将切换 LAND 并开始下降。请确认降落区安全。",
-            critical=True,
-        ):
-            return
-        self._events.warn("operator", "操作者确认发送 LAND")
+        """仿真直接请求 LAND；实机仍须危险操作确认。"""
+        simulation = self._connection_mode == "simulation"
+        if not simulation:
+            if not self._confirm_action(
+                "确认降落",
+                "飞行器将切换 LAND 并开始下降。请确认降落区安全。",
+                critical=True,
+            ):
+                return
+            self._events.warn("operator", "操作者确认发送 LAND")
+        else:
+            self._events.info("operator", "仿真模式请求发送 LAND")
         self._pending_commands.add("land")
         self._ros.request_land()
         self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN)
@@ -821,6 +866,7 @@ class GroundStationWindow(QMainWindow):
         if not self._availability.motion:
             return
         self._ros.adjust_velocity(vx, vy, vz, yaw_rate)
+        self.operations.mark_manual_command()
         self._events.debug(
             "operator",
             f"运动增量 V=({vx:+.2f},{vy:+.2f},{vz:+.2f}) yaw={yaw_rate:+.2f}",
@@ -832,6 +878,7 @@ class GroundStationWindow(QMainWindow):
         if not self._availability.hover:
             return
         self._ros.request_hover()
+        self.operations.mark_manual_command()
         self._events.info("operator", "操作者请求悬停")
         self.activity_banner.set_message("悬停请求已发送。", LogLevel.INFO)
 
@@ -858,23 +905,33 @@ class GroundStationWindow(QMainWindow):
                 f"所选策略「{flight_strategy.label}」尚未实现，"
                 "将按「直线飞行」执行。\n"
             )
-        if not self._confirm_action(
-            "确认执行航点任务",
-            f"即将上传并执行 {len(values)} 个本地 ENU 航点。\n"
-            f"飞行策略：{flight_strategy.label}\n"
-            f"{strategy_note}"
-            f"首点 ({first[0]:+.1f}, {first[1]:+.1f}, {first[2]:+.1f})，"
-            f"末点 ({last[0]:+.1f}, {last[1]:+.1f}, {last[2]:+.1f})。\n\n"
-            "任务执行将覆盖当前手动/悬停模式，确认继续吗？",
-            critical=True,
-        ):
-            return
-        self._events.warn(
-            "operator",
-            f"操作者确认执行 {len(values)} 个航点（策略={flight_strategy.label}）",
-        )
+        simulation = self._connection_mode == "simulation"
+        if not simulation:
+            if not self._confirm_action(
+                "确认执行航点任务",
+                f"即将上传并执行 {len(values)} 个本地 ENU 航点。\n"
+                f"飞行策略：{flight_strategy.label}\n"
+                f"{strategy_note}"
+                f"首点 ({first[0]:+.1f}, {first[1]:+.1f}, {first[2]:+.1f})，"
+                f"末点 ({last[0]:+.1f}, {last[1]:+.1f}, {last[2]:+.1f})。\n\n"
+                "任务执行将覆盖当前手动/悬停模式，确认继续吗？",
+                critical=True,
+            ):
+                return
+            self._events.warn(
+                "operator",
+                f"操作者确认执行 {len(values)} 个航点（策略={flight_strategy.label}）",
+            )
+        else:
+            self._events.info(
+                "operator",
+                f"仿真模式请求执行 {len(values)} 个航点"
+                f"（策略={flight_strategy.label}）",
+            )
         self._waypoint_running = True
         self._pending_commands.add("waypoints")
+        # 新任务先清掉上一任务的完成进度；同一任务后续 RUNNING 回报不会重置。
+        self.waypoints.reset_progress()
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
         self._ros.request_waypoints(values, flight_strategy)
         self._refresh()
@@ -918,8 +975,12 @@ class GroundStationWindow(QMainWindow):
             waypoint_running=self._waypoint_running,
         )
         self.operations.apply_availability(
-            self._availability, closing=self._shutting_down
+            self._availability,
+            closing=self._shutting_down,
+            communication_running=self._communication_busy,
+            communication_cancel_pending=self._communication_cancel_pending,
         )
+        self.exit_button.setEnabled(not self._shutting_down)
         self.waypoints.apply_availability(self._availability)
         if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
             self.operations.stop_simulation_button.setEnabled(False)
@@ -1047,16 +1108,14 @@ class GroundStationWindow(QMainWindow):
             ),
         )
 
-    def _shortcut_motion(
-        self, name: str, values: tuple[float, float, float, float]
-    ) -> None:
-        """仅在非输入焦点且对应按钮可用时转发快捷键。"""
+    def _shortcut_motion(self, name: str) -> None:
+        """仅在非输入焦点且对应按钮可用时触发统一摇杆入口。"""
         if (
             self._focus_is_input()
             or not self.operations.motion_buttons[name].isEnabled()
         ):
             return
-        self._send_motion(*values)
+        self.operations.trigger_motion(name)
 
     def _shortcut_hover(self) -> None:
         """Space 只在非输入焦点且悬停可用时生效。"""
@@ -1086,7 +1145,7 @@ class GroundStationWindow(QMainWindow):
     # ---- 安全退出 ----
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
-        """关闭窗口前确认飞行风险，并在后台完成清理与 ROS 停止。"""
+        """任何主动退出都先二次确认，再后台清理环境并停止 ROS。"""
         if self._allow_close:
             event.accept()
             return
@@ -1094,15 +1153,21 @@ class GroundStationWindow(QMainWindow):
             event.ignore()
             return
         snapshot = self._ros.snapshot()
-        if snapshot.armed or snapshot.controller_active:
-            if not self._confirm_action(
-                "飞行中退出地面站",
+        flight_active = snapshot.armed or snapshot.controller_active
+        title = "飞行中退出地面站" if flight_active else "退出地面站"
+        if flight_active:
+            message = (
                 "飞行器仍处于武装或机载控制活动状态。退出会释放控制租约，"
-                "机载端随后按失联策略悬停并自动降落。\n\n确认退出吗？",
-                critical=True,
-            ):
-                event.ignore()
-                return
+                "机载端随后按失联策略悬停并自动降落。\n\n确认退出吗？"
+            )
+        else:
+            message = (
+                "退出将释放控制租约、终止本项目启动的本地仿真进程，"
+                "并停止地面站 ROS 客户端。\n\n确认退出吗？"
+            )
+        if not self._confirm_action(title, message, critical=flight_active):
+            event.ignore()
+            return
         event.ignore()
         self._begin_shutdown()
 

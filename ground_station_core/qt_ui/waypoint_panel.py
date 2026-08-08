@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -22,11 +23,13 @@ from PySide6.QtWidgets import (
 
 from ..models import VehicleSnapshot, WaypointFlightStrategy
 from .state import UiAvailability
-from .widgets import Card, NoWheelDoubleSpinBox
+from .widgets import Card, DownwardComboBox, NoWheelDoubleSpinBox
 
 
 class WaypointPanel(QWidget):
     """维护尚未上传的本地航点副本，并把最终列表作为单一信号发出。"""
+
+    _ROW_HEIGHT = 28
 
     # 参数为 (waypoints_tuple, WaypointFlightStrategy)。
     send_requested = Signal(object, object)
@@ -52,14 +55,15 @@ class WaypointPanel(QWidget):
         """创建航点输入与可伸缩表格：仅中间列表随面板高度变长。"""
         card = Card(
             "航点任务",
-            "坐标系为本地 ENU；上传的是列表副本，到达判定与推进由机载服务完成。",
+            "坐标系为本地 ENU；上传的是列表副本，\n"
+            "到达判定与推进由机载服务完成。",
         )
         card.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
         )
         # 标签与输入同排：X [框] Y [框] Z [框] Yaw [框]，压缩顶部高度留给列表。
         coords = QHBoxLayout()
-        coords.setSpacing(6)
+        coords.setSpacing(3)
         self.x_input = self._coordinate_input(-10000.0, 10000.0, 2, " m")
         self.y_input = self._coordinate_input(-10000.0, 10000.0, 2, " m")
         self.z_input = self._coordinate_input(-1000.0, 10000.0, 2, " m")
@@ -78,15 +82,18 @@ class WaypointPanel(QWidget):
             )
             coords.addWidget(label, 0)
             coords.addWidget(control, 1)
-
-        inputs = QVBoxLayout()
-        inputs.setSpacing(6)
-        inputs.addLayout(coords)
-        self.add_button = self._button("添加航点", "primary", "addWaypointButton")
+        self.add_button = self._button("+", "neutral", "addWaypointButton")
+        self.add_button.setProperty("compact", True)
+        self.add_button.setFixedSize(self._ROW_HEIGHT, self._ROW_HEIGHT)
+        self.add_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self.add_button.setToolTip("将当前 X、Y、Z、Yaw 追加到航点列表")
+        self.add_button.setProperty("baseToolTip", self.add_button.toolTip())
         self.add_button.clicked.connect(self._add_waypoint)
-        inputs.addWidget(self.add_button)
-        # stretch=0：坐标行与添加按钮固定在卡片顶部。
-        card.content_layout.addLayout(inputs, 0)
+        coords.addWidget(self.add_button, 0)
+        # stretch=0：坐标与添加操作固定为单行，把纵向空间留给表格。
+        card.content_layout.addLayout(coords, 0)
 
         self.table = QTableWidget(0, 5)
         self.table.setObjectName("waypointTable")
@@ -98,12 +105,17 @@ class WaypointPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setMinimumHeight(95)
+        self.table.setProperty("baseToolTip", "")
         # 取消固定最大高度，使中间列表成为唯一纵向伸缩区。
         self.table.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self.table.verticalHeader().setVisible(False)
+        vertical_header = self.table.verticalHeader()
+        vertical_header.setVisible(False)
+        vertical_header.setMinimumSectionSize(self._ROW_HEIGHT)
+        vertical_header.setDefaultSectionSize(self._ROW_HEIGHT)
         header = self.table.horizontalHeader()
+        header.setFixedHeight(self._ROW_HEIGHT)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         for column in range(1, 5):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
@@ -111,18 +123,33 @@ class WaypointPanel(QWidget):
         card.content_layout.addWidget(self.table, 1)
 
         controls = QHBoxLayout()
-        self.remove_button = self._button("删除选中", "neutral", "removeWaypointButton")
-        self.up_button = self._button("上移", "neutral", "moveWaypointUpButton")
-        self.down_button = self._button("下移", "neutral", "moveWaypointDownButton")
+        assets = Path(__file__).resolve().parent / "assets"
+        self.up_button = self._icon_button(
+            QIcon(str(assets / "chevron-up.svg")),
+            "上移选中航点",
+            "moveWaypointUpButton",
+        )
+        self.down_button = self._icon_button(
+            QIcon(str(assets / "chevron-down.svg")),
+            "下移选中航点",
+            "moveWaypointDownButton",
+        )
+        self.remove_button = self._icon_button(
+            QIcon(str(assets / "minus-red.svg")),
+            "删除选中航点",
+            "removeWaypointButton",
+        )
         self.clear_button = self._button("清空", "danger", "clearWaypointButton")
+        self.clear_button.setToolTip("清空全部本地航点")
+        self.clear_button.setProperty("baseToolTip", self.clear_button.toolTip())
         self.remove_button.clicked.connect(self._remove_selected)
         self.up_button.clicked.connect(lambda: self._move_selected(-1))
         self.down_button.clicked.connect(lambda: self._move_selected(1))
         self.clear_button.clicked.connect(self.clear_requested)
         for button in (
-            self.remove_button,
             self.up_button,
             self.down_button,
+            self.remove_button,
             self.clear_button,
         ):
             button.setProperty("compact", True)
@@ -163,9 +190,9 @@ class WaypointPanel(QWidget):
         # 左：发送执行；右：飞行策略（避障类仅预留，当前均按直线飞行）。
         send_row = QHBoxLayout()
         send_row.setSpacing(8)
-        self.send_button = self._button("发送并执行航点", "success", "sendWaypointButton")
+        self.send_button = self._button("发送并执行航点", "primary", "sendWaypointButton")
         self.send_button.clicked.connect(self._emit_send_requested)
-        self.strategy_combo = QComboBox()
+        self.strategy_combo = DownwardComboBox()
         self.strategy_combo.setObjectName("waypointStrategyCombo")
         self.strategy_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -197,13 +224,19 @@ class WaypointPanel(QWidget):
     def _coordinate_input(
         minimum: float, maximum: float, decimals: int, suffix: str
     ) -> NoWheelDoubleSpinBox:
-        """创建有界航点数值输入（纵向固定，不参与栏高伸缩）。"""
+        """创建带窄型步进箭头和可见单位的紧凑航点输入。"""
         control = NoWheelDoubleSpinBox()
         control.setRange(minimum, maximum)
         control.setDecimals(decimals)
         control.setSingleStep(0.1)
-        control.setSuffix(suffix)
+        control.setProperty("compactValueInput", True)
+        control.setSuffix(suffix.strip())
+        control.setToolTip(f"输入值单位：{suffix.strip()}")
+        control.setProperty("baseToolTip", control.toolTip())
         control.setKeyboardTracking(False)
+        control.setProperty("waypointCoordinate", True)
+        control.setFixedHeight(WaypointPanel._ROW_HEIGHT)
+        control.setMinimumWidth(58)
         control.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -219,6 +252,20 @@ class WaypointPanel(QWidget):
         button.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
         )
+        return button
+
+    @classmethod
+    def _icon_button(
+        cls, icon: QIcon, tooltip: str, object_name: str
+    ) -> QPushButton:
+        """创建只显示图标、但保留无障碍名称和明确提示的表格操作按钮。"""
+        button = cls._button("", "neutral", object_name)
+        button.setIcon(icon)
+        button.setIconSize(QSize(16, 16))
+        button.setFixedSize(32, cls._ROW_HEIGHT)
+        button.setToolTip(tooltip)
+        button.setProperty("baseToolTip", tooltip)
+        button.setAccessibleName(tooltip)
         return button
 
     @property
@@ -344,6 +391,19 @@ class WaypointPanel(QWidget):
             ):
                 control.setToolTip(edit_tip)
         else:
+            for control in (
+                self.x_input,
+                self.y_input,
+                self.z_input,
+                self.yaw_input,
+                self.add_button,
+                self.remove_button,
+                self.up_button,
+                self.down_button,
+                self.clear_button,
+                self.table,
+            ):
+                control.setToolTip(str(control.property("baseToolTip") or ""))
             self.send_button.setToolTip(state.flight_reason)
             self.strategy_combo.setToolTip(
                 "航点飞行策略。当前仅实现「直线飞行」；"
@@ -365,7 +425,9 @@ class WaypointPanel(QWidget):
 
     def set_result(self, message: str, running: bool) -> None:
         """展示可靠命令结果，并在运行期间明确锁定上传按钮文本。"""
-        if running:
+        # 仅在任务首次进入运行态时初始化；后续每个机载 RUNNING 结果不得
+        # 把已经推进的进度短暂重置成“等待”，否则界面会每到一个点闪烁。
+        if running and not self._progress_tracking:
             self._progress_tracking = True
             self.progress.setRange(0, max(1, len(self._waypoints)))
             self.progress.setValue(0)

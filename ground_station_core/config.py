@@ -22,6 +22,8 @@ ONBOARD_PARAM_FILE = (
 # GUI 只产生高层意图；所有连续控制参数均在机载 C++ 参数文件中维护。
 VELOCITY_SCALE = 0.2  # 每次按键发送的速度增量，单位 m/s（偏航为 rad/s）。
 TAKEOFF_ALTITUDE = 0.3  # 默认起飞高度，单位 m。
+TAKEOFF_SPEED = 2.5  # 本机 ArduPilot WP_SPD_UP 默认值，单位 m/s。
+LAND_SPEED = 0.5  # 本机 ArduPilot LAND_SPD_MS 默认值，单位 m/s。
 INTERFACE_PREFIX = os.environ.get("GROUND_STATION_INTERFACE_PREFIX", "/onboard_control")
 COMMAND_TTL_MS = 1500  # 高层离散命令和按键意图的网络有效期。
 LEASE_DURATION_MS = 1500  # 控制权需由 5 Hz 心跳持续续租。

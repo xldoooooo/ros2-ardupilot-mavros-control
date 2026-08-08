@@ -51,14 +51,11 @@ class LogPanel(QFrame):
         title.setObjectName("cardTitle")
         toolbar.addWidget(title)
 
-        level_label = QLabel("等级")
-        level_label.setObjectName("mutedLabel")
-        toolbar.addWidget(level_label)
         self.level_checks: dict[LogLevel, QCheckBox] = {}
         for level in LogLevel:
             checkbox = QCheckBox(level.label)
             checkbox.setObjectName(f"logLevel{level.label.title()}")
-            checkbox.setChecked(True)
+            checkbox.setChecked(level is not LogLevel.DEBUG)
             checkbox.setToolTip(f"独立显示或隐藏 {level.label} 日志")
             checkbox.toggled.connect(self._rebuild)
             self.level_checks[level] = checkbox
@@ -66,6 +63,7 @@ class LogPanel(QFrame):
 
         self.search_input = QLineEdit()
         self.search_input.setObjectName("logSearchInput")
+        self.search_input.setProperty("compact", True)
         self.search_input.setPlaceholderText("搜索来源或消息")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self._rebuild)
@@ -79,10 +77,11 @@ class LogPanel(QFrame):
         self.counter_label = QLabel("D 0 · I 0 · W 0 · E 0")
         self.counter_label.setObjectName("mutedLabel")
         toolbar.addWidget(self.counter_label)
-        clear_button = QPushButton("清空显示")
-        clear_button.setProperty("compact", True)
-        clear_button.clicked.connect(self.clear_display)
-        toolbar.addWidget(clear_button)
+        self.clear_button = QPushButton("清空显示")
+        self.clear_button.setObjectName("clearLogDisplayButton")
+        self.clear_button.setProperty("compact", True)
+        self.clear_button.clicked.connect(self.clear_display)
+        toolbar.addWidget(self.clear_button)
         root.addLayout(toolbar)
 
         self.viewer = QTextEdit()
