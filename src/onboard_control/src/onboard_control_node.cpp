@@ -19,7 +19,8 @@ namespace onboard_control
 namespace
 {
 
-constexpr char kInterfaceVersion[] = "1.0";
+// ExecuteWaypoints 请求结构加入 flight_strategy 后不再与 1.0 线级兼容。
+constexpr char kInterfaceVersion[] = "2.0";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;

@@ -16,7 +16,7 @@
 - 实机连接、起降、航点、断开、清空和飞行中退出均有默认取消的确认框；退出与清理在后台执行，Qt 主线程不阻塞。飞控/EKF 原点：齿轮仅改本地缓存；**仅实机连接**工作流会 `set_gp_origin`。**本地仿真禁止**写入 GUI 缓存原点——SITL 使用自身 Home（默认 CMAC 一带）建立 EKF，本地位姿应在米级；若把与 SITL Home 不一致的经纬高（如杭州默认缓存）写入，local ENU 会偏移数百万米，GUI 实际位姿与 RViz TF 会发散。
 - 按钮角色样式：`primary`/`success`/`danger` 均有 hover 变深（`accent_hover`/`success_hover`/`danger_hover`），与中性按钮悬停反馈一致。
 - `EventLog` 在事件产生处保存 DEBUG/INFO/WARN/ERROR、来源、时间和序号。SITL/MAVROS/机载/RViz stdout 会实时 tee 到同一日志和原磁盘文件；Qt 只筛选已有等级，不按文本猜测。四个等级现为独立复选框，可任意组合显示。
-- 任务 07（日志部分保留）：`ProcessSupervisor._explicit_output_level` 将 SITL/MAVROS 等 chatty 源的启动刷屏（如 `Embedding file ...`、ROS `[INFO]` 插件加载）降为 DEBUG；显式 WARN/ERROR 不变。日志“自动滚动”关闭后必须保留视口位置，禁止 `setTextCursor(End)` 强制跳底。
+- 任务 07（日志部分保留）：`ProcessSupervisor._explicit_output_level` 将 SITL/MAVROS 等 chatty 源的启动刷屏（如 `Embedding file ...`、ROS `[INFO]` 插件加载）降为 DEBUG；生产仿真进程名是 `mavros_sim`，分类规则和测试必须直接覆盖该名称。显式 WARN/ERROR 不变。日志“自动滚动”关闭后必须保留视口位置，禁止 `setTextCursor(End)` 强制跳底。
 - GPS 与航点共七个数值框统一禁止鼠标滚轮改值，并使用自带 SVG 的明确上下箭头；航点清空会停止 GUI 进度跟踪，避免机载端旧任务快照恢复已清空进度。
 - 菜单栏仅“设置”“帮助”：设置为“显示实时日志”“恢复默认布局”；日志自动滚动/清空在日志面板工具栏操作，不在菜单重复。右上“终端”通过 `QProcess.startDetached()` 在当前目录启动系统终端。
 - 完整顶层窗口使用 frameless + 透明留边 + `outerWindowFrame`，具有连续四边轮廓和 Qt 自绘阴影；最小化、最大化/还原、关闭、菜单空白拖动及四边/四角缩放。
@@ -26,7 +26,7 @@
 
 ## 重构后的部署边界
 
-- `src/guided_interfaces/` 是上位机与机载计算机唯一共享的 ROS 2 高层协议，接口版本为 `1.0`。`ExecuteWaypoints.flight_strategy` 预留直线/自动避障/遇障悬停；当前机载仅实现直线飞行，其余值会告警并按直线执行。
+- `src/guided_interfaces/` 是上位机与机载计算机唯一共享的 ROS 2 高层协议。`ExecuteWaypoints.flight_strategy` 改变了请求结构，接口与 `guided_interfaces`/`onboard_control` 包版本已同步升级为 `2.0`/`2.0.0`；旧 `1.0` 机载端必须在命令传输前被拒绝。该字段预留直线/自动避障/遇障悬停；当前机载仅实现直线飞行，其余值会告警并按直线执行。
 - `src/onboard_control/` 是无 GUI 的机载 C++ 服务：控制权仲裁、起降编排、航点推进、失联保护、100 Hz PD+DOB、姿态/推力输出和 MAVROS 网关全部在此。
 - `ground_station_core/ros_controller.py` 是薄客户端，只发布心跳/运动意图并调用高层服务；地面站不创建任何 MAVROS setpoint 发布器，也不保存安全关键的持续控制状态。
 - `ground_station_core/environment.py` 的仿真路径会在本机启动 SITL、MAVROS、同款机载 C++ 节点和 RViz；实机路径只连接局域网中的远端机载服务，不启动或终止远端 MAVROS、Odin、extnav 或控制节点。
@@ -95,6 +95,13 @@
 - 任务 07 的集成终端已按用户反馈撤销；外部终端入口保留为右上“终端”按钮。
 - 保留：SITL/MAVROS 启动刷屏降为 DEBUG；日志面板内“自动滚动”可关闭且不强制跳底。
 - Python 回归应覆盖外部终端入口、自动滚动关闭、Embedding 降 DEBUG；详见当日撤销报告。
+
+## 审计问题修正基线（2026-08-08）
+
+- 航点请求结构对应的协议/包版本已统一升级为 `2.0`/`2.0.0`；回归确认旧 `1.0` 状态在访问 ROS 传输实体前即被拒绝，并校验 Python、C++ 与两个包版本保持同步。
+- `mavros_sim` 已纳入 chatty 源；对真实历史日志重放的 410 条 ROS `[INFO]` 全部归类为 DEBUG，显式 WARN 仍为 WARN。
+- 原点对话框、环境卡、摘要和仿真按钮 tooltip 统一说明：缓存原点仅在实机连接时写入，本地 SITL 使用自身 Home。
+- Python 全量为 27 passed；三包构建成功；ROS/C++ 为 5 tests、0 errors/failures；环境诊断、修改范围 flake8、compileall 和 `git diff --check` 通过。
 
 ## 版本库卫生
 

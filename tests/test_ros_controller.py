@@ -1,8 +1,10 @@
 """地面站高层协议客户端的排队、状态映射与无服务失败测试。"""
 
+import time
 from types import SimpleNamespace
 
-from ground_station_core.models import FlightMode
+from ground_station_core.config import INTERFACE_VERSION
+from ground_station_core.models import FlightMode, VehicleSnapshot
 from ground_station_core.ros_controller import (
     GroundStationRosController,
     _VehicleStateStore,
@@ -49,7 +51,7 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
     store = _VehicleStateStore("gcs-test")
     vector = SimpleNamespace(x=1.0, y=2.0, z=3.0)
     message = SimpleNamespace(
-        interface_version="1.0",
+        interface_version=INTERFACE_VERSION,
         fcu_connected=True,
         armed=True,
         autopilot_mode="GUIDED",
@@ -86,3 +88,25 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
     assert snapshot.waypoint_index == 2
     assert snapshot.control_rate_hz == 99.8
     assert snapshot.hover_throttle == 0.39
+
+
+def test_previous_interface_version_is_rejected_before_command_transport() -> None:
+    """1.0 机载端不得在 ExecuteWaypoints 结构升级后被误判为兼容。"""
+    controller = GroundStationRosController(source_id="gcs-version-gate")
+    controller._state._snapshot = VehicleSnapshot(
+        onboard_available=True,
+        interface_version="1.0",
+        control_authority=True,
+        lease_owner="gcs-version-gate",
+    )
+    controller._state._last_status_time = time.monotonic()
+    ticket = controller.request_takeoff(0.3)
+
+    # 版本检查发生在读取任何 ROS 实体前，空字典可证明请求没有进入传输层。
+    controller._process_one_command({}, {})
+    result = controller.wait_for_result(ticket, timeout=0.1)
+
+    assert INTERFACE_VERSION == "2.0"
+    assert result is not None
+    assert not result.success
+    assert "接口版本不兼容" in result.message
