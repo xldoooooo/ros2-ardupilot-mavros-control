@@ -49,7 +49,14 @@ from .log_panel import LogPanel
 from .operations_panel import OperationsPanel
 from .state import derive_availability
 from .waypoint_panel import WaypointPanel
-from .widgets import ActivityBanner, ShadowMessageBox, StatusBadge, repolish
+from .widgets import (
+    ActivityBanner,
+    ShadowMessageBox,
+    StatusBadge,
+    repolish,
+    set_text_if_changed,
+    set_tooltip_if_changed,
+)
 
 
 class _ThreadBridge(QObject):
@@ -101,6 +108,8 @@ class GroundStationWindow(QMainWindow):
         self._shutdown_thread: threading.Thread | None = None
         self._shutting_down = False
         self._allow_close = False
+        # 仅缓存显示层应用签名；ROS 快照和安全状态仍保持 10 Hz 读取。
+        self._last_availability_render_key: object | None = None
         self._availability = derive_availability(
             VehicleSnapshot(),
             ros_ready=False,
@@ -175,13 +184,18 @@ class GroundStationWindow(QMainWindow):
             )
         )
         self.outer_window_frame.lower()
-        self._window_shadow.setEnabled(not maximized)
+        if self._window_shadow.isEnabled() == maximized:
+            self._window_shadow.setEnabled(not maximized)
         if self.outer_window_frame.property("windowMaximized") != maximized:
             self.outer_window_frame.setProperty("windowMaximized", maximized)
             repolish(self.outer_window_frame)
         if hasattr(self, "maximize_button"):
-            self.maximize_button.setText("❐" if maximized else "□")
-            self.maximize_button.setToolTip("还原" if maximized else "最大化")
+            set_text_if_changed(
+                self.maximize_button, "❐" if maximized else "□"
+            )
+            set_tooltip_if_changed(
+                self.maximize_button, "还原" if maximized else "最大化"
+            )
 
     def _resize_edges_at(self, x: float, y: float) -> Qt.Edge:
         """把透明留边中的坐标映射为原生四边或四角缩放方向。"""
@@ -287,6 +301,9 @@ class GroundStationWindow(QMainWindow):
         """在完整窗口外框内构建状态带、双栏工作区和底部日志。"""
         central = QWidget()
         central.setObjectName("centralRoot")
+        # centralRoot 的 QSS 背景覆盖完整客户区；声明不透明可阻止 Qt
+        # 在 2x 高 DPI resize 时递归重绘其后的透明顶层表面。
+        central.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -974,23 +991,36 @@ class GroundStationWindow(QMainWindow):
             waypoint_count=len(self.waypoints.waypoints),
             waypoint_running=self._waypoint_running,
         )
-        self.operations.apply_availability(
-            self._availability,
-            closing=self._shutting_down,
-            communication_running=self._communication_busy,
-            communication_cancel_pending=self._communication_cancel_pending,
+        cleanup_active = (
+            self._cleanup_thread is not None and self._cleanup_thread.is_alive()
         )
-        self.exit_button.setEnabled(not self._shutting_down)
-        self.waypoints.apply_availability(self._availability)
-        if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
-            self.operations.stop_simulation_button.setEnabled(False)
-            self.operations.disconnect_hardware_button.setEnabled(False)
-        for command, button in (
-            ("takeoff", self.operations.takeoff_button),
-            ("land", self.operations.land_button),
-        ):
-            if command in self._pending_commands:
-                button.setEnabled(False)
+        render_key = (
+            self._availability,
+            self._shutting_down,
+            self._communication_busy,
+            self._communication_cancel_pending,
+            cleanup_active,
+            frozenset(self._pending_commands),
+        )
+        if render_key != self._last_availability_render_key:
+            self.operations.apply_availability(
+                self._availability,
+                closing=self._shutting_down,
+                communication_running=self._communication_busy,
+                communication_cancel_pending=self._communication_cancel_pending,
+            )
+            self.exit_button.setEnabled(not self._shutting_down)
+            self.waypoints.apply_availability(self._availability)
+            if cleanup_active:
+                self.operations.stop_simulation_button.setEnabled(False)
+                self.operations.disconnect_hardware_button.setEnabled(False)
+            for command, button in (
+                ("takeoff", self.operations.takeoff_button),
+                ("land", self.operations.land_button),
+            ):
+                if command in self._pending_commands:
+                    button.setEnabled(False)
+            self._last_availability_render_key = render_key
 
         if self._ros.error and self._ros.error != self._last_ros_error:
             self._last_ros_error = self._ros.error
@@ -999,9 +1029,9 @@ class GroundStationWindow(QMainWindow):
             )
         self.log_panel.poll()
         source_id = getattr(self._ros, "source_id", "--")
-        self.statusBar().showMessage(
-            f"接口 {INTERFACE_VERSION} · source_id={source_id}"
-        )
+        status_message = f"接口 {INTERFACE_VERSION} · source_id={source_id}"
+        if self.statusBar().currentMessage() != status_message:
+            self.statusBar().showMessage(status_message)
 
     def _consume_results(self) -> None:
         """增量显示可靠命令结果；日志等级已由 ROS 源端同步生成。"""
@@ -1088,7 +1118,9 @@ class GroundStationWindow(QMainWindow):
             "simulation": "本地 SITL 仿真",
             "hardware": "实机机载服务",
         }
-        self.connection_label.setText(f"环境 · {names[self._connection_mode]}")
+        set_text_if_changed(
+            self.connection_label, f"环境 · {names[self._connection_mode]}"
+        )
 
     # ---- 快捷键与对话框 ----
 

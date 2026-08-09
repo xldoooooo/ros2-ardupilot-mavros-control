@@ -11,7 +11,7 @@ from unittest.mock import patch
 # 必须在首次导入 Qt 前选择无显示服务平台，保证测试可在 CI/headless 运行。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
@@ -205,9 +205,13 @@ def _window(
 
 def _close_window(window: GroundStationWindow) -> None:
     """测试结束时绕过生产退出流程并销毁窗口。"""
+    window._timer.stop()
     window._allow_close = True
     window.close()
-    _application().processEvents()
+    window.deleteLater()
+    application = _application()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
 
 
 def test_availability_requires_explicit_environment_and_preserves_land() -> None:
@@ -1043,6 +1047,14 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         assert panel.up_button.x() < panel.down_button.x() < panel.remove_button.x()
         assert panel.clear_button.text() == "清空"
         assert panel.send_button.property("role") == "primary"
+        # 结果状态仍按原链路更新，但不再作为灰色说明行参与布局。
+        assert not panel.status_label.isVisible()
+        assert panel.status_label.parentWidget() is not None
+        assert panel.status_label.parentWidget().content_layout.indexOf(
+            panel.status_label
+        ) == -1
+        panel.set_result("航点状态回归", running=False)
+        assert panel.status_label.text() == "航点状态回归"
         assert "QProgressBar#waypointProgress::chunk" in STYLE_SHEET
         assert COLORS["success"] in STYLE_SHEET
 
@@ -1144,6 +1156,81 @@ def test_running_waypoint_result_does_not_reset_existing_progress() -> None:
         window._send_waypoints(window.waypoints.waypoints)
         assert window.waypoints.progress.value() == 0
         assert window.waypoints.progress.format() == "等待机载任务进度…"
+    finally:
+        _close_window(window)
+
+
+def test_stable_refresh_skips_reapplying_unchanged_widget_state() -> None:
+    """稳定快照仍被读取，但不得重复写门控属性或触发 tooltip 事件。"""
+
+    class TooltipCounter(QObject):
+        """统计应用级 tooltip 变化，验证周期刷新不会制造事件风暴。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.changes = 0
+
+        def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+            if event.type() == QEvent.Type.ToolTipChange:
+                self.changes += 1
+            return super().eventFilter(watched, event)
+
+    window, ros = _window(_operational_snapshot(armed=False))
+    application = _application()
+    counter = TooltipCounter()
+    application.installEventFilter(counter)
+    try:
+        with (
+            patch.object(
+                window.operations,
+                "apply_availability",
+                wraps=window.operations.apply_availability,
+            ) as apply_operations,
+            patch.object(
+                window.waypoints,
+                "apply_availability",
+                wraps=window.waypoints.apply_availability,
+            ) as apply_waypoints,
+        ):
+            window._refresh()
+            application.processEvents()
+            assert apply_operations.call_count == 0
+            assert apply_waypoints.call_count == 0
+            assert counter.changes == 0
+
+            # 快照数值变化仍须立即进入原有遥测显示路径。
+            ros.current_snapshot = replace(ros.current_snapshot, z=1.234)
+            window._refresh()
+            application.processEvents()
+            assert window.operations.altitude_summary_value.text() == "+1.23"
+            assert apply_operations.call_count == 0
+
+            # 门控输入变化时，两块面板仍各完整应用一次原逻辑。
+            window._environment_active = True
+            window._connection_mode = "simulation"
+            window._refresh()
+            assert apply_operations.call_count == 1
+            assert apply_waypoints.call_count == 1
+    finally:
+        application.removeEventFilter(counter)
+        _close_window(window)
+
+
+def test_opaque_render_hints_only_cover_fully_painted_surfaces() -> None:
+    """高 DPI 优化只标记由 windowSurface 完整覆盖的客户内容区。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    try:
+        opaque = Qt.WidgetAttribute.WA_OpaquePaintEvent
+        assert window.centralWidget().testAttribute(opaque)
+
+        # 面板、viewport、阴影和圆角卡片仍依赖各自的背景清除或透明像素。
+        assert not window.operations.testAttribute(opaque)
+        assert not window.waypoints.testAttribute(opaque)
+        assert not window.waypoints.table.viewport().testAttribute(opaque)
+        assert not window.log_panel.viewer.viewport().testAttribute(opaque)
+        assert not window.outer_window_frame.testAttribute(opaque)
+        assert not window.operations.environment_card.testAttribute(opaque)
+        assert window.outer_window_frame.graphicsEffect() is window._window_shadow
     finally:
         _close_window(window)
 

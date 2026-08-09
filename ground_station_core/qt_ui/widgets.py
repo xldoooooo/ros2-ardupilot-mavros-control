@@ -31,6 +31,22 @@ def repolish(widget: QWidget) -> None:
     widget.update()
 
 
+def set_text_if_changed(widget: QLabel | QPushButton, text: str) -> bool:
+    """仅在可见文本真正变化时写入，避免无效布局和重绘事件。"""
+    if widget.text() == text:
+        return False
+    widget.setText(text)
+    return True
+
+
+def set_tooltip_if_changed(widget: QWidget, text: str) -> bool:
+    """仅在提示文字变化时写入，避免周期刷新产生 ToolTipChange 风暴。"""
+    if widget.toolTip() == text:
+        return False
+    widget.setToolTip(text)
+    return True
+
+
 class ShadowMessageBox(QMessageBox):
     """带自绘标题、完整边框和透明留边阴影的统一消息框。"""
 
@@ -289,8 +305,8 @@ class StatusBadge(QFrame):
         if self.property("tone") != tone:
             self.setProperty("tone", tone)
             repolish(self)
-        self.value_label.setText(value)
-        self.setToolTip(detail or value)
+        set_text_if_changed(self.value_label, value)
+        set_tooltip_if_changed(self, detail or value)
 
 
 class ActivityBanner(QFrame):
@@ -326,5 +342,5 @@ class ActivityBanner(QFrame):
         if self.property("tone") != tone:
             self.setProperty("tone", tone)
             repolish(self)
-        self.message_label.setText(message)
-        self.setToolTip(message)
+        set_text_if_changed(self.message_label, message)
+        set_tooltip_if_changed(self, message)

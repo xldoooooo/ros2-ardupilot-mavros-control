@@ -182,10 +182,11 @@ class WaypointPanel(QWidget):
         self.progress.setValue(0)
         self.progress.setFormat("尚未执行")
         card.content_layout.addWidget(self.progress)
-        self.status_label = QLabel("请先编辑航点，再在飞行器就绪后发送。")
+        # 保留非可视状态接收器，使现有结果更新链与内部接口不变；
+        # 不加入布局，避免灰色说明行占用执行卡高度。
+        self.status_label = QLabel("请先编辑航点，再在飞行器就绪后发送。", card)
         self.status_label.setObjectName("mutedLabel")
-        self.status_label.setWordWrap(True)
-        card.content_layout.addWidget(self.status_label)
+        self.status_label.hide()
 
         # 左：发送执行；右：飞行策略（避障类仅预留，当前均按直线飞行）。
         send_row = QHBoxLayout()

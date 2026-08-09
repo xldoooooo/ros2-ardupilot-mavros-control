@@ -34,7 +34,13 @@ from ..config import (
 from ..models import VehicleSnapshot
 from .state import UiAvailability
 from .theme import COLORS
-from .widgets import Card, DownwardComboBox, NoWheelDoubleSpinBox, repolish
+from .widgets import (
+    Card,
+    DownwardComboBox,
+    NoWheelDoubleSpinBox,
+    repolish,
+    set_text_if_changed,
+)
 
 
 class OriginConfigDialog(QDialog):
@@ -769,7 +775,7 @@ class OperationsPanel(QWidget):
         else:
             elapsed = max(0.0, time.monotonic() - self._last_manual_command_at)
             text = f"最近指令 · {elapsed:.1f} s"
-        self.last_manual_command_chip.setText(text)
+        set_text_if_changed(self.last_manual_command_chip, text)
 
     def _size_auxiliary_buttons(self) -> None:
         """把齿轮与 Wi-Fi 按钮固定为一致的紧凑正方形。"""
@@ -801,7 +807,8 @@ class OperationsPanel(QWidget):
     def _refresh_origin_summary(self) -> None:
         """在环境卡片展示当前缓存原点摘要。"""
         lat, lon, alt = self._origin
-        self.origin_summary.setText(
+        set_text_if_changed(
+            self.origin_summary,
             f"实机连接原点 · Lat {lat:.7f}  Lon {lon:.7f}  Alt {alt:.1f} m"
         )
 
@@ -815,48 +822,59 @@ class OperationsPanel(QWidget):
     def update_snapshot(self, snapshot: VehicleSnapshot) -> None:
         """刷新摘要、常驻状态与默认折叠的机载工程诊断。"""
         self._latest_yaw = snapshot.yaw
-        self.altitude_summary_value.setText(f"{snapshot.z:+.2f}")
-        self.heading_summary_value.setText(
-            f"{math.degrees(snapshot.yaw):+.1f}"
+        set_text_if_changed(self.altitude_summary_value, f"{snapshot.z:+.2f}")
+        set_text_if_changed(
+            self.heading_summary_value,
+            f"{math.degrees(snapshot.yaw):+.1f}",
         )
-        self.horizontal_summary_value.setText(
-            f"{math.hypot(snapshot.target_vx, snapshot.target_vy):.2f}"
+        set_text_if_changed(
+            self.horizontal_summary_value,
+            f"{math.hypot(snapshot.target_vx, snapshot.target_vy):.2f}",
         )
-        self.vertical_summary_value.setText(f"{snapshot.target_vz:+.2f}")
-        self.yaw_rate_summary_value.setText(
-            f"{math.degrees(snapshot.target_yaw_rate):+.1f}"
+        set_text_if_changed(
+            self.vertical_summary_value, f"{snapshot.target_vz:+.2f}"
+        )
+        set_text_if_changed(
+            self.yaw_rate_summary_value,
+            f"{math.degrees(snapshot.target_yaw_rate):+.1f}",
         )
 
         authority = bool(snapshot.control_authority)
         authority_text = "控制权 · 已取得" if authority else "控制权 · 未取得"
         authority_tone = "good" if authority else "bad"
-        self.control_authority_chip.setText(authority_text)
+        set_text_if_changed(self.control_authority_chip, authority_text)
         if self.control_authority_chip.property("tone") != authority_tone:
             self.control_authority_chip.setProperty("tone", authority_tone)
             repolish(self.control_authority_chip)
         self._refresh_manual_command_age()
 
-        self.position_value.setText(
+        set_text_if_changed(
+            self.position_value,
             f"X {snapshot.x:+.2f}  Y {snapshot.y:+.2f}  Z {snapshot.z:+.2f}  "
-            f"Yaw {math.degrees(snapshot.yaw):+.1f}°"
+            f"Yaw {math.degrees(snapshot.yaw):+.1f}°",
         )
-        self.velocity_value.setText(
+        set_text_if_changed(
+            self.velocity_value,
             f"Vx {snapshot.target_vx:+.2f}  Vy {snapshot.target_vy:+.2f}  "
-            f"Vz {snapshot.target_vz:+.2f}  YawRate {snapshot.target_yaw_rate:+.2f}"
+            f"Vz {snapshot.target_vz:+.2f}  YawRate {snapshot.target_yaw_rate:+.2f}",
         )
-        self.target_value.setText(
+        set_text_if_changed(
+            self.target_value,
             f"X {snapshot.target_x:+.2f}  Y {snapshot.target_y:+.2f}  "
-            f"Z {snapshot.target_z:+.2f}  Yaw {math.degrees(snapshot.target_yaw):+.1f}°"
+            f"Z {snapshot.target_z:+.2f}  "
+            f"Yaw {math.degrees(snapshot.target_yaw):+.1f}°",
         )
-        self.controller_value.setText(
+        set_text_if_changed(
+            self.controller_value,
             f"{snapshot.control_rate_hz:.2f} Hz · "
             f"jitter {snapshot.max_jitter_ms:.2f} ms "
-            f"· miss {snapshot.deadline_miss_count}"
+            f"· miss {snapshot.deadline_miss_count}",
         )
-        self.safety_value.setText(
+        set_text_if_changed(
+            self.safety_value,
             f"位置 {'OK' if snapshot.local_position_valid else 'WAIT'} · "
             f"推力 {'OK' if snapshot.thrust_mode_verified else 'WAIT'} · "
-            f"发布源 {'CONFLICT' if snapshot.setpoint_conflict else 'OK'}"
+            f"发布源 {'CONFLICT' if snapshot.setpoint_conflict else 'OK'}",
         )
 
     def apply_availability(

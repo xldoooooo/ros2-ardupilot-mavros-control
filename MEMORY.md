@@ -151,6 +151,19 @@
 - 任务 12 追加修正：坐标系实际切换会写入 `INFO/operator` 日志并说明机体旋转或 ENU 固定轴语义；坐标系与左右灵敏度三个选择器统一复用航点策略的 `DownwardComboBox`，完整菜单固定向下显示且无裁切。全量仍为 46 passed，视觉证据为 `agent/codex/task12-coordinate-menu.png`，详见 `agent/report/report-2026-08-09-task12-coordinate-dropdown-fix.md`。
 - 任务 12 第二次追加调整：坐标系与左右灵敏度选择器现和手动运动按钮共用 `UiAvailability.motion` 门控，禁用时显示统一 `flight_reason`，恢复后还原原始 tooltip；双摇杆布局使用响应式外侧留白、可伸缩底盘和固定 24 px 中缝。1600×920 时两侧留白各 101 px，1180×700 时约 35 px，不再贴边或形成过大中央空洞。全量仍为 46 passed，详见 `agent/report/report-2026-08-09-task12-manual-control-gating-responsive-spacing.md`。
 
+## GUI 窗口性能优化基线（2026-08-09）
+
+- 保留 frameless、透明留边、完整阴影、全部 QSS、控件尺寸与布局；没有改用原生标题栏、取消阴影、冻结界面或降低渲染分辨率。`GroundStationWindow._refresh()` 仍以 10 Hz 读取 ROS 权威快照，但只有门控显示签名变化时才重新应用按钮/tooltip/icon 状态；遥测和状态文本仅在格式化结果变化时写入。
+- 仅 `centralRoot` 使用 `WA_OpaquePaintEvent`，其区域始终被 `windowSurface` 完整覆盖。面板、viewport、圆角卡片和阴影外框禁止使用该提示；试验中这些区域会因跳过背景清除而变黑，相关方案已撤销并加入回归约束。
+- 本机 X11、5120×2880、DPR 2.0、1228×924 逻辑窗口的程序化 resize 从约 83.80 ms/次降至 63.96 ms/次；稳定预热后的 10 次刷新为 0 次 Paint、0 次 ToolTipChange。2456×1848 修改前后截图除日志时间戳外逐像素一致。
+- Qt 定向回归 26 passed、Python 全量 48 passed；三包构建成功，ROS/C++ 为 5 tests、0 errors/failures；环境自检、compileall、致命级 flake8 和修改范围 `git diff --check` 通过。详见 `agent/report/report-2026-08-09-gui-window-performance-optimization.md`。
+
+## 航点执行区压缩追加基线（2026-08-09）
+
+- “发送并执行航点”上方的灰色状态说明已从布局和绘制中移除；原 `status_label` 仍作为不可见状态接收器，保持航点新增、清空、运行结果的更新链与内部接口不变。
+- 1228×924、1600×920 和 1180×700 三种尺寸下，执行卡高度均由 148 px 降为 118 px，航点表格高度均增加 30 px；进度条、策略选择、发送门控和结果处理均未改变。
+- Python 全量回归 48 passed；三包普通模式构建成功，ROS/C++ 为 5 tests、0 errors/failures；环境自检、compileall 和致命级 flake8（88 字符项目标准）通过。详见 `agent/report/report-2026-08-09-waypoint-execution-panel-compression.md`。
+
 ## 版本库卫生
 
 - `.gitignore` 排除 Python/colcon 产物、rosbag、ArduPilot/MAVProxy 日志、EEPROM、飞行记录和通用临时文件。
