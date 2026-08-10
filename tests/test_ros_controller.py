@@ -1,5 +1,6 @@
 """地面站高层协议客户端的排队、状态映射与无服务失败测试。"""
 
+import os
 import time
 from types import SimpleNamespace
 
@@ -163,6 +164,7 @@ def test_compatible_onboard_is_passive_until_control_is_explicitly_enabled() -> 
         "last_attempt": 0.0,
         "last_heartbeat": 0.0,
         "granted_hint": False,
+        "grant_hint_deadline": 0.0,
         "release_future": None,
     }
 
@@ -206,3 +208,144 @@ def test_remote_rosout_is_verbatim_and_only_enabled_for_explicit_real_link() -> 
     assert received.level is LogLevel.WARN
     assert received.source == "remote-rosout:onboard_control_node"
     assert received.message == message.msg
+
+
+def test_controller_rebuilds_context_when_switching_domains() -> None:
+    """同一 GUI 进程须能销毁仿真 context，再创建 domain 0 实机 context。"""
+    controller = GroundStationRosController(source_id="gcs-domain-switch")
+    controller.start(domain_id=230, discovery_range="LOCALHOST")
+    first_thread = controller._thread
+    try:
+        assert controller.ready
+        assert controller.domain_id == 230
+        assert controller.discovery_range == "LOCALHOST"
+
+        controller.start(domain_id=229, discovery_range="LOCALHOST")
+        assert controller.ready
+        assert controller.domain_id == 229
+        assert controller._thread is not first_thread
+        assert first_thread is not None and not first_thread.is_alive()
+    finally:
+        controller.stop()
+
+    assert controller.domain_id is None
+
+
+def test_simulation_hides_and_hardware_restores_explicit_discovery_peers(
+    monkeypatch,
+) -> None:
+    """仿真不得沿用指向真机的静态 peer/discovery server。"""
+    monkeypatch.setenv("ROS_STATIC_PEERS", "192.168.112.186")
+    monkeypatch.setenv("ROS_DISCOVERY_SERVER", "192.168.112.186:11811")
+    controller = GroundStationRosController(source_id="gcs-discovery-isolation")
+
+    controller._apply_transport_environment(231, "LOCALHOST")
+    assert "ROS_LOCALHOST_ONLY" not in os.environ
+    assert os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
+    assert "ROS_STATIC_PEERS" not in os.environ
+    assert "ROS_DISCOVERY_SERVER" not in os.environ
+
+    controller._apply_transport_environment(0, "SUBNET")
+    assert "ROS_LOCALHOST_ONLY" not in os.environ
+    assert os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "SUBNET"
+    assert os.environ["ROS_STATIC_PEERS"] == "192.168.112.186"
+    assert os.environ["ROS_DISCOVERY_SERVER"] == "192.168.112.186:11811"
+
+
+def test_lease_sequence_remains_monotonic_across_rebuilt_contexts() -> None:
+    """同一 source_id 重建仿真/实机 context 后不得把租约序号重置为 1。"""
+    controller = GroundStationRosController(source_id="gcs-lease-context-order")
+
+    first_context = [controller._next_lease_sequence() for _ in range(7)]
+    rebuilt_context = [controller._next_lease_sequence() for _ in range(3)]
+
+    assert first_context == list(range(1, 8))
+    assert rebuilt_context == [8, 9, 10]
+
+
+def test_endpoint_conflict_blocks_commands_and_lease_transmission() -> None:
+    """重复机载状态发布者出现时不得申请租约或发送任何高层命令。"""
+    controller = GroundStationRosController(source_id="gcs-endpoint-conflict")
+    controller._state._snapshot = VehicleSnapshot(
+        onboard_available=True,
+        interface_version=INTERFACE_VERSION,
+        endpoint_conflict=True,
+        control_authority=True,
+    )
+    controller._state._endpoint_conflict = True
+    controller._state._last_status_time = time.monotonic()
+    controller.enable_control()
+    controller._update_lease(
+        {"node": object(), "clients": {"lease": object()}},
+        {
+            "sequence": 0,
+            "future": None,
+            "last_attempt": 0.0,
+            "last_heartbeat": 0.0,
+            "granted_hint": False,
+            "grant_hint_deadline": 0.0,
+            "release_future": None,
+        },
+    )
+    assert not controller.control_enabled
+    ticket = controller.request_takeoff(0.3)
+
+    controller._process_one_command({}, {})
+    result = controller.wait_for_result(ticket, timeout=0.1)
+
+    assert result is not None
+    assert not result.success
+    assert "多个机载状态发布者" in result.message
+
+
+def test_stale_grant_hint_reacquires_after_onboard_restart() -> None:
+    """机载进程重启清空租约后，地面站不得永久只发送无效心跳。"""
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.requests: list[object] = []
+
+        @staticmethod
+        def service_is_ready() -> bool:
+            return True
+
+        def call_async(self, request: object) -> object:
+            self.requests.append(request)
+            return SimpleNamespace(done=lambda: False)
+
+    class FakeNow:
+        @staticmethod
+        def to_msg() -> object:
+            return object()
+
+    client = FakeClient()
+    controller = GroundStationRosController(source_id="gcs-reacquire")
+    controller._state._snapshot = VehicleSnapshot(
+        onboard_available=True,
+        interface_version=INTERFACE_VERSION,
+        control_authority=False,
+    )
+    controller._state._last_status_time = time.monotonic()
+    controller.enable_control()
+    state = {
+        "sequence": 4,
+        "future": None,
+        "last_attempt": 0.0,
+        "last_heartbeat": 0.0,
+        "granted_hint": True,
+        "grant_hint_deadline": time.monotonic() - 0.1,
+        "release_future": None,
+    }
+    entities = {
+        "node": SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(now=lambda: FakeNow())
+        ),
+        "clients": {"lease": client},
+        "AcquireControl": SimpleNamespace(Request=SimpleNamespace),
+    }
+
+    controller._update_lease(entities, state)
+
+    assert not state["granted_hint"]
+    assert len(client.requests) == 1
+    assert client.requests[0].release is False

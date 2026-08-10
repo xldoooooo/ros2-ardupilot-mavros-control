@@ -45,9 +45,9 @@ def derive_availability(
     hardware_session = mode == "hardware" or (busy and pending == "hardware")
 
     # 仿真或实机会话已建立时禁止再次点启动，须先断开/清理。
-    start_environment = (
-        ros_ready and not busy and not closing and not environment_active
-    )
+    # ROS is started lazily by the selected workflow, so an idle client must not
+    # disable the three entry points and force DDS discovery at GUI startup.
+    start_environment = not busy and not closing and not environment_active
     # Wi-Fi 检测与环境初始化互斥，避免在既有租约会话中伪装成零命令诊断。
     communication_test = start_environment
     # 仅本会话类型可关：仿真中禁用“断开实机”，实机中禁用“关闭仿真”。
@@ -66,6 +66,8 @@ def derive_availability(
         reason = "尚未启动仿真或连接机载服务"
     elif not snapshot.onboard_available:
         reason = "尚未连接机载控制服务"
+    elif snapshot.endpoint_conflict:
+        reason = "检测到多个机载状态发布者，已禁止控制"
     elif not snapshot.connected:
         reason = "机载服务尚未连接飞控"
     elif not snapshot.control_authority:
@@ -85,6 +87,7 @@ def derive_availability(
         and not closing
         and environment_active
         and snapshot.onboard_available
+        and not snapshot.endpoint_conflict
         and snapshot.connected
         and snapshot.control_authority
     )

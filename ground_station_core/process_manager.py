@@ -28,6 +28,7 @@ class ManagedProcess:
     command: tuple[str, ...]
     log_path: Path
     log_stream: TextIO
+    process_group_id: int
     output_thread: threading.Thread | None = None
 
     @property
@@ -138,7 +139,10 @@ class ProcessSupervisor:
             if existing is not None and existing.running:
                 raise RuntimeError(f"进程 {name} 已在运行 (PID={existing.process.pid})")
             if existing is not None:
-                self._close_record(existing)
+                if not self._close_record(existing):
+                    raise RuntimeError(
+                        f"进程 {name} 的旧日志线程仍未退出，拒绝覆盖记录"
+                    )
                 self._managed.pop(name, None)
 
             environment = build_sourced_environment(setup_files)
@@ -168,7 +172,14 @@ class ProcessSupervisor:
                 log_stream.close()
                 self._events.error(name, f"进程启动失败：{exc}")
                 raise
-            record = ManagedProcess(name, process, argv, log_path, log_stream)
+            record = ManagedProcess(
+                name,
+                process,
+                argv,
+                log_path,
+                log_stream,
+                process_group_id=os.getpgid(process.pid),
+            )
             record.output_thread = threading.Thread(
                 target=self._capture_output,
                 args=(record,),
@@ -218,23 +229,22 @@ class ProcessSupervisor:
         with self._lock:
             records = tuple(self._managed.values())
 
-        # ROS/SITL 先接收 SIGINT 以执行自身清理，再逐步升级到 SIGKILL。
+        # 必须在组长退出前抓取整个后代树。sim_vehicle 会启动新的 xterm/session，
+        # 仅凭组长 poll 或单一 PGID 无法覆盖这些后代。
+        tracked_groups = {record.process_group_id for record in records}
+        tracked_pids = {record.process.pid for record in records}
+        tracked_pids = self._with_descendants(tracked_pids)
+
+        # 即使组长已在上一阶段退出，也继续向保存的 PGID 和后代 PID 升级信号。
         for signum, grace in (
             (signal.SIGINT, 2.0),
             (signal.SIGTERM, 2.0),
             (signal.SIGKILL, 1.0),
         ):
-            running = [record for record in records if record.running]
-            if not running:
+            if not self._targets_alive(tracked_groups, tracked_pids):
                 break
-            for record in running:
-                try:
-                    os.killpg(os.getpgid(record.process.pid), signum)
-                except ProcessLookupError:
-                    pass
-                except OSError as exc:
-                    errors.append(f"{record.name}: {exc}")
-            self._wait_records(running, grace)
+            self._signal_targets(tracked_groups, tracked_pids, signum, errors)
+            self._wait_targets(tracked_groups, tracked_pids, grace)
 
         managed_stopped = 0
         with self._lock:
@@ -245,7 +255,10 @@ class ProcessSupervisor:
                     errors.append(f"{name}: PID {record.process.pid} 无法结束")
                 else:
                     managed_stopped += 1
-                self._close_record(record)
+                if not self._close_record(record):
+                    errors.append(
+                        f"{name}: 日志读取线程未在时限内退出；已跳过阻塞式流关闭"
+                    )
                 self._managed.pop(name, None)
 
         stale_pids = tuple(pid for pid, _ in self.find_related_processes())
@@ -456,6 +469,15 @@ class ProcessSupervisor:
             return "fcu_url:=tcp://127.0.0.1:5762" in command_line
         if any(name in {"rviz2", "robot_state_publisher"} for name in basenames):
             return "guided_sim" in command_line or "quadcopter.rviz" in command_line
+        if "arducopter" in basenames:
+            has_temporary_defaults = any(
+                token.startswith("/tmp/tmp") for token in argv
+            )
+            return (
+                "--sim-address=127.0.0.1" in command_line
+                and "-I0" in argv
+                and has_temporary_defaults
+            )
 
         # 只识别本项目独有的包；通用 MAVROS 还必须匹配本地 SITL 端点。
         local_packages = {"guided_sim", "onboard_control"}
@@ -498,14 +520,71 @@ class ProcessSupervisor:
             current = parent
         return ancestors
 
-    @staticmethod
-    def _wait_records(records: Iterable[ManagedProcess], timeout: float) -> None:
-        """在短宽限期内轮询多个进程，避免逐个 wait 叠加超时。"""
+    @classmethod
+    def _targets_alive(cls, groups: set[int], pids: set[int]) -> bool:
+        """判断保存的进程组或后代 PID 是否仍有实际运行成员。"""
+        return any(cls._group_alive(group) for group in groups) or any(
+            cls._pid_alive(pid) for pid in pids
+        )
+
+    @classmethod
+    def _wait_targets(
+        cls, groups: set[int], pids: set[int], timeout: float
+    ) -> None:
+        """在统一宽限期内等待所有保存的进程组和后代退出。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if all(not record.running for record in records):
+            if not cls._targets_alive(groups, pids):
                 return
             time.sleep(0.05)
+
+    @classmethod
+    def _signal_targets(
+        cls,
+        groups: set[int],
+        pids: set[int],
+        signum: signal.Signals,
+        errors: list[str],
+    ) -> None:
+        """向保存的 PGID 及逃逸到其他 session 的后代发送同一级信号。"""
+        for group in sorted(groups):
+            try:
+                os.killpg(group, signum)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                errors.append(f"PGID {group}: {exc}")
+
+        for pid in sorted(pids):
+            if not cls._pid_alive(pid):
+                continue
+            try:
+                if os.getpgid(pid) in groups:
+                    continue
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                errors.append(f"PID {pid}: {exc}")
+
+    @staticmethod
+    def _group_alive(group: int) -> bool:
+        """扫描非僵尸组成员，不把尚未 wait 的已退出组长误判为运行中。"""
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                raw = (entry / "stat").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                fields = raw.rsplit(")", 1)[1].split()
+                state = fields[0]
+                process_group = int(fields[2])
+            except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
+                continue
+            if process_group == group and state != "Z":
+                return True
+        return False
 
     @classmethod
     def _terminate_pids(cls, pids: Iterable[int], errors: list[str]) -> None:
@@ -562,15 +641,16 @@ class ProcessSupervisor:
     def _pid_alive(pid: int) -> bool:
         """判断 PID 是否为非僵尸进程；僵尸已不再执行代码，不算运行残留。"""
         try:
-            fields = Path(f"/proc/{pid}/stat").read_text(
+            raw = Path(f"/proc/{pid}/stat").read_text(
                 encoding="utf-8", errors="replace"
-            ).split()
+            )
+            fields = raw.rsplit(")", 1)[1].split()
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             return False
-        return len(fields) > 2 and fields[2] != "Z"
+        return bool(fields) and fields[0] != "Z"
 
-    def _close_record(self, record: ManagedProcess) -> None:
-        """关闭记录对应的日志文件。"""
+    def _close_record(self, record: ManagedProcess) -> bool:
+        """有界关闭日志；读取线程未退时绝不跨线程关闭其缓冲流。"""
         if record.process.stdin is not None:
             try:
                 record.process.stdin.close()
@@ -581,19 +661,22 @@ class ProcessSupervisor:
             and record.output_thread is not threading.current_thread()
         ):
             record.output_thread.join(timeout=1.0)
-        try:
-            if record.process.stdout is not None:
-                record.process.stdout.close()
-        except OSError:
-            pass
         if (
             record.output_thread is not None
             and record.output_thread.is_alive()
             and record.output_thread is not threading.current_thread()
         ):
-            record.output_thread.join(timeout=0.2)
+            # TextIOWrapper 正在另一线程执行阻塞 read 时，close() 会永久等待
+            # buffered lock。保留 daemon 线程/流交给进程退出回收，先保证 GUI 可退出。
+            return False
+        try:
+            if record.process.stdout is not None:
+                record.process.stdout.close()
+        except OSError:
+            pass
         try:
             record.log_stream.flush()
             record.log_stream.close()
         except OSError:
             pass
+        return True

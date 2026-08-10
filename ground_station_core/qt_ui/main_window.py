@@ -81,7 +81,7 @@ class GroundStationWindow(QMainWindow):
         event_log: EventLog | None = None,
         ros_controller: GroundStationRosController | None = None,
         environment: EnvironmentInitializer | None = None,
-        auto_start: bool = True,
+        auto_start: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         """创建后端依赖、模块化面板、线程桥和周期状态刷新。"""
@@ -138,6 +138,7 @@ class GroundStationWindow(QMainWindow):
         self._timer.start()
         self._events.info("ui", "Qt 地面站界面已创建")
         self._refresh()
+        # Production stays outside the DDS graph until the operator requests a workflow.
         if auto_start:
             QTimer.singleShot(0, self._start_ros)
 
@@ -600,7 +601,7 @@ class GroundStationWindow(QMainWindow):
         self._shortcuts.append(hover_shortcut)
 
     def _start_ros(self) -> None:
-        """窗口首次进入事件循环后创建常驻 ROS 客户端。"""
+        """显式请求时创建 ROS 客户端；单纯打开窗口不会加入远端 DDS 图。"""
         if self._shutting_down:
             return
         try:
@@ -975,9 +976,13 @@ class GroundStationWindow(QMainWindow):
         self.waypoints.update_progress(snapshot)
         self._consume_results()
 
+        cleanup_active = (
+            self._cleanup_thread is not None and self._cleanup_thread.is_alive()
+        )
         busy = (
             self._workflow_busy
             or self._communication_busy
+            or cleanup_active
             or bool(getattr(self._environment, "busy", False))
         )
         self._availability = derive_availability(
@@ -990,9 +995,6 @@ class GroundStationWindow(QMainWindow):
             pending_mode=self._pending_environment_mode,
             waypoint_count=len(self.waypoints.waypoints),
             waypoint_running=self._waypoint_running,
-        )
-        cleanup_active = (
-            self._cleanup_thread is not None and self._cleanup_thread.is_alive()
         )
         render_key = (
             self._availability,
@@ -1068,7 +1070,7 @@ class GroundStationWindow(QMainWindow):
         elif self._ros.ready:
             self.link_badge.set_status("WAITING ONBOARD", "warn")
         else:
-            self.link_badge.set_status("STARTING ROS", "neutral")
+            self.link_badge.set_status("ROS IDLE", "neutral", "首次连接操作时启动")
 
         if not snapshot.connected:
             self.aircraft_badge.set_status("FCU OFFLINE", "neutral")
@@ -1217,12 +1219,8 @@ class GroundStationWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                if (
-                    self._cleanup_thread is not None
-                    and self._cleanup_thread.is_alive()
-                    and self._cleanup_thread is not threading.current_thread()
-                ):
-                    self._cleanup_thread.join(timeout=8.0)
+                # EnvironmentInitializer 会合并并发清理请求并设置硬超时；这里
+                # 不再先 join 后二次进入清理，以免两条线程互等同一把锁。
                 report = self._environment.cleanup()
                 self._ros.stop()
             except Exception as exc:

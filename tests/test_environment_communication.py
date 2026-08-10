@@ -8,7 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from ground_station_core.config import INTERFACE_VERSION
+from ground_station_core.config import (
+    HARDWARE_DISCOVERY_RANGE,
+    HARDWARE_DOMAIN_ID,
+    INTERFACE_VERSION,
+    SIMULATION_DISCOVERY_RANGE,
+    SIMULATION_DOMAIN_ID,
+)
 from ground_station_core.environment import EnvironmentInitializer
 from ground_station_core.event_log import EventLog
 from ground_station_core.models import VehicleSnapshot
@@ -38,17 +44,49 @@ class _TrackingSupervisor:
         return CleanupReport()
 
 
+class _BlockingSupervisor(_TrackingSupervisor):
+    """让首个清理停在进程阶段，以验证第二个调用只等待同一结果。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def terminate_all(self) -> CleanupReport:
+        self.terminate_calls += 1
+        self.entered.set()
+        assert self.release.wait(2.0)
+        return CleanupReport(managed_stopped=4)
+
+
 class _DiagnosticRos:
     """生成状态接收统计，并让任何租约、维护或飞行入口立即失败。"""
 
     def __init__(self, snapshot: VehicleSnapshot, events: EventLog) -> None:
         self.ready = True
+        self.domain_id: int | None = HARDWARE_DOMAIN_ID
         self.error = None
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.start_transports: list[tuple[int, str]] = []
         self.event_log = events
         self.current_snapshot = snapshot
         self.control_enabled = False
         self.remote_logs_enabled = False
         self._status_count = 0
+
+    def start(self, *, domain_id: int, discovery_range: str) -> None:
+        """模拟首次连接操作按需创建 ROS 客户端。"""
+        self.start_calls += 1
+        self.domain_id = domain_id
+        self.start_transports.append((domain_id, discovery_range))
+        self.ready = True
+
+    def stop(self) -> None:
+        """模拟完整断开会立即销毁当前 DDS context。"""
+        self.stop_calls += 1
+        self.ready = False
+        self.domain_id = None
 
     def snapshot(self) -> VehicleSnapshot:
         """返回测试指定的权威机载快照。"""
@@ -100,6 +138,7 @@ class _FullConnectionRos:
 
     def __init__(self, events: EventLog) -> None:
         self.ready = True
+        self.domain_id = HARDWARE_DOMAIN_ID
         self.error = None
         self.event_log = events
         self.control_enabled = False
@@ -137,6 +176,12 @@ class _FullConnectionRos:
 
     def mark_environment_stopped(self) -> None:
         self.calls.append(("mark_environment_stopped", None))
+
+    def stop(self) -> None:
+        """记录断开按钮销毁 ROS context，而非留到后续仿真切换。"""
+        self.ready = False
+        self.domain_id = None
+        self.calls.append(("stop", None))
 
     def request_set_rates(self) -> int:
         self.calls.append(("set_rates", None))
@@ -190,6 +235,109 @@ def test_communication_workflow_only_observes_status_and_remote_logs(
     assert "未申请控制权" in result
     assert "远端日志 1 条" in result
     assert any("全程零控制命令" in message for message in statuses)
+
+
+def test_communication_workflow_starts_ros_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """打开 GUI 时可保持 DDS 空闲，首次只读检测才启动 ROS。"""
+    monkeypatch.setattr(
+        "ground_station_core.environment._COMMUNICATION_OBSERVATION_SECONDS", 0.02
+    )
+    events = EventLog()
+    ros = _DiagnosticRos(_connected_snapshot(), events)
+    ros.ready = False
+    initializer = EnvironmentInitializer(
+        ros,
+        supervisor=_TrackingSupervisor(forbid_process_calls=True),
+        event_log=events,
+    )
+
+    result = initializer._communication_workflow(lambda *_args: None)
+
+    assert ros.start_calls == 1
+    assert ros.start_transports == [
+        (HARDWARE_DOMAIN_ID, HARDWARE_DISCOVERY_RANGE)
+    ]
+    assert ros.ready
+    assert "通讯链路检测通过" in result
+
+
+def test_same_gui_switches_from_simulation_domain_to_hardware_domain() -> None:
+    """结束仿真后应在同一控制器对象内切回 domain 0，无需重启 GUI。"""
+    events = EventLog()
+    ros = _DiagnosticRos(VehicleSnapshot(), events)
+    initializer = EnvironmentInitializer(
+        ros,
+        supervisor=_TrackingSupervisor(),
+        event_log=events,
+    )
+
+    initializer._ensure_ros_ready(
+        SIMULATION_DOMAIN_ID, SIMULATION_DISCOVERY_RANGE
+    )
+    initializer._ensure_ros_ready(
+        HARDWARE_DOMAIN_ID, HARDWARE_DISCOVERY_RANGE
+    )
+
+    assert ros.start_transports == [
+        (SIMULATION_DOMAIN_ID, SIMULATION_DISCOVERY_RANGE),
+        (HARDWARE_DOMAIN_ID, HARDWARE_DISCOVERY_RANGE),
+    ]
+    assert ros.domain_id == HARDWARE_DOMAIN_ID
+
+
+def test_session_cleanup_stops_dds_context_at_disconnect_boundary() -> None:
+    """断开真机/终止仿真后不得在 IDLE 留下旧 domain participant。"""
+    events = EventLog()
+    ros = _FullConnectionRos(events)
+    initializer = EnvironmentInitializer(
+        ros,
+        supervisor=_TrackingSupervisor(),
+        event_log=events,
+    )
+
+    report = initializer.cleanup()
+
+    assert report.success
+    assert not ros.ready
+    assert ros.domain_id is None
+    assert ros.calls[-1] == ("stop", None)
+
+
+def test_concurrent_cleanup_requests_share_one_bounded_process_cleanup() -> None:
+    """终止按钮与退出同时发生时不得重复清理或互锁。"""
+    events = EventLog()
+    ros = _FullConnectionRos(events)
+    supervisor = _BlockingSupervisor()
+    initializer = EnvironmentInitializer(
+        ros,
+        supervisor=supervisor,
+        event_log=events,
+    )
+    reports: list[CleanupReport] = []
+
+    first = threading.Thread(
+        target=lambda: reports.append(initializer._terminate_local_processes())
+    )
+    second = threading.Thread(
+        target=lambda: reports.append(initializer._terminate_local_processes())
+    )
+    first.start()
+    assert supervisor.entered.wait(1.0)
+    second.start()
+    time.sleep(0.05)
+    supervisor.release.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert supervisor.terminate_calls == 1
+    assert reports == [
+        CleanupReport(managed_stopped=4),
+        CleanupReport(managed_stopped=4),
+    ]
 
 
 def test_communication_failure_does_not_cleanup_or_send_release() -> None:

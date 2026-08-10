@@ -6,6 +6,7 @@ import os
 from dataclasses import replace
 import math
 from pathlib import Path
+import threading
 from unittest.mock import patch
 
 # 必须在首次导入 Qt 前选择无显示服务平台，保证测试可在 CI/headless 运行。
@@ -43,6 +44,7 @@ class _FakeRosController:
         self.source_id = "qt-test"
         self.ready = True
         self.error = None
+        self.start_calls = 0
         self.current_snapshot = snapshot
         self.calls: list[tuple[str, object]] = []
         self.results: list[CommandResult] = []
@@ -50,6 +52,7 @@ class _FakeRosController:
 
     def start(self) -> None:
         """模拟已就绪客户端。"""
+        self.start_calls += 1
         self.ready = True
 
     def stop(self) -> None:
@@ -237,6 +240,20 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert not offline.waypoint_edit
     assert not offline.waypoint_send
 
+    lazy_ros = derive_availability(
+        VehicleSnapshot(),
+        ros_ready=False,
+        busy=False,
+        closing=False,
+        environment_active=False,
+        connection_mode="none",
+        waypoint_count=0,
+        waypoint_running=False,
+    )
+    assert lazy_ros.start_environment
+    assert lazy_ros.communication_test
+    assert not lazy_ros.takeoff
+
     ready = derive_availability(
         snapshot,
         ros_ready=True,
@@ -292,6 +309,23 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert not conflict.motion
     assert conflict.land
 
+    endpoint_conflict = derive_availability(
+        replace(snapshot, endpoint_conflict=True),
+        ros_ready=True,
+        busy=False,
+        closing=False,
+        environment_active=True,
+        connection_mode="hardware",
+        waypoint_count=2,
+        waypoint_running=False,
+    )
+    assert not endpoint_conflict.takeoff
+    assert not endpoint_conflict.land
+    assert not endpoint_conflict.motion
+    assert not endpoint_conflict.hover
+    assert not endpoint_conflict.waypoint_send
+    assert "多个机载状态发布者" in endpoint_conflict.flight_reason
+
 
 def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
     """无会话时航点组件全禁用；会话建立后禁用双启动入口、原点齿轮并互斥启用关闭按钮。"""
@@ -322,6 +356,49 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert window.waypoints.add_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
     finally:
+        _close_window(window)
+
+
+def test_opening_window_does_not_start_ros_until_a_workflow_is_requested() -> None:
+    """只显示 GUI 不得创建 DDS participant；入口仍可按需启动后台。"""
+    application = _application()
+    events = EventLog()
+    ros = _FakeRosController(events, VehicleSnapshot())
+    ros.ready = False
+    window = GroundStationWindow(
+        event_log=events,
+        ros_controller=ros,
+        environment=_FakeEnvironment(),
+    )
+    window.show()
+    application.processEvents()
+    try:
+        assert ros.start_calls == 0
+        assert window.operations.simulation_button.isEnabled()
+        assert window.operations.hardware_button.isEnabled()
+        assert window.operations.communication_test_button.isEnabled()
+        assert window.link_badge.value_label.text() == "ROS IDLE"
+    finally:
+        _close_window(window)
+
+
+def test_cleanup_in_progress_keeps_all_environment_entry_points_disabled() -> None:
+    """旧清理未完成时不得并发启动仿真、实机连接或通讯检测。"""
+    application = _application()
+    window, _ros = _window(VehicleSnapshot())
+    release = threading.Event()
+    cleanup_thread = threading.Thread(target=release.wait, daemon=True)
+    cleanup_thread.start()
+    window._cleanup_thread = cleanup_thread
+    try:
+        window._refresh()
+        application.processEvents()
+        assert not window.operations.simulation_button.isEnabled()
+        assert not window.operations.hardware_button.isEnabled()
+        assert not window.operations.communication_test_button.isEnabled()
+    finally:
+        release.set()
+        cleanup_thread.join(timeout=1.0)
         _close_window(window)
 
 

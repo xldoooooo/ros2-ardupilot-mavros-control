@@ -10,8 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import (
+    HARDWARE_DISCOVERY_RANGE,
+    HARDWARE_DOMAIN_ID,
     INTERFACE_VERSION,
     ONBOARD_PARAM_FILE,
+    SIMULATION_DISCOVERY_RANGE,
+    SIMULATION_DOMAIN_ID,
     ardupilot_root,
     find_sim_vehicle,
     mavros_apm_config,
@@ -30,6 +34,7 @@ DoneCallback = Callable[[bool, str], None]
 _COMMUNICATION_OBSERVATION_SECONDS = 3.0
 _COMMUNICATION_MIN_RATE_HZ = 5.0
 _COMMUNICATION_MAX_GAP_SECONDS = 0.5
+_CLEANUP_JOIN_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -64,7 +69,9 @@ class EnvironmentInitializer:
         self._events = event_log or ros_controller.event_log
         self._supervisor = supervisor or ProcessSupervisor(self._events)
         self._state_lock = threading.RLock()
-        self._cleanup_lock = threading.Lock()
+        self._cleanup_condition = threading.Condition()
+        self._cleanup_running = False
+        self._last_cleanup_report = CleanupReport()
         self._workflow_thread: threading.Thread | None = None
         self._workflow_name: str | None = None
         self._cancel_event = threading.Event()
@@ -222,7 +229,7 @@ class EnvironmentInitializer:
             return True
 
     def cleanup(self) -> CleanupReport:
-        """释放控制租约并只结束本机仿真进程，不触碰远端机载服务。"""
+        """释放租约、结束本机仿真并销毁当前 DDS context。"""
         self._events.info("environment", "请求断开并清理本地仿真环境")
         with self._state_lock:
             self._cancel_event.set()
@@ -233,15 +240,27 @@ class EnvironmentInitializer:
             and workflow_thread is not threading.current_thread()
         ):
             workflow_thread.join(timeout=6.0)
-        return self._terminate_local_processes()
+        report = self._terminate_local_processes()
+        try:
+            # 断开按钮是完整会话边界。不得把 domain 0 真机 participant
+            # 留到下一次点击仿真时才销毁，否则跨发行版撤销报文会被误判为
+            # 仿真影响真机；仿真结束后同样回到无 DDS participant 的 IDLE。
+            self._ros.stop()
+        except Exception as exc:
+            report = CleanupReport(
+                managed_stopped=report.managed_stopped,
+                stale_stopped=report.stale_stopped,
+                remaining=report.remaining,
+                errors=(*report.errors, f"停止 ROS 客户端异常: {exc}"),
+            )
+        return report
 
     def _simulation_workflow(self, status: StatusCallback) -> str:
         """执行可取消的完整闭环仿真初始化（不写 GPS 原点，沿用 SITL Home）。"""
         try:
-            if not self._ros.ready:
-                raise RuntimeError(
-                    f"地面站 ROS 客户端未就绪: {self._ros.error or '未知原因'}"
-                )
+            self._ensure_ros_ready(
+                SIMULATION_DOMAIN_ID, SIMULATION_DISCOVERY_RANGE
+            )
             sim_vehicle = find_sim_vehicle()
             if sim_vehicle is None:
                 raise FileNotFoundError("未找到 sim_vehicle.py，请配置 ArduPilot PATH")
@@ -264,10 +283,16 @@ class EnvironmentInitializer:
             status, LogLevel.INFO, "正在释放旧租约并清理本地仿真环境..."
         )
         cleanup = self._terminate_local_processes()
-        if cleanup.remaining:
-            raise RuntimeError(f"旧进程清理不完整: {cleanup.remaining}")
+        if not cleanup.success:
+            raise RuntimeError(
+                f"旧进程清理不完整: 残留={cleanup.remaining}，错误={cleanup.errors}"
+            )
         self._ros.enable_control()
         self._check_cancelled()
+        simulation_environment = {
+            "ROS_DOMAIN_ID": str(SIMULATION_DOMAIN_ID),
+            "ROS_AUTOMATIC_DISCOVERY_RANGE": SIMULATION_DISCOVERY_RANGE,
+        }
 
         self._publish_status(status, LogLevel.INFO, "1/5 正在启动 ArduPilot SITL...")
         sitl = self._supervisor.start(
@@ -280,6 +305,7 @@ class EnvironmentInitializer:
                 "GUID_OPTIONS=8",
             ],
             cwd=ardupilot_root(sim_vehicle),
+            extra_environment=simulation_environment,
             keep_stdin_open=True,
         )
         if not self._wait_tcp("127.0.0.1", 5762, 35.0, sitl):
@@ -300,6 +326,7 @@ class EnvironmentInitializer:
                 str(apm_config),
             ],
             setup_files=ros_setup_files(),
+            extra_environment=simulation_environment,
         )
         self._wait_process_stable(mavros, 1.0)
 
@@ -318,10 +345,12 @@ class EnvironmentInitializer:
                 str(ONBOARD_PARAM_FILE),
             ],
             setup_files=ros_setup_files(),
+            extra_environment=simulation_environment,
         )
         self._wait_onboard(20.0, onboard)
         self._wait_connected(35.0, onboard)
-        self._wait_thrust_mode(35.0, onboard)
+        # MAVROS pulls the complete ArduPilot parameter table before these two values exist.
+        self._wait_thrust_mode(60.0, onboard)
         self._wait_control_authority(12.0, onboard)
 
         self._publish_status(
@@ -341,6 +370,7 @@ class EnvironmentInitializer:
             "rviz",
             ["ros2", "launch", "guided_sim", "visualize.launch.py"],
             setup_files=ros_setup_files(),
+            extra_environment=simulation_environment,
         )
         self._wait_process_stable(rviz, 2.0)
         return (
@@ -353,10 +383,9 @@ class EnvironmentInitializer:
     ) -> str:
         """完整连接远端机载服务，校验租约/飞控并执行连接维护命令。"""
         try:
-            if not self._ros.ready:
-                raise RuntimeError(
-                    f"地面站 ROS 客户端未就绪: {self._ros.error or '未知原因'}"
-                )
+            self._ensure_ros_ready(
+                HARDWARE_DOMAIN_ID, HARDWARE_DISCOVERY_RANGE
+            )
             self._verify_ros_package("guided_interfaces", ros_setup_files())
         except Exception as exc:
             raise _PreflightFailed(str(exc)) from exc
@@ -367,8 +396,11 @@ class EnvironmentInitializer:
             "正在停止本地仿真；远端无人机进程不会被地面站终止...",
         )
         cleanup = self._terminate_local_processes()
-        if cleanup.remaining:
-            raise RuntimeError(f"本地仿真清理不完整: {cleanup.remaining}")
+        if not cleanup.success:
+            raise RuntimeError(
+                f"本地仿真清理不完整: 残留={cleanup.remaining}，"
+                f"错误={cleanup.errors}"
+            )
         self._ros.enable_remote_logs()
         self._ros.enable_control()
         self._check_cancelled()
@@ -389,7 +421,8 @@ class EnvironmentInitializer:
         )
         self._wait_control_authority(15.0)
         self._wait_connected(35.0)
-        self._wait_thrust_mode(35.0)
+        # Real FCUs can need more than 35 seconds to finish the MAVROS parameter pull.
+        self._wait_thrust_mode(60.0)
 
         self._publish_status(
             status,
@@ -423,10 +456,9 @@ class EnvironmentInitializer:
     def _communication_workflow(self, status: StatusCallback) -> str:
         """仅订阅并测量实机状态/日志链路，禁止任何控制或进程生命周期调用。"""
         try:
-            if not self._ros.ready:
-                raise RuntimeError(
-                    f"地面站 ROS 客户端未就绪: {self._ros.error or '未知原因'}"
-                )
+            self._ensure_ros_ready(
+                HARDWARE_DOMAIN_ID, HARDWARE_DISCOVERY_RANGE
+            )
             snapshot = self._ros.snapshot()
             if self._ros.control_enabled or snapshot.control_authority:
                 raise RuntimeError("当前客户端已有控制会话，请先正常断开后再检测")
@@ -476,6 +508,29 @@ class EnvironmentInitializer:
         finally:
             self._ros.disable_remote_logs()
 
+    def _ensure_ros_ready(self, domain_id: int, discovery_range: str) -> None:
+        """按环境重建 ROS context，避免仿真与真机共享任何 DDS 端点。"""
+        current_domain = getattr(self._ros, "domain_id", None)
+        if not self._ros.ready or current_domain != domain_id:
+            self._events.info(
+                "ros",
+                f"正在按需启动 ROS 2 客户端：domain={domain_id}，"
+                f"发现={discovery_range}",
+            )
+            self._ros.start(
+                domain_id=domain_id,
+                discovery_range=discovery_range,
+            )
+        if not self._ros.ready:
+            raise RuntimeError(
+                f"地面站 ROS 客户端未就绪: {self._ros.error or '未知原因'}"
+            )
+        active_domain = getattr(self._ros, "domain_id", domain_id)
+        if active_domain != domain_id:
+            raise RuntimeError(
+                f"ROS context domain 错误：期望 {domain_id}，实际 {active_domain}"
+            )
+
     def _observe_communication_link(self, duration: float) -> _CommunicationMetrics:
         """在有界窗口内只读统计新状态样本，持续验证未进入本客户端控制态。"""
         start_count, _ = self._ros.status_observation()
@@ -485,6 +540,7 @@ class EnvironmentInitializer:
         while time.monotonic() < deadline:
             self._check_cancelled()
             latest = self._ros.snapshot()
+            self._raise_on_endpoint_conflict(latest)
             if not latest.onboard_available:
                 raise RuntimeError("检测期间机载 ControlStatus 中断")
             if self._ros.control_enabled or latest.control_authority:
@@ -533,7 +589,9 @@ class EnvironmentInitializer:
         while time.monotonic() < deadline:
             self._check_cancelled()
             self._check_process(process)
-            if self._ros.snapshot().onboard_available:
+            snapshot = self._ros.snapshot()
+            self._raise_on_endpoint_conflict(snapshot)
+            if snapshot.onboard_available:
                 return
             self._cancel_event.wait(0.1)
         suffix = f"；日志: {process.log_path}" if process is not None else ""
@@ -547,7 +605,9 @@ class EnvironmentInitializer:
         while time.monotonic() < deadline:
             self._check_cancelled()
             self._check_process(process)
-            if self._ros.snapshot().connected:
+            snapshot = self._ros.snapshot()
+            self._raise_on_endpoint_conflict(snapshot)
+            if snapshot.connected:
                 return
             self._cancel_event.wait(0.1)
         raise RuntimeError("等待机载飞控连接超时")
@@ -560,7 +620,9 @@ class EnvironmentInitializer:
         while time.monotonic() < deadline:
             self._check_cancelled()
             self._check_process(process)
-            if self._ros.snapshot().control_authority:
+            snapshot = self._ros.snapshot()
+            self._raise_on_endpoint_conflict(snapshot)
+            if snapshot.control_authority:
                 return
             self._cancel_event.wait(0.1)
         snapshot = self._ros.snapshot()
@@ -575,7 +637,9 @@ class EnvironmentInitializer:
         while time.monotonic() < deadline:
             self._check_cancelled()
             self._check_process(process)
-            if self._ros.snapshot().local_position_valid:
+            snapshot = self._ros.snapshot()
+            self._raise_on_endpoint_conflict(snapshot)
+            if snapshot.local_position_valid:
                 return
             self._cancel_event.wait(0.1)
         raise RuntimeError("等待机载本地位置超时")
@@ -588,7 +652,9 @@ class EnvironmentInitializer:
         while time.monotonic() < deadline:
             self._check_cancelled()
             self._check_process(process)
-            if self._ros.snapshot().thrust_mode_verified:
+            snapshot = self._ros.snapshot()
+            self._raise_on_endpoint_conflict(snapshot)
+            if snapshot.thrust_mode_verified:
                 return
             self._cancel_event.wait(0.1)
         raise RuntimeError(
@@ -641,19 +707,64 @@ class EnvironmentInitializer:
                 f"日志: {process.log_path}"
             )
 
+    @staticmethod
+    def _raise_on_endpoint_conflict(snapshot: VehicleSnapshot) -> None:
+        """重复机载状态发布者意味着环境混合，所有连接工作流必须失败关闭。"""
+        if snapshot.endpoint_conflict:
+            raise RuntimeError(
+                "检测到多个 /onboard_control/status 发布者，已禁止控制传输"
+            )
+
     def _check_cancelled(self) -> None:
         """在每个可取消等待点抛出内部取消异常。"""
         if self._cancel_event.is_set():
             raise _WorkflowCancelled()
 
     def _terminate_local_processes(self) -> CleanupReport:
-        """串行释放租约并清理本项目本地仿真进程。"""
-        with self._cleanup_lock:
+        """合并并发清理请求；任何调用者都不会无限等待另一条清理线程。"""
+        with self._cleanup_condition:
+            if self._cleanup_running:
+                deadline = time.monotonic() + _CLEANUP_JOIN_TIMEOUT_SECONDS
+                while self._cleanup_running:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.0:
+                        return CleanupReport(
+                            errors=("等待正在执行的本地清理超时",)
+                        )
+                    self._cleanup_condition.wait(timeout=remaining)
+                return self._last_cleanup_report
+            self._cleanup_running = True
+
+        errors: list[str] = []
+        process_report = CleanupReport()
+        report = CleanupReport(errors=("本地清理未生成结果",))
+        try:
             self._ros.disable_remote_logs()
-            self._ros.release_control(timeout=1.0)
-            report = self._supervisor.terminate_all()
-            self._ros.mark_environment_stopped()
-            return report
+            try:
+                if not self._ros.release_control(timeout=1.0):
+                    errors.append("控制租约释放确认超时")
+            except Exception as exc:
+                errors.append(f"释放控制租约异常: {exc}")
+            try:
+                process_report = self._supervisor.terminate_all()
+            except Exception as exc:
+                errors.append(f"本地进程清理异常: {exc}")
+            try:
+                self._ros.mark_environment_stopped()
+            except Exception as exc:
+                errors.append(f"清除本地环境状态异常: {exc}")
+            report = CleanupReport(
+                managed_stopped=process_report.managed_stopped,
+                stale_stopped=process_report.stale_stopped,
+                remaining=process_report.remaining,
+                errors=(*process_report.errors, *errors),
+            )
+        finally:
+            with self._cleanup_condition:
+                self._last_cleanup_report = report
+                self._cleanup_running = False
+                self._cleanup_condition.notify_all()
+        return self._last_cleanup_report
 
     def _publish_status(
         self, callback: StatusCallback, level: LogLevel, message: str

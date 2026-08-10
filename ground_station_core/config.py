@@ -19,6 +19,13 @@ ONBOARD_PARAM_FILE = (
     / "control.yaml"
 )
 
+# 真机继续使用既有 domain 0；本地仿真固定放入仅本机发现的独立 domain，
+# 从传输层杜绝同时运行的真机与 SITL 共享同名 topic/service。
+HARDWARE_DOMAIN_ID = 0
+SIMULATION_DOMAIN_ID = 231
+HARDWARE_DISCOVERY_RANGE = "SUBNET"
+SIMULATION_DISCOVERY_RANGE = "LOCALHOST"
+
 # GUI 只产生高层意图；所有连续控制参数均在机载 C++ 参数文件中维护。
 VELOCITY_SCALE = 0.2  # 每次按键发送的速度增量，单位 m/s（偏航为 rad/s）。
 TAKEOFF_ALTITUDE = 0.3  # 默认起飞高度，单位 m。

@@ -28,7 +28,9 @@ cd /home/onboard/ros2-ardupilot-mavros-control
 git sparse-checkout init --no-cone
 git sparse-checkout set \
   '/src/guided_interfaces/' \
-  '/src/onboard_control/'
+  '/src/onboard_control/' \
+  '/start_drone/' \
+  '/start_drone_all.sh'
 git checkout main
 ```
 
@@ -37,6 +39,8 @@ git checkout main
 ```text
 src/guided_interfaces/
 src/onboard_control/
+start_drone/
+start_drone_all.sh
 ```
 
 不要复制开发机的 `build/` 或 `install/`。目标机必须针对 Humble/aarch64 原生编译。
@@ -102,9 +106,17 @@ cd /home/onboard/ros2-ardupilot-mavros-control
 ./src/onboard_control/deploy/onboard_workspace.sh verify
 ```
 
-`update` 只允许 sparse checkout，并要求 Git 工作树干净；更新使用 `git pull --ff-only`，不会 reset、覆盖本地修改或触碰 `/home/xld`。
+`update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护两个机载 ROS 包、
+`start_drone/` 分步入口和 `start_drone_all.sh` 一键入口。更新使用 `git pull --ff-only`，
+不会 reset、覆盖本地修改或触碰 `/home/xld`，也不会把仅供地面使用的
+`start_ground_all.sh` 检出到无人机。
 
 ## 5. Humble/Jazzy 网络变量
+
+`ROS_DOMAIN_ID` 只负责把 DDS 参与者划入彼此隔离的逻辑网络，不是地址或链路质量参数。
+未设置时默认值为 `0`。使用 `42` 可以隔离同一局域网中的其他 ROS 系统，但必须在进程
+启动前同时应用给机载控制、MAVROS、Odin、extnav、地面站和诊断 CLI；只改其中一个终端，
+或在节点启动后才修改环境，会让 `ros2 topic list` 看起来为空。
 
 机载 Humble 使用：
 
@@ -122,6 +134,10 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 
 `ROS_AUTOMATIC_DISCOVERY_RANGE` 和 `ROS_STATIC_PEERS` 不是 Humble 的通用配置接口。Humble 默认通过同网段多播发现；若多播不可靠，需要为双方实际使用的 Fast DDS 版本分别验证 XML discovery 配置。
 
+上面的 `42` 只是两端一致配置的示例。当前四终端手工启动且没有加载统一环境时，应全部保持
+默认 domain 0；不要只在某一条启动命令里硬编码 42。domain 值不会修复 Humble/Jazzy 的
+跨发行版序列化兼容问题。
+
 ROS 官方不保证 Humble 与 Jazzy 跨发行版通信。即使状态话题和服务在台架测试中可见，也只能视为当前版本组合的实测结果，不能据此宣称适合实飞。
 
 任务 09 在 Humble `rmw_fastrtps_cpp 6.2.10` 与 Jazzy `8.4.3` 间实测时，
@@ -134,11 +150,50 @@ ROS 发行版/DDS 版本或加入受支持桥接并复验之前，禁止把当�
 所有测试均保持螺旋桨拆除、飞控不解锁，并由低风险到高风险逐级进行：
 
 1. **DDS 协议测试**：不启动 MAVROS，只启动新机载节点；地面站先只读取 `/onboard_control/status`，确认接口 `2.0`、`armed=false`。GUI 中齿轮右侧的独立 Wi-Fi 图标只订阅状态与远端 `/rosout`，测量状态频率和最大接收间隔；它不会申请租约、配置消息频率、写 GPS 原点或建立控制会话。
-2. **MAVROS 只读测试**：只单独启动 MAVROS 并读取 `/mavros/state`，确认 `armed=false`；不要直接运行旧 `odin.sh`，因为该脚本会调用三次 `/mavros/set_message_interval`。Odin/extnav 应留到单独评审后的外部定位测试，不调用任何模式、解锁、起飞、原点或消息频率服务。
-3. **同机链路测试**：启动新机载节点，只观察其聚合状态是否正确反映飞控连接、位姿、`GUID_OPTIONS` 与 setpoint 发布者冲突；使用独立 Wi-Fi 图标，不点击“连接实机服务”，不发送 `FlightCommand`/`MotionIntent`/航点。
-4. **完整连接与维护测试**：原“连接实机服务”按钮保留正式功能，会在明确风险确认后申请控制租约、发送心跳、配置消息频率并写 GPS 原点，连接成功后按权威状态开放控制按钮。只有前三步均通过并单独完成安全评审后才可测试；该按钮本身不会发送解锁或起飞请求，但不属于零命令通讯检测。
+2. **MAVROS 只读测试**：只单独启动 MAVROS 并读取 `/mavros/state`，确认 `armed=false`。Odin/extnav 应留到单独评审后的外部定位测试，不调用任何模式、解锁、起飞或原点服务。
+3. **同机链路测试**：启动新机载节点；它会自动、异步配置控制链必需的 `LOCAL_POSITION_NED`、`ATTITUDE_QUATERNION`、`HIGHRES_IMU` 为 100 Hz，并在飞控重连后重试。只观察聚合状态是否正确反映飞控连接、位姿、`GUID_OPTIONS` 与 setpoint 发布者冲突；使用独立 Wi-Fi 图标，不点击“连接实机服务”，不发送 `FlightCommand`/`MotionIntent`/航点。自动消息频率维护不包含模式、解锁、起飞或参数写入。
+4. **完整连接与维护测试**：原“连接实机服务”按钮保留正式功能，会在明确风险确认后申请控制租约、发送心跳、确认消息频率并写 GPS 原点，连接成功后按权威状态开放控制按钮。只有前三步均通过并单独完成安全评审后才可测试；该按钮本身不会发送解锁或起飞请求，但不属于零命令通讯检测。
 5. **飞行控制测试**：本任务明确禁止，不能进行解锁、起飞或实机姿态/推力控制。
 
-## 7. systemd 示例
+## 7. 实机四组件一键启动
+
+机载工作区根目录的 `start_drone_all.sh` 统一启动原先四个终端中的组件：
+
+- MAVROS（默认串口 `/dev/ttyTHS1:460800`）；
+- Odin 驱动；
+- Odin 到 MAVROS 的外部定位桥；
+- `onboard_control_node`。
+
+在真机桌面终端中执行一行命令：
+
+```bash
+cd /home/onboard/ros2-ardupilot-mavros-control && bash start_drone_all.sh
+```
+
+脚本默认让四个组件都使用 ROS domain 0，并等待以下只读安全条件成立后打印
+`READY`：飞控已连接且未解锁、三路必需 MAVLink 消息频率已配置、推力参数已确认、
+本地位姿有效。它不会请求模式切换、解锁、起飞、控制租约或发送飞行指令。
+
+在运行脚本的同一终端按 `Ctrl+C` 会停止本次启动的全部进程。每次运行的合并日志位于
+`/tmp/ros2_ardupilot_onboard/<时间戳>/`；若检测到四个组件中的任一既有实例，脚本会拒绝
+重复启动，须先确认旧实例的来源和状态，不要直接强杀。
+
+可按需在命令前覆盖配置，例如：
+
+```bash
+MAVROS_FCU_DEVICE=/dev/ttyTHS1 MAVROS_FCU_BAUD=460800 \
+  bash /home/onboard/ros2-ardupilot-mavros-control/start_drone_all.sh
+```
+
+Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会话中，RViz 会因没有
+`DISPLAY` 而退出，但 Odin 驱动、外部定位桥和其余飞行数据链仍可运行；需要 RViz 时应从
+真机桌面终端启动。该现象与 Humble/Jazzy 间的
+`sequence size exceeds remaining buffer` 告警无关。
+
+分步入口现集中在 `start_drone/`，包含 `start_link.sh`、`start_mavros.sh`、
+`start_odin.sh` 和 `start_extnav.sh`；集成脚本不修改它们。部署前备份与本次实机测试结论
+记录在对应日期的任务报告中。
+
+## 8. systemd 示例
 
 `onboard-control.service.example` 仅供未来部署参考，任务 08 不安装、不启用。使用前必须替换 `ONBOARD_USER`，确认 `/etc/ros2-ardupilot/onboard.env`，并完成独立的台架安全评审。服务只启动 `onboard_control`，不会替代 Odin、MAVROS 或 extnav 的生命周期管理。

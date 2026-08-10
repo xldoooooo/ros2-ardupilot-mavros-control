@@ -6,6 +6,8 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
+readonly DRONE_START_SPARSE_PATH="/start_drone/"
+readonly DRONE_START_ALL_SPARSE_PATH="/start_drone_all.sh"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
 readonly SMOKE_INTERFACE_PREFIX="/_task08_smoke_onboard"
 readonly DEFAULT_SMOKE_DOMAIN_ID="231"
@@ -25,7 +27,7 @@ Usage: onboard_workspace.sh COMMAND
 
 Commands:
   show-config  Show the resolved workspace, ROS distribution, and Git revision.
-  update       Fast-forward the existing two-package sparse checkout.
+  update       Fast-forward the onboard packages and launchers sparse checkout.
   deps-check   Check ROS packages and toolchain without changing the OS.
   build        Build guided_interfaces and onboard_control in Release mode.
   test         Run package tests and report all colcon test results.
@@ -91,6 +93,10 @@ validate_workspace_layout() {
     die "guided_interfaces is missing from ${WORKSPACE_ROOT}/src"
   [[ -f "${WORKSPACE_ROOT}/src/onboard_control/package.xml" ]] ||
     die "onboard_control is missing from ${WORKSPACE_ROOT}/src"
+  [[ -d "${WORKSPACE_ROOT}/start_drone" ]] ||
+    die "start_drone is missing from ${WORKSPACE_ROOT}"
+  [[ -f "${WORKSPACE_ROOT}/start_drone_all.sh" ]] ||
+    die "start_drone_all.sh is missing from ${WORKSPACE_ROOT}"
 }
 
 show_config() {
@@ -114,7 +120,8 @@ update_checkout() {
 
   # The checkout was initialized in non-cone mode; older Git treats --no-cone here as a path.
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
-    "${GUIDED_SPARSE_PATH}" "${ONBOARD_SPARSE_PATH}"
+    "${GUIDED_SPARSE_PATH}" "${ONBOARD_SPARSE_PATH}" \
+    "${DRONE_START_SPARSE_PATH}" "${DRONE_START_ALL_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"
   validate_workspace_layout
 }

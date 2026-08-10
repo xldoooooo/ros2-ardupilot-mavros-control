@@ -82,6 +82,7 @@ class VehicleSnapshot:
     message_rates_configured: bool = False
     thrust_mode_verified: bool = False
     hover_throttle: float = 0.0
+    endpoint_conflict: bool = False
     setpoint_conflict: bool = False
     failsafe_reason: str = ""
     status_message: str = ""

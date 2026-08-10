@@ -134,7 +134,8 @@ private:
   bool active_task_matches(const CommandIdentity & command) const;
 
   // Maintenance services are serialized independently of flight tasks.
-  void start_message_rate_configuration(const CommandIdentity & command);
+  void start_message_rate_configuration(
+    const CommandIdentity & command, bool publish_command_result = true);
   void send_next_message_rate();
   void check_thrust_mode_parameter();
 
@@ -221,11 +222,14 @@ private:
   // MAVLink message-rate setup runs independently from flight-mode transitions.
   bool message_rates_configured_{false};
   bool message_rate_configuration_active_{false};
+  bool message_rate_publish_result_{true};
   CommandIdentity message_rate_command_;
   std::size_t message_rate_index_{0};
+  SteadyTime last_automatic_message_rate_attempt_{};
   bool thrust_mode_verified_{false};
   bool thrust_mode_check_inflight_{false};
   SteadyTime last_thrust_mode_check_{};
+  SteadyTime fcu_parameter_sync_started_{};
 
   // Timer diagnostics and publisher-conflict protection.
   SteadyTime last_control_tick_{};

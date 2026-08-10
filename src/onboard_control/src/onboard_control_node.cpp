@@ -27,6 +27,12 @@ constexpr std::uint32_t kMinimumLeaseMs = 300;
 constexpr std::uint32_t kMaximumLeaseMs = 5000;
 constexpr std::size_t kMaximumWaypoints = 256;
 constexpr double kPi = 3.14159265358979323846;
+// MAVROS/FCU startup can need tens of seconds to pull the complete parameter list.
+constexpr auto kFcuParameterSyncGracePeriod = std::chrono::seconds(60);
+// Avoid querying dynamically declared FCU parameters while MAVROS is still pulling them.
+constexpr auto kInitialFcuParameterCheckDelay = std::chrono::seconds(40);
+// A transient MAVLink service failure must not permanently suppress required telemetry.
+constexpr auto kAutomaticMessageRateRetryPeriod = std::chrono::seconds(5);
 
 const std::array<std::pair<std::uint32_t, float>, 3> kMessageIntervals{{
   {32U, 100.0F},   // LOCAL_POSITION_NED
@@ -172,6 +178,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr message)
 {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  const bool was_connected = fcu_connected_;
   const bool was_armed = armed_;
   fcu_connected_ = message->connected;
   armed_ = message->armed;
@@ -179,6 +186,21 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
   last_state_time_ = SteadyClock::now();
   if (!fcu_connected_) {
     thrust_mode_verified_ = false;
+    fcu_parameter_sync_started_ = SteadyTime{};
+    last_thrust_mode_check_ = SteadyTime{};
+    // Message intervals are runtime FCU state and must be re-applied after reconnection.
+    message_rates_configured_ = false;
+    message_rate_configuration_active_ = false;
+    message_rate_index_ = 0;
+    last_automatic_message_rate_attempt_ = SteadyTime{};
+  } else if (!was_connected) {
+    fcu_parameter_sync_started_ = last_state_time_;
+    last_thrust_mode_check_ = SteadyTime{};
+    message_rates_configured_ = false;
+    message_rate_configuration_active_ = false;
+    message_rate_index_ = 0;
+    last_automatic_message_rate_attempt_ = SteadyTime{};
+    set_status_message("等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用");
   }
 
   if (was_armed && !armed_) {
@@ -526,7 +548,22 @@ void OnboardControlNode::on_flight_command(
         response->message = "MAVROS 消息频率服务尚未就绪";
         return;
       }
+      if (message_rates_configured_) {
+        publish_result(
+          command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
+          "MAVLink 本地位置/姿态/IMU 消息频率已经就绪");
+        response->accepted = true;
+        response->message = "消息频率已经配置";
+        return;
+      }
       if (message_rate_configuration_active_) {
+        // Attach the explicit client ticket to the already-running automatic chain.
+        message_rate_command_ = command;
+        message_rate_publish_result_ = true;
+        publish_result(
+          command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
+          "机载端正在配置 MAVLink 消息频率");
+        response->accepted = true;
         response->message = "消息频率配置已在执行";
         return;
       }
@@ -926,15 +963,19 @@ void OnboardControlNode::send_land_mode_request(
     });
 }
 
-void OnboardControlNode::start_message_rate_configuration(const CommandIdentity & command)
+void OnboardControlNode::start_message_rate_configuration(
+  const CommandIdentity & command, const bool publish_command_result)
 {
   message_rate_configuration_active_ = true;
   message_rates_configured_ = false;
+  message_rate_publish_result_ = publish_command_result;
   message_rate_command_ = command;
   message_rate_index_ = 0;
-  publish_result(
-    command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
-    "机载端正在配置 MAVLink 消息频率");
+  if (message_rate_publish_result_) {
+    publish_result(
+      command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
+      "机载端正在配置 MAVLink 消息频率");
+  }
   send_next_message_rate();
 }
 
@@ -946,9 +987,11 @@ void OnboardControlNode::send_next_message_rate()
   if (message_rate_index_ >= kMessageIntervals.size()) {
     message_rate_configuration_active_ = false;
     message_rates_configured_ = true;
-    publish_result(
-      message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
-      "MAVLink 本地位置/姿态/IMU 消息频率已配置为 100 Hz");
+    if (message_rate_publish_result_) {
+      publish_result(
+        message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
+        "MAVLink 本地位置/姿态/IMU 消息频率已配置为 100 Hz");
+    }
     set_status_message("MAVLink 高频遥测配置完成");
     return;
   }
@@ -975,9 +1018,11 @@ void OnboardControlNode::send_next_message_rate()
         message_rate_configuration_active_ = false;
         std::ostringstream stream;
         stream << "飞控拒绝消息 " << message_id << " 的频率配置";
-        publish_result(
-          message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED,
-          true, stream.str());
+        if (message_rate_publish_result_) {
+          publish_result(
+            message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED,
+            true, stream.str());
+        }
         set_status_message(stream.str());
         return;
       }
@@ -1000,14 +1045,27 @@ void OnboardControlNode::check_thrust_mode_parameter()
       thrust_mode_check_inflight_ = false;
       try {
         const auto parameters = future.get();
+        if (!fcu_connected_) {
+          return;
+        }
         if (parameters.size() != 2U || parameters.front().get_type() !=
           rclcpp::ParameterType::PARAMETER_INTEGER || parameters[1].get_type() !=
           rclcpp::ParameterType::PARAMETER_DOUBLE)
         {
-          // 已验证后的单次参数读取故障不应在飞行中制造伪故障；FCU 断开会单独撤销验证。
+          // An incomplete MAVROS parameter pull is expected shortly after FCU connection.
+          // A verified in-flight controller is not invalidated by one transient read failure.
           if (!thrust_mode_verified_) {
-            set_status_message(
-              "无法同时读取 GUID_OPTIONS 与 MOT_THST_HOVER，姿态/推力控制保持禁用");
+            const SteadyTime now = SteadyClock::now();
+            if (fcu_parameter_sync_started_ == SteadyTime{}) {
+              fcu_parameter_sync_started_ = now;
+            }
+            if (now - fcu_parameter_sync_started_ < kFcuParameterSyncGracePeriod) {
+              set_status_message(
+                "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用");
+            } else {
+              set_status_message(
+                "MAVROS 参数同步超时，无法读取 GUID_OPTIONS 与 MOT_THST_HOVER");
+            }
           }
           return;
         }
@@ -1292,11 +1350,23 @@ void OnboardControlNode::status_tick()
   const std::size_t publisher_count = count_publishers(attitude_topic_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
-  if (fcu_connected_ && !thrust_mode_check_inflight_ &&
+  if (fcu_connected_ && fcu_parameter_sync_started_ != SteadyTime{} &&
+    now - fcu_parameter_sync_started_ >= kInitialFcuParameterCheckDelay &&
+    !thrust_mode_check_inflight_ &&
     (last_thrust_mode_check_ == SteadyTime{} ||
     std::chrono::duration<double>(now - last_thrust_mode_check_).count() >= 5.0))
   {
     check_thrust_mode_parameter();
+  }
+  if (fcu_connected_ && !message_rates_configured_ &&
+    !message_rate_configuration_active_ && message_interval_client_->service_is_ready() &&
+    (last_automatic_message_rate_attempt_ == SteadyTime{} ||
+    now - last_automatic_message_rate_attempt_ >= kAutomaticMessageRateRetryPeriod))
+  {
+    // Required FCU telemetry is an onboard prerequisite, not a ground-station side effect.
+    last_automatic_message_rate_attempt_ = now;
+    start_message_rate_configuration(
+      CommandIdentity{"onboard-maintenance", 0U, "set_rates"}, false);
   }
   if (publisher_count > 1U) {
     ++conflict_observations_;
@@ -1376,6 +1446,10 @@ void OnboardControlNode::publish_result(
 
 void OnboardControlNode::set_status_message(const std::string & message)
 {
+  // Avoid turning an unchanged readiness condition into a periodic INFO log flood.
+  if (message.empty() || status_message_ == message) {
+    return;
+  }
   status_message_ = message;
   RCLCPP_INFO(get_logger(), "%s", message.c_str());
 }

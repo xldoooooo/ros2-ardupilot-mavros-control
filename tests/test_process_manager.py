@@ -1,6 +1,8 @@
 """外部进程分组清理与安全匹配规则测试。"""
 
 import subprocess
+import sys
+import time
 
 from ground_station_core.process_manager import ProcessSupervisor
 
@@ -38,6 +40,15 @@ def test_process_matcher_uses_argv_tokens_not_shell_text() -> None:
             "fcu_url:=tcp://127.0.0.1:5762",
         ]
     )
+    assert ProcessSupervisor._is_related_argv(
+        [
+            "/home/nvidia/scq/projects/ardupilot/build/sitl/bin/arducopter",
+            "--defaults",
+            "/tmp/tmp-project-sitl",
+            "--sim-address=127.0.0.1",
+            "-I0",
+        ]
+    )
     assert not ProcessSupervisor._is_related_argv(
         ["/opt/ros/jazzy/bin/ros2", "launch", "nav2_bringup", "navigation_launch.py"]
     )
@@ -71,3 +82,35 @@ def test_historical_unmanaged_ros_process_is_swept() -> None:
     assert process.returncode is not None
     assert process.pid in report.stale_stopped
     assert report.success
+
+
+def test_parent_exit_cannot_leave_pipe_holding_detached_child_or_deadlock() -> None:
+    """组长先退、后代另建 session 且持有 stdout 时，清理仍须有界完成。"""
+    child_code = (
+        "import signal,time; "
+        "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(60)"
+    )
+    parent_code = (
+        "import signal,subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+        "start_new_session=True); "
+        "signal.signal(signal.SIGINT, lambda *_: sys.exit(0)); "
+        "print('ready', flush=True); time.sleep(60)"
+    )
+    supervisor = ProcessSupervisor()
+    process = supervisor.start(
+        "pytest_detached_pipe_probe",
+        [sys.executable, "-c", parent_code],
+    )
+    time.sleep(0.3)
+
+    started = time.monotonic()
+    report = supervisor.terminate_all()
+    elapsed = time.monotonic() - started
+
+    assert process.process.poll() is not None
+    assert elapsed < 7.0
+    assert report.success
+    assert report.remaining == ()

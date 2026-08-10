@@ -47,8 +47,8 @@
 - 租约丢失时，机载端立即抓取当前位置独立悬停；默认等待 10 秒仍未恢复则自动切换 LAND。地面站恢复租约后需显式发送悬停或新任务退出失联状态。
 - 飞控状态或本地位姿/速度超时、非有限控制输出、姿态 setpoint 多发布者、飞行中推力语义校验失效会触发机载 LAND；外部切走 GUIDED 时停止发送 setpoint，避免争夺飞控模式。
 - `ControlStatus` 聚合飞控状态、实际/目标位姿速度、模式、航点进度、租约、推力校验、发布者冲突和控制频率/抖动诊断；GUI 只展示该权威状态。
-- 地面站 ROS 客户端默认只观察；本地 SITL 和完整实机连接工作流才会显式开启租约，避免 ROS 节点启动即自动取得控制权。独立 Wi-Fi 通讯检测始终保持默认观察态，只创建状态/日志订阅，不申请/续租、不发心跳或命令。
-- ROS 2 DDS 当前按“可信同一局域网”设计。两端设置相同 `ROS_DOMAIN_ID` 和 `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`；多播不可靠时配置 `ROS_STATIC_PEERS`。本阶段没有加入跨网段路由、VPN、SROS2 身份或加密。
+- 地面站 GUI 默认保持 `ROS IDLE`，单纯打开窗口不会创建 DDS participant；启动仿真、完整实机连接或独立 Wi-Fi 检测时才在后台按需启动 ROS。ROS 启动后仍默认只观察，只有本地 SITL 和完整实机连接显式开启租约；Wi-Fi 检测只创建状态/日志订阅，不申请/续租、不发心跳或命令。
+- ROS 2 DDS 当前按“可信同一局域网”设计。未设置 `ROS_DOMAIN_ID` 时为 domain 0；42 只是一种可选隔离值，必须在 MAVROS、Odin、extnav、onboard、地面站和诊断 CLI 启动前一致应用，不能只改一个终端或用它修复跨发行版兼容。Jazzy 使用 `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`；Humble 的发现配置需按其实际 RMW 验证。本阶段没有加入跨网段路由、VPN、SROS2 身份或加密。
 
 ## 生命周期与部署文件
 
@@ -124,6 +124,16 @@
 - Humble `rmw_fastrtps_cpp 6.2.10` 与 Jazzy `8.4.3` 发现部分跨发行版端点时反复报告 `sequence size exceeds remaining buffer`；Jazzy 图中 Humble 发布者节点名未知且 type hash 为 `INVALID`。已测数据路径稳定不等于整个 ROS 图兼容，统一发行版/DDS 或受支持桥接并复验前禁止据此实飞。
 - 测试后真机 MAVROS/onboard/Odin/extnav 零残留，串口无占用，systemd 仍 inactive；旧仓库 `dad9067`、新仓库 `c8abad9`、工作树与三个旧脚本哈希均保持不变。详细证据见 `agent/report/report-2026-08-08-task09-communication.md`。
 
+## 2026-08-10 当前实机链路与目录清理基线
+
+- 当前手工启动的实机 MAVROS、Odin、extnav、onboard 与开发机地面站均未设置 `ROS_DOMAIN_ID`，实际同在 domain 0；仅在新 CLI 设置 42 会进入空的隔离图。历史 domain 42 测试不代表当前运行配置。
+- 实机当前 `GUID_OPTIONS=8`、`MOT_THST_HOVER=0.20921991765499115`。连接后约 35.6 秒才完成 MAVROS 参数表同步，旧“无法同时读取”日志是启动暂态；同步后 `thrust_mode_verified=true`。机载端现延后 40 秒首次检查、60 秒后才报同步超时，地面站等待门同步扩为 60 秒，相同状态日志去重。
+- 当前拆分启动遗漏旧 `odin.sh` 的 message 32/31/105 频率请求；本次运行的 8 秒、20 秒和 45 秒窗口内 `/mavros/local_position/pose` 均为 0 Hz，且 `message_rates_configured=false`。该字段只表示当前 onboard 实例是否完成自己的设置序列，不是飞控 interval 的读回，当前 0 Hz 结论来自直接采样。历史仿真与完整实机连接工作流在飞行就绪前本来就调用 `request_set_rates()`，旧 `odin.sh` 也设置三路；新的自动逻辑是把既有前置条件从地面站/脚本迁到机载节点，不是首次加入。用户曾观察到打印 buffer error 后仍收到 pose，可能是当时 message 32 已由这些路径或 ArduPilot `SRx_*` stream 配置。自动逻辑消除启动顺序不确定性，不修复跨发行版 DDS。
+- 追加复核中，Jazzy 只读 participant 存在时 8 次新建 echo 有 6 次打印 buffer error、2 次不打印，说明错误本身具有发现时序随机性；Humble 长订阅在一次 buffer error 后仍稳定收到 `/mavros/state` 43 条/45 秒，证明它不等于 executor 或整个通信链路阻塞。当前无 pose 在 Jazzy participant 加入前已存在；要判断 DDS 是否让某些 local-pose 新订阅者偶发匹配失败，必须在确认 message 32 持续发布的正样本窗口做同机长订阅与重复新订阅对照。
+- 地面站开启期间 10 秒 UDP 仅 68,444 字节（地→机 12,086，机→地 56,358），socket 队列为 0、5 秒 UDP error 增量为 0；“消息太多造成阻塞”不符合证据。`sequence size exceeds remaining buffer` 与 Jazzy/Humble Fast DDS discovery/type 兼容问题一致，domain 与增大 buffer 均非根治；生产方案仍须统一发行版/RMW 或受支持桥接。
+- 已把无引用的 `shfiles/`、旧 SITL `logs/`、tlog/raw、terrain、EEPROM、parm、两个旧 CSV、FishROS 临时脚本和 Python 缓存移入系统回收站，约 169 MiB；删除 5 个 `guided_sim`/`run` 空目录。保留标准 colcon `build/install/log`、明确资源目录和用户既有工作树改动。
+- 本地验证为 Python 50 passed、ROS/C++ 5 tests 零失败、隔离消息频率重连通过；实机全程只读、`armed=false`、STABILIZE、零租约/零姿态 setpoint，未部署或重启新二进制。完整记录见 `agent/report/report-2026-08-10-domain-parameter-dds-cleanup.md`。
+
 ## 任务 10 UI 精修基线（2026-08-09）
 
 - 卡片长说明统一收进标题右侧圆形问号；日志默认隐藏 DEBUG，并删除“等级”标签。右上角依次为“在此处打开终端”、红色“退出地面站”和窗口控件；任何退出均须默认取消的二次确认。
@@ -169,3 +179,75 @@
 - `.gitignore` 排除 Python/colcon 产物、rosbag、ArduPilot/MAVProxy 日志、EEPROM、飞行记录和通用临时文件。
 - `.deep-copilot/` 运行数据不应重新提交；本机 `AGENTS.md` 保持本地。
 - 仓库不维护 `README.md`；正式执行与部署说明以当日报告、配置注释和 launch/deploy 示例为准。
+
+## 2026-08-10 真机一键启动部署基线
+
+- 真机 `/home/onboard/ros2-ardupilot-mavros-control/start_drone_all.sh` 已集成 MAVROS、Odin、extnav、
+  `onboard_control_node`；使用
+  `cd /home/onboard/ros2-ardupilot-mavros-control && bash start_drone_all.sh` 一行启动，默认 domain 0，
+  `Ctrl+C` 整组退出，日志位于 `/tmp/ros2_ardupilot_onboard/<时间戳>/`，已有任一实例时拒绝
+  重复启动。
+- 真机 Humble Release 构建、5 个 ROS/C++ 测试和隔离烟雾通过；一键脚本两轮均到达
+  `READY`。实测 local pose 93.72 Hz、onboard status 10.00 Hz、vision pose 39.99 Hz，参数
+  `GUID_OPTIONS=8`、`MOT_THST_HOVER=0.20922`，全程 `armed=false`、STABILIZE、零租约、零姿态
+  setpoint。最终四组件全部停止且串口无占用。
+- 原四个分步脚本现集中在 `start_drone/`，文件名为 `start_link.sh`、`start_mavros.sh`、
+  `start_odin.sh`、`start_extnav.sh`。部署前备份为
+  `.deployment-backups/pre-integrated-start-20260810-205108.tar.gz`，SHA-256
+  `ea0ec5bdde38560abf2f47ae594a04a082d16d45879b7029bfde1585d8ab027b`；最终
+  `start_drone_all.sh` SHA-256 为
+  `4b8a3307a71fecb84904df5374b90d1d54309b18181d5a5f1cdece4b5c624452`。
+- 纯 SSH 无 `DISPLAY` 时 Odin launch 的 RViz 子进程退出，但 Odin 数据链仍通过就绪检查；
+  真机桌面终端可正常启动 RViz。Jazzy 客户端接入 Humble 图仍触发 Fast DDS
+  `sequence size exceeds remaining buffer`，数据在告警期间继续到达；该跨发行版问题与
+  MAVLink 频率配置是两个独立问题。详细记录见
+  `agent/report/report-2026-08-10-real-deployment-integrated-start.md`。
+- 本地新增 `start_ground_all.sh`，一行启动完整 Qt 地面站；它只加载 Jazzy、本地 overlay
+  和项目 Python，默认 domain 0/子网发现，并允许透传 `--check-environment`。隔离 domain 231
+  环境自检通过。该文件明确只属于地面仓库，不同步到无人机。
+- 真机调整后的 `start_drone_all.sh` 与 `start_drone/` 四个分步脚本已按原哈希同步回本地；
+  本地旧 `start_all.sh`、`start_drone.sh`、`start_ground.sh` 已移入回收站。真机复核不存在
+  `start_ground_all.sh`。同步完成回归为 Python 52 passed，详见
+  `agent/report/report-2026-08-10-start-layout-ground-launcher-complete.md`。
+
+## 2026-08-10 地面站仿真/实机隔离与退出修复基线
+
+- 地面站 GUI 默认保持 `ROS IDLE`，单纯打开窗口不创建 DDS participant。完整本地仿真固定
+  使用 domain 231 + `LOCALHOST`，并显式传给 SITL、仿真 MAVROS、仿真 onboard 和 RViz；
+  真机仍使用 domain 0 + `SUBNET`，机载端无需设置或修改 domain。
+- 同一 `GroundStationRosController` 使用独立 `rclpy.Context`/executor 动态切换 domain；切换
+  前释放租约、停止旧 context、拒绝旧队列命令。仿真时隐藏 `ROS_STATIC_PEERS` 和
+  `ROS_DISCOVERY_SERVER`，切回真机时恢复 GUI 启动值，因此仿真不会沿静态发现配置接触真机。
+- 多个 `/onboard_control/status` 发布者会触发 `endpoint_conflict`，租约、心跳和全部命令故障
+  关闭；机载进程重启后，过期的本地 grant hint 会清除并重新申请，避免无法恢复控制租约。
+- `ProcessSupervisor` 在组长退出前保存 PGID/后代 PID，并对保存目标完成 INT/TERM/KILL；日志
+  线程仍阻塞时不再跨线程关闭 `TextIOWrapper`。并发清理被合并且有 15 秒等待上限，退出流程
+  不再先 join 后二次清理，清理期间所有环境入口禁用。
+- 全量 Python 60 passed；真实本地 SITL 在 domain 231/LOCALHOST 达到 onboard、FCU、租约和
+  local pose 就绪，始终 `armed=false`，结束后 4 个受管进程全部退出且 TCP 5762/项目残留为空。
+  本任务未连接/修改真机，未改机载运行逻辑。详见
+  `agent/report/report-2026-08-10-ground-simulation-domain-isolation-cleanup-fix.md`。
+
+## 2026-08-10 任务 12.5 仿真/实机切换追加修复
+
+- “断开真机”与“终止仿真”现在都是完整会话边界：释放租约、清理本机受管进程后立即停止
+  `GroundStationRosController` 并销毁当前 DDS context，IDLE 不保留旧 participant。此前真机
+  domain 0 context 会留到下一次点击仿真才销毁，导致跨 Humble/Jazzy 的端点撤销告警被误认为
+  仿真流量影响真机。
+- 同一 GUI 的 `source_id` 保持稳定时，租约 acquire/heartbeat/release 序号也在控制器生命周期内
+  跨 context 单调递增；不得恢复为每个 `_spin()` 从 0 开始，否则真机→仿真→真机后会被机载端
+  拒绝为“重复或乱序”。
+- 仿真继续固定为 domain 231 + `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`，并清除显式
+  `ROS_STATIC_PEERS`/`ROS_DISCOVERY_SERVER`。Wi-Fi 出站方向抓包为 0 包；真机栈运行时 8 秒
+  仿真-only context 窗口也无远端新增输出。
+- 固定同一 source 的未武装真机实测：首次租约序号 2/释放 3，经仿真 context 后以 6 重连、7
+  释放成功；最终 `armed=false`、STABILIZE、零租约，3 秒姿态 setpoint 为 0。Python 62 passed，
+  三包构建成功，ROS/C++ 5 tests 零失败。直接 Humble/Jazzy 真机连接/销毁仍可能触发 Fast DDS
+  反序列化告警，这是 ROS 官方不保证的跨发行版边界，不是仿真 domain 231 出站；详见
+  `agent/report/report-2026-08-10-task12.5-simulation-hardware-switch-bugfix.md`。
+
+## 2026-08-11 机载启动文件更新范围
+
+- 机载 sparse checkout 与 `onboard_workspace.sh update` 必须同时维护
+  `src/guided_interfaces/`、`src/onboard_control/`、根目录 `start_drone/` 和
+  `start_drone_all.sh`；`start_ground_all.sh` 仅属于地面端，禁止同步到无人机。
