@@ -385,3 +385,20 @@
   75 passed。没有执行整机冷重启、租约、原点、模式、解锁、起飞或控制命令；下一次正常开机
   仍需复验 cold-boot journal。详见
   `agent/report/report-2026-08-11-onboard-autostart-time-sync-fix.md`。
+
+## 2026-08-12 Task 16 beautify-3 与接口 2.2
+
+- 手动操纵默认坐标系为本地 ENU；摘要固定为实际高度/速度/航向与三类指令速度；详细左栏固定为
+  实际位姿、目标位姿、实际速度、目标速度、控制周期、安全门控，右栏只保留单次增量与
+  “俯仰/滚转”。顶部状态固定为控制权、飞控模式、电池、通讯频率、最近指令，1180×700 时自动
+  换成坐标行和状态行。
+- 通讯绿色范围使用命名常量 `10±1 Hz`；实机电池阈值为 23.5/22.5 V 且只显示电压，仿真阈值为
+  50%/25% 且只显示百分比。为避免把 yaw 假装成 roll，`ControlStatus` 2.2 新增真实 roll，机载从
+  已有位姿四元数统一解算并聚合，地面站 `VehicleSnapshot` 同步保留。
+- 本地最终 Python 76 passed、ROS/C++ 5 tests 零失败、三包构建和环境检查通过。真机已同步并运行
+  `b84ca3e`；重启前置 Humble 监视器实收 164 条状态/16.501319 秒（9.8780 Hz），最后 FCU、位姿、
+  电池和频率配置有效，全部 `armed=false`、零租约、42 秒零姿态 setpoint，roll 为有限值。
+- **当前真机不应视为飞行 READY**：最终 `thrust_mode_verified=false`，一键脚本 120 秒后报告 full
+  readiness 未达到。安全门因此禁止起飞/运动；必须另行查明 MAVROS 参数服务发现/同步并恢复该门，
+  禁止绕过。跨 Humble/Jazzy Fast DDS 晚加入订阅仍有发现异常，不能把部分话题可达当成实飞通信
+  基线。详见 `agent/report/report-2026-08-12-task16-beautify-3.md`。
