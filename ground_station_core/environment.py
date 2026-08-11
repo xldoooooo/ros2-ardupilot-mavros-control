@@ -172,14 +172,22 @@ class EnvironmentInitializer:
                 try:
                     message = workflow()
                 except _PreflightFailed as exc:
-                    message = f"{operation_label}前检查失败: {exc}"
+                    if cleanup_on_failure:
+                        report = self._terminate_environment_session()
+                        message = (
+                            f"{operation_label}前检查失败: {exc}"
+                            f"{self._cleanup_suffix(report)}"
+                        )
+                    else:
+                        self._ros.disable_remote_logs()
+                        message = f"{operation_label}前检查失败: {exc}"
                     self._events.error("environment", message)
                     done(False, message)
                 except _WorkflowCancelled:
                     if cleanup_on_failure:
-                        report = self._terminate_local_processes()
+                        report = self._terminate_environment_session()
                         message = (
-                            "操作已取消，本地仿真进程与控制租约已清理"
+                            "操作已取消，本地 ROS 连接、仿真进程与控制租约已清理"
                             if report.success
                             else "操作已取消，但本地清理仍有残留: "
                             f"{report.remaining}"
@@ -201,7 +209,7 @@ class EnvironmentInitializer:
                             LogLevel.WARN,
                             f"{operation_label}失败，正在清理本地环境: {exc}",
                         )
-                        report = self._terminate_local_processes()
+                        report = self._terminate_environment_session()
                         message = (
                             f"{operation_label}失败: {exc}"
                             f"{self._cleanup_suffix(report)}"
@@ -242,20 +250,7 @@ class EnvironmentInitializer:
             and workflow_thread is not threading.current_thread()
         ):
             workflow_thread.join(timeout=6.0)
-        report = self._terminate_local_processes()
-        try:
-            # 断开按钮是完整会话边界。不得把 domain 0 真机 participant
-            # 留到下一次点击仿真时才销毁，否则跨发行版撤销报文会被误判为
-            # 仿真影响真机；仿真结束后同样回到无 DDS participant 的 IDLE。
-            self._ros.stop()
-        except Exception as exc:
-            report = CleanupReport(
-                managed_stopped=report.managed_stopped,
-                stale_stopped=report.stale_stopped,
-                remaining=report.remaining,
-                errors=(*report.errors, f"停止 ROS 客户端异常: {exc}"),
-            )
-        return report
+        return self._terminate_environment_session()
 
     def _simulation_workflow(self, status: StatusCallback) -> str:
         """执行可取消的完整闭环仿真初始化（不写 GPS 原点，沿用 SITL Home）。"""
@@ -794,6 +789,22 @@ class EnvironmentInitializer:
                 self._cleanup_condition.notify_all()
         return self._last_cleanup_report
 
+    def _terminate_environment_session(self) -> CleanupReport:
+        """释放租约/进程并销毁 DDS context，使失败与主动断开都回到 IDLE。"""
+        report = self._terminate_local_processes()
+        try:
+            # 任何完整环境工作流的终点都是会话边界。失败时同样必须销毁
+            # participant，否则远端状态会继续刷新并制造“失败后又连接”的假象。
+            self._ros.stop()
+        except Exception as exc:
+            report = CleanupReport(
+                managed_stopped=report.managed_stopped,
+                stale_stopped=report.stale_stopped,
+                remaining=report.remaining,
+                errors=(*report.errors, f"停止 ROS 客户端异常: {exc}"),
+            )
+        return report
+
     def _publish_status(
         self, callback: StatusCallback, level: LogLevel, message: str
     ) -> None:
@@ -805,5 +816,5 @@ class EnvironmentInitializer:
     def _cleanup_suffix(report: CleanupReport) -> str:
         """将本地清理结果压缩为错误消息后缀。"""
         if report.success:
-            return "；本地仿真进程已清理，远端机载端未受影响"
+            return "；本地 ROS 连接与仿真进程已清理，远端机载端未受影响"
         return f"；本地清理仍有残留: {report.remaining or report.errors}"

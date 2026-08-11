@@ -212,6 +212,8 @@ class _FullConnectionRos:
         """记录断开按钮销毁 ROS context，而非留到后续仿真切换。"""
         self.ready = False
         self.domain_id = None
+        self.control_enabled = False
+        self.remote_logs_enabled = False
         self.calls.append(("stop", None))
 
     def request_set_rates(self) -> int:
@@ -422,6 +424,47 @@ def test_session_cleanup_stops_dds_context_at_disconnect_boundary() -> None:
     assert report.success
     assert not ros.ready
     assert ros.domain_id is None
+    assert ros.calls[-1] == ("stop", None)
+
+
+def test_failed_hardware_connection_stops_dds_and_clears_live_telemetry() -> None:
+    """完整连接失败也必须销毁观察端，不能在 GUI IDLE 后继续刷新真机状态。"""
+    events = EventLog()
+    ros = _FullConnectionRos(events)
+    supervisor = _TrackingSupervisor()
+    initializer = EnvironmentInitializer(
+        ros,
+        supervisor=supervisor,
+        event_log=events,
+    )
+    finished = threading.Event()
+    results: list[tuple[bool, str]] = []
+
+    def fail_after_connecting(_origin, _status) -> str:
+        """模拟原点确认失败前已经建立状态、日志和租约链路。"""
+        ros.enable_remote_logs()
+        ros.enable_control()
+        raise RuntimeError("GPS 原点确认超时")
+
+    initializer._hardware_workflow = fail_after_connecting
+    assert initializer.initialize_hardware(
+        (30.0, 120.0, 10.0),
+        lambda *_args: None,
+        lambda success, message: (
+            results.append((success, message)),
+            finished.set(),
+        ),
+    )
+    assert finished.wait(2.0)
+
+    assert results and not results[0][0]
+    assert "GPS 原点确认超时" in results[0][1]
+    assert "本地 ROS 连接与仿真进程已清理" in results[0][1]
+    assert not ros.ready
+    assert ros.domain_id is None
+    assert not ros.control_enabled
+    assert not ros.remote_logs_enabled
+    assert supervisor.terminate_calls == 1
     assert ros.calls[-1] == ("stop", None)
 
 

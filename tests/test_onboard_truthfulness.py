@@ -269,10 +269,32 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
             )
         )
 
+        # 同一 FCU 会话中重复连接时，ArduPilot 不保证再次广播未变化原点。
+        # 已有匹配回读必须幂等成功，并且不发送无意义的第二轮写请求。
+        first_request_count = len(origin_requests)
+        repeated_origin = SetGpsOrigin.Request()
+        repeated_origin.stamp = node.get_clock().now().to_msg()
+        repeated_origin.source_id = "truth-gcs"
+        repeated_origin.sequence = 2
+        repeated_origin.ttl_ms = 3000
+        repeated_origin.origin = origin.origin
+        assert call(origin_client, repeated_origin).accepted
+        assert spin_until(
+            lambda: any(
+                result.command == "set_gp_origin"
+                and result.sequence == repeated_origin.sequence
+                and result.final
+                and result.status == CommandResult.STATUS_SUCCEEDED
+                and "当前值已匹配" in result.message
+                for result in results
+            )
+        )
+        assert len(origin_requests) == first_request_count
+
         land = FlightCommand.Request()
         land.stamp = node.get_clock().now().to_msg()
         land.source_id = "truth-gcs"
-        land.sequence = 2
+        land.sequence = 3
         land.ttl_ms = 3000
         land.command = FlightCommand.Request.COMMAND_LAND
         assert call(land_client, land).accepted

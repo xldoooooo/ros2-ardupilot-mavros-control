@@ -213,6 +213,8 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     message_rate_index_ = 0;
     last_automatic_message_rate_attempt_ = SteadyTime{};
     battery_present_ = false;
+    // 已知断线时不得用 MAVROS 上一条 FCU 会话的 transient 缓存确认请求。
+    global_origin_observed_ = false;
     if (was_connected && origin_confirmation_active_) {
       publish_result(
         origin_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED, true,
@@ -291,7 +293,10 @@ void OnboardControlNode::on_global_origin(
 {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   last_global_origin_ = message->position;
-  if (!origin_confirmation_active_ ||
+  // 节点启动时 transient 原点可能先于第一条 State 到达，此时暂存有效；
+  // 若随后确认 FCU 断线，on_fcu_state 会清除。已知断线期间的旧缓存无效。
+  global_origin_observed_ = fcu_connected_ || last_state_time_ == SteadyTime{};
+  if (!global_origin_observed_ || !origin_confirmation_active_ ||
     !origins_match(requested_origin_, last_global_origin_))
   {
     return;
@@ -726,6 +731,25 @@ void OnboardControlNode::on_set_gps_origin(
     response->message = "已有 GPS 原点请求正在等待飞控回读确认";
     return;
   }
+  const CommandIdentity command{
+    request->source_id, request->sequence, "set_gp_origin"};
+  if (fcu_connected_ && global_origin_observed_ &&
+    origins_match(origin, last_global_origin_))
+  {
+    // MAVROS 的 gp_origin 是 transient-local 的已应用状态。ArduPilot 在原点
+    // 未变化时不会保证再次广播；已有匹配回读应作为幂等成功，而非伪造超时。
+    std::ostringstream stream;
+    stream << "GPS 原点已由飞控回读确认，当前值已匹配，无需重复写入 (lat="
+           << last_global_origin_.latitude << ", lon=" << last_global_origin_.longitude
+           << ", alt=" << last_global_origin_.altitude << ")";
+    set_status_message(stream.str());
+    publish_result(
+      command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
+      stream.str());
+    response->accepted = true;
+    response->message = stream.str();
+    return;
+  }
   if (origin_publisher_->get_subscription_count() == 0U) {
     response->message = "MAVROS GPS 原点订阅尚未就绪";
     return;
@@ -734,8 +758,7 @@ void OnboardControlNode::on_set_gps_origin(
   geographic_msgs::msg::GeoPointStamped message;
   message.header.frame_id = "map";
   message.position = origin;
-  origin_command_ = CommandIdentity{
-    request->source_id, request->sequence, "set_gp_origin"};
+  origin_command_ = command;
   requested_origin_ = origin;
   origin_confirmation_active_ = true;
   origin_confirmation_started_ = SteadyClock::now();

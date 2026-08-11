@@ -259,8 +259,10 @@ private:
   SteadyTime last_thrust_mode_check_{};
   SteadyTime fcu_parameter_sync_started_{};
 
-  // GPS 原点只有在 MAVROS 回传 FCU 的 GPS_GLOBAL_ORIGIN 后才报告成功。
+  // GPS 原点只有在 MAVROS 回传 FCU 的 GPS_GLOBAL_ORIGIN 后才报告成功；
+  // 已观察到的匹配值可让重复设置幂等成功，避免要求飞控重复广播同一状态。
   geographic_msgs::msg::GeoPoint last_global_origin_;
+  bool global_origin_observed_{false};
   bool origin_confirmation_active_{false};
   geographic_msgs::msg::GeoPoint requested_origin_;
   CommandIdentity origin_command_;
