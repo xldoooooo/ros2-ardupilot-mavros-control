@@ -327,3 +327,17 @@
 - 本地运行时图确认两路 IMU 订阅为零；Python 74 passed，ROS/C++ 5 tests
   零失败。本次未连接或同步实机，未验证实机 100 Hz。详见
   `agent/report/report-2026-08-11-remove-100hz-rate-listeners.md`。
+
+## 2026-08-11 真机机载 2.1 同步与未武装测试
+
+- 真机正式 sparse 工作树已快进到 `7c1f8cc`，Humble/aarch64 Release 两包构建、
+  5 项 ROS/C++ 测试和隔离 2.1 smoke 通过。旧工作树/安装前缀备份位于
+  `.deployment-backups/pre-sync-7c1f8cc-20260811-194224/`，快照 SHA-256 为
+  `594b12d8b638f3663ecf67552a72ccb619b3fdc91d83fef61ecab24d5522a4cc`。
+- 真实四组件链路实收 490 条状态，平均 9.9994 Hz；全程 `armed=false`、
+  STABILIZE、零租约、零姿态 setpoint。电池 23.435 V，位姿/推力参数有效，
+  两路 IMU 机载订阅为 0；`message_rates_configured` 只代表 ACK，未验证 100 Hz。
+- systemd drop-in 固定旧部署已确认的 `/dev/ttyTHS1`，并将 SIGINT/130 识别为
+  正常停止。最终服务 `enabled` 但 inactive，Result=success，四组件零进程、
+  串口无占用。Odin/extnav 关停时仍有外部驱动异常日志，但无残留。详见
+  `agent/report/report-2026-08-11-real-onboard-sync-and-test.md`。
