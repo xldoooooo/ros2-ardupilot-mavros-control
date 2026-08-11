@@ -9,8 +9,9 @@ Starts:
 Usage:
   ros2 launch guided_sim visualize.launch.py
 
-Prerequisites:
-  MAVROS must be running and publishing /mavros/local_position/pose.
+Startup ordering:
+  This launch may start before MAVROS. Its pose subscription waits until
+  /mavros/local_position/pose appears, allowing RViz to warm up in parallel.
 
 The packaged RViz config preselects the map fixed frame, RobotModel and TF.
 """

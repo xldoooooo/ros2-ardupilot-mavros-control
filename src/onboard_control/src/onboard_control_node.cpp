@@ -29,8 +29,6 @@ constexpr std::size_t kMaximumWaypoints = 256;
 constexpr double kPi = 3.14159265358979323846;
 // MAVROS/FCU startup can need tens of seconds to pull the complete parameter list.
 constexpr auto kFcuParameterSyncGracePeriod = std::chrono::seconds(60);
-// Avoid querying dynamically declared FCU parameters while MAVROS is still pulling them.
-constexpr auto kInitialFcuParameterCheckDelay = std::chrono::seconds(40);
 // A transient MAVLink service failure must not permanently suppress required telemetry.
 constexpr auto kAutomaticMessageRateRetryPeriod = std::chrono::seconds(5);
 
@@ -57,6 +55,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   status_frequency_hz_ = declare_parameter<double>("status_frequency", 10.0);
   pose_timeout_seconds_ = declare_parameter<double>("pose_timeout_seconds", 0.3);
   state_timeout_seconds_ = declare_parameter<double>("state_timeout_seconds", 2.0);
+  fcu_parameter_check_initial_delay_seconds_ =
+    declare_parameter<double>("fcu_parameter_check_initial_delay_seconds", 40.0);
   link_loss_land_timeout_seconds_ =
     declare_parameter<double>("link_loss_land_timeout_seconds", 10.0);
   takeoff_timeout_seconds_ = declare_parameter<double>("takeoff_timeout_seconds", 45.0);
@@ -95,6 +95,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 
   if (control_frequency_hz_ < 20.0 || control_frequency_hz_ > 400.0 ||
     status_frequency_hz_ <= 0.0 || pose_timeout_seconds_ <= 0.0 ||
+    fcu_parameter_check_initial_delay_seconds_ < 0.1 ||
+    fcu_parameter_check_initial_delay_seconds_ > 60.0 ||
     link_loss_land_timeout_seconds_ <= 0.0 || max_velocity_xy_ <= 0.0 ||
     max_velocity_z_ <= 0.0 || controller_parameters_.hover_throttle <= 0.0 ||
     controller_parameters_.hover_throttle >= 1.0 || controller_parameters_.thrust_ratio <= 1.0)
@@ -1351,7 +1353,8 @@ void OnboardControlNode::status_tick()
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   if (fcu_connected_ && fcu_parameter_sync_started_ != SteadyTime{} &&
-    now - fcu_parameter_sync_started_ >= kInitialFcuParameterCheckDelay &&
+    std::chrono::duration<double>(now - fcu_parameter_sync_started_).count() >=
+    fcu_parameter_check_initial_delay_seconds_ &&
     !thrust_mode_check_inflight_ &&
     (last_thrust_mode_check_ == SteadyTime{} ||
     std::chrono::duration<double>(now - last_thrust_mode_check_).count() >= 5.0))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
@@ -57,6 +58,36 @@ class _BlockingSupervisor(_TrackingSupervisor):
         self.entered.set()
         assert self.release.wait(2.0)
         return CleanupReport(managed_stopped=4)
+
+
+class _SimulationSupervisor(_TrackingSupervisor):
+    """验证仿真依赖并行检查及四个受管进程的启动顺序。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.package_barrier = threading.Barrier(4)
+        self.packages: list[str] = []
+        self.start_calls: list[tuple[str, tuple[str, ...]]] = []
+        self.sequence: list[str] = []
+        self.log_directory = Path("/tmp/task13-simulation-test")
+
+    def run_checked(self, command, **_kwargs) -> object:
+        """四个检查必须同时到达屏障，串行实现会在此测试失败。"""
+        package = str(tuple(command)[-1])
+        self.packages.append(package)
+        self.package_barrier.wait(timeout=2.0)
+        return SimpleNamespace(returncode=0, stdout=f"/tmp/{package}")
+
+    def start(self, name, command, **_kwargs) -> object:
+        """记录启动命令并返回始终存活的轻量进程记录。"""
+        argv = tuple(str(part) for part in command)
+        self.start_calls.append((str(name), argv))
+        self.sequence.append(f"start:{name}")
+        return SimpleNamespace(
+            name=str(name),
+            running=True,
+            log_path=Path(f"/tmp/{name}.log"),
+        )
 
 
 class _DiagnosticRos:
@@ -198,6 +229,18 @@ class _FullConnectionRos:
         return SimpleNamespace(success=True, message="ok")
 
 
+class _SimulationRos(_FullConnectionRos):
+    """提供仿真初始化所需的就绪状态与维护结果，不生成真实 ROS 流量。"""
+
+    def __init__(self, events: EventLog) -> None:
+        super().__init__(events)
+        self.domain_id = SIMULATION_DOMAIN_ID
+
+    def request_set_rates(self) -> int:
+        self.calls.append(("set_rates", None))
+        return 201
+
+
 def _connected_snapshot(*, armed: bool = False) -> VehicleSnapshot:
     """构造兼容、在线的机载状态。"""
     return VehicleSnapshot(
@@ -285,6 +328,83 @@ def test_same_gui_switches_from_simulation_domain_to_hardware_domain() -> None:
         (HARDWARE_DOMAIN_ID, HARDWARE_DISCOVERY_RANGE),
     ]
     assert ros.domain_id == HARDWARE_DOMAIN_ID
+
+
+@pytest.mark.parametrize("prebuilt_sitl", [True, False])
+def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prebuilt_sitl: bool
+) -> None:
+    """安全并行且仅仿真快查参数；有二进制才跳过 ArduPilot 构建。"""
+    sim_vehicle = tmp_path / "sim_vehicle.py"
+    sim_vehicle.touch()
+    if prebuilt_sitl:
+        sitl_binary = tmp_path / "build" / "sitl" / "bin" / "arducopter"
+        sitl_binary.parent.mkdir(parents=True)
+        sitl_binary.touch()
+    apm_config = tmp_path / "apm.yaml"
+    apm_config.touch()
+    monkeypatch.setattr(
+        "ground_station_core.environment.find_sim_vehicle", lambda: sim_vehicle
+    )
+    monkeypatch.setattr(
+        "ground_station_core.environment.ardupilot_root", lambda _path: tmp_path
+    )
+    monkeypatch.setattr(
+        "ground_station_core.environment.mavros_apm_config", lambda: apm_config
+    )
+
+    events = EventLog()
+    ros = _SimulationRos(events)
+    supervisor = _SimulationSupervisor()
+    initializer = EnvironmentInitializer(
+        ros, supervisor=supervisor, event_log=events
+    )
+    stable_calls: list[tuple[str, float]] = []
+
+    def wait_tcp(_host, _port, _timeout, _process) -> bool:
+        """SITL 端口等待开始前 RViz 必须已经启动。"""
+        supervisor.sequence.append("wait:sitl-tcp")
+        assert supervisor.sequence[:3] == [
+            "start:sitl",
+            "start:rviz",
+            "wait:sitl-tcp",
+        ]
+        return True
+
+    initializer._wait_tcp = wait_tcp
+    initializer._wait_process_stable = lambda process, duration: stable_calls.append(
+        (process.name, duration)
+    )
+    initializer._wait_onboard = lambda *_args: None
+    initializer._wait_connected = lambda *_args: None
+    initializer._wait_thrust_mode = lambda *_args: None
+    initializer._wait_control_authority = lambda *_args: None
+    initializer._wait_local_position = lambda *_args: None
+    initializer._wait_ticket = lambda *_args: SimpleNamespace(
+        success=True, message="ok"
+    )
+
+    result = initializer._simulation_workflow(lambda *_args: None)
+
+    assert "仿真闭环初始化完成" in result
+    assert sorted(supervisor.packages) == [
+        "guided_interfaces",
+        "guided_sim",
+        "mavros",
+        "onboard_control",
+    ]
+    assert [name for name, _command in supervisor.start_calls] == [
+        "sitl",
+        "rviz",
+        "mavros_sim",
+        "onboard_control",
+    ]
+    onboard_command = dict(supervisor.start_calls)["onboard_control"]
+    sitl_command = dict(supervisor.start_calls)["sitl"]
+    assert ("--no-rebuild" in sitl_command) is prebuilt_sitl
+    assert "fcu_parameter_check_initial_delay_seconds:=2.0" in onboard_command
+    assert stable_calls == [("mavros_sim", 1.0), ("rviz", 0.2)]
+    assert ("set_rates", None) in ros.calls
 
 
 def test_session_cleanup_stops_dds_context_at_disconnect_boundary() -> None:

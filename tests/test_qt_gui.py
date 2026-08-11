@@ -742,6 +742,75 @@ def test_speed_presets_and_manual_selectors_match_ui_scope() -> None:
         _close_window(window)
 
 
+def test_manual_tooltips_and_detailed_increment_state() -> None:
+    """手动动作提示语义准确，详细状态按当前左右灵敏度即时更新。"""
+    window, _ros = _window(_operational_snapshot(armed=True))
+    try:
+        panel = window.operations
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+
+        expected_tooltips = {
+            "up": "增加向上的期望速度",
+            "down": "增加向下的期望速度",
+            "yaw_left": "增加向左偏航的期望角速度",
+            "yaw_right": "增加向右偏航的期望角速度",
+            "forward": "增加水平向前的期望速度",
+            "back": "增加水平向后的期望速度",
+            "left": "增加水平向左的期望速度",
+            "right": "增加水平向右的期望速度",
+        }
+        for name, phrase in expected_tooltips.items():
+            button = panel.motion_buttons[name]
+            assert button.isEnabled()
+            assert phrase in button.toolTip()
+            assert button.accessibleDescription() == button.toolTip()
+        assert "制动并悬停指令" in panel.hover_button.toolTip()
+        assert panel.engineering_toggle.text() == "详细状态"
+
+        position_row = panel.engineering_left_layout.getItemPosition(
+            panel.engineering_left_layout.indexOf(panel.position_value)
+        )
+        increment_row = panel.engineering_increment_layout.getItemPosition(
+            panel.engineering_increment_layout.indexOf(
+                panel.vertical_increment_value
+            )
+        )
+        assert position_row[1] == 1
+        assert increment_row[1] == 1
+        assert (
+            panel.engineering_left_panel.geometry().x()
+            < panel.engineering_increment_panel.geometry().x()
+        )
+        assert panel.vertical_increment_value.text() == "±0.20 m/s"
+        assert panel.yaw_increment_value.text() == "±11.5 °/s"
+        assert panel.longitudinal_increment_value.text() == "±0.20 m/s"
+        assert panel.lateral_increment_value.text() == "±0.20 m/s"
+
+        panel.left_sensitivity_combo.setCurrentIndex(0)
+        panel.right_sensitivity_combo.setCurrentIndex(2)
+        assert panel.vertical_increment_value.text() == "±0.10 m/s"
+        assert panel.yaw_increment_value.text() == "±5.7 °/s"
+        assert panel.longitudinal_increment_value.text() == "±0.40 m/s"
+        assert panel.lateral_increment_value.text() == "±0.40 m/s"
+
+        # 禁用态优先解释安全门控；重新就绪后恢复动作本身的语义提示。
+        window._environment_active = False
+        window._connection_mode = "none"
+        window._refresh()
+        assert panel.motion_buttons["left"].toolTip() == (
+            window._availability.flight_reason
+        )
+        assert panel.hover_button.toolTip() == window._availability.flight_reason
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        assert "增加水平向左的期望速度" in panel.motion_buttons["left"].toolTip()
+    finally:
+        _close_window(window)
+
+
 def test_input_focus_blocks_keyboard_flight_shortcut() -> None:
     """数值输入聚焦时 W 等字符不能穿透成飞行命令。"""
     window, ros = _window(_operational_snapshot(armed=True))

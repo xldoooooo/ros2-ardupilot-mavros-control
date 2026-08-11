@@ -43,6 +43,20 @@ from .widgets import (
 )
 
 
+# 手动按钮描述的是“期望量增量”，避免把机载接受命令误写成已实现的物理运动。
+_MANUAL_MOTION_TOOLTIPS = {
+    "up": "向飞行器发送指令，增加向上的期望速度",
+    "down": "向飞行器发送指令，增加向下的期望速度",
+    "yaw_left": "向飞行器发送指令，增加向左偏航的期望角速度",
+    "yaw_right": "向飞行器发送指令，增加向右偏航的期望角速度",
+    "forward": "向飞行器发送指令，增加水平向前的期望速度；方向按当前坐标系解释",
+    "back": "向飞行器发送指令，增加水平向后的期望速度；方向按当前坐标系解释",
+    "left": "向飞行器发送指令，增加水平向左的期望速度；方向按当前坐标系解释",
+    "right": "向飞行器发送指令，增加水平向右的期望速度；方向按当前坐标系解释",
+}
+_HOVER_TOOLTIP = "向机载服务发送制动并悬停指令，清零目标速度并保持当前位置"
+
+
 class OriginConfigDialog(QDialog):
     """配置完整实机连接使用的 EKF/飞控原点，仅在本地保存。"""
 
@@ -478,6 +492,9 @@ class OperationsPanel(QWidget):
         self.hover_button = self._button(
             "制动并悬停  SPACE", "success", "hoverButton"
         )
+        self.hover_button.setToolTip(_HOVER_TOOLTIP)
+        self.hover_button.setProperty("baseToolTip", _HOVER_TOOLTIP)
+        self.hover_button.setAccessibleDescription(_HOVER_TOOLTIP)
         self.hover_button.clicked.connect(self.hover_requested)
         self.hover_button.setMinimumWidth(260)
         hover_row = QHBoxLayout()
@@ -507,14 +524,16 @@ class OperationsPanel(QWidget):
 
         self.engineering_toggle = QToolButton()
         self.engineering_toggle.setObjectName("engineeringTelemetryToggle")
-        self.engineering_toggle.setText("工程信息")
+        self.engineering_toggle.setText("详细状态")
         self.engineering_toggle.setCheckable(True)
         self.engineering_toggle.setChecked(False)
         self.engineering_toggle.setArrowType(Qt.ArrowType.RightArrow)
         self.engineering_toggle.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
-        self.engineering_toggle.setToolTip("展开 XYZ、目标位姿和控制周期诊断")
+        self.engineering_toggle.setToolTip(
+            "展开 XYZ、目标位姿、控制周期和当前单次指令增量"
+        )
         self.engineering_toggle.toggled.connect(self._set_engineering_visible)
         card.content_layout.addWidget(
             self.engineering_toggle,
@@ -525,15 +544,27 @@ class OperationsPanel(QWidget):
         self.engineering_panel = QWidget()
         self.engineering_panel.setObjectName("manualEngineeringPanel")
         self.engineering_panel.setMinimumWidth(580)
-        self.engineering_panel.setMaximumWidth(620)
+        self.engineering_panel.setMaximumWidth(900)
+        self.engineering_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         self.telemetry_panel = self.engineering_panel
-        telemetry = QGridLayout(self.engineering_panel)
+        details = QHBoxLayout(self.engineering_panel)
+        details.setContentsMargins(0, 0, 0, 0)
+        details.setSpacing(12)
+        self.engineering_left_panel = QWidget()
+        telemetry = QGridLayout(self.engineering_left_panel)
+        self.engineering_left_layout = telemetry
         telemetry.setContentsMargins(0, 0, 0, 0)
         telemetry.setHorizontalSpacing(10)
         telemetry.setVerticalSpacing(5)
         self.position_value = self._metric("X --  Y --  Z --  Yaw --")
         self.velocity_value = self._metric("Vx --  Vy --  Vz --  YawRate --")
         self.target_value = self._metric("X --  Y --  Z --  Yaw --")
+        self.position_value.setToolTip("ψ 表示实际偏航角")
+        self.velocity_value.setToolTip("ωz 表示目标偏航角速度，单位 rad/s")
+        self.target_value.setToolTip("ψ 表示目标偏航角")
         self.controller_value = self._metric("-- Hz · jitter -- ms · miss --")
         self.safety_value = self._metric("位置 WAIT · 推力 WAIT · 发布源 WAIT")
         rows = (
@@ -548,12 +579,53 @@ class OperationsPanel(QWidget):
             label_widget.setObjectName("mutedLabel")
             telemetry.addWidget(label_widget, row, 0)
             telemetry.addWidget(value, row, 1)
+
         telemetry.setColumnStretch(1, 1)
-        card.content_layout.addWidget(
-            self.engineering_panel,
-            0,
-            Qt.AlignmentFlag.AlignLeft,
+        details.addWidget(self.engineering_left_panel, 2)
+
+        # 右栏只陈述当前按一下按键所发送的增量；机载端仍会累加并按安全上限裁剪。
+        divider = QFrame()
+        divider.setObjectName("manualDetailsDivider")
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setFrameShadow(QFrame.Shadow.Sunken)
+        details.addWidget(divider)
+        self.engineering_increment_panel = QWidget()
+        increment_layout = QGridLayout(self.engineering_increment_panel)
+        self.engineering_increment_layout = increment_layout
+        increment_layout.setContentsMargins(0, 0, 0, 0)
+        increment_layout.setHorizontalSpacing(8)
+        increment_layout.setVerticalSpacing(5)
+        self.manual_increment_heading = QLabel("单次指令增量")
+        self.manual_increment_heading.setObjectName("mutedLabel")
+        self.manual_increment_heading.setToolTip(
+            "显示当前灵敏度下每按一次所发送的期望量增量；不是实测运动量"
         )
+        increment_layout.addWidget(self.manual_increment_heading, 0, 0, 1, 2)
+        self.vertical_increment_value = self._metric("±-- m/s")
+        self.yaw_increment_value = self._metric("±-- °/s")
+        self.longitudinal_increment_value = self._metric("±-- m/s")
+        self.lateral_increment_value = self._metric("±-- m/s")
+        increment_rows = (
+            ("升降 W/S", self.vertical_increment_value),
+            ("偏航 A/D", self.yaw_increment_value),
+            ("前后 I/K", self.longitudinal_increment_value),
+            ("横移 J/L", self.lateral_increment_value),
+        )
+        for row, (label, value) in enumerate(increment_rows, start=1):
+            label_widget = QLabel(label)
+            label_widget.setObjectName("mutedLabel")
+            increment_layout.addWidget(label_widget, row, 0)
+            increment_layout.addWidget(value, row, 1)
+        increment_layout.setColumnStretch(1, 1)
+        details.addWidget(self.engineering_increment_panel, 1)
+        self.left_sensitivity_combo.currentIndexChanged.connect(
+            self._refresh_manual_increment_details
+        )
+        self.right_sensitivity_combo.currentIndexChanged.connect(
+            self._refresh_manual_increment_details
+        )
+        self._refresh_manual_increment_details()
+        card.content_layout.addWidget(self.engineering_panel)
         self.engineering_panel.setVisible(False)
         return card
 
@@ -641,10 +713,36 @@ class OperationsPanel(QWidget):
         return metric, value
 
     def _set_engineering_visible(self, visible: bool) -> None:
-        """展开或收起原始位姿、目标与控制周期工程诊断。"""
+        """展开或收起原始位姿、目标、控制周期与指令增量。"""
         self.engineering_panel.setVisible(visible)
         self.engineering_toggle.setArrowType(
             Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
+        )
+
+    def _refresh_manual_increment_details(self, _index: int = -1) -> None:
+        """按两个摇杆的当前倍率刷新用户可读的单次期望量增量。"""
+        left_increment = VELOCITY_SCALE * float(
+            self.left_sensitivity_combo.currentData()
+        )
+        right_increment = VELOCITY_SCALE * float(
+            self.right_sensitivity_combo.currentData()
+        )
+        yaw_degrees = math.degrees(left_increment)
+        set_text_if_changed(
+            self.vertical_increment_value,
+            f"±{left_increment:.2f} m/s",
+        )
+        set_text_if_changed(
+            self.yaw_increment_value,
+            f"±{yaw_degrees:.1f} °/s",
+        )
+        set_text_if_changed(
+            self.longitudinal_increment_value,
+            f"±{right_increment:.2f} m/s",
+        )
+        set_text_if_changed(
+            self.lateral_increment_value,
+            f"±{right_increment:.2f} m/s",
         )
 
     @staticmethod
@@ -687,6 +785,10 @@ class OperationsPanel(QWidget):
         button = self._button(text, "neutral", f"motion_{name}")
         button.setProperty("compact", True)
         button.setProperty("manualActive", False)
+        tooltip = _MANUAL_MOTION_TOOLTIPS[name]
+        button.setToolTip(tooltip)
+        button.setProperty("baseToolTip", tooltip)
+        button.setAccessibleDescription(tooltip)
         button.pressed.connect(
             lambda action=name: self._set_motion_feedback(action, True)
         )
@@ -851,18 +953,18 @@ class OperationsPanel(QWidget):
         set_text_if_changed(
             self.position_value,
             f"X {snapshot.x:+.2f}  Y {snapshot.y:+.2f}  Z {snapshot.z:+.2f}  "
-            f"Yaw {math.degrees(snapshot.yaw):+.1f}°",
+            f"ψ {math.degrees(snapshot.yaw):+.1f}°",
         )
         set_text_if_changed(
             self.velocity_value,
             f"Vx {snapshot.target_vx:+.2f}  Vy {snapshot.target_vy:+.2f}  "
-            f"Vz {snapshot.target_vz:+.2f}  YawRate {snapshot.target_yaw_rate:+.2f}",
+            f"Vz {snapshot.target_vz:+.2f}  ωz {snapshot.target_yaw_rate:+.2f}",
         )
         set_text_if_changed(
             self.target_value,
             f"X {snapshot.target_x:+.2f}  Y {snapshot.target_y:+.2f}  "
             f"Z {snapshot.target_z:+.2f}  "
-            f"Yaw {math.degrees(snapshot.target_yaw):+.1f}°",
+            f"ψ {math.degrees(snapshot.target_yaw):+.1f}°",
         )
         set_text_if_changed(
             self.controller_value,
@@ -997,10 +1099,11 @@ class OperationsPanel(QWidget):
                 "仅在实机连接会话（或正在连接实机）时可用"
             )
 
-        for button in (
-            self.takeoff_button,
-            self.land_button,
-            self.hover_button,
-            *self.motion_buttons.values(),
-        ):
+        for button in (self.takeoff_button, self.land_button):
             button.setToolTip(state.flight_reason)
+        for button in (self.hover_button, *self.motion_buttons.values()):
+            button.setToolTip(
+                str(button.property("baseToolTip") or "")
+                if button.isEnabled()
+                else state.flight_reason
+            )

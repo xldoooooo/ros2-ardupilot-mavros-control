@@ -165,6 +165,8 @@ private:
   double status_frequency_hz_{10.0};
   double pose_timeout_seconds_{0.3};
   double state_timeout_seconds_{2.0};
+  // Hardware keeps 40 s; local SITL may safely override this startup-only delay.
+  double fcu_parameter_check_initial_delay_seconds_{40.0};
   double link_loss_land_timeout_seconds_{10.0};
   double takeoff_timeout_seconds_{45.0};
   double waypoint_tolerance_{0.3};

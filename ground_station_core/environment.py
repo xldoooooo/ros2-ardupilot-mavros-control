@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -269,13 +270,10 @@ class EnvironmentInitializer:
                 raise FileNotFoundError(f"MAVROS 参数文件不存在: {apm_config}")
             if not ONBOARD_PARAM_FILE.is_file():
                 raise FileNotFoundError(f"机载控制参数不存在: {ONBOARD_PARAM_FILE}")
-            for package in (
-                "mavros",
-                "guided_interfaces",
-                "onboard_control",
-                "guided_sim",
-            ):
-                self._verify_ros_package(package, ros_setup_files())
+            self._verify_ros_packages_parallel(
+                ("mavros", "guided_interfaces", "onboard_control", "guided_sim"),
+                ros_setup_files(),
+            )
         except Exception as exc:
             raise _PreflightFailed(str(exc)) from exc
 
@@ -295,23 +293,40 @@ class EnvironmentInitializer:
         }
 
         self._publish_status(status, LogLevel.INFO, "1/5 正在启动 ArduPilot SITL...")
+        sitl_root = ardupilot_root(sim_vehicle)
+        sitl_command = [
+            str(sim_vehicle),
+            "-v",
+            "ArduCopter",
+            "--param",
+            "GUID_OPTIONS=8",
+        ]
+        # 已有有效二进制时跳过每次启动前的重复 waf 构建；首次安装仍自动构建。
+        if (sitl_root / "build" / "sitl" / "bin" / "arducopter").is_file():
+            sitl_command.append("--no-rebuild")
+            self._events.debug("environment", "复用已有 ArduPilot SITL 二进制")
         sitl = self._supervisor.start(
             "sitl",
-            [
-                str(sim_vehicle),
-                "-v",
-                "ArduCopter",
-                "--param",
-                "GUID_OPTIONS=8",
-            ],
-            cwd=ardupilot_root(sim_vehicle),
+            sitl_command,
+            cwd=sitl_root,
             extra_environment=simulation_environment,
             keep_stdin_open=True,
+        )
+
+        # RViz、静态模型与 TF 订阅者不依赖 SITL 已经发布位姿，可在端口等待期间预热。
+        self._publish_status(status, LogLevel.INFO, "2/5 正在并行预热 RViz...")
+        rviz = self._supervisor.start(
+            "rviz",
+            ["ros2", "launch", "guided_sim", "visualize.launch.py"],
+            setup_files=ros_setup_files(),
+            extra_environment=simulation_environment,
         )
         if not self._wait_tcp("127.0.0.1", 5762, 35.0, sitl):
             raise RuntimeError(f"SITL 未开放 TCP 5762；日志: {sitl.log_path}")
 
-        self._publish_status(status, LogLevel.INFO, "2/5 正在启动仿真 MAVROS...")
+        self._publish_status(
+            status, LogLevel.INFO, "3/5 正在并行启动仿真 MAVROS 与机载控制服务..."
+        )
         mavros = self._supervisor.start(
             "mavros_sim",
             [
@@ -328,11 +343,6 @@ class EnvironmentInitializer:
             setup_files=ros_setup_files(),
             extra_environment=simulation_environment,
         )
-        self._wait_process_stable(mavros, 1.0)
-
-        self._publish_status(
-            status, LogLevel.INFO, "3/5 正在启动独立机载 C++ 控制服务..."
-        )
         onboard = self._supervisor.start(
             "onboard_control",
             [
@@ -343,13 +353,18 @@ class EnvironmentInitializer:
                 "--ros-args",
                 "--params-file",
                 str(ONBOARD_PARAM_FILE),
+                "-p",
+                "fcu_parameter_check_initial_delay_seconds:=2.0",
             ],
             setup_files=ros_setup_files(),
             extra_environment=simulation_environment,
         )
+        # 两个进程互相通过 ROS 异步发现；无需让机载服务等待 MAVROS 稳定窗结束。
+        self._wait_process_stable(mavros, 1.0)
         self._wait_onboard(20.0, onboard)
         self._wait_connected(35.0, onboard)
-        # MAVROS pulls the complete ArduPilot parameter table before these two values exist.
+        # MAVROS pulls the complete ArduPilot parameter table before these two
+        # values exist.
         self._wait_thrust_mode(60.0, onboard)
         self._wait_control_authority(12.0, onboard)
 
@@ -365,14 +380,8 @@ class EnvironmentInitializer:
         # 写入错误原点会使 /mavros/local_position 偏移数百万米。
         self._wait_local_position(45.0, onboard)
 
-        self._publish_status(status, LogLevel.INFO, "5/5 正在启动 RViz...")
-        rviz = self._supervisor.start(
-            "rviz",
-            ["ros2", "launch", "guided_sim", "visualize.launch.py"],
-            setup_files=ros_setup_files(),
-            extra_environment=simulation_environment,
-        )
-        self._wait_process_stable(rviz, 2.0)
+        self._publish_status(status, LogLevel.INFO, "5/5 正在验证已预热的 RViz...")
+        self._wait_process_stable(rviz, 0.2)
         return (
             "仿真闭环初始化完成：SITL/MAVROS/机载 C++ 控制/RViz；"
             f"日志目录: {self._supervisor.log_directory}"
@@ -580,6 +589,24 @@ class EnvironmentInitializer:
         if result.returncode != 0:
             detail = result.stdout.strip() or "package not found"
             raise RuntimeError(f"ROS 包 {package} 不可用: {detail}")
+
+    def _verify_ros_packages_parallel(
+        self, packages: tuple[str, ...], setup_files: tuple[Path, ...]
+    ) -> None:
+        """并行验证仿真的独立 ROS 包依赖，缩短重复 shell 启动的墙钟时间。"""
+        if not packages:
+            return
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(packages)),
+            thread_name_prefix="simulation-preflight",
+        ) as executor:
+            futures = [
+                executor.submit(self._verify_ros_package, package, setup_files)
+                for package in packages
+            ]
+            # 按输入顺序传播异常，保持依赖错误提示稳定可复现。
+            for future in futures:
+                future.result()
 
     def _wait_onboard(
         self, timeout: float, process: ManagedProcess | None = None

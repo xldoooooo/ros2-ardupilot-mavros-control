@@ -251,3 +251,32 @@
 - 机载 sparse checkout 与 `onboard_workspace.sh update` 必须同时维护
   `src/guided_interfaces/`、`src/onboard_control/`、根目录 `start_drone/` 和
   `start_drone_all.sh`；`start_ground_all.sh` 仅属于地面端，禁止同步到无人机。
+
+## 2026-08-11 任务 13 健壮性精修基线
+
+- W/A/S/D、I/J/K/L 与 SPACE 具有“发送期望量/接管悬停”语义 tooltip 和无障碍描述；门控
+  禁用时优先显示安全原因，恢复后还原动作说明。“工程信息”已更名“详细状态”，左栏保留
+  既有诊断，右栏随左右灵敏度实时显示 W/S、A/D、I/K、J/L 单次增量。默认分别为
+  `±0.20 m/s`、`±11.5 °/s`、`±0.20 m/s`、`±0.20 m/s`。
+- 仿真启动并行检查四个 ROS 包，SITL 启动后立即预热 RViz，TCP 可用后并行初始化 MAVROS
+  与 onboard；已有 ArduCopter SITL 二进制时使用 `--no-rebuild`。生产/实机飞控参数首次检查
+  仍默认 40 秒，仅仿真命令覆盖为 2 秒。真实未武装 SITL 就绪从 52.866 秒降至 43.487 秒
+  （快 9.379 秒/17.74%），RViz 提前 49.375 秒；剩余关键路径是 EKF 模拟时间稳定，禁止跳过
+  local pose/EKF 安全门。
+- MAVROS command 520 是能力广播请求的有效 accepted ACK 被 command 插件记账逻辑误报为
+  unexpected；`STAT_RUNTIME (65535/...) different index` 是无索引运行时更新随后遇到完整参数表
+  真实索引。SITL/真机均复现且能力/参数表随后完成，无实际影响，不应修改或粗暴屏蔽。
+- 地面站重启机载栈后显示启动日志来自实机会话对全局 `/rosout` 的 reliable +
+  transient-local 订阅，不是 SSH 终端镜像；实测恢复时收 190 条远端 ROS 启动事件并重新上线。
+  后续应对白名单、历史补发标记、去重和等级做治理。
+- 当前握手已有接口版本、状态新鲜度、单发布者检测、source/sequence 租约与心跳、服务接受及
+  reliable final `CommandResult`；后续优先补 boot/session id、状态序号、每票 final deadline、
+  header 时间校验与 applied-state 读回。起飞/航点有遥测确认，LAND、消息频率和 GPS 原点仍
+  只证明模式请求接受/服务 ACK/topic 发布，日志必须区分 accepted/applied/observed。
+- Roll/pitch 可由机载已订阅的 pose 四元数解算；电池来自 MAVROS `/mavros/battery`；通信频率
+  必须分 GCS↔onboard、onboard 输入流与 MAVLink 链路三个层次。后续都应先加入机载聚合
+  `ControlStatus`，不让 GUI 绕过接口直订阅更多 MAVROS topic。
+- 最终 Python 65 passed，本地三包构建与 ROS/C++ 5 tests 通过；Humble/aarch64 临时两包构建、
+  5 tests 和隔离默认参数 smoke 通过。实机两轮和被动重启观察始终 `armed=false`，最终服务
+  inactive、飞行进程零残留、串口无人占用。详见
+  `agent/report/report-2026-08-11-task13-refine-3.md`。
