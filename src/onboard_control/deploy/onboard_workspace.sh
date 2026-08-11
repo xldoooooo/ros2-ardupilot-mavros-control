@@ -263,8 +263,8 @@ smoke_test() {
     die "isolated status topic was not received"
   }
 
-  grep -Eq "^interface_version: ['\"]?2\\.0['\"]?$" "${status_log}" ||
-    die "smoke status did not report interface version 2.0"
+  grep -Eq "^interface_version: ['\"]?2\\.1['\"]?$" "${status_log}" ||
+    die "smoke status did not report interface version 2.1"
   grep -q '^fcu_connected: false$' "${status_log}" ||
     die "smoke node unexpectedly reported an FCU connection"
   grep -q '^armed: false$' "${status_log}" ||
@@ -280,7 +280,7 @@ smoke_test() {
   [[ ${echo_status} -eq 124 ]] ||
     die "smoke node emitted an attitude setpoint or the no-output check failed (${echo_status})"
 
-  log "smoke passed: interface=2.0, fcu_connected=false, armed=false, setpoint_messages=0"
+  log "smoke passed: interface=2.1, fcu_connected=false, armed=false, setpoint_messages=0"
   cleanup_smoke
   trap - EXIT INT TERM
 }

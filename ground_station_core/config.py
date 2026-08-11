@@ -35,8 +35,8 @@ INTERFACE_PREFIX = os.environ.get("GROUND_STATION_INTERFACE_PREFIX", "/onboard_c
 COMMAND_TTL_MS = 1500  # 高层离散命令和按键意图的网络有效期。
 LEASE_DURATION_MS = 1500  # 控制权需由 5 Hz 心跳持续续租。
 HEARTBEAT_PERIOD_SECONDS = 0.2
-# ExecuteWaypoints 请求结构加入 flight_strategy 后不再与 1.0 线级兼容。
-INTERFACE_VERSION = "2.0"
+# ControlStatus 加入姿态与电池遥测后，地面站和机载端必须同步使用 2.1。
+INTERFACE_VERSION = "2.1"
 
 # 完整实机连接时写入飞控的默认虚拟原点；本地 SITL 与 Wi-Fi 通讯检测不使用。
 DEFAULT_GPS_ORIGIN = (30.2489634, 120.2052342, 488.0)

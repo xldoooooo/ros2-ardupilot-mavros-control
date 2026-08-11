@@ -744,7 +744,18 @@ def test_speed_presets_and_manual_selectors_match_ui_scope() -> None:
 
 def test_manual_tooltips_and_detailed_increment_state() -> None:
     """手动动作提示语义准确，详细状态按当前左右灵敏度即时更新。"""
-    window, _ros = _window(_operational_snapshot(armed=True))
+    snapshot = replace(
+        _operational_snapshot(armed=True),
+        pitch=math.radians(-4.2),
+        yaw=math.radians(92.3),
+        battery_valid=True,
+        battery_voltage=15.76,
+        battery_current=3.21,
+        battery_percentage=0.74,
+        status_rate_hz=9.98,
+        status_age_seconds=0.04,
+    )
+    window, _ros = _window(snapshot)
     try:
         panel = window.operations
         window._environment_active = True
@@ -787,6 +798,10 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
         assert panel.yaw_increment_value.text() == "±11.5 °/s"
         assert panel.longitudinal_increment_value.text() == "±0.20 m/s"
         assert panel.lateral_increment_value.text() == "±0.20 m/s"
+        assert panel.attitude_value.text() == "俯仰 -4.2° · 偏航 +92.3°"
+        assert panel.status_link_value.text() == "9.98 Hz · age 0.04 s"
+        assert panel.battery_value.text() == "15.76 V · +3.21 A · 74%"
+        assert panel.autopilot_mode_value.text() == "GUIDED"
 
         panel.left_sensitivity_combo.setCurrentIndex(0)
         panel.right_sensitivity_combo.setCurrentIndex(2)

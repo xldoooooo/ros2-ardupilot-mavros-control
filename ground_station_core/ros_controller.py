@@ -81,6 +81,11 @@ class _VehicleStateStore:
             vx=message.velocity.x,
             vy=message.velocity.y,
             vz=message.velocity.z,
+            pitch=message.pitch,
+            battery_valid=message.battery_valid,
+            battery_voltage=message.battery_voltage,
+            battery_current=message.battery_current,
+            battery_percentage=message.battery_percentage,
             local_position_valid=message.local_position_valid,
             active_mode=mode,
             controller_active=message.controller_active,
@@ -150,9 +155,25 @@ class _VehicleStateStore:
         with self._lock:
             snapshot = self._snapshot
             last_status_time = self._last_status_time
-        if snapshot.onboard_available and (
-            time.monotonic() - last_status_time > self._STATUS_STALE_SECONDS
-        ):
+            status_times = tuple(self._status_times)
+        now = time.monotonic()
+        status_age = max(0.0, now - last_status_time) if last_status_time else 0.0
+        recent_times = tuple(
+            received_at
+            for received_at in status_times
+            if received_at >= now - 5.0
+        )
+        status_rate = 0.0
+        if len(recent_times) >= 2 and recent_times[-1] > recent_times[0]:
+            status_rate = (len(recent_times) - 1) / (
+                recent_times[-1] - recent_times[0]
+            )
+        snapshot = replace(
+            snapshot,
+            status_rate_hz=status_rate,
+            status_age_seconds=status_age,
+        )
+        if snapshot.onboard_available and status_age > self._STATUS_STALE_SECONDS:
             return replace(
                 snapshot,
                 onboard_available=False,

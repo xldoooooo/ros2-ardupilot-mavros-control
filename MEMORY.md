@@ -107,7 +107,7 @@
 ## 任务 08 机载最小部署基线（2026-08-08）
 
 - 真机为 Ubuntu 22.04/Humble/aarch64；新工作区固定为 `/home/onboard/ros2-ardupilot-mavros-control`，父目录保持 `root:root`，仓库目录为 `xld:xld`。使用 partial clone + non-cone sparse checkout，只检出 `src/guided_interfaces/` 与 `src/onboard_control/`；禁止把地面站、`guided_sim` 或开发机 build/install 复制到机载端。
-- `src/onboard_control/deploy/onboard_workspace.sh` 提供 `update/deps-check/build/test/smoke/verify`。默认依赖检查不调用 apt/sudo/rosdep 初始化；Humble 烟雾测试固定使用非零 domain 231、`ROS_LOCALHOST_ONLY=1`、独立 `/_task08_smoke_mavros` 前缀，不发送命令，并验证接口 2.0、FCU 未连接、未武装以及 2 秒窗口内零姿态 setpoint。
+- `src/onboard_control/deploy/onboard_workspace.sh` 提供 `update/deps-check/build/test/smoke/verify`。默认依赖检查不调用 apt/sudo/rosdep 初始化；Humble 烟雾测试固定使用非零 domain 231、`ROS_LOCALHOST_ONLY=1`、独立 `/_task08_smoke_mavros` 前缀，不发送命令，并验证当前接口版本、FCU 未连接、未武装以及 2 秒窗口内零姿态 setpoint。
 - Humble 编译暴露 `Clock::now()` const API 差异；已改用 Humble/Jazzy 都支持的 `Node::now()`，不改变控制逻辑。最终真机 Release 构建成功，5 tests、0 failures；aarch64 动态库在 source Humble + overlay 后全部解析，隔离烟雾通过且无进程残留。
 - `/home/xld` 旧仓库保持 `dad9067` 且工作树干净，`odin.sh`、旧 `odin1.sh`、`start_mavros_real.sh` 的部署前后 SHA-256 一致；未安装/启用 systemd，旧启动流程继续作为回退。
 - 真机对 GitHub HTTPS 直连会超时；部署文档提供只在当前 SSH 会话存活的 localhost 反向动态 SOCKS 隧道。不得把代理永久写入 `/home/xld`、系统环境或服务配置。
@@ -296,3 +296,21 @@
   ROS/C++ 5 tests 零失败，干净环境地面站检查通过。没有连接或操作实机；22.04/Humble 仍需在
   师兄目标机执行 `setup_project.sh` 和无桨 `start_drone_all.sh --check` 复验。详细见
   `agent/report/report-2026-08-11-ubuntu2204-humble-portable-deployment.md`。
+
+## 2026-08-11 详细状态与真实终态确认
+
+- `ControlStatus` 2.1 新增 pitch 与电池有效性/电压/电流/百分比；机载从已有 pose 与 MAVROS
+  BatteryState 聚合，地面站只消费权威状态。GUI“详细状态”增加俯仰/偏航、最近 5 秒实际
+  ControlStatus 到达频率及年龄、电池和飞控模式。
+- 机载把 SYS_STATUS 设为 1 Hz 以稳定提供电池 fallback。未解锁 SITL 最终实测状态约 10 Hz、
+  电池 12.60 V/100%、姿态和本地位姿有效、飞控 STABILIZE；全程未发送飞行动作。
+- LAND 的 SetMode ACK 只产生 RUNNING，必须观察到 FCU 解除武装才 final success，120 秒无解除
+  武装则失败。频率配置必须对位置/姿态/IMU 各连续实测至少 1.5 秒、≥50 Hz 且样本新鲜；
+  45 秒窗用于等待 EKF 本地位置。GPS 原点必须等待匹配的 FCU gp_origin 回读，8 秒无回读失败。
+- 原有日志文字不因等级审查增删：运动参考/航点进度/正常参数等待降为 DEBUG，退化与重试为
+  WARN，确定失败、外部模式中断和 failsafe LAND 为 ERROR；行为确认新增的状态/result 单独归于
+  accepted/applied/observed 改造。
+- 最终 Python 74 passed，本地 ROS/C++ 5 tests 与接口 2.1 隔离 smoke 通过；真机 `/tmp` Humble/
+  aarch64 两包 Release 构建与 5 tests 通过，临时目录已清理、服务 inactive、无飞行进程。
+  正式机载部署目录未更新；接口 2.1 上线时必须和地面站同步部署。详见
+  `agent/report/report-2026-08-11-detailed-status-and-truthful-results.md`。

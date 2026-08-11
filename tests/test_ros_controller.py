@@ -48,8 +48,10 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
     assert takeoff < motion < waypoint
 
 
-def test_status_store_maps_remote_mode_and_lease_owner() -> None:
+def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     """GUI 展示必须来自机载聚合状态，而不是本地猜测。"""
+    monotonic_now = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: monotonic_now[0])
     store = _VehicleStateStore("gcs-test")
     vector = SimpleNamespace(x=1.0, y=2.0, z=3.0)
     message = SimpleNamespace(
@@ -60,7 +62,12 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
         local_position_valid=True,
         position=vector,
         velocity=SimpleNamespace(x=0.1, y=0.2, z=0.3),
+        pitch=-0.2,
         yaw=0.4,
+        battery_valid=True,
+        battery_voltage=15.8,
+        battery_current=3.2,
+        battery_percentage=0.74,
         control_mode=4,
         controller_active=True,
         target_position=vector,
@@ -82,6 +89,9 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
         deadline_miss_count=2,
     )
     store.update(message)
+    monotonic_now[0] = 100.1
+    store.update(message)
+    monotonic_now[0] = 100.15
     snapshot = store.snapshot()
     status_count, receive_times = store.observation()
 
@@ -91,8 +101,16 @@ def test_status_store_maps_remote_mode_and_lease_owner() -> None:
     assert snapshot.waypoint_index == 2
     assert snapshot.control_rate_hz == 99.8
     assert snapshot.hover_throttle == 0.39
-    assert status_count == 1
-    assert len(receive_times) == 1
+    assert snapshot.pitch == -0.2
+    assert snapshot.yaw == 0.4
+    assert snapshot.battery_valid
+    assert snapshot.battery_voltage == 15.8
+    assert snapshot.battery_current == 3.2
+    assert snapshot.battery_percentage == 0.74
+    assert abs(snapshot.status_rate_hz - 10.0) < 1e-9
+    assert abs(snapshot.status_age_seconds - 0.05) < 1e-9
+    assert status_count == 2
+    assert len(receive_times) == 2
 
     store.mark_disconnected()
     assert store.observation() == (0, ())
@@ -114,7 +132,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "2.0"
+    assert INTERFACE_VERSION == "2.1"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

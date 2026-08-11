@@ -583,7 +583,7 @@ class OperationsPanel(QWidget):
         telemetry.setColumnStretch(1, 1)
         details.addWidget(self.engineering_left_panel, 2)
 
-        # 右栏只陈述当前按一下按键所发送的增量；机载端仍会累加并按安全上限裁剪。
+        # 右栏同时展示单次指令增量和用户指定的飞行/链路状态。
         divider = QFrame()
         divider.setObjectName("manualDetailsDivider")
         divider.setFrameShape(QFrame.Shape.VLine)
@@ -612,6 +612,27 @@ class OperationsPanel(QWidget):
             ("横移 J/L", self.lateral_increment_value),
         )
         for row, (label, value) in enumerate(increment_rows, start=1):
+            label_widget = QLabel(label)
+            label_widget.setObjectName("mutedLabel")
+            increment_layout.addWidget(label_widget, row, 0)
+            increment_layout.addWidget(value, row, 1)
+        self.flight_state_heading = QLabel("飞行与链路状态")
+        self.flight_state_heading.setObjectName("mutedLabel")
+        increment_layout.addWidget(self.flight_state_heading, 5, 0, 1, 2)
+        self.attitude_value = self._metric("俯仰 --° · 偏航 --°")
+        self.status_link_value = self._metric("-- Hz · age -- s")
+        self.status_link_value.setToolTip(
+            "地面站按 ControlStatus 的实际到达时间计算最近 5 秒接收频率与消息年龄"
+        )
+        self.battery_value = self._metric("无有效数据")
+        self.autopilot_mode_value = self._metric("--")
+        state_rows = (
+            ("俯仰/偏航", self.attitude_value),
+            ("地面↔机载", self.status_link_value),
+            ("电池", self.battery_value),
+            ("飞控模式", self.autopilot_mode_value),
+        )
+        for row, (label, value) in enumerate(state_rows, start=6):
             label_widget = QLabel(label)
             label_widget.setObjectName("mutedLabel")
             increment_layout.addWidget(label_widget, row, 0)
@@ -977,6 +998,42 @@ class OperationsPanel(QWidget):
             f"位置 {'OK' if snapshot.local_position_valid else 'WAIT'} · "
             f"推力 {'OK' if snapshot.thrust_mode_verified else 'WAIT'} · "
             f"发布源 {'CONFLICT' if snapshot.setpoint_conflict else 'OK'}",
+        )
+        if snapshot.local_position_valid:
+            attitude_text = (
+                f"俯仰 {math.degrees(snapshot.pitch):+.1f}° · "
+                f"偏航 {math.degrees(snapshot.yaw):+.1f}°"
+            )
+        else:
+            attitude_text = "俯仰 --° · 偏航 --°"
+        set_text_if_changed(self.attitude_value, attitude_text)
+
+        if snapshot.onboard_available and snapshot.status_rate_hz > 0.0:
+            link_text = (
+                f"{snapshot.status_rate_hz:.2f} Hz · "
+                f"age {snapshot.status_age_seconds:.2f} s"
+            )
+        else:
+            link_text = "-- Hz · age -- s"
+        set_text_if_changed(self.status_link_value, link_text)
+
+        battery_parts: list[str] = []
+        if snapshot.battery_valid:
+            battery_parts.append(f"{snapshot.battery_voltage:.2f} V")
+            if math.isfinite(snapshot.battery_current):
+                battery_parts.append(f"{snapshot.battery_current:+.2f} A")
+            if (
+                math.isfinite(snapshot.battery_percentage)
+                and 0.0 <= snapshot.battery_percentage <= 1.0
+            ):
+                battery_parts.append(f"{snapshot.battery_percentage * 100.0:.0f}%")
+        set_text_if_changed(
+            self.battery_value,
+            " · ".join(battery_parts) if battery_parts else "无有效数据",
+        )
+        set_text_if_changed(
+            self.autopilot_mode_value,
+            snapshot.autopilot_mode or "--",
         )
 
     def apply_availability(

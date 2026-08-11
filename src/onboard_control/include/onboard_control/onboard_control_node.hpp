@@ -37,6 +37,8 @@
 #include <mavros_msgs/srv/set_mode.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
+#include <sensor_msgs/msg/battery_state.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 
 #include "onboard_control/dob_controller.hpp"
 
@@ -65,6 +67,14 @@ private:
     kLand,
   };
 
+  enum class StatusLogLevel
+  {
+    kDebug,
+    kInfo,
+    kWarn,
+    kError,
+  };
+
   struct CommandIdentity
   {
     std::string source;
@@ -72,10 +82,29 @@ private:
     std::string name;
   };
 
+  /** 用本地单调时钟统计一个 MAVROS 输入流的实际到达频率。 */
+  struct StreamRateMonitor
+  {
+    SteadyTime first_sample{};
+    SteadyTime last_sample{};
+    std::size_t sample_count{0};
+
+    void reset();
+    void observe(SteadyTime now);
+    double observation_seconds() const;
+    double rate_hz() const;
+    bool fresh(SteadyTime now, double maximum_age_seconds) const;
+  };
+
   // ROS subscription callbacks update the authoritative vehicle state.
   void on_fcu_state(const mavros_msgs::msg::State::SharedPtr message);
   void on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message);
   void on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message);
+  void on_attitude_imu(const sensor_msgs::msg::Imu::SharedPtr message);
+  void on_highres_imu(const sensor_msgs::msg::Imu::SharedPtr message);
+  void on_battery(const sensor_msgs::msg::BatteryState::SharedPtr message);
+  void on_global_origin(
+    const geographic_msgs::msg::GeoPointStamped::SharedPtr message);
   void on_heartbeat(const guided_interfaces::msg::ControlHeartbeat::SharedPtr message);
   void on_motion_intent(const guided_interfaces::msg::MotionIntent::SharedPtr message);
 
@@ -117,7 +146,8 @@ private:
   void start_land(const CommandIdentity & command, bool failsafe);
   void enter_hover(
     const std::string & reason,
-    std::uint8_t mode = guided_interfaces::msg::ControlStatus::MODE_HOVER);
+    std::uint8_t mode = guided_interfaces::msg::ControlStatus::MODE_HOVER,
+    StatusLogLevel log_level = StatusLogLevel::kInfo);
   void cancel_active_task(const std::string & reason);
   void fail_active_task(const std::string & reason, bool request_land);
   void clear_failsafe_locked();
@@ -137,7 +167,9 @@ private:
   void start_message_rate_configuration(
     const CommandIdentity & command, bool publish_command_result = true);
   void send_next_message_rate();
+  void verify_message_rates(const SteadyTime & now);
   void check_thrust_mode_parameter();
+  void check_origin_confirmation_timeout(const SteadyTime & now);
 
   // Onboard task, safety and output helpers.
   void update_waypoint_executor(const SteadyTime & now);
@@ -153,10 +185,15 @@ private:
     const std::string & message,
     std::uint32_t waypoint_index = 0,
     std::uint32_t waypoint_count = 0);
-  void set_status_message(const std::string & message);
+  void set_status_message(
+    const std::string & message,
+    StatusLogLevel level = StatusLogLevel::kInfo);
 
   static std::string mode_label(std::uint8_t mode);
   static double normalize_angle(double angle);
+  static bool origins_match(
+    const geographic_msgs::msg::GeoPoint & expected,
+    const geographic_msgs::msg::GeoPoint & observed);
 
   mutable std::recursive_mutex mutex_;
 
@@ -169,6 +206,7 @@ private:
   double fcu_parameter_check_initial_delay_seconds_{40.0};
   double link_loss_land_timeout_seconds_{10.0};
   double takeoff_timeout_seconds_{45.0};
+  double land_confirmation_timeout_seconds_{120.0};
   double waypoint_tolerance_{0.3};
   double waypoint_hold_seconds_{1.0};
   double max_velocity_xy_{1.5};
@@ -189,10 +227,16 @@ private:
   bool pose_valid_{false};
   bool velocity_valid_{false};
   VehicleKinematics vehicle_;
+  double pitch_{0.0};
   double yaw_{0.0};
   SteadyTime last_state_time_{};
   SteadyTime last_pose_time_{};
   SteadyTime last_velocity_time_{};
+  bool battery_present_{false};
+  double battery_voltage_{0.0};
+  double battery_current_{0.0};
+  double battery_percentage_{0.0};
+  SteadyTime last_battery_time_{};
 
   // Single onboard control state shared by motion, hover and waypoint execution.
   std::uint8_t control_mode_{guided_interfaces::msg::ControlStatus::MODE_IDLE};
@@ -227,11 +271,22 @@ private:
   bool message_rate_publish_result_{true};
   CommandIdentity message_rate_command_;
   std::size_t message_rate_index_{0};
+  SteadyTime message_rate_verification_started_{};
+  StreamRateMonitor local_position_rate_;
+  StreamRateMonitor attitude_rate_;
+  StreamRateMonitor highres_imu_rate_;
   SteadyTime last_automatic_message_rate_attempt_{};
   bool thrust_mode_verified_{false};
   bool thrust_mode_check_inflight_{false};
   SteadyTime last_thrust_mode_check_{};
   SteadyTime fcu_parameter_sync_started_{};
+
+  // GPS 原点只有在 MAVROS 回传 FCU 的 GPS_GLOBAL_ORIGIN 后才报告成功。
+  geographic_msgs::msg::GeoPoint last_global_origin_;
+  bool origin_confirmation_active_{false};
+  geographic_msgs::msg::GeoPoint requested_origin_;
+  CommandIdentity origin_command_;
+  SteadyTime origin_confirmation_started_{};
 
   // Timer diagnostics and publisher-conflict protection.
   SteadyTime last_control_tick_{};
@@ -250,6 +305,11 @@ private:
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr attitude_imu_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr highres_imu_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_subscription_;
+  rclcpp::Subscription<geographic_msgs::msg::GeoPointStamped>::SharedPtr
+    global_origin_subscription_;
   rclcpp::Subscription<guided_interfaces::msg::ControlHeartbeat>::SharedPtr heartbeat_subscription_;
   rclcpp::Subscription<guided_interfaces::msg::MotionIntent>::SharedPtr motion_subscription_;
 

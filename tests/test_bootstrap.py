@@ -38,8 +38,8 @@ def test_direct_launcher_bootstraps_workspace_from_clean_environment() -> None:
     assert "No module named 'guided_interfaces'" not in completed.stdout
 
 
-def test_protocol_major_version_is_synchronized_across_deployments() -> None:
-    """线级不兼容的航点请求必须让地面站、机载端和包版本同步升级。"""
+def test_protocol_version_is_synchronized_across_deployments() -> None:
+    """线级消息变化必须让地面站、机载端和包版本同步升级。"""
     onboard_source = (
         PROJECT_ROOT / "src" / "onboard_control" / "src" / "onboard_control_node.cpp"
     ).read_text(encoding="utf-8")
@@ -50,9 +50,9 @@ def test_protocol_major_version_is_synchronized_across_deployments() -> None:
         for package in ("guided_interfaces", "onboard_control")
     }
 
-    assert INTERFACE_VERSION == "2.0"
-    assert 'kInterfaceVersion[] = "2.0"' in onboard_source
-    assert package_versions == {"2.0.0"}
+    assert INTERFACE_VERSION == "2.1"
+    assert 'kInterfaceVersion[] = "2.1"' in onboard_source
+    assert package_versions == {"2.1.0"}
 
 
 def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_path) -> None:

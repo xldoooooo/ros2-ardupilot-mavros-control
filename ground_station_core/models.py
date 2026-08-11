@@ -63,6 +63,13 @@ class VehicleSnapshot:
     vx: float = 0.0
     vy: float = 0.0
     vz: float = 0.0
+    pitch: float = 0.0
+    battery_valid: bool = False
+    battery_voltage: float = 0.0
+    battery_current: float = 0.0
+    battery_percentage: float = 0.0
+    status_rate_hz: float = 0.0
+    status_age_seconds: float = 0.0
     local_position_valid: bool = False
     active_mode: FlightMode = FlightMode.IDLE
     controller_active: bool = False

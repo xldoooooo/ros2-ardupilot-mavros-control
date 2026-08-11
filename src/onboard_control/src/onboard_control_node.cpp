@@ -11,6 +11,7 @@
 #include <sstream>
 #include <utility>
 
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/utils.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
@@ -19,8 +20,8 @@ namespace onboard_control
 namespace
 {
 
-// ExecuteWaypoints 请求结构加入 flight_strategy 后不再与 1.0 线级兼容。
-constexpr char kInterfaceVersion[] = "2.0";
+// 2.1 adds attitude and battery telemetry to the atomic onboard status contract.
+constexpr char kInterfaceVersion[] = "2.1";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -31,11 +32,21 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr auto kFcuParameterSyncGracePeriod = std::chrono::seconds(60);
 // A transient MAVLink service failure must not permanently suppress required telemetry.
 constexpr auto kAutomaticMessageRateRetryPeriod = std::chrono::seconds(5);
+constexpr double kMinimumVerifiedMessageRateHz = 50.0;
+constexpr double kMessageRateVerificationMinimumSeconds = 1.5;
+// LOCAL_POSITION_NED only appears after EKF local-position initialization.
+constexpr double kMessageRateVerificationTimeoutSeconds = 45.0;
+constexpr double kMessageRateMaximumAgeSeconds = 0.5;
+constexpr double kBatteryMaximumAgeSeconds = 5.0;
+constexpr double kOriginConfirmationTimeoutSeconds = 8.0;
+constexpr double kOriginHorizontalToleranceDegrees = 2.0e-7;
+constexpr double kOriginAltitudeToleranceMeters = 0.5;
 
-const std::array<std::pair<std::uint32_t, float>, 3> kMessageIntervals{{
+const std::array<std::pair<std::uint32_t, float>, 4> kMessageIntervals{{
   {32U, 100.0F},   // LOCAL_POSITION_NED
   {31U, 100.0F},   // ATTITUDE_QUATERNION
   {105U, 100.0F},  // HIGHRES_IMU
+  {1U, 1.0F},      // SYS_STATUS (battery fallback used by MAVROS)
 }};
 
 bool finite_waypoint(const guided_interfaces::msg::Waypoint & waypoint)
@@ -45,6 +56,43 @@ bool finite_waypoint(const guided_interfaces::msg::Waypoint & waypoint)
 }
 
 }  // namespace
+
+void OnboardControlNode::StreamRateMonitor::reset()
+{
+  first_sample = SteadyTime{};
+  last_sample = SteadyTime{};
+  sample_count = 0U;
+}
+
+void OnboardControlNode::StreamRateMonitor::observe(const SteadyTime now)
+{
+  if (first_sample == SteadyTime{}) {
+    first_sample = now;
+  }
+  last_sample = now;
+  ++sample_count;
+}
+
+double OnboardControlNode::StreamRateMonitor::observation_seconds() const
+{
+  if (sample_count < 2U || first_sample == SteadyTime{} || last_sample <= first_sample) {
+    return 0.0;
+  }
+  return std::chrono::duration<double>(last_sample - first_sample).count();
+}
+
+double OnboardControlNode::StreamRateMonitor::rate_hz() const
+{
+  const double span = observation_seconds();
+  return span > 0.0 ? static_cast<double>(sample_count - 1U) / span : 0.0;
+}
+
+bool OnboardControlNode::StreamRateMonitor::fresh(
+  const SteadyTime now, const double maximum_age_seconds) const
+{
+  return last_sample != SteadyTime{} &&
+         std::chrono::duration<double>(now - last_sample).count() <= maximum_age_seconds;
+}
 
 OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 : Node("onboard_control_node", options),
@@ -60,6 +108,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   link_loss_land_timeout_seconds_ =
     declare_parameter<double>("link_loss_land_timeout_seconds", 10.0);
   takeoff_timeout_seconds_ = declare_parameter<double>("takeoff_timeout_seconds", 45.0);
+  land_confirmation_timeout_seconds_ =
+    declare_parameter<double>("land_confirmation_timeout_seconds", 120.0);
   waypoint_tolerance_ = declare_parameter<double>("waypoint_tolerance", 0.3);
   waypoint_hold_seconds_ = declare_parameter<double>("waypoint_hold_seconds", 1.0);
   max_velocity_xy_ = declare_parameter<double>("max_velocity_xy", 1.5);
@@ -97,7 +147,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     status_frequency_hz_ <= 0.0 || pose_timeout_seconds_ <= 0.0 ||
     fcu_parameter_check_initial_delay_seconds_ < 0.1 ||
     fcu_parameter_check_initial_delay_seconds_ > 60.0 ||
-    link_loss_land_timeout_seconds_ <= 0.0 || max_velocity_xy_ <= 0.0 ||
+    link_loss_land_timeout_seconds_ <= 0.0 || land_confirmation_timeout_seconds_ < 10.0 ||
+    land_confirmation_timeout_seconds_ > 600.0 || max_velocity_xy_ <= 0.0 ||
     max_velocity_z_ <= 0.0 || controller_parameters_.hover_throttle <= 0.0 ||
     controller_parameters_.hover_throttle >= 1.0 || controller_parameters_.thrust_ratio <= 1.0)
   {
@@ -124,6 +175,20 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   velocity_subscription_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     mavros_prefix_ + "/local_position/velocity_local", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1));
+  attitude_imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
+    mavros_prefix_ + "/imu/data", rclcpp::SensorDataQoS().keep_last(1),
+    std::bind(&OnboardControlNode::on_attitude_imu, this, std::placeholders::_1));
+  highres_imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
+    mavros_prefix_ + "/imu/data_raw", rclcpp::SensorDataQoS().keep_last(1),
+    std::bind(&OnboardControlNode::on_highres_imu, this, std::placeholders::_1));
+  battery_subscription_ = create_subscription<sensor_msgs::msg::BatteryState>(
+    mavros_prefix_ + "/battery", rclcpp::SensorDataQoS().keep_last(1),
+    std::bind(&OnboardControlNode::on_battery, this, std::placeholders::_1));
+  global_origin_subscription_ =
+    create_subscription<geographic_msgs::msg::GeoPointStamped>(
+    mavros_prefix_ + "/global_position/gp_origin",
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local(),
+    std::bind(&OnboardControlNode::on_global_origin, this, std::placeholders::_1));
   heartbeat_subscription_ = create_subscription<guided_interfaces::msg::ControlHeartbeat>(
     interface_prefix_ + "/heartbeat", rclcpp::QoS(10).reliable(),
     std::bind(&OnboardControlNode::on_heartbeat, this, std::placeholders::_1));
@@ -194,18 +259,37 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     message_rates_configured_ = false;
     message_rate_configuration_active_ = false;
     message_rate_index_ = 0;
+    message_rate_verification_started_ = SteadyTime{};
+    local_position_rate_.reset();
+    attitude_rate_.reset();
+    highres_imu_rate_.reset();
     last_automatic_message_rate_attempt_ = SteadyTime{};
+    battery_present_ = false;
+    if (was_connected && origin_confirmation_active_) {
+      publish_result(
+        origin_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED, true,
+        "飞控连接中断，GPS 原点未能完成回读确认");
+      origin_confirmation_active_ = false;
+    }
   } else if (!was_connected) {
     fcu_parameter_sync_started_ = last_state_time_;
     last_thrust_mode_check_ = SteadyTime{};
     message_rates_configured_ = false;
     message_rate_configuration_active_ = false;
     message_rate_index_ = 0;
+    message_rate_verification_started_ = SteadyTime{};
+    local_position_rate_.reset();
+    attitude_rate_.reset();
+    highres_imu_rate_.reset();
     last_automatic_message_rate_attempt_ = SteadyTime{};
-    set_status_message("等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用");
+    set_status_message(
+      "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用",
+      StatusLogLevel::kDebug);
   }
 
   if (was_armed && !armed_) {
+    const ActiveTask completed_task = active_task_;
+    const CommandIdentity completed_command = active_command_;
     controller_engaged_ = false;
     active_task_ = ActiveTask::kNone;
     waypoints_.clear();
@@ -216,6 +300,11 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     link_loss_started_.reset();
     failsafe_land_requested_ = false;
     set_status_message("飞行器已解除武装，机载控制回到待机");
+    if (completed_task == ActiveTask::kLand) {
+      publish_result(
+        completed_command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
+        "飞行器已解除武装，已确认降落完成");
+    }
   }
 }
 
@@ -224,9 +313,14 @@ void OnboardControlNode::on_pose(const geometry_msgs::msg::PoseStamped::SharedPt
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   vehicle_.position = Eigen::Vector3d(
     message->pose.position.x, message->pose.position.y, message->pose.position.z);
-  yaw_ = tf2::getYaw(message->pose.orientation);
-  pose_valid_ = vehicle_.position.allFinite() && std::isfinite(yaw_);
+  tf2::Quaternion attitude;
+  tf2::fromMsg(message->pose.orientation, attitude);
+  double roll = 0.0;
+  tf2::Matrix3x3(attitude).getRPY(roll, pitch_, yaw_);
+  pose_valid_ = vehicle_.position.allFinite() && std::isfinite(pitch_) &&
+    std::isfinite(yaw_);
   last_pose_time_ = SteadyClock::now();
+  local_position_rate_.observe(last_pose_time_);
 }
 
 void OnboardControlNode::on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message)
@@ -236,6 +330,54 @@ void OnboardControlNode::on_velocity(const geometry_msgs::msg::TwistStamped::Sha
     message->twist.linear.x, message->twist.linear.y, message->twist.linear.z);
   velocity_valid_ = vehicle_.velocity.allFinite();
   last_velocity_time_ = SteadyClock::now();
+}
+
+void OnboardControlNode::on_attitude_imu(const sensor_msgs::msg::Imu::SharedPtr message)
+{
+  (void)message;
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  attitude_rate_.observe(SteadyClock::now());
+}
+
+void OnboardControlNode::on_highres_imu(const sensor_msgs::msg::Imu::SharedPtr message)
+{
+  (void)message;
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  highres_imu_rate_.observe(SteadyClock::now());
+}
+
+void OnboardControlNode::on_battery(
+  const sensor_msgs::msg::BatteryState::SharedPtr message)
+{
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  battery_present_ = message->present;
+  battery_voltage_ = message->voltage;
+  battery_current_ = message->current;
+  battery_percentage_ = message->percentage;
+  last_battery_time_ = SteadyClock::now();
+}
+
+void OnboardControlNode::on_global_origin(
+  const geographic_msgs::msg::GeoPointStamped::SharedPtr message)
+{
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  last_global_origin_ = message->position;
+  if (!origin_confirmation_active_ ||
+    !origins_match(requested_origin_, last_global_origin_))
+  {
+    return;
+  }
+
+  const CommandIdentity completed = origin_command_;
+  origin_confirmation_active_ = false;
+  std::ostringstream stream;
+  stream << "GPS 原点已由飞控回读确认 (lat=" << last_global_origin_.latitude
+         << ", lon=" << last_global_origin_.longitude
+         << ", alt=" << last_global_origin_.altitude << ")";
+  set_status_message(stream.str());
+  publish_result(
+    completed, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
+    stream.str());
 }
 
 bool OnboardControlNode::validate_envelope(
@@ -459,7 +601,7 @@ void OnboardControlNode::on_motion_intent(
   stream << "运动意图已接受：V=(" << reference_.velocity.x() << ", "
          << reference_.velocity.y() << ", " << reference_.velocity.z()
          << ") m/s, yaw_rate=" << target_yaw_rate_ << " rad/s";
-  set_status_message(stream.str());
+  set_status_message(stream.str(), StatusLogLevel::kDebug);
   publish_result(
     command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true, stream.str());
 }
@@ -501,6 +643,10 @@ void OnboardControlNode::on_flight_command(
       command.name = "land";
       if (!fcu_connected_) {
         response->message = "飞控未连接";
+        return;
+      }
+      if (!armed_) {
+        response->message = "飞行器未武装，无需执行降落";
         return;
       }
       start_land(command, false);
@@ -553,7 +699,7 @@ void OnboardControlNode::on_flight_command(
       if (message_rates_configured_) {
         publish_result(
           command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
-          "MAVLink 本地位置/姿态/IMU 消息频率已经就绪");
+          "MAVLink 本地位置/姿态/IMU/电池状态消息频率已经就绪");
         response->accepted = true;
         response->message = "消息频率已经配置";
         return;
@@ -647,21 +793,34 @@ void OnboardControlNode::on_set_gps_origin(
     response->message = "GPS 原点经纬高非法";
     return;
   }
+  if (origin_confirmation_active_) {
+    response->message = "已有 GPS 原点请求正在等待飞控回读确认";
+    return;
+  }
+  if (origin_publisher_->get_subscription_count() == 0U) {
+    response->message = "MAVROS GPS 原点订阅尚未就绪";
+    return;
+  }
 
   geographic_msgs::msg::GeoPointStamped message;
   message.header.frame_id = "map";
   message.position = origin;
+  origin_command_ = CommandIdentity{
+    request->source_id, request->sequence, "set_gp_origin"};
+  requested_origin_ = origin;
+  origin_confirmation_active_ = true;
+  origin_confirmation_started_ = SteadyClock::now();
   for (int attempt = 0; attempt < 5; ++attempt) {
     message.header.stamp = get_clock()->now();
     origin_publisher_->publish(message);
   }
-  CommandIdentity command{request->source_id, request->sequence, "set_gp_origin"};
   std::ostringstream stream;
-  stream << "GPS 原点已由机载端发布 (lat=" << origin.latitude
+  stream << "GPS 原点请求已发布，等待飞控回读确认 (lat=" << origin.latitude
          << ", lon=" << origin.longitude << ", alt=" << origin.altitude << ")";
   set_status_message(stream.str());
   publish_result(
-    command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true, stream.str());
+    origin_command_, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
+    stream.str());
   response->accepted = true;
   response->message = stream.str();
 }
@@ -729,6 +888,7 @@ void OnboardControlNode::start_land(const CommandIdentity & command, const bool 
   active_task_ = ActiveTask::kLand;
   active_task_started_ = SteadyClock::now();
   control_mode_ = guided_interfaces::msg::ControlStatus::MODE_LAND;
+  controller_engaged_ = false;
   reference_.velocity.setZero();
   target_yaw_rate_ = 0.0;
   controller_.reset();
@@ -741,7 +901,9 @@ void OnboardControlNode::start_land(const CommandIdentity & command, const bool 
   send_land_mode_request(command, failsafe);
 }
 
-void OnboardControlNode::enter_hover(const std::string & reason, const std::uint8_t mode)
+void OnboardControlNode::enter_hover(
+  const std::string & reason, const std::uint8_t mode,
+  const StatusLogLevel log_level)
 {
   reference_.position = vehicle_.position;
   reference_.velocity.setZero();
@@ -750,7 +912,7 @@ void OnboardControlNode::enter_hover(const std::string & reason, const std::uint
   control_mode_ = mode;
   controller_engaged_ = armed_;
   controller_.reset();
-  set_status_message(reason);
+  set_status_message(reason, log_level);
 }
 
 void OnboardControlNode::cancel_active_task(const std::string & reason)
@@ -775,11 +937,14 @@ void OnboardControlNode::fail_active_task(const std::string & reason, const bool
   waypoint_arrival_started_.reset();
   publish_result(
     failed, guided_interfaces::msg::CommandResult::STATUS_FAILED, true, reason);
-  set_status_message(reason);
+  set_status_message(reason, StatusLogLevel::kError);
   if (request_land && armed_) {
     trigger_failsafe_land(reason);
   } else if (armed_ && pose_valid_ && autopilot_mode_ == "GUIDED") {
-    enter_hover("命令失败，机载端保持当前位置");
+    enter_hover(
+      "命令失败，机载端保持当前位置",
+      guided_interfaces::msg::ControlStatus::MODE_HOVER,
+      StatusLogLevel::kWarn);
   } else {
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
     controller_engaged_ = false;
@@ -947,21 +1112,25 @@ void OnboardControlNode::send_land_mode_request(
       } catch (const std::exception & error) {
         failure = std::string("LAND 服务异常: ") + error.what();
       }
-      active_task_ = ActiveTask::kNone;
       if (!success) {
+        active_task_ = ActiveTask::kNone;
         publish_result(
           command, guided_interfaces::msg::CommandResult::STATUS_FAILED, true, failure);
-        set_status_message(failure);
+        set_status_message(failure, StatusLogLevel::kError);
         if (failsafe) {
           failsafe_land_requested_ = false;
         }
         return;
       }
+      active_task_started_ = SteadyClock::now();
       control_mode_ = guided_interfaces::msg::ControlStatus::MODE_LAND;
-      set_status_message(failsafe ? "机载安全保护已切换 LAND" : "降落指令已发送 — LAND 模式");
+      const std::string message =
+        failsafe ? "机载安全保护已切换 LAND" : "降落指令已发送 — LAND 模式";
+      set_status_message(
+        message, failsafe ? StatusLogLevel::kError : StatusLogLevel::kInfo);
       publish_result(
-        command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
-        failsafe ? "机载安全保护已切换 LAND" : "降落指令已发送 — LAND 模式");
+        command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
+        message);
     });
 }
 
@@ -973,6 +1142,10 @@ void OnboardControlNode::start_message_rate_configuration(
   message_rate_publish_result_ = publish_command_result;
   message_rate_command_ = command;
   message_rate_index_ = 0;
+  message_rate_verification_started_ = SteadyTime{};
+  local_position_rate_.reset();
+  attitude_rate_.reset();
+  highres_imu_rate_.reset();
   if (message_rate_publish_result_) {
     publish_result(
       command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
@@ -987,14 +1160,8 @@ void OnboardControlNode::send_next_message_rate()
     return;
   }
   if (message_rate_index_ >= kMessageIntervals.size()) {
-    message_rate_configuration_active_ = false;
-    message_rates_configured_ = true;
-    if (message_rate_publish_result_) {
-      publish_result(
-        message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
-        "MAVLink 本地位置/姿态/IMU 消息频率已配置为 100 Hz");
-    }
-    set_status_message("MAVLink 高频遥测配置完成");
+    // ACK 只证明飞控接受配置；继续等待三路 ROS 数据的实际到达频率。
+    message_rate_verification_started_ = SteadyClock::now();
     return;
   }
 
@@ -1018,6 +1185,7 @@ void OnboardControlNode::send_next_message_rate()
       }
       if (!success) {
         message_rate_configuration_active_ = false;
+        message_rate_verification_started_ = SteadyTime{};
         std::ostringstream stream;
         stream << "飞控拒绝消息 " << message_id << " 的频率配置";
         if (message_rate_publish_result_) {
@@ -1025,7 +1193,7 @@ void OnboardControlNode::send_next_message_rate()
             message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED,
             true, stream.str());
         }
-        set_status_message(stream.str());
+        set_status_message(stream.str(), StatusLogLevel::kWarn);
         return;
       }
       ++message_rate_index_;
@@ -1063,10 +1231,12 @@ void OnboardControlNode::check_thrust_mode_parameter()
             }
             if (now - fcu_parameter_sync_started_ < kFcuParameterSyncGracePeriod) {
               set_status_message(
-                "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用");
+                "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用",
+                StatusLogLevel::kDebug);
             } else {
               set_status_message(
-                "MAVROS 参数同步超时，无法读取 GUID_OPTIONS 与 MOT_THST_HOVER");
+                "MAVROS 参数同步超时，无法读取 GUID_OPTIONS 与 MOT_THST_HOVER",
+                StatusLogLevel::kWarn);
             }
           }
           return;
@@ -1085,13 +1255,19 @@ void OnboardControlNode::check_thrust_mode_parameter()
                  << hover_throttle;
           set_status_message(stream.str());
         } else if ((options & 8) == 0) {
-          set_status_message("GUID_OPTIONS bit 3 未启用：请设置 GUID_OPTIONS=8");
+          set_status_message(
+            "GUID_OPTIONS bit 3 未启用：请设置 GUID_OPTIONS=8",
+            StatusLogLevel::kWarn);
         } else if (!hover_valid) {
-          set_status_message("飞控 MOT_THST_HOVER 非法，姿态/推力控制保持禁用");
+          set_status_message(
+            "飞控 MOT_THST_HOVER 非法，姿态/推力控制保持禁用",
+            StatusLogLevel::kWarn);
         }
       } catch (const std::exception & error) {
         if (!thrust_mode_verified_) {
-          set_status_message(std::string("读取飞控推力参数失败: ") + error.what());
+          set_status_message(
+            std::string("读取飞控推力参数失败: ") + error.what(),
+            StatusLogLevel::kWarn);
         }
       }
     });
@@ -1138,6 +1314,20 @@ void OnboardControlNode::control_tick()
       fail_active_task("起飞高度确认超时", true);
     }
   }
+  if (active_task_ == ActiveTask::kLand &&
+    std::chrono::duration<double>(now - active_task_started_).count() >
+    land_confirmation_timeout_seconds_)
+  {
+    const CommandIdentity timed_out = active_command_;
+    active_task_ = ActiveTask::kNone;
+    std::ostringstream stream;
+    stream << "LAND 模式已发送，但 " << land_confirmation_timeout_seconds_
+           << " 秒内未观察到解除武装";
+    publish_result(
+      timed_out, guided_interfaces::msg::CommandResult::STATUS_FAILED, true,
+      stream.str());
+    set_status_message(stream.str(), StatusLogLevel::kError);
+  }
 
   if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_MOTION) {
     update_motion_reference(dt_seconds);
@@ -1152,6 +1342,69 @@ void OnboardControlNode::control_tick()
   {
     publish_attitude_setpoint(dt_seconds);
   }
+}
+
+void OnboardControlNode::verify_message_rates(const SteadyTime & now)
+{
+  if (!message_rate_configuration_active_ ||
+    message_rate_verification_started_ == SteadyTime{})
+  {
+    return;
+  }
+  const double elapsed =
+    std::chrono::duration<double>(now - message_rate_verification_started_).count();
+  if (elapsed < kMessageRateVerificationMinimumSeconds) {
+    return;
+  }
+
+  const double local_rate = local_position_rate_.rate_hz();
+  const double attitude_rate = attitude_rate_.rate_hz();
+  const double highres_rate = highres_imu_rate_.rate_hz();
+  const bool rates_observed =
+    local_position_rate_.observation_seconds() >=
+    kMessageRateVerificationMinimumSeconds &&
+    attitude_rate_.observation_seconds() >=
+    kMessageRateVerificationMinimumSeconds &&
+    highres_imu_rate_.observation_seconds() >=
+    kMessageRateVerificationMinimumSeconds &&
+    local_rate >= kMinimumVerifiedMessageRateHz &&
+    attitude_rate >= kMinimumVerifiedMessageRateHz &&
+    highres_rate >= kMinimumVerifiedMessageRateHz &&
+    local_position_rate_.fresh(now, kMessageRateMaximumAgeSeconds) &&
+    attitude_rate_.fresh(now, kMessageRateMaximumAgeSeconds) &&
+    highres_imu_rate_.fresh(now, kMessageRateMaximumAgeSeconds);
+  if (rates_observed) {
+    message_rate_configuration_active_ = false;
+    message_rate_verification_started_ = SteadyTime{};
+    message_rates_configured_ = true;
+    std::ostringstream stream;
+    stream << "MAVLink 高频遥测实测确认：位置 " << local_rate
+           << " Hz，姿态 " << attitude_rate << " Hz，IMU " << highres_rate << " Hz";
+    if (message_rate_publish_result_) {
+      publish_result(
+        message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED,
+        true, stream.str());
+    }
+    set_status_message(stream.str());
+    return;
+  }
+
+  if (elapsed < kMessageRateVerificationTimeoutSeconds) {
+    return;
+  }
+  message_rate_configuration_active_ = false;
+  message_rate_verification_started_ = SteadyTime{};
+  message_rates_configured_ = false;
+  last_automatic_message_rate_attempt_ = now;
+  std::ostringstream stream;
+  stream << "MAVLink 高频遥测实测未达标：位置 " << local_rate
+         << " Hz，姿态 " << attitude_rate << " Hz，IMU " << highres_rate << " Hz";
+  if (message_rate_publish_result_) {
+    publish_result(
+      message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED,
+      true, stream.str());
+  }
+  set_status_message(stream.str(), StatusLogLevel::kWarn);
 }
 
 void OnboardControlNode::update_motion_reference(const double dt_seconds)
@@ -1224,7 +1477,7 @@ void OnboardControlNode::update_waypoint_executor(const SteadyTime & now)
   stream << "前往航点 " << waypoint_index_ + 1 << "/" << waypoints_.size()
          << " (" << next.position.x << ", " << next.position.y << ", "
          << next.position.z << ")";
-  set_status_message(stream.str());
+  set_status_message(stream.str(), StatusLogLevel::kDebug);
   publish_result(
     active_command_, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
     stream.str(), static_cast<std::uint32_t>(waypoint_index_ + 1),
@@ -1273,7 +1526,7 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     active_task_ = ActiveTask::kNone;
     controller_.reset();
     failsafe_reason_ = "飞控模式被外部切换，机载服务已停止发送 setpoint";
-    set_status_message(failsafe_reason_);
+    set_status_message(failsafe_reason_, StatusLogLevel::kError);
     return;
   }
 
@@ -1298,7 +1551,8 @@ void OnboardControlNode::trigger_link_loss_hold(const SteadyTime & now)
   if (pose_valid_ && autopilot_mode_ == "GUIDED") {
     enter_hover(
       "地面站失联：机载端独立悬停，超时后 LAND",
-      guided_interfaces::msg::ControlStatus::MODE_FAILSAFE_HOLD);
+      guided_interfaces::msg::ControlStatus::MODE_FAILSAFE_HOLD,
+      StatusLogLevel::kWarn);
   } else {
     trigger_failsafe_land(failsafe_reason_);
   }
@@ -1352,6 +1606,8 @@ void OnboardControlNode::status_tick()
   const std::size_t publisher_count = count_publishers(attitude_topic_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
+  verify_message_rates(now);
+  check_origin_confirmation_timeout(now);
   if (fcu_connected_ && fcu_parameter_sync_started_ != SteadyTime{} &&
     std::chrono::duration<double>(now - fcu_parameter_sync_started_).count() >=
     fcu_parameter_check_initial_delay_seconds_ &&
@@ -1395,7 +1651,16 @@ void OnboardControlNode::status_tick()
   message.velocity.x = vehicle_.velocity.x();
   message.velocity.y = vehicle_.velocity.y();
   message.velocity.z = vehicle_.velocity.z();
+  message.pitch = pitch_;
   message.yaw = yaw_;
+  const bool battery_fresh = last_battery_time_ != SteadyTime{} &&
+    std::chrono::duration<double>(now - last_battery_time_).count() <=
+    kBatteryMaximumAgeSeconds;
+  message.battery_valid = message.fcu_connected && battery_present_ && battery_fresh &&
+    std::isfinite(battery_voltage_) && battery_voltage_ > 0.0;
+  message.battery_voltage = battery_voltage_;
+  message.battery_current = battery_current_;
+  message.battery_percentage = battery_percentage_;
   message.control_mode = control_mode_;
   message.control_mode_label = mode_label(control_mode_);
   message.controller_active = controller_engaged_;
@@ -1447,14 +1712,44 @@ void OnboardControlNode::publish_result(
   result_publisher_->publish(result);
 }
 
-void OnboardControlNode::set_status_message(const std::string & message)
+void OnboardControlNode::check_origin_confirmation_timeout(const SteadyTime & now)
 {
-  // Avoid turning an unchanged readiness condition into a periodic INFO log flood.
+  if (!origin_confirmation_active_ || origin_confirmation_started_ == SteadyTime{} ||
+    std::chrono::duration<double>(now - origin_confirmation_started_).count() <=
+    kOriginConfirmationTimeoutSeconds)
+  {
+    return;
+  }
+  const CommandIdentity timed_out = origin_command_;
+  origin_confirmation_active_ = false;
+  const std::string failure = "GPS 原点请求已发布，但未收到飞控回读确认";
+  publish_result(
+    timed_out, guided_interfaces::msg::CommandResult::STATUS_FAILED, true, failure);
+  set_status_message(failure, StatusLogLevel::kWarn);
+}
+
+void OnboardControlNode::set_status_message(
+  const std::string & message, const StatusLogLevel level)
+{
+  // 同一状态文字只输出一次；严重度由调用点按用户影响明确选择。
   if (message.empty() || status_message_ == message) {
     return;
   }
   status_message_ = message;
-  RCLCPP_INFO(get_logger(), "%s", message.c_str());
+  switch (level) {
+    case StatusLogLevel::kDebug:
+      RCLCPP_DEBUG(get_logger(), "%s", message.c_str());
+      break;
+    case StatusLogLevel::kInfo:
+      RCLCPP_INFO(get_logger(), "%s", message.c_str());
+      break;
+    case StatusLogLevel::kWarn:
+      RCLCPP_WARN(get_logger(), "%s", message.c_str());
+      break;
+    case StatusLogLevel::kError:
+      RCLCPP_ERROR(get_logger(), "%s", message.c_str());
+      break;
+  }
 }
 
 std::string OnboardControlNode::mode_label(const std::uint8_t mode)
@@ -1486,6 +1781,20 @@ double OnboardControlNode::normalize_angle(double angle)
     angle += 2.0 * kPi;
   }
   return angle;
+}
+
+bool OnboardControlNode::origins_match(
+  const geographic_msgs::msg::GeoPoint & expected,
+  const geographic_msgs::msg::GeoPoint & observed)
+{
+  return std::isfinite(observed.latitude) && std::isfinite(observed.longitude) &&
+         std::isfinite(observed.altitude) &&
+         std::abs(expected.latitude - observed.latitude) <=
+         kOriginHorizontalToleranceDegrees &&
+         std::abs(expected.longitude - observed.longitude) <=
+         kOriginHorizontalToleranceDegrees &&
+         std::abs(expected.altitude - observed.altitude) <=
+         kOriginAltitudeToleranceMeters;
 }
 
 }  // namespace onboard_control
