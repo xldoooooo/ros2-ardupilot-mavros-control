@@ -314,3 +314,16 @@
   aarch64 两包 Release 构建与 5 tests 通过，临时目录已清理、服务 inactive、无飞行进程。
   正式机载部署目录未更新；接口 2.1 上线时必须和地面站同步部署。详见
   `agent/report/report-2026-08-11-detailed-status-and-truthful-results.md`。
+
+## 2026-08-11 撤销 100 Hz 实测监听
+
+- 用户明确撤销消息频率真实确认：机载节点不再订阅 `/mavros/imu/data`
+  或 `/mavros/imu/data_raw`，不再对位置/姿态/IMU 做样本计数、实测频率或 45 秒
+  等待。`message_rates_configured` 现仅表示四个 `MessageInterval` ACK 成功，
+  不代表已观察到 100 Hz。
+- 原有三条 100 Hz 配置请求和电池 `SYS_STATUS` 1 Hz 保留。俯仰/偏航、
+  电池、飞控模式、地面站↔机载 `ControlStatus` 实际到达频率显示保留；
+  LAND 解除武装和 GPS 原点回读确认、日志等级调整也保留。
+- 本地运行时图确认两路 IMU 订阅为零；Python 74 passed，ROS/C++ 5 tests
+  零失败。本次未连接或同步实机，未验证实机 100 Hz。详见
+  `agent/report/report-2026-08-11-remove-100hz-rate-listeners.md`。

@@ -372,7 +372,7 @@ class EnvironmentInitializer:
         self._publish_status(
             status, LogLevel.INFO, "4/5 正在由机载服务配置消息频率并等待 EKF..."
         )
-        rate_result = self._wait_ticket(self._ros.request_set_rates(), 50.0)
+        rate_result = self._wait_ticket(self._ros.request_set_rates(), 25.0)
         if rate_result is None:
             raise RuntimeError("消息频率配置等待超时")
         if not rate_result.success:
@@ -439,7 +439,11 @@ class EnvironmentInitializer:
             LogLevel.INFO,
             "3/4 正在由机载 MAVROS 配置消息频率并写入飞控原点...",
         )
-        # 先确认 FCU 应用了全局原点，避免尚无本地位姿时让频率实测形成依赖环。
+        rate_result = self._wait_ticket(self._ros.request_set_rates(), 25.0)
+        if rate_result is None or not rate_result.success:
+            raise RuntimeError(
+                rate_result.message if rate_result is not None else "消息频率配置超时"
+            )
         origin_result = self._wait_ticket(
             self._ros.request_set_gp_origin(*origin), 10.0
         )
@@ -448,11 +452,6 @@ class EnvironmentInitializer:
                 origin_result.message
                 if origin_result is not None
                 else "飞控原点设置超时"
-            )
-        rate_result = self._wait_ticket(self._ros.request_set_rates(), 50.0)
-        if rate_result is None or not rate_result.success:
-            raise RuntimeError(
-                rate_result.message if rate_result is not None else "消息频率配置超时"
             )
 
         self._publish_status(

@@ -32,11 +32,6 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr auto kFcuParameterSyncGracePeriod = std::chrono::seconds(60);
 // A transient MAVLink service failure must not permanently suppress required telemetry.
 constexpr auto kAutomaticMessageRateRetryPeriod = std::chrono::seconds(5);
-constexpr double kMinimumVerifiedMessageRateHz = 50.0;
-constexpr double kMessageRateVerificationMinimumSeconds = 1.5;
-// LOCAL_POSITION_NED only appears after EKF local-position initialization.
-constexpr double kMessageRateVerificationTimeoutSeconds = 45.0;
-constexpr double kMessageRateMaximumAgeSeconds = 0.5;
 constexpr double kBatteryMaximumAgeSeconds = 5.0;
 constexpr double kOriginConfirmationTimeoutSeconds = 8.0;
 constexpr double kOriginHorizontalToleranceDegrees = 2.0e-7;
@@ -56,43 +51,6 @@ bool finite_waypoint(const guided_interfaces::msg::Waypoint & waypoint)
 }
 
 }  // namespace
-
-void OnboardControlNode::StreamRateMonitor::reset()
-{
-  first_sample = SteadyTime{};
-  last_sample = SteadyTime{};
-  sample_count = 0U;
-}
-
-void OnboardControlNode::StreamRateMonitor::observe(const SteadyTime now)
-{
-  if (first_sample == SteadyTime{}) {
-    first_sample = now;
-  }
-  last_sample = now;
-  ++sample_count;
-}
-
-double OnboardControlNode::StreamRateMonitor::observation_seconds() const
-{
-  if (sample_count < 2U || first_sample == SteadyTime{} || last_sample <= first_sample) {
-    return 0.0;
-  }
-  return std::chrono::duration<double>(last_sample - first_sample).count();
-}
-
-double OnboardControlNode::StreamRateMonitor::rate_hz() const
-{
-  const double span = observation_seconds();
-  return span > 0.0 ? static_cast<double>(sample_count - 1U) / span : 0.0;
-}
-
-bool OnboardControlNode::StreamRateMonitor::fresh(
-  const SteadyTime now, const double maximum_age_seconds) const
-{
-  return last_sample != SteadyTime{} &&
-         std::chrono::duration<double>(now - last_sample).count() <= maximum_age_seconds;
-}
 
 OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 : Node("onboard_control_node", options),
@@ -175,12 +133,6 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   velocity_subscription_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     mavros_prefix_ + "/local_position/velocity_local", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1));
-  attitude_imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
-    mavros_prefix_ + "/imu/data", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_attitude_imu, this, std::placeholders::_1));
-  highres_imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
-    mavros_prefix_ + "/imu/data_raw", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_highres_imu, this, std::placeholders::_1));
   battery_subscription_ = create_subscription<sensor_msgs::msg::BatteryState>(
     mavros_prefix_ + "/battery", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_battery, this, std::placeholders::_1));
@@ -259,10 +211,6 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     message_rates_configured_ = false;
     message_rate_configuration_active_ = false;
     message_rate_index_ = 0;
-    message_rate_verification_started_ = SteadyTime{};
-    local_position_rate_.reset();
-    attitude_rate_.reset();
-    highres_imu_rate_.reset();
     last_automatic_message_rate_attempt_ = SteadyTime{};
     battery_present_ = false;
     if (was_connected && origin_confirmation_active_) {
@@ -277,10 +225,6 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     message_rates_configured_ = false;
     message_rate_configuration_active_ = false;
     message_rate_index_ = 0;
-    message_rate_verification_started_ = SteadyTime{};
-    local_position_rate_.reset();
-    attitude_rate_.reset();
-    highres_imu_rate_.reset();
     last_automatic_message_rate_attempt_ = SteadyTime{};
     set_status_message(
       "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用",
@@ -320,7 +264,6 @@ void OnboardControlNode::on_pose(const geometry_msgs::msg::PoseStamped::SharedPt
   pose_valid_ = vehicle_.position.allFinite() && std::isfinite(pitch_) &&
     std::isfinite(yaw_);
   last_pose_time_ = SteadyClock::now();
-  local_position_rate_.observe(last_pose_time_);
 }
 
 void OnboardControlNode::on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message)
@@ -330,20 +273,6 @@ void OnboardControlNode::on_velocity(const geometry_msgs::msg::TwistStamped::Sha
     message->twist.linear.x, message->twist.linear.y, message->twist.linear.z);
   velocity_valid_ = vehicle_.velocity.allFinite();
   last_velocity_time_ = SteadyClock::now();
-}
-
-void OnboardControlNode::on_attitude_imu(const sensor_msgs::msg::Imu::SharedPtr message)
-{
-  (void)message;
-  std::lock_guard<std::recursive_mutex> lock(mutex_);
-  attitude_rate_.observe(SteadyClock::now());
-}
-
-void OnboardControlNode::on_highres_imu(const sensor_msgs::msg::Imu::SharedPtr message)
-{
-  (void)message;
-  std::lock_guard<std::recursive_mutex> lock(mutex_);
-  highres_imu_rate_.observe(SteadyClock::now());
 }
 
 void OnboardControlNode::on_battery(
@@ -1142,10 +1071,6 @@ void OnboardControlNode::start_message_rate_configuration(
   message_rate_publish_result_ = publish_command_result;
   message_rate_command_ = command;
   message_rate_index_ = 0;
-  message_rate_verification_started_ = SteadyTime{};
-  local_position_rate_.reset();
-  attitude_rate_.reset();
-  highres_imu_rate_.reset();
   if (message_rate_publish_result_) {
     publish_result(
       command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
@@ -1160,8 +1085,14 @@ void OnboardControlNode::send_next_message_rate()
     return;
   }
   if (message_rate_index_ >= kMessageIntervals.size()) {
-    // ACK 只证明飞控接受配置；继续等待三路 ROS 数据的实际到达频率。
-    message_rate_verification_started_ = SteadyClock::now();
+    message_rate_configuration_active_ = false;
+    message_rates_configured_ = true;
+    if (message_rate_publish_result_) {
+      publish_result(
+        message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED,
+        true, "飞控已接受 MAVLink 本地位置/姿态/IMU 100 Hz 与电池状态 1 Hz 配置请求");
+    }
+    set_status_message("MAVLink 遥测消息频率配置请求已被飞控接受");
     return;
   }
 
@@ -1185,7 +1116,6 @@ void OnboardControlNode::send_next_message_rate()
       }
       if (!success) {
         message_rate_configuration_active_ = false;
-        message_rate_verification_started_ = SteadyTime{};
         std::ostringstream stream;
         stream << "飞控拒绝消息 " << message_id << " 的频率配置";
         if (message_rate_publish_result_) {
@@ -1342,69 +1272,6 @@ void OnboardControlNode::control_tick()
   {
     publish_attitude_setpoint(dt_seconds);
   }
-}
-
-void OnboardControlNode::verify_message_rates(const SteadyTime & now)
-{
-  if (!message_rate_configuration_active_ ||
-    message_rate_verification_started_ == SteadyTime{})
-  {
-    return;
-  }
-  const double elapsed =
-    std::chrono::duration<double>(now - message_rate_verification_started_).count();
-  if (elapsed < kMessageRateVerificationMinimumSeconds) {
-    return;
-  }
-
-  const double local_rate = local_position_rate_.rate_hz();
-  const double attitude_rate = attitude_rate_.rate_hz();
-  const double highres_rate = highres_imu_rate_.rate_hz();
-  const bool rates_observed =
-    local_position_rate_.observation_seconds() >=
-    kMessageRateVerificationMinimumSeconds &&
-    attitude_rate_.observation_seconds() >=
-    kMessageRateVerificationMinimumSeconds &&
-    highres_imu_rate_.observation_seconds() >=
-    kMessageRateVerificationMinimumSeconds &&
-    local_rate >= kMinimumVerifiedMessageRateHz &&
-    attitude_rate >= kMinimumVerifiedMessageRateHz &&
-    highres_rate >= kMinimumVerifiedMessageRateHz &&
-    local_position_rate_.fresh(now, kMessageRateMaximumAgeSeconds) &&
-    attitude_rate_.fresh(now, kMessageRateMaximumAgeSeconds) &&
-    highres_imu_rate_.fresh(now, kMessageRateMaximumAgeSeconds);
-  if (rates_observed) {
-    message_rate_configuration_active_ = false;
-    message_rate_verification_started_ = SteadyTime{};
-    message_rates_configured_ = true;
-    std::ostringstream stream;
-    stream << "MAVLink 高频遥测实测确认：位置 " << local_rate
-           << " Hz，姿态 " << attitude_rate << " Hz，IMU " << highres_rate << " Hz";
-    if (message_rate_publish_result_) {
-      publish_result(
-        message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED,
-        true, stream.str());
-    }
-    set_status_message(stream.str());
-    return;
-  }
-
-  if (elapsed < kMessageRateVerificationTimeoutSeconds) {
-    return;
-  }
-  message_rate_configuration_active_ = false;
-  message_rate_verification_started_ = SteadyTime{};
-  message_rates_configured_ = false;
-  last_automatic_message_rate_attempt_ = now;
-  std::ostringstream stream;
-  stream << "MAVLink 高频遥测实测未达标：位置 " << local_rate
-         << " Hz，姿态 " << attitude_rate << " Hz，IMU " << highres_rate << " Hz";
-  if (message_rate_publish_result_) {
-    publish_result(
-      message_rate_command_, guided_interfaces::msg::CommandResult::STATUS_FAILED,
-      true, stream.str());
-  }
-  set_status_message(stream.str(), StatusLogLevel::kWarn);
 }
 
 void OnboardControlNode::update_motion_reference(const double dt_seconds)
@@ -1606,7 +1473,6 @@ void OnboardControlNode::status_tick()
   const std::size_t publisher_count = count_publishers(attitude_topic_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
-  verify_message_rates(now);
   check_origin_confirmation_timeout(now);
   if (fcu_connected_ && fcu_parameter_sync_started_ != SteadyTime{} &&
     std::chrono::duration<double>(now - fcu_parameter_sync_started_).count() >=

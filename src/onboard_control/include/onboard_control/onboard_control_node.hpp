@@ -38,7 +38,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
-#include <sensor_msgs/msg/imu.hpp>
 
 #include "onboard_control/dob_controller.hpp"
 
@@ -82,26 +81,10 @@ private:
     std::string name;
   };
 
-  /** 用本地单调时钟统计一个 MAVROS 输入流的实际到达频率。 */
-  struct StreamRateMonitor
-  {
-    SteadyTime first_sample{};
-    SteadyTime last_sample{};
-    std::size_t sample_count{0};
-
-    void reset();
-    void observe(SteadyTime now);
-    double observation_seconds() const;
-    double rate_hz() const;
-    bool fresh(SteadyTime now, double maximum_age_seconds) const;
-  };
-
   // ROS subscription callbacks update the authoritative vehicle state.
   void on_fcu_state(const mavros_msgs::msg::State::SharedPtr message);
   void on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message);
   void on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message);
-  void on_attitude_imu(const sensor_msgs::msg::Imu::SharedPtr message);
-  void on_highres_imu(const sensor_msgs::msg::Imu::SharedPtr message);
   void on_battery(const sensor_msgs::msg::BatteryState::SharedPtr message);
   void on_global_origin(
     const geographic_msgs::msg::GeoPointStamped::SharedPtr message);
@@ -167,7 +150,6 @@ private:
   void start_message_rate_configuration(
     const CommandIdentity & command, bool publish_command_result = true);
   void send_next_message_rate();
-  void verify_message_rates(const SteadyTime & now);
   void check_thrust_mode_parameter();
   void check_origin_confirmation_timeout(const SteadyTime & now);
 
@@ -271,10 +253,6 @@ private:
   bool message_rate_publish_result_{true};
   CommandIdentity message_rate_command_;
   std::size_t message_rate_index_{0};
-  SteadyTime message_rate_verification_started_{};
-  StreamRateMonitor local_position_rate_;
-  StreamRateMonitor attitude_rate_;
-  StreamRateMonitor highres_imu_rate_;
   SteadyTime last_automatic_message_rate_attempt_{};
   bool thrust_mode_verified_{false};
   bool thrust_mode_check_inflight_{false};
@@ -305,8 +283,6 @@ private:
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_subscription_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr attitude_imu_subscription_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr highres_imu_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_subscription_;
   rclcpp::Subscription<geographic_msgs::msg::GeoPointStamped>::SharedPtr
     global_origin_subscription_;
