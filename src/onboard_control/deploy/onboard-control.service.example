@@ -2,8 +2,9 @@
 # Replace ONBOARD_USER and review /etc/ros2-ardupilot/onboard.env before use.
 [Unit]
 Description=ROS 2 ArduPilot onboard control service
-After=network-online.target
-Wants=network-online.target
+# ROS wall timers must not be created before the first boot-time clock sync.
+Wants=network-online.target systemd-time-wait-sync.service
+After=network-online.target time-sync.target
 
 [Service]
 Type=simple

@@ -197,3 +197,7 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 ## 8. systemd 示例
 
 `onboard-control.service.example` 仅供未来部署参考，任务 08 不安装、不启用。使用前必须替换 `ONBOARD_USER`，确认 `/etc/ros2-ardupilot/onboard.env`，并完成独立的台架安全评审。服务只启动 `onboard_control`，不会替代 Odin、MAVROS 或 extnav 的生命周期管理。
+
+服务通过 `systemd-time-wait-sync.service` 排在首次系统校时之后。机载 ROS/MAVROS
+进程不得在该时点之前启动：开机保存时间与 NTP 时间之间的跳变会破坏已经创建的 ROS
+墙钟定时器。不要用固定秒数的 `sleep` 替代这个就绪条件。

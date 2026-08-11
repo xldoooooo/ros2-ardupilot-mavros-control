@@ -371,3 +371,17 @@
 - Humble/Jazzy context 切换期间既有 `sequence size exceeds remaining buffer` 仍会出现，但未造成
   状态、租约、原点或进程失败；该独立跨发行版 DDS 问题没有在本修复中屏蔽或宣称解决。详见
   `agent/report/report-2026-08-11-gps-origin-reconnect-and-failure-teardown.md`。
+
+## 2026-08-11 机载开机自启动首次校时门
+
+- 真机冷启动故障不是串口或 systemd 环境差异：服务在开机 12.328 秒启动，MAVROS 在
+  24.081 秒已收到 FCU HEARTBEAT，但 `systemd-timesyncd` 到 39.641 秒才首次同步，约 5 分钟
+  墙钟跳变随后破坏已创建的 ROS/MAVROS 定时链；系统时间稳定后手工运行同一脚本可立即连接。
+- 机载服务现在 `Wants=network-online.target systemd-time-wait-sync.service` 且
+  `After=network-online.target time-sync.target`，保留开机自启动但不再早于首次校时；禁止退回
+  固定秒数 `sleep`。仓库 systemd 示例和部署测试同步维护该顺序。
+- 新单元通过解析与真实 systemd 启动顺序验证，地面端只读收到约 9.999 Hz 状态，最终
+  `fcu_connected=true`、`armed=false`、本地位姿/频率/推力参数就绪、租约为空。全量 Python
+  75 passed。没有执行整机冷重启、租约、原点、模式、解锁、起飞或控制命令；下一次正常开机
+  仍需复验 cold-boot journal。详见
+  `agent/report/report-2026-08-11-onboard-autostart-time-sync-fix.md`。

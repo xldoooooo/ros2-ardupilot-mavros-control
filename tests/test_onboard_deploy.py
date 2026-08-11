@@ -232,6 +232,8 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "/opt/ros/jazzy" not in service
     assert "/opt/ros/${ROS_DISTRO}/setup.bash" in service
     assert "mavros.service" not in service
+    assert "systemd-time-wait-sync.service" in service
+    assert "After=network-online.target time-sync.target" in service
     assert "ROS_DISTRO=humble" in environment
     assert "ONBOARD_WORKSPACE=/home/onboard/ros2-ardupilot-mavros-control" in environment
     assert "ROS_LOCALHOST_ONLY=0" in environment
