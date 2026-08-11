@@ -236,6 +236,8 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "ONBOARD_WORKSPACE=/home/onboard/ros2-ardupilot-mavros-control" in environment
     assert "ROS_LOCALHOST_ONLY=0" in environment
     assert "MAVROS_FCU_DEVICE=" in environment
+    assert "ODIN_OVERLAY_SETUP=" in environment
+    assert "EXTNAV_OVERLAY_SETUP=" in environment
 
 
 def test_integrated_start_supervises_all_four_components_without_flight_commands() -> None:

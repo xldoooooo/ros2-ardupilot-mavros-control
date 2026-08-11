@@ -341,3 +341,14 @@
   正常停止。最终服务 `enabled` 但 inactive，Result=success，四组件零进程、
   串口无占用。Odin/extnav 关停时仍有外部驱动异常日志，但无残留。详见
   `agent/report/report-2026-08-11-real-onboard-sync-and-test.md`。
+
+## 2026-08-11 真机交互启动配置修复
+
+- `start_drone_all.sh` 会读取 `/etc/ros2-ardupilot/onboard.env`（可由
+  `ONBOARD_ENV_FILE` 覆盖），让交互终端与 systemd 共用已人工确认的 FCU 串口和
+  Odin/extnav overlay；没有配置时仍拒绝猜测多个串口或 overlay。
+- 真机环境文件固定已验证的 `/dev/ttyTHS1`、`/home/xld/ws/install/setup.bash` 和
+  `/home/xld/vrpn_mavros/install/setup.bash`。直接执行 `./start_drone_all.sh --check`
+  已通过且没有启动组件；服务仍 inactive/Result=success，飞行进程为零，串口空闲。
+- 修复提交 `72cc836` 已同步真机；本地目标测试 10 passed、完整 Python 测试
+  74 passed。详见 `agent/report/report-2026-08-11-manual-onboard-launch-env-fix.md`。
