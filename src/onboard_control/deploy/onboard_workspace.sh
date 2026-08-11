@@ -4,6 +4,14 @@
 set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/start_drone/runtime_common.bash"
+[[ -r "${RUNTIME_HELPERS}" ]] || {
+  printf '[onboard-workspace] ERROR: runtime helper is missing: %s\n' \
+    "${RUNTIME_HELPERS}" >&2
+  exit 1
+}
+# shellcheck disable=SC1090
+source "${RUNTIME_HELPERS}"
 readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly DRONE_START_SPARSE_PATH="/start_drone/"
@@ -54,17 +62,6 @@ resolve_workspace() {
     die "cannot resolve the Git workspace; set ONBOARD_WORKSPACE"
 }
 
-detect_ros_distro() {
-  local candidate
-  for candidate in "${ONBOARD_ROS_DISTRO:-}" "${ROS_DISTRO:-}" humble jazzy; do
-    if [[ -n "${candidate}" && -f "/opt/ros/${candidate}/setup.bash" ]]; then
-      printf '%s\n' "${candidate}"
-      return
-    fi
-  done
-  die "no supported ROS setup found under /opt/ros (expected humble or jazzy)"
-}
-
 source_setup() {
   local setup_file="$1"
   [[ -f "${setup_file}" ]] || die "setup file not found: ${setup_file}"
@@ -76,7 +73,7 @@ source_setup() {
 }
 
 source_underlay() {
-  source_setup "/opt/ros/${ROS_DISTRO_RESOLVED}/setup.bash"
+  source_setup "${ROS_SETUP_RESOLVED}"
 }
 
 source_overlay() {
@@ -289,7 +286,9 @@ smoke_test() {
 }
 
 readonly WORKSPACE_ROOT="$(resolve_workspace)"
-readonly ROS_DISTRO_RESOLVED="$(detect_ros_distro)"
+ROS_SETUP_RESOLVED="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
+readonly ROS_SETUP_RESOLVED
+readonly ROS_DISTRO_RESOLVED="$(basename "$(dirname "${ROS_SETUP_RESOLVED}")")"
 readonly SMOKE_DOMAIN_ID="${ONBOARD_SMOKE_DOMAIN_ID:-${DEFAULT_SMOKE_DOMAIN_ID}}"
 
 case "${1:-}" in

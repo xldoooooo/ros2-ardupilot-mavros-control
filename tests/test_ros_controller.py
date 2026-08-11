@@ -235,6 +235,7 @@ def test_simulation_hides_and_hardware_restores_explicit_discovery_peers(
     monkeypatch,
 ) -> None:
     """仿真不得沿用指向真机的静态 peer/discovery server。"""
+    monkeypatch.setenv("ROS_DISTRO", "jazzy")
     monkeypatch.setenv("ROS_STATIC_PEERS", "192.168.112.186")
     monkeypatch.setenv("ROS_DISCOVERY_SERVER", "192.168.112.186:11811")
     controller = GroundStationRosController(source_id="gcs-discovery-isolation")
@@ -250,6 +251,23 @@ def test_simulation_hides_and_hardware_restores_explicit_discovery_peers(
     assert os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "SUBNET"
     assert os.environ["ROS_STATIC_PEERS"] == "192.168.112.186"
     assert os.environ["ROS_DISCOVERY_SERVER"] == "192.168.112.186:11811"
+
+
+def test_humble_uses_localhost_only_instead_of_jazzy_discovery_range(
+    monkeypatch,
+) -> None:
+    """Humble 仿真/实机切换必须使用其实际支持的发现环境变量。"""
+    monkeypatch.setenv("ROS_DISTRO", "humble")
+    monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET")
+    controller = GroundStationRosController(source_id="gcs-humble-discovery")
+
+    controller._apply_transport_environment(231, "LOCALHOST")
+    assert os.environ["ROS_LOCALHOST_ONLY"] == "1"
+    assert "ROS_AUTOMATIC_DISCOVERY_RANGE" not in os.environ
+
+    controller._apply_transport_environment(0, "SUBNET")
+    assert os.environ["ROS_LOCALHOST_ONLY"] == "0"
+    assert "ROS_AUTOMATIC_DISCOVERY_RANGE" not in os.environ
 
 
 def test_lease_sequence_remains_monotonic_across_rebuilt_contexts() -> None:

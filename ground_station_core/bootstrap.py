@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from .config import INSTALL_SETUP, PROJECT_ROOT
+from .config import INSTALL_SETUP, PROJECT_ROOT, ros_setup_file
 from .process_manager import build_sourced_environment
 
 
@@ -43,8 +43,7 @@ def _interfaces_available() -> bool:
 
 def workspace_setup_files() -> tuple[Path, Path]:
     """返回需要按顺序加载的 ROS 发行版和本工作空间 setup。"""
-    distro = os.environ.get("ROS_DISTRO", "jazzy")
-    return Path(f"/opt/ros/{distro}/setup.bash"), INSTALL_SETUP
+    return ros_setup_file(), INSTALL_SETUP
 
 
 def ensure_workspace_environment(entrypoint: Path | None = None) -> None:
@@ -55,7 +54,7 @@ def ensure_workspace_environment(entrypoint: Path | None = None) -> None:
     setup_files = workspace_setup_files()
     missing = [str(path) for path in setup_files if not path.is_file()]
     build_command = (
-        "source /opt/ros/jazzy/setup.bash && "
+        f"source {ros_setup_file()} && "
         "colcon build --packages-select guided_interfaces onboard_control guided_sim"
     )
     if missing:

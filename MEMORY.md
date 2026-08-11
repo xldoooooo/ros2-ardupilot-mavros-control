@@ -258,6 +258,7 @@
   禁用时优先显示安全原因，恢复后还原动作说明。“工程信息”已更名“详细状态”，左栏保留
   既有诊断，右栏随左右灵敏度实时显示 W/S、A/D、I/K、J/L 单次增量。默认分别为
   `±0.20 m/s`、`±11.5 °/s`、`±0.20 m/s`、`±0.20 m/s`。
+
 - 仿真启动并行检查四个 ROS 包，SITL 启动后立即预热 RViz，TCP 可用后并行初始化 MAVROS
   与 onboard；已有 ArduCopter SITL 二进制时使用 `--no-rebuild`。生产/实机飞控参数首次检查
   仍默认 40 秒，仅仿真命令覆盖为 2 秒。真实未武装 SITL 就绪从 52.866 秒降至 43.487 秒
@@ -280,3 +281,18 @@
   5 tests 和隔离默认参数 smoke 通过。实机两轮和被动重启观察始终 `armed=false`，最终服务
   inactive、飞行进程零残留、串口无人占用。详见
   `agent/report/report-2026-08-11-task13-refine-3.md`。
+
+## 2026-08-11 Ubuntu 22.04/Humble 可移植部署入口
+
+- `setup_project.sh` 现在从当前检出自动完成发行版选择、项目 `.venv`、PySide6、三包 Release
+  构建、ROS/C++ 测试与环境检查；Ubuntu 22.04 优先 Humble，正常部署不再填写开发机路径。
+- `start_drone/runtime_common.bash` 统一发现 ROS、项目 Python、Odin/extnav ament overlay 和唯一
+  FCU 串口；`start_drone_all.sh --check` 只输出发现结果而不启动组件。多个串口或多个 overlay
+  时必须安全失败，禁止为了“全自动”猜测真实飞控。
+- 地面站及四个机载分步脚本已移除 `/home/nvidia`、`/home/xld`、`/home/onboard`、固定
+  `/opt/ros/{jazzy,humble}` 和 `/dev/ttyTHS1` 运行依赖。ArduPilot SITL 会搜索 PATH 与常见
+  源码布局；Humble DDS 切换使用 `ROS_LOCALHOST_ONLY`，Jazzy 继续使用自动发现范围变量。
+- 自动入口在当前 24.04/Jazzy 开发机完整执行成功；Python 73 passed，三包 Release 构建成功，
+  ROS/C++ 5 tests 零失败，干净环境地面站检查通过。没有连接或操作实机；22.04/Humble 仍需在
+  师兄目标机执行 `setup_project.sh` 和无桨 `start_drone_all.sh --check` 复验。详细见
+  `agent/report/report-2026-08-11-ubuntu2204-humble-portable-deployment.md`。

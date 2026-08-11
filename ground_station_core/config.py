@@ -42,10 +42,48 @@ INTERFACE_VERSION = "2.0"
 DEFAULT_GPS_ORIGIN = (30.2489634, 120.2052342, 488.0)
 
 
+def detect_ros_distro() -> str:
+    """按显式环境、Ubuntu 版本和已安装目录依次选择 Humble/Jazzy。"""
+    requested = os.environ.get("ROS_DISTRO", "").strip()
+    if requested:
+        return requested
+
+    ros_root = Path(os.environ.get("ROS_INSTALL_ROOT", "/opt/ros"))
+    os_version = ""
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VERSION_ID="):
+                os_version = line.partition("=")[2].strip().strip('"')
+                break
+    except OSError:
+        pass
+
+    preferred = {"22.04": "humble", "24.04": "jazzy"}.get(os_version)
+    candidates = tuple(item for item in (preferred, "humble", "jazzy") if item)
+    for candidate in candidates:
+        if (ros_root / candidate / "setup.bash").is_file():
+            return candidate
+    # 保留原开发环境默认值，让缺失提示仍给出确定路径。
+    return preferred or "jazzy"
+
+
+def ros_setup_file() -> Path:
+    """返回当前主机自动选择的 ROS underlay setup。"""
+    ros_root = Path(os.environ.get("ROS_INSTALL_ROOT", "/opt/ros"))
+    return ros_root / detect_ros_distro() / "setup.bash"
+
+
+def ros_discovery_environment(discovery_range: str) -> dict[str, str]:
+    """生成当前 ROS 发行版支持的 DDS 发现环境变量。"""
+    normalized = discovery_range.strip().upper()
+    if detect_ros_distro() == "humble":
+        return {"ROS_LOCALHOST_ONLY": "1" if normalized == "LOCALHOST" else "0"}
+    return {"ROS_AUTOMATIC_DISCOVERY_RANGE": normalized}
+
+
 def ros_setup_files(extra: Iterable[Path] = ()) -> tuple[Path, ...]:
     """返回子进程需要依次 source 的 ROS/工作空间 setup 文件。"""
-    distro = os.environ.get("ROS_DISTRO", "jazzy")
-    candidates = [Path(f"/opt/ros/{distro}/setup.bash")]
+    candidates = [ros_setup_file()]
     if INSTALL_SETUP.is_file():
         candidates.append(INSTALL_SETUP)
     candidates.extend(Path(item).expanduser() for item in extra)
@@ -59,13 +97,23 @@ def ros_setup_files(extra: Iterable[Path] = ()) -> tuple[Path, ...]:
 
 
 def find_sim_vehicle() -> Path | None:
-    """从环境变量或 PATH 定位 ArduPilot 的 sim_vehicle.py。"""
+    """从环境变量、PATH 和常见源码位置自动定位 sim_vehicle.py。"""
     configured = os.environ.get("GROUND_STATION_SIM_VEHICLE")
     if configured:
         path = Path(configured).expanduser()
         return path if path.is_file() else None
     located = shutil.which("sim_vehicle.py")
-    return Path(located).resolve() if located else None
+    if located:
+        return Path(located).resolve()
+
+    candidates = (
+        PROJECT_ROOT.parent / "ardupilot" / "Tools" / "autotest" / "sim_vehicle.py",
+        Path.home() / "ardupilot" / "Tools" / "autotest" / "sim_vehicle.py",
+        Path.home() / "ArduPilot" / "Tools" / "autotest" / "sim_vehicle.py",
+        Path("/opt/ardupilot/Tools/autotest/sim_vehicle.py"),
+        Path("/usr/local/src/ardupilot/Tools/autotest/sim_vehicle.py"),
+    )
+    return next((path.resolve() for path in candidates if path.is_file()), None)
 
 
 def ardupilot_root(sim_vehicle: Path) -> Path:
@@ -78,5 +126,5 @@ def ardupilot_root(sim_vehicle: Path) -> Path:
 
 def mavros_apm_config() -> Path:
     """返回当前 ROS 发行版的 MAVROS APM 参数文件路径。"""
-    distro = os.environ.get("ROS_DISTRO", "jazzy")
-    return Path(f"/opt/ros/{distro}/share/mavros/launch/apm_config.yaml")
+    ros_root = Path(os.environ.get("ROS_INSTALL_ROOT", "/opt/ros"))
+    return ros_root / detect_ros_distro() / "share/mavros/launch/apm_config.yaml"

@@ -7,6 +7,7 @@ import subprocess
 import sys
 from xml.etree import ElementTree
 
+import ground_station_core.config as project_config
 from ground_station_core.config import INTERFACE_VERSION, PROJECT_ROOT
 
 
@@ -52,3 +53,38 @@ def test_protocol_major_version_is_synchronized_across_deployments() -> None:
     assert INTERFACE_VERSION == "2.0"
     assert 'kInterfaceVersion[] = "2.0"' in onboard_source
     assert package_versions == {"2.0.0"}
+
+
+def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_path) -> None:
+    """未预先 source 时，22.04 部署可由安装根目录自动选择 Humble。"""
+    ros_root = tmp_path / "ros"
+    setup = ros_root / "humble" / "setup.bash"
+    setup.parent.mkdir(parents=True)
+    setup.touch()
+    monkeypatch.delenv("ROS_DISTRO", raising=False)
+    monkeypatch.setenv("ROS_INSTALL_ROOT", str(ros_root))
+
+    assert project_config.detect_ros_distro() == "humble"
+    assert project_config.ros_setup_file() == setup
+    assert project_config.mavros_apm_config() == (
+        ros_root / "humble" / "share" / "mavros" / "launch" / "apm_config.yaml"
+    )
+
+
+def test_sim_vehicle_is_found_from_a_checkout_neighbour(monkeypatch, tmp_path) -> None:
+    """常见 ArduPilot 源码布局不应要求用户填写绝对路径。"""
+    project_root = tmp_path / "project" / "ros-control"
+    sim_vehicle = (
+        project_root.parent
+        / "ardupilot"
+        / "Tools"
+        / "autotest"
+        / "sim_vehicle.py"
+    )
+    sim_vehicle.parent.mkdir(parents=True)
+    sim_vehicle.touch()
+    monkeypatch.setattr(project_config, "PROJECT_ROOT", project_root)
+    monkeypatch.delenv("GROUND_STATION_SIM_VEHICLE", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+
+    assert project_config.find_sim_vehicle() == sim_vehicle.resolve()

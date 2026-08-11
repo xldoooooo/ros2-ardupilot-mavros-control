@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
+import textwrap
 from xml.etree import ElementTree
 
 from ground_station_core.config import PROJECT_ROOT
@@ -16,6 +16,19 @@ DEPLOYMENT_GUIDE = DEPLOY_DIR / "ONBOARD_DEPLOYMENT.md"
 DRONE_START_DIRECTORY = PROJECT_ROOT / "start_drone"
 INTEGRATED_START = PROJECT_ROOT / "start_drone_all.sh"
 GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
+PROJECT_SETUP = PROJECT_ROOT / "setup_project.sh"
+RUNTIME_HELPERS = DRONE_START_DIRECTORY / "runtime_common.bash"
+
+
+def run_bash(script: str, environment: dict[str, str] | None = None):
+    """在隔离 bash 中调用可移植发现函数。"""
+    return subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
 
 
 def test_onboard_workspace_script_has_valid_shell_and_help() -> None:
@@ -38,6 +51,127 @@ def test_onboard_workspace_script_has_valid_shell_and_help() -> None:
     assert help_result.returncode == 0, help_result.stderr
     for command in ("update", "deps-check", "build", "test", "smoke", "verify"):
         assert command in help_result.stdout
+
+
+def test_runtime_discovery_resolves_ros_python_and_unique_serial(tmp_path) -> None:
+    """常规 22.04/Humble 布局应无需编辑绝对路径即可被唯一解析。"""
+    ros_root = tmp_path / "ros"
+    humble_setup = ros_root / "humble" / "setup.bash"
+    humble_setup.parent.mkdir(parents=True)
+    humble_setup.write_text("export ROS_DISTRO=humble\n", encoding="utf-8")
+
+    project_root = tmp_path / "checkout"
+    project_python = project_root / ".venv" / "bin" / "python3"
+    project_python.parent.mkdir(parents=True)
+    project_python.write_text("#!/usr/bin/env sh\n", encoding="utf-8")
+    project_python.chmod(0o755)
+
+    dev_root = tmp_path / "dev"
+    serial_target = dev_root / "ttyACM0"
+    serial_target.parent.mkdir()
+    serial_target.touch()
+    stable_device = dev_root / "serial" / "by-id" / "flight-controller"
+    stable_device.parent.mkdir(parents=True)
+    stable_device.symlink_to(serial_target)
+
+    command = textwrap.dedent(
+        f"""
+        source {RUNTIME_HELPERS!s}
+        runtime_detect_ros_setup humble
+        runtime_detect_python {project_root!s}
+        runtime_detect_fcu_device
+        """
+    )
+    environment = os.environ.copy()
+    environment.update(
+        ROS_INSTALL_ROOT=str(ros_root),
+        RUNTIME_DEV_ROOT=str(dev_root),
+    )
+    result = run_bash(command, environment)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        str(humble_setup),
+        str(project_python),
+        str(stable_device),
+    ]
+
+
+def test_ubuntu_2204_prefers_humble_when_both_distros_are_installed(
+    tmp_path,
+) -> None:
+    """师兄的 22.04 主机即使残留另一发行版，也应自动使用 Humble。"""
+    ros_root = tmp_path / "ros"
+    for distro in ("humble", "jazzy"):
+        setup = ros_root / distro / "setup.bash"
+        setup.parent.mkdir(parents=True)
+        setup.touch()
+    os_release = tmp_path / "os-release"
+    os_release.write_text('VERSION_ID="22.04"\n', encoding="utf-8")
+
+    environment = os.environ.copy()
+    environment.update(
+        ROS_INSTALL_ROOT=str(ros_root),
+        RUNTIME_OS_RELEASE_FILE=str(os_release),
+        ROS_DISTRO="jazzy",
+    )
+    result = run_bash(
+        f"source {RUNTIME_HELPERS!s}; runtime_detect_ros_setup",
+        environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(ros_root / "humble" / "setup.bash")
+
+
+def test_runtime_discovery_rejects_ambiguous_serial_devices(tmp_path) -> None:
+    """多个串口候选时必须安全失败，禁止自动猜测飞控。"""
+    dev_root = tmp_path / "dev"
+    stable_root = dev_root / "serial" / "by-id"
+    stable_root.mkdir(parents=True)
+    for name in ("controller-a", "controller-b"):
+        target = dev_root / f"tty-{name}"
+        target.touch()
+        (stable_root / name).symlink_to(target)
+
+    environment = os.environ.copy()
+    environment["RUNTIME_DEV_ROOT"] = str(dev_root)
+    result = run_bash(
+        f"source {RUNTIME_HELPERS!s}; runtime_detect_fcu_device",
+        environment,
+    )
+
+    assert result.returncode != 0
+    assert "multiple stable serial devices" in result.stderr
+    assert "refusing to guess" in result.stderr
+
+
+def test_runtime_discovery_finds_the_overlay_that_owns_a_package(tmp_path) -> None:
+    """Odin/extnav 应由 ament 索引反查 overlay，不依赖用户名或工作区名称。"""
+    prefix = tmp_path / "renamed-workspace" / "install"
+    marker = (
+        prefix
+        / "share"
+        / "ament_index"
+        / "resource_index"
+        / "packages"
+        / "fixture_portable_package"
+    )
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    setup = prefix / "setup.bash"
+    setup.write_text("true\n", encoding="utf-8")
+
+    environment = os.environ.copy()
+    environment["RUNTIME_OVERLAY_SEARCH_ROOTS"] = str(tmp_path)
+    result = run_bash(
+        f"source {RUNTIME_HELPERS!s}; "
+        "runtime_find_package_setup fixture_portable_package",
+        environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(setup)
 
 
 def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
@@ -123,6 +257,7 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
     ):
         assert command in script
     for parameter in (
+        "runtime_detect_fcu_device",
         "MAVROS_FCU_BAUD:-460800",
         "vision_rate_hz:=40.0",
         "ctrl_rate_hz:=100.0",
@@ -133,12 +268,19 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
         assert parameter in script
 
     assert 'export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"' in script
+    assert "runtime_detect_ros_setup" in script
+    assert "runtime_ensure_package odin_ros_driver" in script
+    assert "runtime_ensure_package extnav_bridge" in script
+    assert "--check" in script
     assert "refusing to create duplicate flight-stack processes" in script
     assert "kill -INT -- \"-${pid}\"" in script
     assert "message_rates_configured: true" in script
     assert "local_position_valid: true" in script
 
     for forbidden in (
+        "/home/xld",
+        "/dev/ttyTHS1",
+        'humble_setup="/opt/ros/humble',
         "/cmd/arming",
         "/cmd/takeoff",
         "COMMAND_TAKEOFF",
@@ -180,11 +322,44 @@ def test_synced_split_launchers_and_local_ground_launcher_are_well_scoped() -> N
     assert "unset ROS_LOCALHOST_ONLY" in script
     assert "ROS_AUTOMATIC_DISCOVERY_RANGE" in script
     assert 'ground_station.py" "$@"' in script
+    assert "runtime_detect_ros_setup" in script
+    assert "runtime_detect_python" in script
+    assert "/home/nvidia" not in script
+    assert "/opt/ros/jazzy" not in script
     for forbidden in (
         "/dev/ttyTHS1",
         "mavros apm.launch",
         "odin_ros_driver",
         "extnav_bridge",
+        "/cmd/arming",
+        "/cmd/takeoff",
+    ):
+        assert forbidden not in script
+
+
+def test_project_setup_is_checkout_relative_and_never_contacts_hardware() -> None:
+    """完整部署入口应自动构建本检出，且不接触 MAVROS、串口或飞行命令。"""
+    assert os.access(PROJECT_SETUP, os.X_OK)
+    syntax = subprocess.run(
+        ["bash", "-n", str(PROJECT_SETUP)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    script = PROJECT_SETUP.read_text(encoding="utf-8")
+    assert "runtime_detect_ros_setup" in script
+    assert 'project_root}/.venv' in script
+    assert "guided_interfaces onboard_control guided_sim" in script
+    assert "--symlink-install" not in script
+    assert "ground_station.py --check-environment" in script
+    for forbidden in (
+        "/home/nvidia",
+        "/home/xld",
+        "/opt/ros/jazzy",
+        "/opt/ros/humble",
+        "mavros apm.launch",
         "/cmd/arming",
         "/cmd/takeoff",
     ):

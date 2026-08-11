@@ -21,6 +21,7 @@ from .config import (
     find_sim_vehicle,
     mavros_apm_config,
     ros_setup_files,
+    ros_discovery_environment,
 )
 from .event_log import EventLog, LogLevel
 from .models import VehicleSnapshot
@@ -289,7 +290,7 @@ class EnvironmentInitializer:
         self._check_cancelled()
         simulation_environment = {
             "ROS_DOMAIN_ID": str(SIMULATION_DOMAIN_ID),
-            "ROS_AUTOMATIC_DISCOVERY_RANGE": SIMULATION_DISCOVERY_RANGE,
+            **ros_discovery_environment(SIMULATION_DISCOVERY_RANGE),
         }
 
         self._publish_status(status, LogLevel.INFO, "1/5 正在启动 ArduPilot SITL...")

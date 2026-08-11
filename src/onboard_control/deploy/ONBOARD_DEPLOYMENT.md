@@ -12,19 +12,16 @@
 
 ## 1. 首次最小拉取
 
-目标目录是 `/home/onboard/ros2-ardupilot-mavros-control`。父目录可保持 `root:root`，只把新建的仓库目录交给部署用户管理：
+在部署用户自己的目录执行；启动器会从自身位置解析工作区，不要求固定用户名或绝对路径：
 
 ```bash
-sudo install -d -o xld -g xld \
-  /home/onboard/ros2-ardupilot-mavros-control
-
 git clone \
   --filter=blob:none \
   --no-checkout \
   https://github.com/xldoooooo/ros2-ardupilot-mavros-control.git \
-  /home/onboard/ros2-ardupilot-mavros-control
+  ros2-ardupilot-mavros-control
 
-cd /home/onboard/ros2-ardupilot-mavros-control
+cd ros2-ardupilot-mavros-control
 git sparse-checkout init --no-cone
 git sparse-checkout set \
   '/src/guided_interfaces/' \
@@ -65,7 +62,6 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 ## 2. 无系统修改的依赖检查
 
 ```bash
-cd /home/onboard/ros2-ardupilot-mavros-control
 ./src/onboard_control/deploy/onboard_workspace.sh show-config
 ./src/onboard_control/deploy/onboard_workspace.sh deps-check
 ```
@@ -75,7 +71,6 @@ cd /home/onboard/ros2-ardupilot-mavros-control
 ## 3. 编译、单元测试与安全烟雾测试
 
 ```bash
-cd /home/onboard/ros2-ardupilot-mavros-control
 ./src/onboard_control/deploy/onboard_workspace.sh build
 ./src/onboard_control/deploy/onboard_workspace.sh test
 ./src/onboard_control/deploy/onboard_workspace.sh smoke
@@ -101,7 +96,6 @@ setpoint_messages=0
 ## 4. 后续更新
 
 ```bash
-cd /home/onboard/ros2-ardupilot-mavros-control
 ./src/onboard_control/deploy/onboard_workspace.sh update
 ./src/onboard_control/deploy/onboard_workspace.sh verify
 ```
@@ -157,9 +151,9 @@ ROS 发行版/DDS 版本或加入受支持桥接并复验之前，禁止把当�
 
 ## 7. 实机四组件一键启动
 
-机载工作区根目录的 `start_drone_all.sh` 统一启动原先四个终端中的组件：
+机载工作区根目录的 `start_drone_all.sh` 自动发现并统一启动四个组件：
 
-- MAVROS（默认串口 `/dev/ttyTHS1:460800`）；
+- MAVROS（优先唯一的 `/dev/serial/by-id`，波特率默认 460800）；
 - Odin 驱动；
 - Odin 到 MAVROS 的外部定位桥；
 - `onboard_control_node`。
@@ -167,7 +161,8 @@ ROS 发行版/DDS 版本或加入受支持桥接并复验之前，禁止把当�
 在真机桌面终端中执行一行命令：
 
 ```bash
-cd /home/onboard/ros2-ardupilot-mavros-control && bash start_drone_all.sh
+bash start_drone_all.sh --check
+bash start_drone_all.sh
 ```
 
 脚本默认让四个组件都使用 ROS domain 0，并等待以下只读安全条件成立后打印
@@ -178,11 +173,11 @@ cd /home/onboard/ros2-ardupilot-mavros-control && bash start_drone_all.sh
 `/tmp/ros2_ardupilot_onboard/<时间戳>/`；若检测到四个组件中的任一既有实例，脚本会拒绝
 重复启动，须先确认旧实例的来源和状态，不要直接强杀。
 
-可按需在命令前覆盖配置，例如：
+仅当自动发现报告多个真实候选时，人工确认后可对当前命令覆盖配置，例如：
 
 ```bash
-MAVROS_FCU_DEVICE=/dev/ttyTHS1 MAVROS_FCU_BAUD=460800 \
-  bash /home/onboard/ros2-ardupilot-mavros-control/start_drone_all.sh
+MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> \
+  bash start_drone_all.sh --check
 ```
 
 Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会话中，RViz 会因没有

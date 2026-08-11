@@ -19,6 +19,7 @@ from .config import (
     INTERFACE_PREFIX,
     INTERFACE_VERSION,
     LEASE_DURATION_MS,
+    detect_ros_distro,
 )
 from .event_log import EventLog
 from .models import CommandRequest, CommandResult, FlightMode, VehicleSnapshot
@@ -387,8 +388,14 @@ class GroundStationRosController:
     ) -> None:
         """让当前 context 及随后启动的本地 ROS 子进程继承同一隔离策略。"""
         os.environ["ROS_DOMAIN_ID"] = str(domain_id)
-        os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = discovery_range
-        os.environ.pop("ROS_LOCALHOST_ONLY", None)
+        if detect_ros_distro() == "humble":
+            os.environ.pop("ROS_AUTOMATIC_DISCOVERY_RANGE", None)
+            os.environ["ROS_LOCALHOST_ONLY"] = (
+                "1" if discovery_range == "LOCALHOST" else "0"
+            )
+        else:
+            os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = discovery_range
+            os.environ.pop("ROS_LOCALHOST_ONLY", None)
         if discovery_range == "LOCALHOST":
             # domain 隔离 + LOCALHOST 发现范围强制仿真 DDS 只走回环；同时
             # 清除可能直指真机的显式 peer/server，避免绕过自动发现范围。

@@ -1,35 +1,38 @@
 #!/usr/bin/env bash
-# Launch and supervise MAVROS, Odin, extnav, and onboard control in one terminal.
+# Auto-discover, launch, and supervise the four onboard ROS components.
 
 set -Eeuo pipefail
 
 readonly project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-readonly humble_setup="/opt/ros/humble/setup.bash"
+readonly runtime_helpers="${project_root}/start_drone/runtime_common.bash"
 readonly onboard_setup="${project_root}/install/setup.bash"
-readonly odin_setup="/home/xld/ws/install/setup.bash"
-readonly extnav_setup="/home/xld/vrpn_mavros/install/setup.bash"
-readonly fcu_device="${MAVROS_FCU_DEVICE:-/dev/ttyTHS1}"
+[[ -r "${runtime_helpers}" ]] || {
+  echo "[startup] runtime discovery helper is missing: ${runtime_helpers}" >&2
+  exit 1
+}
+# shellcheck disable=SC1090
+source "${runtime_helpers}"
+
+ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
+readonly ros_setup
+fcu_device="$(runtime_detect_fcu_device "${MAVROS_FCU_DEVICE:-}")" || exit 1
+readonly fcu_device
 readonly fcu_baud="${MAVROS_FCU_BAUD:-460800}"
 readonly log_root="${ONBOARD_LOG_ROOT:-/tmp/ros2_ardupilot_onboard}"
 
 # All four participants inherit one domain. Domain 0 matches the current manual setup.
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
-export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
-
-source_setup() {
-  local setup_file="$1"
-  # ROS-generated setup files legitimately inspect optional unset variables.
-  set +u
-  # shellcheck disable=SC1090
-  source "${setup_file}"
-  set -u
-}
+if [[ "${ros_setup}" == */humble/setup.bash ]]; then
+  export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
+  unset ROS_AUTOMATIC_DISCOVERY_RANGE ROS_STATIC_PEERS
+else
+  unset ROS_LOCALHOST_ONLY
+  export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
+fi
 
 for required_path in \
-  "${humble_setup}" \
+  "${ros_setup}" \
   "${onboard_setup}" \
-  "${odin_setup}" \
-  "${extnav_setup}" \
   "${fcu_device}"
 do
   if [[ ! -e "${required_path}" ]]; then
@@ -38,12 +41,19 @@ do
   fi
 done
 
+runtime_source_setup "${ros_setup}"
+runtime_source_setup "${onboard_setup}"
+
 for required_command in ros2 setsid stdbuf sed tee timeout grep pgrep; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     echo "[startup] required command is missing: ${required_command}" >&2
     exit 1
   fi
 done
+
+runtime_ensure_package mavros
+runtime_ensure_package odin_ros_driver "${ODIN_OVERLAY_SETUP:-}"
+runtime_ensure_package extnav_bridge "${EXTNAV_OVERLAY_SETUP:-}"
 
 # Duplicate MAVROS or control nodes can contend for the serial port or setpoint topic.
 readonly process_pattern='mavros_node|odin1_ros2.launch.py|extnav_to_vision_pose|onboard_control_node'
@@ -54,8 +64,19 @@ if [[ -n "${existing_processes}" ]]; then
   exit 1
 fi
 
-source_setup "${humble_setup}"
-source_setup "${onboard_setup}"
+echo "[startup] auto-discovered ROS=${ROS_DISTRO:-unknown}"
+echo "[startup] workspace=${project_root}"
+echo "[startup] FCU=${fcu_device}:${fcu_baud}"
+echo "[startup] odin=$(ros2 pkg prefix odin_ros_driver)"
+echo "[startup] extnav=$(ros2 pkg prefix extnav_bridge)"
+
+if [[ "${1:-}" == "--check" ]]; then
+  echo "[startup] discovery check passed; no component was started"
+  exit 0
+elif [[ -n "${1:-}" ]]; then
+  echo "Usage: bash start_drone_all.sh [--check]" >&2
+  exit 2
+fi
 
 readonly run_stamp="$(date '+%Y%m%d-%H%M%S')"
 readonly run_directory="${log_root}/${run_stamp}"
@@ -139,16 +160,16 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 launch_component "mavros" \
-  "source '${humble_setup}'; exec ros2 launch mavros apm.launch fcu_url:='${fcu_device}:${fcu_baud}'"
+  "exec ros2 launch mavros apm.launch fcu_url:='${fcu_device}:${fcu_baud}'"
 sleep 1
 launch_component "odin" \
-  "source '${humble_setup}'; source '${odin_setup}'; exec ros2 launch odin_ros_driver odin1_ros2.launch.py"
+  "exec ros2 launch odin_ros_driver odin1_ros2.launch.py"
 sleep 1
 launch_component "extnav" \
-  "source '${humble_setup}'; source '${odin_setup}'; source '${extnav_setup}'; exec ros2 run extnav_bridge extnav_to_vision_pose --ros-args -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq -p roll_cam:=0.0 -p pitch_cam:=0.0 -p yaw_cam:=0.0 -p odin_x:=0.06 -p odin_y:=-0.03 -p odin_z:=0.05"
+  "exec ros2 run extnav_bridge extnav_to_vision_pose --ros-args -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq -p roll_cam:=0.0 -p pitch_cam:=0.0 -p yaw_cam:=0.0 -p odin_x:=0.06 -p odin_y:=-0.03 -p odin_z:=0.05"
 sleep 1
 launch_component "onboard" \
-  "cd '${project_root}'; source '${humble_setup}'; source '${onboard_setup}'; exec ros2 launch onboard_control control.launch.py"
+  "cd '${project_root}'; exec ros2 launch onboard_control control.launch.py"
 
 echo "[startup] all components launched on ROS domain ${ROS_DOMAIN_ID}"
 echo "[startup] waiting for a safe, unarmed readiness snapshot (no control commands are sent)..."
