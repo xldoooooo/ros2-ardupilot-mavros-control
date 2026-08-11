@@ -60,10 +60,16 @@ bash start_drone_all.sh
 `ttyTHS`、`ttyACM` 和 `ttyUSB`。Odin/extnav 通过 ament package index 反查其 overlay，
 不依赖用户名或工作区目录名称。
 
+启动器会先读取 `/etc/ros2-ardupilot/onboard.env`（可用 `ONBOARD_ENV_FILE`
+覆盖路径）。对已确认但存在多个串口候选的飞机，把
+`MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备>` 写入该文件，这样 systemd
+和交互终端直接运行 `./start_drone_all.sh` 使用同一机载配置。
+
 ## 4. 无法唯一判断时
 
 多块串口设备或多个旧 overlay 本身具有安全歧义，程序不会静默选择。确认实际硬件后，
-只对当前命令提供覆盖值，不需要修改仓库文件：
+可将固定选择写入 `/etc/ros2-ardupilot/onboard.env`。临时调试也可只对当前命令
+提供覆盖值，不需要修改仓库文件：
 
 ```bash
 MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> bash start_drone_all.sh --check

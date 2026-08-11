@@ -13,6 +13,16 @@ readonly onboard_setup="${project_root}/install/setup.bash"
 # shellcheck disable=SC1090
 source "${runtime_helpers}"
 
+# Per-aircraft hardware choices stay outside Git and are shared by systemd/manual starts.
+readonly onboard_environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
+if [[ -e "${onboard_environment_file}" && ! -r "${onboard_environment_file}" ]]; then
+  echo "[startup] onboard environment is not readable: ${onboard_environment_file}" >&2
+  exit 1
+fi
+if [[ -r "${onboard_environment_file}" ]]; then
+  runtime_source_setup "${onboard_environment_file}"
+fi
+
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
 fcu_device="$(runtime_detect_fcu_device "${MAVROS_FCU_DEVICE:-}")" || exit 1

@@ -235,6 +235,7 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "ROS_DISTRO=humble" in environment
     assert "ONBOARD_WORKSPACE=/home/onboard/ros2-ardupilot-mavros-control" in environment
     assert "ROS_LOCALHOST_ONLY=0" in environment
+    assert "MAVROS_FCU_DEVICE=" in environment
 
 
 def test_integrated_start_supervises_all_four_components_without_flight_commands() -> None:
@@ -271,6 +272,8 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
     assert "runtime_detect_ros_setup" in script
     assert "runtime_ensure_package odin_ros_driver" in script
     assert "runtime_ensure_package extnav_bridge" in script
+    assert "ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env" in script
+    assert 'runtime_source_setup "${onboard_environment_file}"' in script
     assert "--check" in script
     assert "refusing to create duplicate flight-stack processes" in script
     assert "kill -INT -- \"-${pid}\"" in script
