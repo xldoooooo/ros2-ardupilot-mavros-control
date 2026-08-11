@@ -352,3 +352,22 @@
   已通过且没有启动组件；服务仍 inactive/Result=success，飞行进程为零，串口空闲。
 - 修复提交 `72cc836` 已同步真机；本地目标测试 10 passed、完整 Python 测试
   74 passed。详见 `agent/report/report-2026-08-11-manual-onboard-launch-env-fix.md`。
+
+## 2026-08-11 GPS 原点重复连接与失败彻底断开修复
+
+- `gp_origin` 是 reliable + transient-local 的已应用状态，不是周期事件。机载端必须记录当前
+  FCU 会话是否已真实观察原点：匹配请求可幂等 final success 且无需重复发布；不存在或不匹配
+  时仍须等待新回读并保留 8 秒失败门。已知 FCU 断线会作废缓存，禁止跨 FCU 会话误确认。
+- 完整仿真/实机工作流的前检查失败、取消、异常和主动断开都是完整会话边界：释放租约、清理
+  本地进程后必须停止 `GroundStationRosController` 并销毁 DDS context。失败后的 GUI 应为
+  `ROS IDLE`、快照全清，不能因仍订阅 10 Hz 状态而重新显示飞控连接或继续刷新遥测。纯 Wi-Fi
+  只读检测仍不得复用会发送 release/管理进程的清理路径。
+- 真实旧机载端原点超时回归确认修改后的地面站 `ready=false`、domain=None、快照全清，最终错误
+  后 3 秒无晚到链路事件。修复部署后同一 GUI 身份连续两轮连接/断开均成功，原点 ticket 2/4
+  都返回“当前值已匹配”，每轮断开后 2 秒无晚到重连。
+- 提交 `91ccc75` 已推送 `main` 并同步真机；本地 Python 75 passed、ROS/C++ 5 tests 零失败，
+  真机 Humble/aarch64 Release 构建与 5 tests 零失败。最终 systemd 服务 enabled + active，飞机
+  `armed=false`、STABILIZE、IDLE、无租约、setpoint 单发布者。
+- Humble/Jazzy context 切换期间既有 `sequence size exceeds remaining buffer` 仍会出现，但未造成
+  状态、租约、原点或进程失败；该独立跨发行版 DDS 问题没有在本修复中屏蔽或宣称解决。详见
+  `agent/report/report-2026-08-11-gps-origin-reconnect-and-failure-teardown.md`。
