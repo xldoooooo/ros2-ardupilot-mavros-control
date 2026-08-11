@@ -953,6 +953,33 @@ def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
             assert panel.communication_rate_chip.property("tone") == tone
             assert "age" not in panel.communication_rate_chip.text()
 
+        # 常见的 9.xx/10.xx 位数变化不得改变组件或后续状态块的位置。
+        window.resize(1600, 920)
+        stable_widths = []
+        following_chip_positions = []
+        for rate in (10.00, 9.99, 10.00, 9.98):
+            ros.current_snapshot = replace(snapshot, status_rate_hz=rate)
+            window._refresh()
+            _application().processEvents()
+            stable_widths.append(panel.communication_rate_chip.width())
+            following_chip_positions.append(
+                panel.last_manual_command_chip.mapTo(
+                    panel.manual_card, QPoint(0, 0)
+                ).x()
+            )
+        assert len(set(stable_widths)) == 1
+        assert len(set(following_chip_positions)) == 1
+
+        # 最小宽度不是固定/最大宽度，异常的更长内容仍能响应式扩展。
+        ros.current_snapshot = replace(snapshot, status_rate_hz=100.0)
+        window._refresh()
+        _application().processEvents()
+        assert panel.communication_rate_chip.width() > stable_widths[0]
+        assert (
+            panel.communication_rate_chip.width()
+            >= panel.communication_rate_chip.sizeHint().width()
+        )
+
         # 最小窗口使用较长实机文字时也不裁字。
         window._connection_mode = "hardware"
         ros.current_snapshot = replace(

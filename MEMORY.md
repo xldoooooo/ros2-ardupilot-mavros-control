@@ -402,3 +402,12 @@
   readiness 未达到。安全门因此禁止起飞/运动；必须另行查明 MAVROS 参数服务发现/同步并恢复该门，
   禁止绕过。跨 Humble/Jazzy Fast DDS 晚加入订阅仍有发现异常，不能把部分话题可达当成实飞通信
   基线。详见 `agent/report/report-2026-08-12-task16-beautify-3.md`。
+
+## 2026-08-12 通讯频率状态块宽度防抖
+
+- 通讯频率块按配置正常范围计算整数位数，以同位数宽字符样本完成 style polish 后的 `sizeHint`
+  作为最小宽度；9.xx/10.xx 正常波动不再改变自身宽度或推挤“最近指令”。没有设置固定/最大
+  宽度，更长内容仍可扩展，1180×700 两行响应布局保持不变。
+- 几何回归覆盖 10.00→9.99→10.00→9.98 的宽度/X 坐标稳定性及 100.00 Hz 扩展；最终 Python
+  76 passed，静态检查与环境检查通过。本次未连接真机。详见
+  `agent/report/report-2026-08-12-communication-rate-chip-width-stability.md`。

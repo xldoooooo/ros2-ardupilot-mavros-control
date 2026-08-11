@@ -507,13 +507,27 @@ class OperationsPanel(QWidget):
             f"仿真显示百分比：≥ {SIMULATION_BATTERY_GOOD_PERCENTAGE * 100:.0f}% "
             f"正常，≥ {SIMULATION_BATTERY_WARNING_PERCENTAGE * 100:.0f}% 告警"
         )
-        self.communication_rate_chip = QLabel("通讯频率 · -- Hz")
+        # 按正常范围所需整数位数预留宽度，避免 9.99/10.00 Hz 往返时推挤相邻状态块。
+        # 这里只设置最小宽度；更长文本仍可扩展，窄窗口的两行响应布局也保持不变。
+        normal_rate_ceiling = STATUS_RATE_TARGET_HZ + STATUS_RATE_TOLERANCE_HZ
+        normal_integer_digits = max(
+            1, len(str(int(math.ceil(normal_rate_ceiling))))
+        )
+        nominal_rate_text = (
+            f"通讯频率 · {'8' * normal_integer_digits}.88 Hz"
+        )
+        self.communication_rate_chip = QLabel(nominal_rate_text)
         self.communication_rate_chip.setObjectName("manualStatusChip")
         self.communication_rate_chip.setProperty("tone", "warning")
         self.communication_rate_chip.setToolTip(
             f"按 ControlStatus 实际到达时间计算最近 5 秒频率；"
             f"{STATUS_RATE_TARGET_HZ:.0f} ± {STATUS_RATE_TOLERANCE_HZ:.0f} Hz 显示为正常"
         )
+        self.communication_rate_chip.ensurePolished()
+        self.communication_rate_chip.setMinimumWidth(
+            self.communication_rate_chip.sizeHint().width()
+        )
+        self.communication_rate_chip.setText("通讯频率 · -- Hz")
         self.last_manual_command_chip = QLabel("最近指令 · 尚未发送")
         self.last_manual_command_chip.setObjectName("manualStatusChip")
         self.last_manual_command_chip.setProperty("tone", "neutral")
