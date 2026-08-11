@@ -1,0 +1,75 @@
+# 地面站
+
+```bash
+ROS_DOMAIN_ID=0
+ROS_LOCALHOST_ONLY=0
+```
+
+# 机载服务
+
+## 开机自启
+
+开机自启动配置：
+
+```text
+/etc/systemd/system/ros2-ardupilot-onboard.service
+```
+
+机载计算机开机后，会等待网络就绪和系统首次校时完成，然后运行：
+
+```text
+/home/onboard/ros2-ardupilot-mavros-control/start_drone_all.sh
+```
+
+若机载服务在系统首次 NTP 校时之前启动，墙钟跳变可能使已创建的 MAVROS/ROS 定时链异常，
+导致地面站无法连接。
+
+## 自动重启
+
+```text
+/etc/systemd/system/ros2-ardupilot-onboard.service
+```
+
+该服务会自动重启：`start_drone_all.sh` 启动的四个组件中，任一主要进程异常退出后，脚本会清理
+其余组件并以失败状态退出，systemd 在 10 秒后重启整组服务。
+
+通过 `systemctl stop` 主动停止服务不会触发自动重启。
+
+仓库中的通用服务示例位于
+[`src/onboard_control/deploy/onboard-control.service.example`](src/onboard_control/deploy/onboard-control.service.example)。
+
+## 一键启动
+
+```bash
+cd /home/onboard/ros2-ardupilot-mavros-control
+./start_drone_all.sh
+```
+
+## 结束机载服务
+
+```bash
+sudo systemctl stop ros2-ardupilot-onboard.service
+```
+
+或
+
+```bash
+bash ./stop_onboard_service.sh
+```
+
+## 配置
+
+`start_drone_all.sh` 会自动读取以下配置文件：
+
+```text
+/etc/ros2-ardupilot/onboard.env
+```
+
+```bash
+ROS_DOMAIN_ID=0
+ROS_LOCALHOST_ONLY=0
+MAVROS_FCU_DEVICE=/dev/ttyTHS1
+MAVROS_FCU_BAUD=460800
+```
+
+当前实机 FCU 串口配置为 `/dev/ttyTHS1:460800`。

@@ -328,6 +328,23 @@
   零失败。本次未连接或同步实机，未验证实机 100 Hz。详见
   `agent/report/report-2026-08-11-remove-100hz-rate-listeners.md`。
 
+## 2026-08-11 真机开机自启动配置
+
+- 真机 `xld@192.168.112.186` 已安装并启用系统服务
+  `/etc/systemd/system/ros2-ardupilot-onboard.service`，开机进入 `multi-user.target` 后以 `xld`
+  用户运行 `/home/onboard/ros2-ardupilot-mavros-control/start_drone_all.sh`。服务固定加载 Humble、
+  项目 overlay、`/home/xld/ws` Odin overlay 和 `/home/xld/vrpn_mavros` extnav overlay，使用
+  domain 0/subnet；失败后间隔 10 秒重试，停止时先向监督脚本发送 SIGINT。
+- 配置阶段只执行 `systemctl enable`，没有 `start` 或重启真机；交付时服务为
+  `enabled`、`inactive/dead`，四组件零残留且 `/dev/ttyTHS1` 无占用。首次开机实际运行仍需由
+  用户观察 `systemctl status` 与 journal 验证。
+- 真机脚本哈希仍为旧已验证版本
+  `4b8a3307a71fecb84904df5374b90d1d54309b18181d5a5f1cdece4b5c624452`，并不支持后来本地版本
+  才加入的真正 `--check`。一次按新文档执行的 `--check` 因此短暂启动四组件，发现后立即通过
+  脚本 SIGINT 清理；只读状态确认全程 `armed=false`、STABILIZE，最终无进程或串口占用。
+  不得再把该远端旧脚本的 `--check` 当作无启动检查。详见
+  `agent/report/report-2026-08-11-onboard-boot-autostart.md`。
+
 ## 2026-08-11 真机机载 2.1 同步与未武装测试
 
 - 真机正式 sparse 工作树已快进到 `7c1f8cc`，Humble/aarch64 Release 两包构建、
@@ -411,3 +428,13 @@
 - 几何回归覆盖 10.00→9.99→10.00→9.98 的宽度/X 坐标稳定性及 100.00 Hz 扩展；最终 Python
   76 passed，静态检查与环境检查通过。本次未连接真机。详见
   `agent/report/report-2026-08-12-communication-rate-chip-width-stability.md`。
+
+## 2026-08-12 当前改动整理与过程目录清理
+
+- 根目录 `README.md` 与 `integration/` 已按用户要求纳入版本管理；任务 14～16 的任务输入、有效
+  素材和报告，以及 AP 重启调查 DOCX/PDF 一并保留。
+- `agent/codex/`、`agent/grok/` 是本地代理过程目录，内容已清空并由 `.gitignore` 整目录忽略；
+  不应再把需要长期维护的正式配置只放在这两个目录中。
+- 清理了 `agent/ref/` 中与任务 15 素材完全相同的视频副本，以及三张未引用的 8×1 像素空白
+  PNG。完整清单与验证结果见
+  `agent/report/report-2026-08-12-current-changes-review-and-push.md`。

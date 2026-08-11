@@ -82,6 +82,10 @@ deepcopilot/
 /AGENTS.md
 /fishros
 
+# Agent-specific scratch files and generated evidence
+/agent/codex/
+/agent/grok/
+
 # IDE and editor files
 .vscode/
 .idea/
