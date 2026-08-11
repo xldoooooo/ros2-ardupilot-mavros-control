@@ -85,7 +85,7 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 成功烟雾测试必须同时报告：
 
 ```text
-interface=2.1
+interface=2.2
 fcu_connected=false
 armed=false
 setpoint_messages=0
@@ -143,7 +143,7 @@ ROS 发行版/DDS 版本或加入受支持桥接并复验之前，禁止把当�
 
 所有测试均保持螺旋桨拆除、飞控不解锁，并由低风险到高风险逐级进行：
 
-1. **DDS 协议测试**：不启动 MAVROS，只启动新机载节点；地面站先只读取 `/onboard_control/status`，确认接口 `2.1`、`armed=false`。GUI 中齿轮右侧的独立 Wi-Fi 图标只订阅状态与远端 `/rosout`，测量状态频率和最大接收间隔；它不会申请租约、配置消息频率、写 GPS 原点或建立控制会话。
+1. **DDS 协议测试**：不启动 MAVROS，只启动新机载节点；地面站先只读取 `/onboard_control/status`，确认接口 `2.2`、`armed=false`。GUI 中齿轮右侧的独立 Wi-Fi 图标只订阅状态与远端 `/rosout`，测量状态频率和最大接收间隔；它不会申请租约、配置消息频率、写 GPS 原点或建立控制会话。
 2. **MAVROS 只读测试**：只单独启动 MAVROS 并读取 `/mavros/state`，确认 `armed=false`。Odin/extnav 应留到单独评审后的外部定位测试，不调用任何模式、解锁、起飞或原点服务。
 3. **同机链路测试**：启动新机载节点；它会自动、异步配置控制链必需的 `LOCAL_POSITION_NED`、`ATTITUDE_QUATERNION`、`HIGHRES_IMU` 为 100 Hz，并在飞控重连后重试。只观察聚合状态是否正确反映飞控连接、位姿、`GUID_OPTIONS` 与 setpoint 发布者冲突；使用独立 Wi-Fi 图标，不点击“连接实机服务”，不发送 `FlightCommand`/`MotionIntent`/航点。自动消息频率维护不包含模式、解锁、起飞或参数写入。
 4. **完整连接与维护测试**：原“连接实机服务”按钮保留正式功能，会在明确风险确认后申请控制租约、发送心跳、确认消息频率并写 GPS 原点，连接成功后按权威状态开放控制按钮。只有前三步均通过并单独完成安全评审后才可测试；该按钮本身不会发送解锁或起飞请求，但不属于零命令通讯检测。

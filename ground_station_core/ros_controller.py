@@ -81,6 +81,7 @@ class _VehicleStateStore:
             vx=message.velocity.x,
             vy=message.velocity.y,
             vz=message.velocity.z,
+            roll=message.roll,
             pitch=message.pitch,
             battery_valid=message.battery_valid,
             battery_voltage=message.battery_voltage,

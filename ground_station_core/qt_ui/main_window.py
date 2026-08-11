@@ -972,7 +972,7 @@ class GroundStationWindow(QMainWindow):
         """统一刷新快照、按钮状态、命令结果和日志，不跨线程触碰 Qt。"""
         snapshot = self._ros.snapshot()
         self._update_status_badges(snapshot)
-        self.operations.update_snapshot(snapshot)
+        self.operations.update_snapshot(snapshot, self._connection_mode)
         self.waypoints.update_progress(snapshot)
         self._consume_results()
 

@@ -7,7 +7,15 @@ from pathlib import Path
 import time
 
 from PySide6.QtCore import QPointF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QIcon, QPaintEvent, QPainter, QPen
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QIcon,
+    QPaintEvent,
+    QPainter,
+    QPen,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -26,7 +34,13 @@ from PySide6.QtWidgets import (
 
 from ..config import (
     DEFAULT_GPS_ORIGIN,
+    HARDWARE_BATTERY_GOOD_VOLTAGE,
+    HARDWARE_BATTERY_WARNING_VOLTAGE,
     LAND_SPEED,
+    SIMULATION_BATTERY_GOOD_PERCENTAGE,
+    SIMULATION_BATTERY_WARNING_PERCENTAGE,
+    STATUS_RATE_TARGET_HZ,
+    STATUS_RATE_TOLERANCE_HZ,
     TAKEOFF_ALTITUDE,
     TAKEOFF_SPEED,
     VELOCITY_SCALE,
@@ -187,6 +201,8 @@ class OperationsPanel(QWidget):
 
     # 齿轮与 Wi-Fi 均使用紧凑正方形，给最小窗口下的两个文字按钮保留宽度。
     _AUXILIARY_BUTTON_SIZE = 36
+    # 窄窗口改用两行状态布局，避免五个状态块文字被裁切。
+    _STATUS_WRAP_WIDTH = 860
 
     simulation_requested = Signal()
     hardware_requested = Signal()
@@ -236,6 +252,46 @@ class OperationsPanel(QWidget):
         manual_layout.addWidget(self.manual_card)
         root.addWidget(self.manual_panel)
         root.addStretch(1)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        """在窄布局中把五个状态块换到独立第二行。"""
+        super().resizeEvent(event)
+        if hasattr(self, "manual_status_layout"):
+            self._arrange_manual_status(
+                wrapped=event.size().width() < self._STATUS_WRAP_WIDTH
+            )
+
+    def _arrange_manual_status(self, wrapped: bool) -> None:
+        """重用同一组控件切换单行/两行状态布局。"""
+        if self._manual_status_wrapped is wrapped:
+            return
+        layout = self.manual_status_layout
+        layout.removeWidget(self.coordinate_status_group)
+        layout.removeWidget(self.manual_status_chip_group)
+        if wrapped:
+            layout.addWidget(
+                self.coordinate_status_group,
+                0,
+                0,
+                Qt.AlignmentFlag.AlignLeft,
+            )
+            layout.addWidget(self.manual_status_chip_group, 1, 0)
+        else:
+            layout.addWidget(
+                self.coordinate_status_group,
+                0,
+                0,
+                Qt.AlignmentFlag.AlignLeft,
+            )
+            layout.addWidget(
+                self.manual_status_chip_group,
+                0,
+                1,
+                Qt.AlignmentFlag.AlignRight,
+            )
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 0)
+        self._manual_status_wrapped = wrapped
 
     def _build_environment_card(self) -> Card:
         """创建仿真/实机入口、原点齿轮、零命令通讯检测与断开操作。"""
@@ -396,15 +452,29 @@ class OperationsPanel(QWidget):
             _JoystickOffsetIndicator, str
         ] = {}
 
-        # 坐标系、控制权与最近指令年龄始终显示在操纵区顶部。
-        status_row = QHBoxLayout()
-        status_row.setSpacing(7)
+        # 坐标系与五个关键状态块始终显示在操纵区顶部。
+        self.manual_status_panel = QWidget()
+        self.manual_status_panel.setObjectName("manualStatusPanel")
+        self.manual_status_layout = QGridLayout(self.manual_status_panel)
+        self.manual_status_layout.setContentsMargins(0, 0, 0, 0)
+        self.manual_status_layout.setHorizontalSpacing(5)
+        self.manual_status_layout.setVerticalSpacing(5)
+        self.coordinate_status_group = QWidget()
+        self.coordinate_status_group.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
+        coordinate_layout = QHBoxLayout(self.coordinate_status_group)
+        coordinate_layout.setContentsMargins(0, 0, 0, 0)
+        coordinate_layout.setSpacing(5)
         coordinate_label = QLabel("坐标系")
         coordinate_label.setObjectName("mutedLabel")
         self.coordinate_mode_combo = DownwardComboBox()
         self.coordinate_mode_combo.setObjectName("manualCoordinateMode")
         self.coordinate_mode_combo.addItem("机体坐标", "body")
         self.coordinate_mode_combo.addItem("本地 ENU", "enu")
+        # 本地 ENU 是默认输入语义；初始设值不产生一条伪造的操作日志。
+        self.coordinate_mode_combo.setCurrentIndex(1)
         self.coordinate_mode_combo.setToolTip(
             "机体坐标：I/J 始终沿机头前方/左侧；本地 ENU：按固定 X/Y 轴输入"
         )
@@ -415,18 +485,53 @@ class OperationsPanel(QWidget):
         self.coordinate_mode_combo.currentIndexChanged.connect(
             self._emit_coordinate_mode_changed
         )
+        coordinate_layout.addWidget(coordinate_label)
+        coordinate_layout.addWidget(self.coordinate_mode_combo)
+
+        self.manual_status_chip_group = QWidget()
+        chip_layout = QHBoxLayout(self.manual_status_chip_group)
+        chip_layout.setContentsMargins(0, 0, 0, 0)
+        chip_layout.setSpacing(4)
         self.control_authority_chip = QLabel("控制权 · 未取得")
         self.control_authority_chip.setObjectName("manualStatusChip")
         self.control_authority_chip.setProperty("tone", "bad")
+        self.autopilot_mode_chip = QLabel("飞控模式 · --")
+        self.autopilot_mode_chip.setObjectName("manualStatusChip")
+        self.autopilot_mode_chip.setProperty("tone", "neutral")
+        self.battery_status_chip = QLabel("电池 · --")
+        self.battery_status_chip.setObjectName("manualStatusChip")
+        self.battery_status_chip.setProperty("tone", "warning")
+        self.battery_status_chip.setToolTip(
+            f"实机显示电压：≥ {HARDWARE_BATTERY_GOOD_VOLTAGE:.1f} V 正常，"
+            f"≥ {HARDWARE_BATTERY_WARNING_VOLTAGE:.1f} V 告警，更低为危险；"
+            f"仿真显示百分比：≥ {SIMULATION_BATTERY_GOOD_PERCENTAGE * 100:.0f}% "
+            f"正常，≥ {SIMULATION_BATTERY_WARNING_PERCENTAGE * 100:.0f}% 告警"
+        )
+        self.communication_rate_chip = QLabel("通讯频率 · -- Hz")
+        self.communication_rate_chip.setObjectName("manualStatusChip")
+        self.communication_rate_chip.setProperty("tone", "warning")
+        self.communication_rate_chip.setToolTip(
+            f"按 ControlStatus 实际到达时间计算最近 5 秒频率；"
+            f"{STATUS_RATE_TARGET_HZ:.0f} ± {STATUS_RATE_TOLERANCE_HZ:.0f} Hz 显示为正常"
+        )
         self.last_manual_command_chip = QLabel("最近指令 · 尚未发送")
         self.last_manual_command_chip.setObjectName("manualStatusChip")
         self.last_manual_command_chip.setProperty("tone", "neutral")
-        status_row.addWidget(coordinate_label)
-        status_row.addWidget(self.coordinate_mode_combo)
-        status_row.addStretch(1)
-        status_row.addWidget(self.control_authority_chip)
-        status_row.addWidget(self.last_manual_command_chip)
-        card.content_layout.addLayout(status_row)
+        for chip in (
+            self.control_authority_chip,
+            self.autopilot_mode_chip,
+            self.battery_status_chip,
+            self.communication_rate_chip,
+            self.last_manual_command_chip,
+        ):
+            chip.setSizePolicy(
+                QSizePolicy.Policy.Minimum,
+                QSizePolicy.Policy.Fixed,
+            )
+            chip_layout.addWidget(chip)
+        self._manual_status_wrapped: bool | None = None
+        self._arrange_manual_status(wrapped=False)
+        card.content_layout.addWidget(self.manual_status_panel)
 
         # 左摇杆：W/S 控制升降，A/D 控制偏航。
         left_definitions = (
@@ -511,10 +616,11 @@ class OperationsPanel(QWidget):
         summary.setSpacing(7)
         summary_definitions = (
             ("实际高度", "m", "altitude_summary_value"),
+            ("实际速度", "m/s", "actual_speed_summary_value"),
             ("实际航向", "°", "heading_summary_value"),
-            ("目标水平", "m/s", "horizontal_summary_value"),
-            ("目标升降", "m/s", "vertical_summary_value"),
-            ("目标偏航", "°/s", "yaw_rate_summary_value"),
+            ("指令水平速度", "m/s", "horizontal_summary_value"),
+            ("指令垂直速度", "m/s", "vertical_summary_value"),
+            ("指令转向速度", "°/s", "yaw_rate_summary_value"),
         )
         for title, unit, attribute in summary_definitions:
             metric, value = self._summary_metric(title, unit)
@@ -532,7 +638,7 @@ class OperationsPanel(QWidget):
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
         self.engineering_toggle.setToolTip(
-            "展开 XYZ、目标位姿、控制周期和当前单次指令增量"
+            "展开实际/目标位姿与速度、控制周期和当前单次指令增量"
         )
         self.engineering_toggle.toggled.connect(self._set_engineering_visible)
         card.content_layout.addWidget(
@@ -560,17 +666,20 @@ class OperationsPanel(QWidget):
         telemetry.setHorizontalSpacing(10)
         telemetry.setVerticalSpacing(5)
         self.position_value = self._metric("X --  Y --  Z --  Yaw --")
-        self.velocity_value = self._metric("Vx --  Vy --  Vz --  YawRate --")
         self.target_value = self._metric("X --  Y --  Z --  Yaw --")
+        self.actual_velocity_value = self._metric("Vx --  Vy --  Vz --")
+        self.velocity_value = self._metric("Vx --  Vy --  Vz --  YawRate --")
         self.position_value.setToolTip("ψ 表示实际偏航角")
-        self.velocity_value.setToolTip("ωz 表示目标偏航角速度，单位 rad/s")
         self.target_value.setToolTip("ψ 表示目标偏航角")
+        self.actual_velocity_value.setToolTip("实际本地 ENU 线速度，单位 m/s")
+        self.velocity_value.setToolTip("ωz 表示目标偏航角速度，单位 rad/s")
         self.controller_value = self._metric("-- Hz · jitter -- ms · miss --")
         self.safety_value = self._metric("位置 WAIT · 推力 WAIT · 发布源 WAIT")
         rows = (
             ("实际位姿", self.position_value),
-            ("目标速度", self.velocity_value),
             ("目标位姿", self.target_value),
+            ("实际速度", self.actual_velocity_value),
+            ("目标速度", self.velocity_value),
             ("控制周期", self.controller_value),
             ("安全门控", self.safety_value),
         )
@@ -616,27 +725,14 @@ class OperationsPanel(QWidget):
             label_widget.setObjectName("mutedLabel")
             increment_layout.addWidget(label_widget, row, 0)
             increment_layout.addWidget(value, row, 1)
-        self.flight_state_heading = QLabel("飞行与链路状态")
+        self.flight_state_heading = QLabel("飞行姿态")
         self.flight_state_heading.setObjectName("mutedLabel")
         increment_layout.addWidget(self.flight_state_heading, 5, 0, 1, 2)
-        self.attitude_value = self._metric("俯仰 --° · 偏航 --°")
-        self.status_link_value = self._metric("-- Hz · age -- s")
-        self.status_link_value.setToolTip(
-            "地面站按 ControlStatus 的实际到达时间计算最近 5 秒接收频率与消息年龄"
-        )
-        self.battery_value = self._metric("无有效数据")
-        self.autopilot_mode_value = self._metric("--")
-        state_rows = (
-            ("俯仰/偏航", self.attitude_value),
-            ("地面↔机载", self.status_link_value),
-            ("电池", self.battery_value),
-            ("飞控模式", self.autopilot_mode_value),
-        )
-        for row, (label, value) in enumerate(state_rows, start=6):
-            label_widget = QLabel(label)
-            label_widget.setObjectName("mutedLabel")
-            increment_layout.addWidget(label_widget, row, 0)
-            increment_layout.addWidget(value, row, 1)
+        self.attitude_value = self._metric("俯仰 --° · 滚转 --°")
+        attitude_label = QLabel("俯仰/滚转")
+        attitude_label.setObjectName("mutedLabel")
+        increment_layout.addWidget(attitude_label, 6, 0)
+        increment_layout.addWidget(self.attitude_value, 6, 1)
         increment_layout.setColumnStretch(1, 1)
         details.addWidget(self.engineering_increment_panel, 1)
         self.left_sensitivity_combo.currentIndexChanged.connect(
@@ -734,7 +830,7 @@ class OperationsPanel(QWidget):
         return metric, value
 
     def _set_engineering_visible(self, visible: bool) -> None:
-        """展开或收起原始位姿、目标、控制周期与指令增量。"""
+        """展开或收起位姿、速度、控制周期与指令增量。"""
         self.engineering_panel.setVisible(visible)
         self.engineering_toggle.setArrowType(
             Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
@@ -798,6 +894,46 @@ class OperationsPanel(QWidget):
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         label.setWordWrap(True)
         return label
+
+    @staticmethod
+    def _set_status_chip(chip: QLabel, text: str, tone: str) -> None:
+        """仅在文字或语义颜色变化时刷新顶部状态块。"""
+        set_text_if_changed(chip, text)
+        if chip.property("tone") != tone:
+            chip.setProperty("tone", tone)
+            repolish(chip)
+
+    @staticmethod
+    def _battery_chip_state(
+        snapshot: VehicleSnapshot,
+        connection_mode: str,
+    ) -> tuple[str, str]:
+        """按仿真/实机语义返回电池状态块文字与颜色。"""
+        if not snapshot.onboard_available or not snapshot.battery_valid:
+            return "电池 · --", "warning"
+
+        if connection_mode == "simulation":
+            percentage = snapshot.battery_percentage
+            if not math.isfinite(percentage) or not 0.0 <= percentage <= 1.0:
+                return "电池 · --", "warning"
+            if percentage >= SIMULATION_BATTERY_GOOD_PERCENTAGE:
+                tone = "good"
+            elif percentage >= SIMULATION_BATTERY_WARNING_PERCENTAGE:
+                tone = "warning"
+            else:
+                tone = "bad"
+            return f"电池 · {percentage * 100.0:.0f}%", tone
+
+        voltage = snapshot.battery_voltage
+        if not math.isfinite(voltage) or voltage <= 0.0:
+            return "电池 · --", "warning"
+        if voltage >= HARDWARE_BATTERY_GOOD_VOLTAGE:
+            tone = "good"
+        elif voltage >= HARDWARE_BATTERY_WARNING_VOLTAGE:
+            tone = "warning"
+        else:
+            tone = "bad"
+        return f"电池 · {voltage:.2f} V", tone
 
     def _motion_button(
         self, name: str, text: str, values: tuple[float, float, float, float]
@@ -942,10 +1078,18 @@ class OperationsPanel(QWidget):
             self._origin = dialog.origin()
             self._refresh_origin_summary()
 
-    def update_snapshot(self, snapshot: VehicleSnapshot) -> None:
+    def update_snapshot(
+        self,
+        snapshot: VehicleSnapshot,
+        connection_mode: str = "none",
+    ) -> None:
         """刷新摘要、常驻状态与默认折叠的机载工程诊断。"""
         self._latest_yaw = snapshot.yaw
         set_text_if_changed(self.altitude_summary_value, f"{snapshot.z:+.2f}")
+        set_text_if_changed(
+            self.actual_speed_summary_value,
+            f"{math.hypot(snapshot.vx, snapshot.vy, snapshot.vz):.2f}",
+        )
         set_text_if_changed(
             self.heading_summary_value,
             f"{math.degrees(snapshot.yaw):+.1f}",
@@ -963,12 +1107,47 @@ class OperationsPanel(QWidget):
         )
 
         authority = bool(snapshot.control_authority)
-        authority_text = "控制权 · 已取得" if authority else "控制权 · 未取得"
-        authority_tone = "good" if authority else "bad"
-        set_text_if_changed(self.control_authority_chip, authority_text)
-        if self.control_authority_chip.property("tone") != authority_tone:
-            self.control_authority_chip.setProperty("tone", authority_tone)
-            repolish(self.control_authority_chip)
+        self._set_status_chip(
+            self.control_authority_chip,
+            "控制权 · 已取得" if authority else "控制权 · 未取得",
+            "good" if authority else "bad",
+        )
+        autopilot_mode = (
+            snapshot.autopilot_mode
+            if snapshot.onboard_available and snapshot.autopilot_mode
+            else "--"
+        )
+        self._set_status_chip(
+            self.autopilot_mode_chip,
+            f"飞控模式 · {autopilot_mode}",
+            "neutral",
+        )
+        battery_text, battery_tone = self._battery_chip_state(
+            snapshot,
+            str(connection_mode or "none").lower(),
+        )
+        self._set_status_chip(
+            self.battery_status_chip,
+            battery_text,
+            battery_tone,
+        )
+        status_rate = snapshot.status_rate_hz
+        status_rate_valid = (
+            snapshot.onboard_available
+            and math.isfinite(status_rate)
+            and status_rate > 0.0
+        )
+        rate_text = f"{status_rate:.2f} Hz" if status_rate_valid else "-- Hz"
+        rate_good = status_rate_valid and (
+            STATUS_RATE_TARGET_HZ - STATUS_RATE_TOLERANCE_HZ
+            <= status_rate
+            <= STATUS_RATE_TARGET_HZ + STATUS_RATE_TOLERANCE_HZ
+        )
+        self._set_status_chip(
+            self.communication_rate_chip,
+            f"通讯频率 · {rate_text}",
+            "good" if rate_good else "warning",
+        )
         self._refresh_manual_command_age()
 
         set_text_if_changed(
@@ -977,15 +1156,20 @@ class OperationsPanel(QWidget):
             f"ψ {math.degrees(snapshot.yaw):+.1f}°",
         )
         set_text_if_changed(
-            self.velocity_value,
-            f"Vx {snapshot.target_vx:+.2f}  Vy {snapshot.target_vy:+.2f}  "
-            f"Vz {snapshot.target_vz:+.2f}  ωz {snapshot.target_yaw_rate:+.2f}",
-        )
-        set_text_if_changed(
             self.target_value,
             f"X {snapshot.target_x:+.2f}  Y {snapshot.target_y:+.2f}  "
             f"Z {snapshot.target_z:+.2f}  "
             f"ψ {math.degrees(snapshot.target_yaw):+.1f}°",
+        )
+        set_text_if_changed(
+            self.actual_velocity_value,
+            f"Vx {snapshot.vx:+.2f}  Vy {snapshot.vy:+.2f}  "
+            f"Vz {snapshot.vz:+.2f}",
+        )
+        set_text_if_changed(
+            self.velocity_value,
+            f"Vx {snapshot.target_vx:+.2f}  Vy {snapshot.target_vy:+.2f}  "
+            f"Vz {snapshot.target_vz:+.2f}  ωz {snapshot.target_yaw_rate:+.2f}",
         )
         set_text_if_changed(
             self.controller_value,
@@ -1002,39 +1186,11 @@ class OperationsPanel(QWidget):
         if snapshot.local_position_valid:
             attitude_text = (
                 f"俯仰 {math.degrees(snapshot.pitch):+.1f}° · "
-                f"偏航 {math.degrees(snapshot.yaw):+.1f}°"
+                f"滚转 {math.degrees(snapshot.roll):+.1f}°"
             )
         else:
-            attitude_text = "俯仰 --° · 偏航 --°"
+            attitude_text = "俯仰 --° · 滚转 --°"
         set_text_if_changed(self.attitude_value, attitude_text)
-
-        if snapshot.onboard_available and snapshot.status_rate_hz > 0.0:
-            link_text = (
-                f"{snapshot.status_rate_hz:.2f} Hz · "
-                f"age {snapshot.status_age_seconds:.2f} s"
-            )
-        else:
-            link_text = "-- Hz · age -- s"
-        set_text_if_changed(self.status_link_value, link_text)
-
-        battery_parts: list[str] = []
-        if snapshot.battery_valid:
-            battery_parts.append(f"{snapshot.battery_voltage:.2f} V")
-            if math.isfinite(snapshot.battery_current):
-                battery_parts.append(f"{snapshot.battery_current:+.2f} A")
-            if (
-                math.isfinite(snapshot.battery_percentage)
-                and 0.0 <= snapshot.battery_percentage <= 1.0
-            ):
-                battery_parts.append(f"{snapshot.battery_percentage * 100.0:.0f}%")
-        set_text_if_changed(
-            self.battery_value,
-            " · ".join(battery_parts) if battery_parts else "无有效数据",
-        )
-        set_text_if_changed(
-            self.autopilot_mode_value,
-            snapshot.autopilot_mode or "--",
-        )
 
     def apply_availability(
         self,

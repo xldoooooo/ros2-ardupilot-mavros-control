@@ -62,6 +62,7 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
         local_position_valid=True,
         position=vector,
         velocity=SimpleNamespace(x=0.1, y=0.2, z=0.3),
+        roll=-0.1,
         pitch=-0.2,
         yaw=0.4,
         battery_valid=True,
@@ -101,6 +102,7 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     assert snapshot.waypoint_index == 2
     assert snapshot.control_rate_hz == 99.8
     assert snapshot.hover_throttle == 0.39
+    assert snapshot.roll == -0.1
     assert snapshot.pitch == -0.2
     assert snapshot.yaw == 0.4
     assert snapshot.battery_valid
@@ -132,7 +134,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "2.1"
+    assert INTERFACE_VERSION == "2.2"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

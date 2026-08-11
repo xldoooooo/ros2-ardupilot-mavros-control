@@ -63,6 +63,7 @@ class VehicleSnapshot:
     vx: float = 0.0
     vy: float = 0.0
     vz: float = 0.0
+    roll: float = 0.0
     pitch: float = 0.0
     battery_valid: bool = False
     battery_voltage: float = 0.0

@@ -15,6 +15,7 @@ string autopilot_mode
 bool local_position_valid
 geometry_msgs/Point position
 geometry_msgs/Vector3 velocity
+float64 roll
 float64 pitch
 float64 yaw
 bool battery_valid

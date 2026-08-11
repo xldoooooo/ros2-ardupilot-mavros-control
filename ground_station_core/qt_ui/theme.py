@@ -126,17 +126,22 @@ QLabel#metricValue {{
 }}
 QLabel#manualStatusChip {{
     min-height: 25px;
-    padding: 2px 8px;
+    padding: 2px;
     background: {COLORS['surface_alt']};
     border: 1px solid {COLORS['border']};
     border-radius: 3px;
-    font-size: 9pt;
+    font-size: 8.5pt;
     font-weight: 700;
 }}
 QLabel#manualStatusChip[tone="good"] {{
     color: {COLORS['success']};
     background: {COLORS['success_soft']};
     border-color: #a8cbbb;
+}}
+QLabel#manualStatusChip[tone="warning"] {{
+    color: {COLORS['warning']};
+    background: {COLORS['warning_soft']};
+    border-color: #dec789;
 }}
 QLabel#manualStatusChip[tone="bad"] {{
     color: {COLORS['danger']};

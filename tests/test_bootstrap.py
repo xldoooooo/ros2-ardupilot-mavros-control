@@ -50,9 +50,9 @@ def test_protocol_version_is_synchronized_across_deployments() -> None:
         for package in ("guided_interfaces", "onboard_control")
     }
 
-    assert INTERFACE_VERSION == "2.1"
-    assert 'kInterfaceVersion[] = "2.1"' in onboard_source
-    assert package_versions == {"2.1.0"}
+    assert INTERFACE_VERSION == "2.2"
+    assert 'kInterfaceVersion[] = "2.2"' in onboard_source
+    assert package_versions == {"2.2.0"}
 
 
 def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_path) -> None:

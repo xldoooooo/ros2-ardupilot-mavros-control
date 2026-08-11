@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
-    """保留姿态/电池/模式显示，原点与降落必须等待对应遥测证据。"""
+    """保留三轴姿态/电池/模式，原点与降落等待遥测证据。"""
     rclpy = pytest.importorskip("rclpy")
     from geographic_msgs.msg import GeoPointStamped
     from geometry_msgs.msg import PoseStamped, TwistStamped
@@ -171,13 +171,32 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
             lambda: statuses and statuses[-1].message_rates_configured
         )
 
+        roll = math.radians(8.0)
         pitch = math.radians(-6.0)
         yaw = math.radians(35.0)
+        sin_roll = math.sin(roll / 2.0)
+        cos_roll = math.cos(roll / 2.0)
+        sin_pitch = math.sin(pitch / 2.0)
+        cos_pitch = math.cos(pitch / 2.0)
+        sin_yaw = math.sin(yaw / 2.0)
+        cos_yaw = math.cos(yaw / 2.0)
         pose = PoseStamped()
-        pose.pose.orientation.x = -math.sin(pitch / 2.0) * math.sin(yaw / 2.0)
-        pose.pose.orientation.y = math.sin(pitch / 2.0) * math.cos(yaw / 2.0)
-        pose.pose.orientation.z = math.cos(pitch / 2.0) * math.sin(yaw / 2.0)
-        pose.pose.orientation.w = math.cos(pitch / 2.0) * math.cos(yaw / 2.0)
+        pose.pose.orientation.x = (
+            sin_roll * cos_pitch * cos_yaw
+            - cos_roll * sin_pitch * sin_yaw
+        )
+        pose.pose.orientation.y = (
+            cos_roll * sin_pitch * cos_yaw
+            + sin_roll * cos_pitch * sin_yaw
+        )
+        pose.pose.orientation.z = (
+            cos_roll * cos_pitch * sin_yaw
+            - sin_roll * sin_pitch * cos_yaw
+        )
+        pose.pose.orientation.w = (
+            cos_roll * cos_pitch * cos_yaw
+            + sin_roll * sin_pitch * sin_yaw
+        )
         velocity = TwistStamped()
         battery = BatteryState()
         battery.present = True
@@ -195,12 +214,13 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
             executor.spin_once(timeout_sec=0.01)
             time.sleep(0.04)
         measured = statuses[-1]
-        assert measured.interface_version == "2.1"
+        assert measured.interface_version == "2.2"
         assert measured.autopilot_mode == "GUIDED"
         assert measured.battery_valid
         assert measured.battery_voltage == pytest.approx(15.7, abs=0.01)
         assert measured.battery_current == pytest.approx(-3.1, abs=0.01)
         assert measured.battery_percentage == pytest.approx(0.73, abs=0.01)
+        assert measured.roll == pytest.approx(roll, abs=0.01)
         assert measured.pitch == pytest.approx(pitch, abs=0.01)
         assert measured.yaw == pytest.approx(yaw, abs=0.01)
 

@@ -20,8 +20,8 @@ namespace onboard_control
 namespace
 {
 
-// 2.1 adds attitude and battery telemetry to the atomic onboard status contract.
-constexpr char kInterfaceVersion[] = "2.1";
+// 2.2 adds roll telemetry to the atomic onboard status contract.
+constexpr char kInterfaceVersion[] = "2.2";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -261,10 +261,9 @@ void OnboardControlNode::on_pose(const geometry_msgs::msg::PoseStamped::SharedPt
     message->pose.position.x, message->pose.position.y, message->pose.position.z);
   tf2::Quaternion attitude;
   tf2::fromMsg(message->pose.orientation, attitude);
-  double roll = 0.0;
-  tf2::Matrix3x3(attitude).getRPY(roll, pitch_, yaw_);
-  pose_valid_ = vehicle_.position.allFinite() && std::isfinite(pitch_) &&
-    std::isfinite(yaw_);
+  tf2::Matrix3x3(attitude).getRPY(roll_, pitch_, yaw_);
+  pose_valid_ = vehicle_.position.allFinite() && std::isfinite(roll_) &&
+    std::isfinite(pitch_) && std::isfinite(yaw_);
   last_pose_time_ = SteadyClock::now();
 }
 
@@ -1540,6 +1539,7 @@ void OnboardControlNode::status_tick()
   message.velocity.x = vehicle_.velocity.x();
   message.velocity.y = vehicle_.velocity.y();
   message.velocity.z = vehicle_.velocity.z();
+  message.roll = roll_;
   message.pitch = pitch_;
   message.yaw = yaw_;
   const bool battery_fresh = last_battery_time_ != SteadyTime{} &&

@@ -18,8 +18,14 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 
 from ground_station_core.config import (  # noqa: E402
+    HARDWARE_BATTERY_GOOD_VOLTAGE,
+    HARDWARE_BATTERY_WARNING_VOLTAGE,
     INTERFACE_VERSION,
     LAND_SPEED,
+    SIMULATION_BATTERY_GOOD_PERCENTAGE,
+    SIMULATION_BATTERY_WARNING_PERCENTAGE,
+    STATUS_RATE_TARGET_HZ,
+    STATUS_RATE_TOLERANCE_HZ,
     TAKEOFF_SPEED,
     VELOCITY_SCALE,
 )
@@ -746,8 +752,11 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
     """手动动作提示语义准确，详细状态按当前左右灵敏度即时更新。"""
     snapshot = replace(
         _operational_snapshot(armed=True),
+        roll=math.radians(7.6),
         pitch=math.radians(-4.2),
         yaw=math.radians(92.3),
+        vx=0.3,
+        vy=0.4,
         battery_valid=True,
         battery_voltage=15.76,
         battery_current=3.21,
@@ -798,10 +807,66 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
         assert panel.yaw_increment_value.text() == "±11.5 °/s"
         assert panel.longitudinal_increment_value.text() == "±0.20 m/s"
         assert panel.lateral_increment_value.text() == "±0.20 m/s"
-        assert panel.attitude_value.text() == "俯仰 -4.2° · 偏航 +92.3°"
-        assert panel.status_link_value.text() == "9.98 Hz · age 0.04 s"
-        assert panel.battery_value.text() == "15.76 V · +3.21 A · 74%"
-        assert panel.autopilot_mode_value.text() == "GUIDED"
+        assert panel.attitude_value.text() == "俯仰 -4.2° · 滚转 +7.6°"
+
+        # 五个状态块在坐标系右侧按指定顺序展示。
+        status_chips = (
+            panel.control_authority_chip,
+            panel.autopilot_mode_chip,
+            panel.battery_status_chip,
+            panel.communication_rate_chip,
+            panel.last_manual_command_chip,
+        )
+        chip_positions = [
+            chip.mapTo(panel.manual_card, QPoint(0, 0)).x()
+            for chip in status_chips
+        ]
+        assert chip_positions == sorted(chip_positions)
+        assert panel.autopilot_mode_chip.text() == "飞控模式 · GUIDED"
+        assert panel.battery_status_chip.text() == "电池 · 74%"
+        assert panel.battery_status_chip.property("tone") == "good"
+        assert panel.communication_rate_chip.text() == "通讯频率 · 9.98 Hz"
+        assert panel.communication_rate_chip.property("tone") == "good"
+        assert "age" not in panel.communication_rate_chip.text()
+
+        # 六项摘要和左侧详细状态严格使用任务指定的顺序。
+        summary_titles = [
+            label.text()
+            for label in panel.manual_summary_panel.findChildren(QLabel)
+            if label.objectName() == "manualSummaryTitle"
+        ]
+        assert summary_titles == [
+            "实际高度",
+            "实际速度",
+            "实际航向",
+            "指令水平速度",
+            "指令垂直速度",
+            "指令转向速度",
+        ]
+        assert panel.actual_speed_summary_value.text() == "0.50"
+        detail_labels = [
+            panel.engineering_left_layout.itemAtPosition(row, 0).widget().text()
+            for row in range(6)
+        ]
+        assert detail_labels == [
+            "实际位姿",
+            "目标位姿",
+            "实际速度",
+            "目标速度",
+            "控制周期",
+            "安全门控",
+        ]
+        assert panel.actual_velocity_value.text() == (
+            "Vx +0.30  Vy +0.40  Vz +0.00"
+        )
+        right_labels = {
+            label.text()
+            for label in panel.engineering_increment_panel.findChildren(QLabel)
+            if label.objectName() == "mutedLabel"
+        }
+        assert "飞行姿态" in right_labels
+        assert "俯仰/滚转" in right_labels
+        assert not {"地面↔机载", "电池", "飞控模式"} & right_labels
 
         panel.left_sensitivity_combo.setCurrentIndex(0)
         panel.right_sensitivity_combo.setCurrentIndex(2)
@@ -822,6 +887,101 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
         window._connection_mode = "simulation"
         window._refresh()
         assert "增加水平向左的期望速度" in panel.motion_buttons["left"].toolTip()
+    finally:
+        _close_window(window)
+
+
+def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
+    """通讯与电池状态块使用可调阈值，仿真/实机不混显单位。"""
+    snapshot = replace(
+        _operational_snapshot(armed=True),
+        battery_valid=True,
+        battery_voltage=HARDWARE_BATTERY_GOOD_VOLTAGE,
+        battery_percentage=SIMULATION_BATTERY_GOOD_PERCENTAGE,
+        status_rate_hz=STATUS_RATE_TARGET_HZ,
+    )
+    window, ros = _window(snapshot)
+    try:
+        panel = window.operations
+        window._environment_active = True
+        window._connection_mode = "hardware"
+
+        hardware_cases = (
+            (HARDWARE_BATTERY_GOOD_VOLTAGE, "good"),
+            (HARDWARE_BATTERY_GOOD_VOLTAGE - 0.01, "warning"),
+            (HARDWARE_BATTERY_WARNING_VOLTAGE, "warning"),
+            (HARDWARE_BATTERY_WARNING_VOLTAGE - 0.01, "bad"),
+        )
+        for voltage, tone in hardware_cases:
+            ros.current_snapshot = replace(snapshot, battery_voltage=voltage)
+            window._refresh()
+            assert panel.battery_status_chip.text() == f"电池 · {voltage:.2f} V"
+            assert panel.battery_status_chip.property("tone") == tone
+            assert "%" not in panel.battery_status_chip.text()
+
+        window._connection_mode = "simulation"
+        simulation_cases = (
+            (SIMULATION_BATTERY_GOOD_PERCENTAGE, "good"),
+            (SIMULATION_BATTERY_GOOD_PERCENTAGE - 0.01, "warning"),
+            (SIMULATION_BATTERY_WARNING_PERCENTAGE, "warning"),
+            (SIMULATION_BATTERY_WARNING_PERCENTAGE - 0.01, "bad"),
+        )
+        for percentage, tone in simulation_cases:
+            ros.current_snapshot = replace(
+                snapshot,
+                battery_percentage=percentage,
+            )
+            window._refresh()
+            assert panel.battery_status_chip.text() == (
+                f"电池 · {percentage * 100.0:.0f}%"
+            )
+            assert panel.battery_status_chip.property("tone") == tone
+            assert " V" not in panel.battery_status_chip.text()
+
+        rate_cases = (
+            (STATUS_RATE_TARGET_HZ - STATUS_RATE_TOLERANCE_HZ, "good"),
+            (STATUS_RATE_TARGET_HZ + STATUS_RATE_TOLERANCE_HZ, "good"),
+            (STATUS_RATE_TARGET_HZ - STATUS_RATE_TOLERANCE_HZ - 0.01, "warning"),
+            (STATUS_RATE_TARGET_HZ + STATUS_RATE_TOLERANCE_HZ + 0.01, "warning"),
+        )
+        for rate, tone in rate_cases:
+            ros.current_snapshot = replace(snapshot, status_rate_hz=rate)
+            window._refresh()
+            assert panel.communication_rate_chip.text() == (
+                f"通讯频率 · {rate:.2f} Hz"
+            )
+            assert panel.communication_rate_chip.property("tone") == tone
+            assert "age" not in panel.communication_rate_chip.text()
+
+        # 最小窗口使用较长实机文字时也不裁字。
+        window._connection_mode = "hardware"
+        ros.current_snapshot = replace(
+            snapshot,
+            autopilot_mode="STABILIZE",
+            battery_voltage=HARDWARE_BATTERY_GOOD_VOLTAGE - 0.05,
+        )
+        window._refresh()
+        panel.last_manual_command_chip.setText("最近指令 · 355.7 s")
+        window.resize(1180, 700)
+        _application().processEvents()
+        chips = (
+            panel.control_authority_chip,
+            panel.autopilot_mode_chip,
+            panel.battery_status_chip,
+            panel.communication_rate_chip,
+            panel.last_manual_command_chip,
+        )
+        assert panel._manual_status_wrapped is True
+        chip_bounds = []
+        for chip in chips:
+            origin = chip.mapTo(panel.manual_card, QPoint(0, 0))
+            chip_bounds.append((origin.x(), origin.x() + chip.width()))
+            assert chip.width() >= chip.sizeHint().width()
+        assert all(
+            left[1] <= right[0]
+            for left, right in zip(chip_bounds, chip_bounds[1:])
+        )
+        assert chip_bounds[-1][1] <= panel.manual_card.width()
     finally:
         _close_window(window)
 
@@ -1094,6 +1254,9 @@ def test_manual_coordinate_modes_and_independent_stick_sensitivity() -> None:
         _operational_snapshot(armed=True),
         yaw=math.pi / 2.0,
         z=3.25,
+        vx=0.1,
+        vy=0.2,
+        vz=0.2,
         target_vx=0.3,
         target_vy=0.4,
         target_vz=-0.1,
@@ -1106,32 +1269,39 @@ def test_manual_coordinate_modes_and_independent_stick_sensitivity() -> None:
         window._refresh()
         panel = window.operations
 
-        assert panel.coordinate_mode() == "body"
-        assert panel.coordinate_mode_combo.currentText() == "机体坐标"
+        assert panel.coordinate_mode() == "enu"
+        assert panel.coordinate_mode_combo.currentText() == "本地 ENU"
         assert panel.altitude_summary_value.text() == "+3.25"
+        assert panel.actual_speed_summary_value.text() == "0.30"
         assert panel.horizontal_summary_value.text() == "0.50"
         assert panel.vertical_summary_value.text() == "-0.10"
         assert panel.yaw_rate_summary_value.text() == "+15.0"
 
-        # 右摇杆低灵敏度：机头朝 +Y 时，I 的机体前进转换为 ENU +Y。
+        # 默认 ENU 不旋转，右摇杆低灵敏度的 I 直接增加本地 +X。
         panel.right_sensitivity_combo.setCurrentIndex(0)
         panel.motion_buttons["forward"].click()
         command = ros.calls[-1][1]
         assert ros.calls[-1][0] == "motion"
-        assert abs(command[0]) < 1e-9
-        assert abs(command[1] - VELOCITY_SCALE * 0.5) < 1e-9
+        assert abs(command[0] - VELOCITY_SCALE * 0.5) < 1e-9
+        assert abs(command[1]) < 1e-9
 
-        # 同一灵敏度在 ENU 模式下不旋转，I 直接增加本地 +X。
-        panel.coordinate_mode_combo.setCurrentIndex(1)
+        # 切换机体坐标后，机头朝 +Y 时 I 转换为 ENU +Y。
+        panel.coordinate_mode_combo.setCurrentIndex(0)
         coordinate_event = window.event_log.snapshot()[-1]
         assert coordinate_event.level is LogLevel.INFO
         assert coordinate_event.source == "operator"
-        assert "坐标系切换为「本地 ENU」" in coordinate_event.message
-        assert "固定 X/Y 轴" in coordinate_event.message
+        assert "坐标系切换为「机体坐标」" in coordinate_event.message
+        assert "按最新机头航向旋转" in coordinate_event.message
         panel.motion_buttons["forward"].click()
         command = ros.calls[-1][1]
-        assert abs(command[0] - VELOCITY_SCALE * 0.5) < 1e-9
-        assert abs(command[1]) < 1e-9
+        assert abs(command[0]) < 1e-9
+        assert abs(command[1] - VELOCITY_SCALE * 0.5) < 1e-9
+
+        # 切回 ENU 后恢复固定轴语义。
+        panel.coordinate_mode_combo.setCurrentIndex(1)
+        coordinate_event = window.event_log.snapshot()[-1]
+        assert "坐标系切换为「本地 ENU」" in coordinate_event.message
+        assert "固定 X/Y 轴" in coordinate_event.message
 
         # 左摇杆高灵敏度独立控制升降/偏航，不受右摇杆倍率影响。
         panel.left_sensitivity_combo.setCurrentIndex(2)

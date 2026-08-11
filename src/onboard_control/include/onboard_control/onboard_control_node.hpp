@@ -209,6 +209,7 @@ private:
   bool pose_valid_{false};
   bool velocity_valid_{false};
   VehicleKinematics vehicle_;
+  double roll_{0.0};
   double pitch_{0.0};
   double yaw_{0.0};
   SteadyTime last_state_time_{};
