@@ -113,6 +113,8 @@ class GroundStationWindow(QMainWindow):
         self._last_ros_error = ""
         self._cleanup_thread: threading.Thread | None = None
         self._shutdown_thread: threading.Thread | None = None
+        self._shutdown_cleanup_lock = threading.Lock()
+        self._shutdown_report: CleanupReport | None = None
         self._shutting_down = False
         self._allow_close = False
         # 仅缓存显示层应用签名；ROS 快照和安全状态仍保持 10 Hz 读取。
@@ -1334,12 +1336,24 @@ class GroundStationWindow(QMainWindow):
         event.ignore()
         self._begin_shutdown()
 
-    def _begin_shutdown(self) -> None:
+    def request_external_shutdown(self, reason: str) -> None:
+        """终端或进程管理器请求退出时跳过交互确认并执行同一清理链。"""
+        self._begin_shutdown(
+            source="shutdown",
+            message=f"收到 {reason} 终止信号，正在安全退出地面站",
+        )
+
+    def _begin_shutdown(
+        self,
+        *,
+        source: str = "operator",
+        message: str = "操作者请求退出地面站",
+    ) -> None:
         """锁定界面并启动不会阻塞 Qt 事件循环的安全退出线程。"""
         if self._shutting_down:
             return
         self._shutting_down = True
-        self._events.warn("operator", "操作者请求退出地面站")
+        self._events.warn(source, message)
         self.activity_banner.set_message(
             "正在安全退出：释放租约、清理本地仿真并停止 ROS…",
             LogLevel.WARN,
@@ -1347,6 +1361,19 @@ class GroundStationWindow(QMainWindow):
         self._refresh()
 
         def worker() -> None:
+            report = self._cleanup_backend_once()
+            self._bridge.shutdown_done.emit(report)
+
+        self._shutdown_thread = threading.Thread(
+            target=worker, name="ground-station-qt-shutdown", daemon=True
+        )
+        self._shutdown_thread.start()
+
+    def _cleanup_backend_once(self) -> CleanupReport:
+        """幂等释放租约、清理本地进程并停止 ROS，供所有退出路径复用。"""
+        with self._shutdown_cleanup_lock:
+            if self._shutdown_report is not None:
+                return self._shutdown_report
             try:
                 # EnvironmentInitializer 会合并并发清理请求并设置硬超时；这里
                 # 不再先 join 后二次进入清理，以免两条线程互等同一把锁。
@@ -1355,12 +1382,17 @@ class GroundStationWindow(QMainWindow):
             except Exception as exc:
                 report = CleanupReport(errors=(str(exc),))
                 self._events.error("shutdown", f"安全退出异常：{exc}")
-            self._bridge.shutdown_done.emit(report)
+            self._shutdown_report = report
+            return report
 
-        self._shutdown_thread = threading.Thread(
-            target=worker, name="ground-station-qt-shutdown", daemon=True
-        )
-        self._shutdown_thread.start()
+    def finalize_process_exit(self) -> CleanupReport:
+        """Qt 事件循环返回前的同步兜底；正常退出时直接复用已有结果。"""
+        if not self._shutting_down:
+            self._shutting_down = True
+            self._events.warn(
+                "shutdown", "Qt 事件循环已结束，执行地面站后端兜底清理"
+            )
+        return self._cleanup_backend_once()
 
     def _on_shutdown_done(self, report: CleanupReport) -> None:
         """完成最后一次日志刷新后允许 Qt 真正销毁窗口。"""

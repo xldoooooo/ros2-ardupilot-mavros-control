@@ -482,3 +482,15 @@
   已武装时告警保持。真实未武装 SITL 在未点击预览时已持续获得机体 TF，30 秒 controller WARN
   为 0；Python 96 passed，三包构建成功，ROS/C++ 5 tests 零失败。未连接、解锁或起飞实机。详见
   `agent/report/report-2026-08-12-task15-rviz-startup-and-idle-jitter-fix.md`。
+
+## 2026-08-12 地面站异常退出无残留
+
+- `start_ground_all.sh` 不再 `exec` GUI，而是保留父级生命周期监督壳；GUI 退出后始终通过隐藏的
+  `ground_station.py --cleanup-local-processes` 复核项目专属本地进程。正常清理时幂等无操作，
+  GUI 遭 `SIGKILL` 时仍可清除 SITL/MAVROS/onboard/RViz 残留。
+- GUI 捕获 `SIGHUP/SIGINT/SIGQUIT/SIGTERM`，由 Qt 主循环转入统一安全退出；窗口关闭保留原二次
+  确认，外部信号不弹无人可操作的确认框。Qt 事件循环异常返回也会执行一次锁保护的同步兜底。
+- 真实启动入口的终端进程组 HUP、仅 GUI HUP、GUI SIGKILL 三条进程级回归均为零残留；AP、
+  MAVROS、RViz 生产 argv 形态替身均被识别并终止。最终 Python 100 passed，环境检查、compileall、
+  致命 flake8、shellcheck 与本任务 diff 检查通过。本任务未连接实机、解锁或起飞。详见
+  `agent/report/report-2026-08-12-ground-station-exit-cleanup.md`。

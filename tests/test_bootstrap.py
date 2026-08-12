@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 from xml.etree import ElementTree
 
+from ground_station import _install_termination_signal_handlers, _TERMINATION_SIGNALS
 import ground_station_core.config as project_config
 from ground_station_core.config import INTERFACE_VERSION, PROJECT_ROOT
+
+
+def test_terminal_signals_are_forwarded_and_handlers_are_restored() -> None:
+    """终端关闭、Ctrl+C 与 TERM 必须进入 GUI 生命周期而非直接杀死进程。"""
+    received: list[str] = []
+    original = {
+        signum: signal.getsignal(signum)
+        for signum in _TERMINATION_SIGNALS
+    }
+    restore = _install_termination_signal_handlers(received.append)
+    try:
+        for signum in original:
+            handler = signal.getsignal(signum)
+            assert callable(handler)
+            handler(signum, None)
+    finally:
+        restore()
+
+    assert received == ["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]
+    assert all(signal.getsignal(signum) == value for signum, value in original.items())
 
 
 def test_direct_launcher_bootstraps_workspace_from_clean_environment() -> None:
@@ -36,6 +58,26 @@ def test_direct_launcher_bootstraps_workspace_from_clean_environment() -> None:
     assert completed.returncode == 0, completed.stdout
     assert "workspace environment OK" in completed.stdout
     assert "No module named 'guided_interfaces'" not in completed.stdout
+
+
+def test_local_cleanup_entry_runs_without_creating_the_gui() -> None:
+    """父级启动壳必须能在 GUI 退出后独立执行幂等本地残留扫描。"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "ground_station.py"),
+            "--cleanup-local-processes",
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=20.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout
+    assert "PySide6" not in completed.stdout
 
 
 def test_protocol_version_is_synchronized_across_deployments() -> None:

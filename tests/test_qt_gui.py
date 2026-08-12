@@ -60,6 +60,7 @@ class _FakeRosController:
         self.ready = True
         self.error = None
         self.start_calls = 0
+        self.stop_calls = 0
         self.current_snapshot = snapshot
         self.calls: list[tuple[str, object]] = []
         self.results: list[CommandResult] = []
@@ -72,6 +73,7 @@ class _FakeRosController:
 
     def stop(self) -> None:
         """模拟客户端停止。"""
+        self.stop_calls += 1
         self.ready = False
 
     def snapshot(self) -> VehicleSnapshot:
@@ -121,6 +123,7 @@ class _FakeEnvironment:
         self.last_origin = None
         self.communication_tests = 0
         self.preview_modes: list[str] = []
+        self.cleanup_calls = 0
 
     def initialize_simulation(self, status, done) -> bool:
         # 仿真不接收/不写入 GPS 原点；与 EnvironmentInitializer 一致。
@@ -159,6 +162,7 @@ class _FakeEnvironment:
         return False
 
     def cleanup(self) -> CleanupReport:
+        self.cleanup_calls += 1
         self.mode = "none"
         return CleanupReport()
 
@@ -1872,6 +1876,53 @@ def test_exit_button_always_requires_default_cancel_confirmation() -> None:
         assert confirmations[-1][2] is False
         assert not window._shutting_down
         assert window.isVisible()
+    finally:
+        _close_window(window)
+
+
+def test_external_termination_skips_dialog_and_cleans_backend_once() -> None:
+    """SIGHUP 等外部退出必须完成环境/ROS 清理，且同步兜底不得重复执行。"""
+    environment = _FakeEnvironment()
+    window, ros = _window(
+        _operational_snapshot(armed=False), environment=environment
+    )
+    try:
+        window._confirm_action = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("外部终止信号不应等待无人可操作的确认框")
+        )
+        window.request_external_shutdown("SIGHUP")
+
+        for _attempt in range(100):
+            _application().processEvents()
+            if window._allow_close:
+                break
+            QTest.qWait(10)
+
+        assert window._allow_close
+        assert environment.cleanup_calls == 1
+        assert ros.stop_calls == 1
+        assert not ros.ready
+        assert window.finalize_process_exit().success
+        assert environment.cleanup_calls == 1
+        assert ros.stop_calls == 1
+    finally:
+        _close_window(window)
+
+
+def test_event_loop_exit_fallback_cleans_without_close_event() -> None:
+    """事件循环若绕过窗口关闭事件，进程退出兜底仍必须清理且保持幂等。"""
+    environment = _FakeEnvironment()
+    window, ros = _window(
+        _operational_snapshot(armed=False), environment=environment
+    )
+    try:
+        first = window.finalize_process_exit()
+        second = window.finalize_process_exit()
+
+        assert first.success and second.success
+        assert environment.cleanup_calls == 1
+        assert ros.stop_calls == 1
+        assert not ros.ready
     finally:
         _close_window(window)
 
