@@ -533,3 +533,19 @@
   0.5 m，并在 0°/180°之间交替转向，最终到达 `(0, 0, 3.8)`、航向 0°。
 - 文件已通过项目 CSV 加载器和既有航点导入测试；未启动仿真或操作实机。详见
   `agent/report/report-2026-08-13-three-round-waypoints.md`。
+
+## 2026-08-13 机载接口 3.0 源码同步与本地验证
+
+- 真机 sparse 源码工作树已从 `31b19fc` 快进到 `4741066`；本地/真机
+  `src/onboard_control` 与 `src/guided_interfaces` tree 对象一致。同步前备份为真机
+  `.deployment-backups/pre-source-sync-20260813-025708.tar.gz`，SHA-256
+  `092f15ea2497218ce5af47d21ad0338980e0dea1d3b415c6027c1bba10f64fab`。
+- 本次只同步源码，没有在真机构建、替换 `install/` 或重启服务；同一 systemd 主进程保持运行，
+  当前实际节点仍为接口 2.2。接口 3.0 上线必须另行完成 Humble/aarch64 构建、测试、隔离 smoke
+  和安全窗口重启，不能把源码同步等同于部署生效。
+- 本地三包 Release 构建成功，ROS/C++ 13 tests 零失败，加载本地 overlay 后 Python 103 passed；
+  domain 232/LOCALHOST 隔离 smoke 为接口 3.0、FCU 未连接、未武装、零姿态 setpoint。
+- `4741066` 把平滑航点水平参考速度调到 1.00 m/s、速度保护调到 1.20 m/s，并调整加速度、jerk、
+  到达速度和保持时间；这些值通过静态/单元测试但没有真机飞行验证。当前真机启动日志仍提示
+  full readiness 未达到，禁止宣称飞行 READY。详见
+  `agent/report/report-2026-08-13-onboard-source-sync-local-build-test.md`。
