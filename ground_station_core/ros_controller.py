@@ -23,7 +23,14 @@ from .config import (
     detect_ros_distro,
 )
 from .event_log import EventLog
-from .models import CommandRequest, CommandResult, FlightMode, VehicleSnapshot
+from .models import (
+    CommandRequest,
+    CommandResult,
+    FlightMode,
+    VehicleSnapshot,
+    WaypointReferenceGenerator,
+    WaypointTrackingController,
+)
 
 
 _REMOTE_MODE_MAP = {
@@ -109,7 +116,17 @@ class _VehicleStateStore:
             target_vx=message.target_velocity.x,
             target_vy=message.target_velocity.y,
             target_vz=message.target_velocity.z,
+            target_ax=message.target_acceleration.x,
+            target_ay=message.target_acceleration.y,
+            target_az=message.target_acceleration.z,
             target_yaw_rate=message.target_yaw_rate,
+            active_reference_generator=WaypointReferenceGenerator.from_value(
+                message.active_reference_generator
+            ),
+            active_tracking_controller=WaypointTrackingController.from_value(
+                message.active_tracking_controller
+            ),
+            reference_phase=int(message.reference_phase),
             lease_owner=message.lease_owner,
             lease_active=message.lease_active,
             control_authority=(
@@ -526,17 +543,34 @@ class GroundStationRosController:
         """请求机载 MAVROS 配置必要高频消息。"""
         return self._enqueue("set_rates")
 
-    def request_waypoints(self, waypoints, strategy: int | object = 0) -> int:
-        """上传航点副本与飞行策略；进度/到达/终点由机载端维护。
+    def request_waypoints(
+        self,
+        waypoints,
+        strategy: int | object = 0,
+        reference_generator: int | object = 0,
+        tracking_controller: int | object = 0,
+    ) -> int:
+        """上传航点、避障空壳与两项独立控制实验选择。
 
         strategy 对齐 ExecuteWaypoints.flight_strategy；未实现的策略机载会按直线飞行。
         """
         from .models import WaypointFlightStrategy
 
         strategy_value = int(WaypointFlightStrategy.from_value(strategy))
+        generator_value = int(
+            WaypointReferenceGenerator.from_value(reference_generator)
+        )
+        controller_value = int(
+            WaypointTrackingController.from_value(tracking_controller)
+        )
         return self._enqueue(
             "waypoints",
-            {"waypoints": tuple(waypoints), "strategy": strategy_value},
+            {
+                "waypoints": tuple(waypoints),
+                "strategy": strategy_value,
+                "reference_generator": generator_value,
+                "tracking_controller": controller_value,
+            },
         )
 
     def publish_waypoint_preview(self, waypoints) -> bool:
@@ -1336,20 +1370,26 @@ class GroundStationRosController:
                 client = clients["waypoints"]
                 if not client.service_is_ready():
                     raise RuntimeError("机载航点服务不可用")
-                # 兼容旧调用：纯航点序列；新调用：{waypoints, strategy}。
+                # 兼容旧内部调用默认到完整基线；生产 GUI 总是显式传三项选择。
                 payload = command.argument
                 if isinstance(payload, dict):
                     waypoint_values = payload.get("waypoints", ())
                     strategy_value = int(payload.get("strategy", 0))
+                    generator_value = int(payload.get("reference_generator", 0))
+                    tracking_value = int(payload.get("tracking_controller", 0))
                 else:
                     waypoint_values = payload
                     strategy_value = 0
+                    generator_value = 0
+                    tracking_value = 0
                 request = ros_entities["ExecuteWaypoints"].Request()
                 request.stamp = node.get_clock().now().to_msg()
                 request.source_id = self._source_id
                 request.sequence = command.ticket
                 request.ttl_ms = COMMAND_TTL_MS
                 request.flight_strategy = strategy_value
+                request.reference_generator = generator_value
+                request.tracking_controller = tracking_value
                 for values in waypoint_values:
                     waypoint = ros_entities["Waypoint"]()
                     waypoint.position.x = float(values[0])

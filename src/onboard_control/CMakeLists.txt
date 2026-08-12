@@ -19,7 +19,10 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 
-add_library(dob_controller src/dob_controller.cpp)
+add_library(dob_controller
+  src/dob_controller.cpp
+  src/reference_generator.cpp
+)
 target_include_directories(dob_controller PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -59,6 +62,11 @@ if(BUILD_TESTING)
   if(TARGET test_dob_controller)
     target_include_directories(test_dob_controller PRIVATE include ${EIGEN3_INCLUDE_DIRS})
     target_link_libraries(test_dob_controller dob_controller Eigen3::Eigen)
+  endif()
+  ament_add_gtest(test_reference_generator test/test_reference_generator.cpp)
+  if(TARGET test_reference_generator)
+    target_include_directories(test_reference_generator PRIVATE include ${EIGEN3_INCLUDE_DIRS})
+    target_link_libraries(test_reference_generator dob_controller Eigen3::Eigen)
   endif()
 endif()
 

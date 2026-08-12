@@ -27,7 +27,12 @@ from ..config import (
     WAYPOINT_Z_MAX_METERS,
     WAYPOINT_Z_MIN_METERS,
 )
-from ..models import VehicleSnapshot, WaypointFlightStrategy
+from ..models import (
+    VehicleSnapshot,
+    WaypointFlightStrategy,
+    WaypointReferenceGenerator,
+    WaypointTrackingController,
+)
 from .state import UiAvailability
 from .widgets import Card, DownwardComboBox, NoWheelDoubleSpinBox
 
@@ -82,8 +87,8 @@ class WaypointPanel(QWidget):
 
     _ROW_HEIGHT = 28
 
-    # 参数为 (waypoints_tuple, WaypointFlightStrategy)。
-    send_requested = Signal(object, object)
+    # 参数依次为航点、避障策略空壳、命令生成方式和跟踪控制方式。
+    send_requested = Signal(object, object, object, object)
     clear_requested = Signal()
     preview_requested = Signal()
     import_file_requested = Signal()
@@ -272,43 +277,83 @@ class WaypointPanel(QWidget):
         return card
 
     def _build_execution_card(self) -> Card:
-        """创建任务发送、权威进度和结果状态区（高度固定贴底）。"""
-        card = Card("执行与进度")
+        """创建无标题的紧凑进度、发送与三项实验配置区。"""
+        card = Card("")
         card.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
         self.progress = QProgressBar()
         self.progress.setObjectName("waypointProgress")
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.progress.setFormat("尚未执行")
-        card.content_layout.addWidget(self.progress)
+        self.send_button = self._button(
+            "发送并执行航点", "primary", "sendWaypointButton"
+        )
+        self.send_button.clicked.connect(self._emit_send_requested)
+        action_row.addWidget(self.progress, 2)
+        action_row.addWidget(self.send_button, 1)
+        card.content_layout.addLayout(action_row)
         # 保留非可视状态接收器，使现有结果更新链与内部接口不变；
         # 不加入布局，避免灰色说明行占用执行卡高度。
         self.status_label = QLabel("请先编辑航点，再在飞行器就绪后发送。", card)
         self.status_label.setObjectName("mutedLabel")
         self.status_label.hide()
 
-        # 左：发送执行；右：飞行策略（避障类仅预留，当前均按直线飞行）。
-        send_row = QHBoxLayout()
-        send_row.setSpacing(8)
-        self.send_button = self._button("发送并执行航点", "primary", "sendWaypointButton")
-        self.send_button.clicked.connect(self._emit_send_requested)
+        # 三列只负责选择；飞行中由状态门控统一锁定，任务内部不做热切换。
+        selection_row = QHBoxLayout()
+        selection_row.setSpacing(8)
         self.strategy_combo = DownwardComboBox()
         self.strategy_combo.setObjectName("waypointStrategyCombo")
-        self.strategy_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
         self.strategy_combo.setToolTip(
             "航点飞行策略。当前仅实现「直线飞行」；"
             "「自动避障」与「遇到障碍悬停」为预留选项，发送后仍按直线飞行执行。"
         )
+        self.strategy_combo.setProperty("baseToolTip", self.strategy_combo.toolTip())
         for strategy in WaypointFlightStrategy:
             self.strategy_combo.addItem(strategy.label, strategy)
         self.strategy_combo.setCurrentIndex(0)
-        send_row.addWidget(self.send_button, 1)
-        send_row.addWidget(self.strategy_combo, 1)
-        card.content_layout.addLayout(send_row)
+
+        self.reference_combo = DownwardComboBox()
+        self.reference_combo.setObjectName("waypointReferenceGeneratorCombo")
+        self.reference_combo.setToolTip(
+            "选择航点到连续位置/速度/加速度参考的生成方式；参数位于 control.yaml。"
+        )
+        self.reference_combo.setProperty("baseToolTip", self.reference_combo.toolTip())
+        for generator in WaypointReferenceGenerator:
+            self.reference_combo.addItem(generator.label, generator)
+        self.reference_combo.setCurrentIndex(0)
+
+        self.tracking_combo = DownwardComboBox()
+        self.tracking_combo.setObjectName("waypointTrackingControllerCombo")
+        self.tracking_combo.setToolTip(
+            "位置 PD+DOB 保留基线；轨迹 PD+DOB 使用独立低带宽增益和加速度前馈。"
+        )
+        self.tracking_combo.setProperty("baseToolTip", self.tracking_combo.toolTip())
+        for controller in WaypointTrackingController:
+            self.tracking_combo.addItem(controller.label, controller)
+        self.tracking_combo.setCurrentIndex(0)
+
+        for label_text, combo in (
+            ("避障策略", self.strategy_combo),
+            ("命令生成", self.reference_combo),
+            ("跟踪控制", self.tracking_combo),
+        ):
+            field = QVBoxLayout()
+            field.setSpacing(4)
+            label = QLabel(label_text)
+            label.setObjectName("waypointMethodLabel")
+            label.setBuddy(combo)
+            combo.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            combo.setMinimumWidth(0)
+            field.addWidget(label)
+            field.addWidget(combo)
+            selection_row.addLayout(field, 1)
+        card.content_layout.addLayout(selection_row)
         return card
 
     def selected_strategy(self) -> WaypointFlightStrategy:
@@ -318,9 +363,28 @@ class WaypointPanel(QWidget):
             return data
         return WaypointFlightStrategy.from_value(data)
 
+    def selected_reference_generator(self) -> WaypointReferenceGenerator:
+        """返回解除武装阶段选定的航点命令生成方式。"""
+        data = self.reference_combo.currentData()
+        if isinstance(data, WaypointReferenceGenerator):
+            return data
+        return WaypointReferenceGenerator.from_value(data)
+
+    def selected_tracking_controller(self) -> WaypointTrackingController:
+        """返回解除武装阶段选定的航点跟踪控制方式。"""
+        data = self.tracking_combo.currentData()
+        if isinstance(data, WaypointTrackingController):
+            return data
+        return WaypointTrackingController.from_value(data)
+
     def _emit_send_requested(self) -> None:
-        """发出航点列表与所选策略（策略尚未实现时仍按直线飞行）。"""
-        self.send_requested.emit(tuple(self._waypoints), self.selected_strategy())
+        """原子发出航点和飞行前锁定的三项选择。"""
+        self.send_requested.emit(
+            tuple(self._waypoints),
+            self.selected_strategy(),
+            self.selected_reference_generator(),
+            self.selected_tracking_controller(),
+        )
 
     @staticmethod
     def _coordinate_input(
@@ -491,9 +555,15 @@ class WaypointPanel(QWidget):
             self.yaw_input,
             self.add_button,
             self.import_button,
-            self.strategy_combo,
         ):
             control.setEnabled(state.waypoint_edit)
+        method_combos = (
+            self.strategy_combo,
+            self.reference_combo,
+            self.tracking_combo,
+        )
+        for combo in method_combos:
+            combo.setEnabled(state.waypoint_configuration)
         self.table.setEnabled(state.waypoint_edit)
         self.send_button.setEnabled(state.waypoint_send)
         if not state.waypoint_edit:
@@ -514,7 +584,6 @@ class WaypointPanel(QWidget):
                 self.clear_button,
                 self.import_button,
                 self.table,
-                self.strategy_combo,
                 self.send_button,
             ):
                 control.setToolTip(edit_tip)
@@ -534,10 +603,18 @@ class WaypointPanel(QWidget):
             ):
                 control.setToolTip(str(control.property("baseToolTip") or ""))
             self.send_button.setToolTip(state.flight_reason)
-            self.strategy_combo.setToolTip(
-                "航点飞行策略。当前仅实现「直线飞行」；"
-                "「自动避障」与「遇到障碍悬停」为预留选项，发送后仍按直线飞行执行。"
+        if state.waypoint_configuration:
+            for combo in method_combos:
+                combo.setToolTip(str(combo.property("baseToolTip") or ""))
+        else:
+            configuration_tip = (
+                "飞行过程中禁止修改航点策略、命令生成和跟踪控制；"
+                "请在降落并解除武装后选择下一组实验配置。"
+                if state.waypoint_edit
+                else state.flight_reason
             )
+            for combo in method_combos:
+                combo.setToolTip(configuration_tip)
         if not self._waypoints:
             preview_tip = "请先添加或导入至少一个航点"
         elif state.waypoint_preview:

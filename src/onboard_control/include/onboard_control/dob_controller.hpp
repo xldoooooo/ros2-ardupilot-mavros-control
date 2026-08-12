@@ -41,6 +41,7 @@ struct ControlReference
 {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d acceleration{Eigen::Vector3d::Zero()};
   double yaw{0.0};
 };
 
@@ -66,6 +67,9 @@ public:
   /** 用飞控已标定的 MOT_THST_HOVER 更新推力映射；非法值不会生效。 */
   bool set_hover_throttle(double hover_throttle) noexcept;
 
+  /** 只切换反馈与 DOB 增益，保留已校准推力映射和统一安全限幅。 */
+  bool set_gain_profile(const ControllerParameters & profile) noexcept;
+
   /** 返回当前实际用于推力映射的悬停油门。 */
   double hover_throttle() const noexcept {return parameters_.hover_throttle;}
 
@@ -73,7 +77,8 @@ public:
   ControlOutput compute(
     const VehicleKinematics & state,
     const ControlReference & reference,
-    double dt_seconds);
+    double dt_seconds,
+    bool use_acceleration_feedforward = false);
 
   const Eigen::Vector3d & disturbance() const noexcept {return disturbance_;}
 

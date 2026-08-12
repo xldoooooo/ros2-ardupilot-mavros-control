@@ -214,7 +214,7 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
             executor.spin_once(timeout_sec=0.01)
             time.sleep(0.04)
         measured = statuses[-1]
-        assert measured.interface_version == "2.2"
+        assert measured.interface_version == "3.0"
         assert measured.autopilot_mode == "GUIDED"
         assert measured.battery_valid
         assert measured.battery_voltage == pytest.approx(15.7, abs=0.01)

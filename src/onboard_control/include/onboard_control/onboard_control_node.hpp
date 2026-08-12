@@ -40,6 +40,7 @@
 #include <sensor_msgs/msg/battery_state.hpp>
 
 #include "onboard_control/dob_controller.hpp"
+#include "onboard_control/reference_generator.hpp"
 
 namespace onboard_control
 {
@@ -125,7 +126,9 @@ private:
   void start_takeoff(const CommandIdentity & command, double altitude);
   void start_waypoint_task(
     const CommandIdentity & command,
-    const std::vector<guided_interfaces::msg::Waypoint> & waypoints);
+    const std::vector<guided_interfaces::msg::Waypoint> & waypoints,
+    ReferenceGeneratorType reference_generator,
+    TrackingControllerType tracking_controller);
   void start_land(const CommandIdentity & command, bool failsafe);
   void enter_hover(
     const std::string & reason,
@@ -154,12 +157,24 @@ private:
   void check_origin_confirmation_timeout(const SteadyTime & now);
 
   // Onboard task, safety and output helpers.
-  void update_waypoint_executor(const SteadyTime & now);
+  void update_waypoint_executor(const SteadyTime & now, double dt_seconds);
   void update_motion_reference(double dt_seconds);
   void enforce_safety(const SteadyTime & now);
   void trigger_link_loss_hold(const SteadyTime & now);
   void trigger_failsafe_land(const std::string & reason);
   void publish_attitude_setpoint(double dt_seconds);
+  void initialize_waypoint_segment();
+  void activate_tracking_controller(TrackingControllerType type);
+  void reset_waypoint_reference_state();
+  bool waypoint_configuration_change_locked(
+    std::uint8_t flight_strategy,
+    ReferenceGeneratorType reference_generator,
+    TrackingControllerType tracking_controller) const;
+  void lock_waypoint_configuration(
+    std::uint8_t flight_strategy,
+    ReferenceGeneratorType reference_generator,
+    TrackingControllerType tracking_controller);
+  void clear_waypoint_configuration_lock();
   void publish_result(
     const CommandIdentity & command,
     std::uint8_t status,
@@ -196,10 +211,17 @@ private:
   double max_yaw_rate_{1.0};
   double max_reference_error_xy_{0.8};
   double max_reference_error_z_{0.5};
+  double waypoint_start_speed_tolerance_{0.20};
+  double waypoint_arrival_speed_tolerance_{0.10};
+  double waypoint_actual_speed_guard_xy_{0.42};
+  double waypoint_actual_speed_guard_z_{0.24};
+  int waypoint_speed_guard_observations_{5};
   double max_clock_skew_seconds_{2.0};
   std::string mavros_prefix_{"/mavros"};
   std::string interface_prefix_{"/onboard_control"};
   ControllerParameters controller_parameters_;
+  ControllerParameters trajectory_controller_parameters_;
+  ReferenceGeneratorParameters reference_generator_parameters_;
   DobController controller_;
 
   // Latest MAVROS state and freshness markers.
@@ -239,6 +261,19 @@ private:
   std::optional<SteadyTime> waypoint_arrival_started_;
   // ExecuteWaypoints.flight_strategy；非 STRAIGHT 时预留，当前仍走直线飞行。
   std::uint8_t waypoint_flight_strategy_{0};
+  ReferenceGeneratorType active_reference_generator_{
+    ReferenceGeneratorType::kStepPosition};
+  TrackingControllerType active_tracking_controller_{
+    TrackingControllerType::kPositionPdDob};
+  ReferencePhase active_reference_phase_{ReferencePhase::kIdle};
+  std::unique_ptr<ReferenceGenerator> reference_generator_;
+  std::size_t generator_waypoint_index_{0};
+  bool generator_waypoint_initialized_{false};
+  int waypoint_speed_guard_count_{0};
+  // 首个航点任务锁定整次武装周期的实验方法；只有解除武装才能重新选择。
+  std::optional<std::uint8_t> armed_flight_strategy_lock_;
+  std::optional<ReferenceGeneratorType> armed_reference_generator_lock_;
+  std::optional<TrackingControllerType> armed_tracking_controller_lock_;
 
   // Lease, replay protection and link-loss state.
   std::string lease_owner_;

@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 from ground_station_core.config import INTERFACE_VERSION
 from ground_station_core.event_log import EventLog, LogLevel
-from ground_station_core.models import FlightMode, VehicleSnapshot
+from ground_station_core.models import (
+    FlightMode,
+    VehicleSnapshot,
+    WaypointReferenceGenerator,
+    WaypointTrackingController,
+)
 from ground_station_core.ros_controller import (
     GroundStationRosController,
     PREVIEW_FRAME_ID,
@@ -49,8 +54,118 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
     assert queued[2].argument == {
         "waypoints": ((1.0, 0.0, 1.0, 0.0),),
         "strategy": 1,
+        "reference_generator": 0,
+        "tracking_controller": 0,
     }
     assert takeoff < motion < waypoint
+
+
+def test_waypoint_request_preserves_three_independent_gui_choices() -> None:
+    """避障空壳、命令生成和跟踪控制必须作为独立字段原子排队。"""
+    controller = GroundStationRosController(source_id="pytest-waypoint-methods")
+
+    controller.request_waypoints(
+        ((4.0, 0.0, 1.5, 0.0),),
+        strategy=2,
+        reference_generator=3,
+        tracking_controller=1,
+    )
+
+    queued = controller._command_queue.get_nowait()
+    assert queued.argument == {
+        "waypoints": ((4.0, 0.0, 1.5, 0.0),),
+        "strategy": 2,
+        "reference_generator": 3,
+        "tracking_controller": 1,
+    }
+
+
+def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
+    """队列中的三项选择必须进入同一个 ExecuteWaypoints 服务请求。"""
+
+    class FakeWaypoint:
+        """提供 ExecuteWaypoints 所需的最小几何字段。"""
+
+        def __init__(self) -> None:
+            self.position = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+            self.yaw = 0.0
+
+    class FakeRequest:
+        """保存地面站写入的完整航点服务载荷。"""
+
+        def __init__(self) -> None:
+            self.stamp = None
+            self.source_id = ""
+            self.sequence = 0
+            self.ttl_ms = 0
+            self.flight_strategy = 0
+            self.reference_generator = 0
+            self.tracking_controller = 0
+            self.waypoints: list[FakeWaypoint] = []
+
+    class FakeClient:
+        """记录异步服务请求，不伪造执行终态。"""
+
+        def __init__(self) -> None:
+            self.requests: list[FakeRequest] = []
+
+        @staticmethod
+        def service_is_ready() -> bool:
+            return True
+
+        def call_async(self, request: FakeRequest) -> object:
+            self.requests.append(request)
+            return SimpleNamespace(done=lambda: False)
+
+    class FakeNow:
+        """提供 builtin time 消息的最小替身。"""
+
+        @staticmethod
+        def to_msg() -> object:
+            return object()
+
+    controller = GroundStationRosController(source_id="gcs-waypoint-transport")
+    controller._state._snapshot = VehicleSnapshot(
+        onboard_available=True,
+        interface_version=INTERFACE_VERSION,
+        control_authority=True,
+        lease_owner="gcs-waypoint-transport",
+    )
+    controller._state._last_status_time = time.monotonic()
+    controller.enable_control()
+    ticket = controller.request_waypoints(
+        ((4.0, -1.0, 1.5, 0.25),),
+        strategy=2,
+        reference_generator=3,
+        tracking_controller=1,
+    )
+    client = FakeClient()
+    pending: dict[int, tuple] = {}
+    controller._process_one_command(
+        {
+            "node": SimpleNamespace(
+                get_clock=lambda: SimpleNamespace(now=lambda: FakeNow())
+            ),
+            "clients": {"waypoints": client},
+            "ExecuteWaypoints": SimpleNamespace(Request=FakeRequest),
+            "Waypoint": FakeWaypoint,
+        },
+        pending,
+    )
+
+    assert ticket in pending
+    assert len(client.requests) == 1
+    request = client.requests[0]
+    assert request.flight_strategy == 2
+    assert request.reference_generator == 3
+    assert request.tracking_controller == 1
+    waypoint = request.waypoints[0]
+    assert (waypoint.position.x, waypoint.position.y, waypoint.position.z) == (
+        4.0,
+        -1.0,
+        1.5,
+    )
+    assert waypoint.yaw == 0.25
 
 
 def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
@@ -205,8 +320,12 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
         controller_active=True,
         target_position=vector,
         target_velocity=SimpleNamespace(x=0.5, y=0.0, z=0.0),
+        target_acceleration=SimpleNamespace(x=0.2, y=0.0, z=-0.1),
         target_yaw=0.6,
         target_yaw_rate=0.1,
+        active_reference_generator=3,
+        active_tracking_controller=1,
+        reference_phase=4,
         lease_owner="gcs-test",
         lease_active=True,
         waypoint_index=2,
@@ -237,6 +356,20 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     assert snapshot.roll == -0.1
     assert snapshot.pitch == -0.2
     assert snapshot.yaw == 0.4
+    assert (snapshot.target_ax, snapshot.target_ay, snapshot.target_az) == (
+        0.2,
+        0.0,
+        -0.1,
+    )
+    assert (
+        snapshot.active_reference_generator
+        is WaypointReferenceGenerator.JERK_LIMITED_S_CURVE
+    )
+    assert (
+        snapshot.active_tracking_controller
+        is WaypointTrackingController.TRAJECTORY_PD_DOB
+    )
+    assert snapshot.reference_phase == 4
     assert snapshot.battery_valid
     assert snapshot.battery_voltage == 15.8
     assert snapshot.battery_current == 3.2
@@ -251,11 +384,11 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
 
 
 def test_previous_interface_version_is_rejected_before_command_transport() -> None:
-    """1.0 机载端不得在 ExecuteWaypoints 结构升级后被误判为兼容。"""
+    """2.2 机载端不得在 ExecuteWaypoints 3.0 结构升级后被误判为兼容。"""
     controller = GroundStationRosController(source_id="gcs-version-gate")
     controller._state._snapshot = VehicleSnapshot(
         onboard_available=True,
-        interface_version="1.0",
+        interface_version="2.2",
         control_authority=True,
         lease_owner="gcs-version-gate",
     )
@@ -266,7 +399,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "2.2"
+    assert INTERFACE_VERSION == "3.0"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

@@ -26,6 +26,15 @@
     max_reference_error_xy: 0.8
     max_reference_error_z: 0.5
 
+    # Smooth waypoint methods may only start from a settled hover. Arrival also
+    # requires low actual speed; repeated guard violations cancel into hover.
+    # STEP_POSITION intentionally bypasses these additions to preserve baseline behavior.
+    waypoint_start_speed_tolerance: 0.20
+    waypoint_arrival_speed_tolerance: 0.10
+    waypoint_actual_speed_guard_xy: 0.42
+    waypoint_actual_speed_guard_z: 0.24
+    waypoint_speed_guard_observations: 5
+
     # Position PD + first-order disturbance observer.
     hover_wn_xy: 2.236
     hover_zeta_xy: 0.8
@@ -33,6 +42,49 @@
     hover_zeta_z: 0.6
     dob_L_xy: 1.5
     dob_L_z: 0.6
+
+    # TRAJECTORY_PD_DOB independent low-bandwidth profile. It adds reference
+    # acceleration feedforward. Explicit hover/manual and POSITION_PD_DOB use the
+    # baseline above; a completed trajectory task keeps this profile for terminal hold.
+    trajectory_wn_xy: 1.2
+    trajectory_zeta_xy: 1.1
+    trajectory_wn_z: 1.2
+    trajectory_zeta_z: 1.1
+    trajectory_dob_L_xy: 0.5
+    trajectory_dob_L_z: 0.3
+
+    # SECOND_ORDER_FILTER independent tuning. The speed/acceleration clamps are
+    # part of this comparison method and do not affect either profile below.
+    second_order_filter_wn_xy: 0.8
+    second_order_filter_zeta_xy: 1.1
+    second_order_filter_wn_z: 0.6
+    second_order_filter_zeta_z: 1.1
+    second_order_filter_max_velocity_xy: 0.30
+    second_order_filter_max_velocity_z: 0.15
+    second_order_filter_max_acceleration_xy: 0.18
+    second_order_filter_max_acceleration_z: 0.10
+    second_order_filter_completion_position_tolerance: 0.005
+    second_order_filter_completion_velocity_tolerance: 0.01
+
+    # TRAPEZOIDAL_PROFILE comparison tuning. It deliberately has acceleration
+    # discontinuities while sharing nominal limits with the S-curve experiment.
+    trapezoidal_max_velocity_xy: 0.30
+    trapezoidal_max_velocity_z: 0.15
+    trapezoidal_max_acceleration_xy: 0.18
+    trapezoidal_max_acceleration_z: 0.10
+    trapezoidal_max_deceleration_xy: 0.20
+    trapezoidal_max_deceleration_z: 0.12
+
+    # JERK_LIMITED_S_CURVE recommended inspection profile. Long segments use
+    # smooth acceleration ramps, a constant-speed plateau, then smooth braking.
+    s_curve_max_velocity_xy: 0.30
+    s_curve_max_velocity_z: 0.15
+    s_curve_max_acceleration_xy: 0.18
+    s_curve_max_acceleration_z: 0.10
+    s_curve_max_deceleration_xy: 0.20
+    s_curve_max_deceleration_z: 0.12
+    s_curve_max_jerk_xy: 0.15
+    s_curve_max_jerk_z: 0.08
 
     # Thrust mapping and hard output limits. The startup fallback is replaced by
     # the FCU's calibrated MOT_THST_HOVER before raw attitude control is enabled.

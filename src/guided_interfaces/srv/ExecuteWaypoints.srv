@@ -10,6 +10,18 @@ uint8 STRATEGY_STRAIGHT=0
 uint8 STRATEGY_AVOID=1
 uint8 STRATEGY_HOVER_ON_OBSTACLE=2
 uint8 flight_strategy 0
+
+# 航点到连续控制参考的生成方法；0 完整保留接口 2.2 的位置阶跃基线。
+uint8 REFERENCE_STEP_POSITION=0
+uint8 REFERENCE_SECOND_ORDER_FILTER=1
+uint8 REFERENCE_TRAPEZOIDAL_PROFILE=2
+uint8 REFERENCE_JERK_LIMITED_S_CURVE=3
+uint8 reference_generator 0
+
+# POSITION 保留原 PD+DOB；TRAJECTORY 在同一控制器中增加参考加速度前馈。
+uint8 TRACKING_POSITION_PD_DOB=0
+uint8 TRACKING_TRAJECTORY_PD_DOB=1
+uint8 tracking_controller 0
 ---
 bool accepted
 string message

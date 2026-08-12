@@ -47,6 +47,56 @@ class WaypointFlightStrategy(int, Enum):
             return cls.STRAIGHT
 
 
+class WaypointReferenceGenerator(int, Enum):
+    """航点命令生成方式；数值与 ExecuteWaypoints.srv 常量对齐。"""
+
+    STEP_POSITION = 0
+    SECOND_ORDER_FILTER = 1
+    TRAPEZOIDAL_PROFILE = 2
+    JERK_LIMITED_S_CURVE = 3
+
+    @property
+    def label(self) -> str:
+        """返回航点实验下拉框使用的短标签。"""
+        return {
+            WaypointReferenceGenerator.STEP_POSITION: "位置阶跃（基线）",
+            WaypointReferenceGenerator.SECOND_ORDER_FILTER: "二阶命令滤波",
+            WaypointReferenceGenerator.TRAPEZOIDAL_PROFILE: "普通梯形速度",
+            WaypointReferenceGenerator.JERK_LIMITED_S_CURVE: "限 jerk S 曲线",
+        }[self]
+
+    @classmethod
+    def from_value(cls, value: object) -> "WaypointReferenceGenerator":
+        """把界面/调用值规范为已知方法，未知值安全回退到既有基线。"""
+        try:
+            return cls(int(value))
+        except (TypeError, ValueError):
+            return cls.STEP_POSITION
+
+
+class WaypointTrackingController(int, Enum):
+    """航点跟踪控制方式；两项仍复用唯一机载 DobController。"""
+
+    POSITION_PD_DOB = 0
+    TRAJECTORY_PD_DOB = 1
+
+    @property
+    def label(self) -> str:
+        """返回航点实验下拉框使用的短标签。"""
+        return {
+            WaypointTrackingController.POSITION_PD_DOB: "位置 PD+DOB（基线）",
+            WaypointTrackingController.TRAJECTORY_PD_DOB: "轨迹 PD+DOB",
+        }[self]
+
+    @classmethod
+    def from_value(cls, value: object) -> "WaypointTrackingController":
+        """把界面/调用值规范为已知控制器，未知值回退到既有基线。"""
+        try:
+            return cls(int(value))
+        except (TypeError, ValueError):
+            return cls.POSITION_PD_DOB
+
+
 @dataclass(frozen=True)
 class VehicleSnapshot:
     """来自机载聚合状态接口的飞行器、租约和控制诊断快照。"""
@@ -81,7 +131,17 @@ class VehicleSnapshot:
     target_vx: float = 0.0
     target_vy: float = 0.0
     target_vz: float = 0.0
+    target_ax: float = 0.0
+    target_ay: float = 0.0
+    target_az: float = 0.0
     target_yaw_rate: float = 0.0
+    active_reference_generator: WaypointReferenceGenerator = (
+        WaypointReferenceGenerator.STEP_POSITION
+    )
+    active_tracking_controller: WaypointTrackingController = (
+        WaypointTrackingController.POSITION_PD_DOB
+    )
+    reference_phase: int = 0
     lease_owner: str = ""
     lease_active: bool = False
     control_authority: bool = False

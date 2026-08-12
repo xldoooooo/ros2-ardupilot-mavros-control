@@ -43,7 +43,12 @@ from PySide6.QtWidgets import (
 from ..config import INTERFACE_VERSION, MAX_WAYPOINT_COUNT, PROJECT_ROOT
 from ..environment import EnvironmentInitializer
 from ..event_log import EventLog, LogLevel
-from ..models import FlightMode, VehicleSnapshot
+from ..models import (
+    FlightMode,
+    VehicleSnapshot,
+    WaypointReferenceGenerator,
+    WaypointTrackingController,
+)
 from ..process_manager import CleanupReport
 from ..ros_controller import GroundStationRosController
 from ..waypoint_io import (
@@ -914,9 +919,13 @@ class GroundStationWindow(QMainWindow):
         self.activity_banner.set_message("悬停请求已发送。", LogLevel.INFO)
 
     def _send_waypoints(
-        self, waypoints: object, strategy: object | None = None
+        self,
+        waypoints: object,
+        strategy: object | None = None,
+        reference_generator: object | None = None,
+        tracking_controller: object | None = None,
     ) -> None:
-        """确认列表摘要后上传不可变航点副本与飞行策略。"""
+        """确认组合语义后原子上传航点与三项飞行前锁定配置。"""
         from ..models import WaypointFlightStrategy
 
         values = tuple(waypoints)
@@ -928,21 +937,53 @@ class GroundStationWindow(QMainWindow):
             else self.waypoints.selected_strategy()
         )
         flight_strategy = WaypointFlightStrategy.from_value(selected)
+        selected_generator = (
+            reference_generator
+            if reference_generator is not None
+            else self.waypoints.selected_reference_generator()
+        )
+        generator = WaypointReferenceGenerator.from_value(selected_generator)
+        selected_controller = (
+            tracking_controller
+            if tracking_controller is not None
+            else self.waypoints.selected_tracking_controller()
+        )
+        controller = WaypointTrackingController.from_value(selected_controller)
         first = values[0]
         last = values[-1]
-        strategy_note = ""
+        combination_warnings: list[str] = []
         if flight_strategy is not WaypointFlightStrategy.STRAIGHT:
-            strategy_note = (
-                f"所选策略「{flight_strategy.label}」尚未实现，"
-                "将按「直线飞行」执行。\n"
+            combination_warnings.append(
+                f"避障策略「{flight_strategy.label}」尚未实现，机载端将按直线飞行执行。"
             )
+        recommended_pair = (
+            generator is WaypointReferenceGenerator.STEP_POSITION
+            and controller is WaypointTrackingController.POSITION_PD_DOB
+        ) or (
+            generator is not WaypointReferenceGenerator.STEP_POSITION
+            and controller is WaypointTrackingController.TRAJECTORY_PD_DOB
+        )
+        if not recommended_pair:
+            combination_warnings.append(
+                f"「{generator.label} + {controller.label}」不是已验证搭配；"
+                "本次只保证基线以及三种连续参考 + 轨迹 PD+DOB 组合。"
+            )
+        if combination_warnings and not self._confirm_action(
+            "实验组合警告",
+            "\n\n".join(combination_warnings)
+            + "\n\n如仍要执行，请确认已理解该组合未经调试。",
+            critical=True,
+        ):
+            return
+
         simulation = self._connection_mode == "simulation"
         if not simulation:
             if not self._confirm_action(
                 "确认执行航点任务",
                 f"即将上传并执行 {len(values)} 个本地 ENU 航点。\n"
                 f"飞行策略：{flight_strategy.label}\n"
-                f"{strategy_note}"
+                f"命令生成：{generator.label}\n"
+                f"跟踪控制：{controller.label}\n"
                 f"首点 ({first[0]:+.1f}, {first[1]:+.1f}, {first[2]:+.1f})，"
                 f"末点 ({last[0]:+.1f}, {last[1]:+.1f}, {last[2]:+.1f})。\n\n"
                 "任务执行将覆盖当前手动/悬停模式，确认继续吗？",
@@ -951,20 +992,24 @@ class GroundStationWindow(QMainWindow):
                 return
             self._events.warn(
                 "operator",
-                f"操作者确认执行 {len(values)} 个航点（策略={flight_strategy.label}）",
+                f"操作者确认执行 {len(values)} 个航点（避障={flight_strategy.label}，"
+                f"命令生成={generator.label}，跟踪={controller.label}）",
             )
         else:
             self._events.info(
                 "operator",
                 f"仿真模式请求执行 {len(values)} 个航点"
-                f"（策略={flight_strategy.label}）",
+                f"（避障={flight_strategy.label}，命令生成={generator.label}，"
+                f"跟踪={controller.label}）",
             )
         self._waypoint_running = True
         self._pending_commands.add("waypoints")
         # 新任务先清掉上一任务的完成进度；同一任务后续 RUNNING 回报不会重置。
         self.waypoints.reset_progress()
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
-        self._ros.request_waypoints(values, flight_strategy)
+        self._ros.request_waypoints(
+            values, flight_strategy, generator, controller
+        )
         self._refresh()
 
     def _confirm_clear_waypoints(self) -> None:

@@ -23,6 +23,7 @@ class UiAvailability:
     waypoint_send: bool
     waypoint_preview: bool
     waypoint_edit: bool
+    waypoint_configuration: bool
     flight_reason: str
 
 
@@ -142,6 +143,17 @@ def derive_availability(
         # 无环境会话时禁止编辑/操作任何航点组件；任务运行中同样锁定编辑。
         waypoint_edit=(
             environment_active and not closing and not waypoint_running
+        ),
+        # 三种算法选择只允许在解除武装后修改；起飞后保留已选值供任务上传。
+        waypoint_configuration=(
+            environment_active
+            and not closing
+            and not busy
+            and not waypoint_running
+            and snapshot.onboard_available
+            and snapshot.connected
+            and not snapshot.armed
+            and snapshot.active_mode is FlightMode.IDLE
         ),
         flight_reason=reason,
     )

@@ -494,3 +494,24 @@
   MAVROS、RViz 生产 argv 形态替身均被识别并终止。最终 Python 100 passed，环境检查、compileall、
   致命 flake8、shellcheck 与本任务 diff 检查通过。本任务未连接实机、解锁或起飞。详见
   `agent/report/report-2026-08-12-ground-station-exit-cleanup.md`。
+
+## 2026-08-12 航点平稳参考生成与轨迹 PD+DOB
+
+- `ExecuteWaypoints`/`ControlStatus` 接口升级为 3.0：避障空壳、参考生成和跟踪控制是三个独立字段；
+  GUI 默认继续使用 `STEP_POSITION + POSITION_PD_DOB` 基线。执行卡去掉标题，进度/发送按 2:1
+  同行，下方为三列下拉框。组合只在解除武装待机时可改，机载端还锁定同一武装周期并拒绝绕过 GUI
+  换方法；解除武装后清锁。
+- 新增可插拔直线航段生成器：位置阶跃、二阶滤波、普通梯形速度、七阶段限 jerk S 曲线；统一输出
+  位置/速度/加速度/航向参考。`TRAJECTORY_PD_DOB` 复用唯一 `DobController`，使用独立低带宽增益和
+  加速度前馈；基线分支不启用前馈且原增益/到达语义不变。所有方法参数按独立前缀集中在
+  `src/onboard_control/config/control.yaml`。
+- 最终推荐默认 XY 参考速度 0.30 m/s、加速 0.18 m/s²、减速 0.20 m/s²、jerk 0.15 m/s³，配
+  `trajectory_dob_L_xy/z=0.5/0.3`。4 m 往返 SITL 中，S 曲线实际峰值约 0.327 m/s、匀速
+  0.303±0.019 m/s、最大倾角约 1.73°、姿态变化率 RMS 约 0.64°/s；梯形对照姿态变化率约
+  1.29°/s，原基线为约 3.71 m/s、25.15°、52.88°/s。90° 转向复测结果相近。
+- 主推荐机载进程树约占单核 3.9%～4.0%，100 Hz 航点控制零新增 deadline miss；连续完成多轮
+  起飞/往返/降落并清理全部本地进程。Python 正式测试 103 passed，ROS/C++ 汇总 13 tests 零失败，
+  三包构建和静态检查通过。根目录无范围 pytest 只因用户未跟踪的
+  `integration/websocket_test_demo` 缺少 `ws_demo` 在收集阶段失败，没有修改该无关目录。本任务仅
+  使用隔离 SITL，未连接、解锁或起飞实机。详见
+  `agent/report/report-2026-08-12-waypoint-smooth-reference-methods.md`。

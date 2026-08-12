@@ -245,36 +245,39 @@ class DownwardComboBox(QComboBox):
 
 
 class Card(QFrame):
-    """带标题、可选悬停帮助和统一内容边距的工程卡片。"""
+    """带可选标题、悬停帮助和统一内容边距的工程卡片。"""
 
     def __init__(
         self, title: str, subtitle: str = "", parent: QWidget | None = None
     ) -> None:
-        """创建卡片；说明文字收进标题旁问号，释放纵向操作空间。"""
+        """创建卡片；空标题时完全省略标题行，供紧凑操作区复用。"""
         super().__init__(parent)
         self.setObjectName("card")
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 16)
         root.setSpacing(10)
 
-        title_row = QHBoxLayout()
-        title_row.setSpacing(6)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("cardTitle")
-        title_row.addWidget(self.title_label)
         self.help_icon: QLabel | None = None
-        if subtitle:
-            help_icon = QLabel("?")
-            help_icon.setObjectName("cardHelpIcon")
-            help_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            help_icon.setFixedSize(18, 18)
-            help_icon.setToolTip(subtitle)
-            help_icon.setAccessibleName(f"{title}帮助")
-            help_icon.setAccessibleDescription(subtitle)
-            title_row.addWidget(help_icon)
-            self.help_icon = help_icon
-        title_row.addStretch(1)
-        root.addLayout(title_row)
+        if title or subtitle:
+            title_row = QHBoxLayout()
+            title_row.setSpacing(6)
+            title_row.addWidget(self.title_label)
+            if subtitle:
+                help_icon = QLabel("?")
+                help_icon.setObjectName("cardHelpIcon")
+                help_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                help_icon.setFixedSize(18, 18)
+                help_icon.setToolTip(subtitle)
+                help_icon.setAccessibleName(f"{title}帮助")
+                help_icon.setAccessibleDescription(subtitle)
+                title_row.addWidget(help_icon)
+                self.help_icon = help_icon
+            title_row.addStretch(1)
+            root.addLayout(title_row)
+        else:
+            self.title_label.hide()
 
         self.content_layout = QVBoxLayout()
         self.content_layout.setSpacing(9)

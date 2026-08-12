@@ -49,14 +49,37 @@ bool DobController::set_hover_throttle(const double hover_throttle) noexcept
   return true;
 }
 
+bool DobController::set_gain_profile(const ControllerParameters & profile) noexcept
+{
+  const bool valid = std::isfinite(profile.wn_xy) && profile.wn_xy > 0.0 &&
+    std::isfinite(profile.zeta_xy) && profile.zeta_xy > 0.0 &&
+    std::isfinite(profile.wn_z) && profile.wn_z > 0.0 &&
+    std::isfinite(profile.zeta_z) && profile.zeta_z > 0.0 &&
+    std::isfinite(profile.observer_xy) && profile.observer_xy >= 0.0 &&
+    std::isfinite(profile.observer_z) && profile.observer_z >= 0.0;
+  if (!valid) {
+    return false;
+  }
+  parameters_.wn_xy = profile.wn_xy;
+  parameters_.zeta_xy = profile.zeta_xy;
+  parameters_.wn_z = profile.wn_z;
+  parameters_.zeta_z = profile.zeta_z;
+  parameters_.observer_xy = profile.observer_xy;
+  parameters_.observer_z = profile.observer_z;
+  reset();
+  return true;
+}
+
 ControlOutput DobController::compute(
   const VehicleKinematics & state,
   const ControlReference & reference,
-  const double dt_seconds)
+  const double dt_seconds,
+  const bool use_acceleration_feedforward)
 {
   ControlOutput output;
   if (!state.position.allFinite() || !state.velocity.allFinite() ||
     !reference.position.allFinite() || !reference.velocity.allFinite() ||
+    !reference.acceleration.allFinite() ||
     !std::isfinite(reference.yaw) || !std::isfinite(dt_seconds))
   {
     return output;
@@ -75,6 +98,10 @@ ControlOutput DobController::compute(
   nominal.x() = kp_xy * position_error.x() + kd_xy * velocity_error.x();
   nominal.y() = kp_xy * position_error.y() + kd_xy * velocity_error.y();
   nominal.z() = kp_z * position_error.z() + kd_z * velocity_error.z();
+  if (use_acceleration_feedforward) {
+    // 轨迹控制只比既有位置 PD 多这一项；基线分支保持原数值路径不变。
+    nominal += reference.acceleration;
+  }
 
   // 一阶 DOB 的半隐式离散形式与原项目算法一致，并对估计值增加安全限幅。
   const Eigen::Vector3d observer_gain(

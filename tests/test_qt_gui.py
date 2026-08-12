@@ -102,8 +102,22 @@ class _FakeRosController:
     def adjust_velocity(self, *values: float) -> int:
         return self._record("motion", values)
 
-    def request_waypoints(self, waypoints: object, strategy: object = 0) -> int:
-        return self._record("waypoints", (tuple(waypoints), strategy))
+    def request_waypoints(
+        self,
+        waypoints: object,
+        strategy: object = 0,
+        reference_generator: object = 0,
+        tracking_controller: object = 0,
+    ) -> int:
+        return self._record(
+            "waypoints",
+            (
+                tuple(waypoints),
+                strategy,
+                reference_generator,
+                tracking_controller,
+            ),
+        )
 
     def publish_waypoint_preview(self, waypoints: object) -> bool:
         """记录只读预览快照，不占用飞行命令序号。"""
@@ -272,6 +286,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert not offline.motion
     assert not offline.land
     assert not offline.waypoint_edit
+    assert not offline.waypoint_configuration
     assert not offline.waypoint_send
     assert not offline.waypoint_preview
 
@@ -306,6 +321,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert ready.stop_simulation
     assert not ready.disconnect_hardware
     assert ready.waypoint_edit
+    assert not ready.waypoint_configuration
     assert ready.waypoint_preview
     assert ready.motion and ready.hover and ready.land and ready.waypoint_send
 
@@ -1074,10 +1090,14 @@ def test_input_focus_blocks_keyboard_flight_shortcut() -> None:
 
 
 def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
-    """仿真航点免确认、实机保留确认，且缩放后两栏仍同时可见。"""
-    from ground_station_core.models import WaypointFlightStrategy
+    """飞行前锁定三项选择，仿真有效组合免确认、实机保留确认。"""
+    from ground_station_core.models import (
+        WaypointFlightStrategy,
+        WaypointReferenceGenerator,
+        WaypointTrackingController,
+    )
 
-    window, ros = _window(_operational_snapshot(armed=True))
+    window, ros = _window(_operational_snapshot(armed=False))
     try:
         window._environment_active = True
         window._connection_mode = "simulation"
@@ -1087,10 +1107,27 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         window.waypoints.x_input.setValue(2.0)
         window.waypoints.add_button.click()
         window._refresh()
-        assert window.waypoints.send_button.isEnabled()
+        assert not window.waypoints.send_button.isEnabled()
         assert window.waypoints.strategy_combo.isEnabled()
+        assert window.waypoints.reference_combo.isEnabled()
+        assert window.waypoints.tracking_combo.isEnabled()
         assert window.waypoints.strategy_combo.count() == 3
+        assert window.waypoints.reference_combo.count() == 4
+        assert window.waypoints.tracking_combo.count() == 2
         assert window.waypoints.selected_strategy() is WaypointFlightStrategy.STRAIGHT
+        window.waypoints.reference_combo.setCurrentIndex(
+            WaypointReferenceGenerator.JERK_LIMITED_S_CURVE.value
+        )
+        window.waypoints.tracking_combo.setCurrentIndex(
+            WaypointTrackingController.TRAJECTORY_PD_DOB.value
+        )
+
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
+        assert window.waypoints.send_button.isEnabled()
+        assert not window.waypoints.strategy_combo.isEnabled()
+        assert not window.waypoints.reference_combo.isEnabled()
+        assert not window.waypoints.tracking_combo.isEnabled()
 
         window._confirm_action = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("仿真航点发送不得弹出二次确认")
@@ -1101,9 +1138,12 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
 
         window._waypoint_running = False
         window._pending_commands.discard("waypoints")
+        ros.current_snapshot = _operational_snapshot(armed=False)
         window._connection_mode = "hardware"
         window._refresh()
         window.waypoints.strategy_combo.setCurrentIndex(1)  # 自动避障（预留）
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
         window._confirm_action = lambda *_args, **_kwargs: False
         window._send_waypoints(
             window.waypoints.waypoints, window.waypoints.selected_strategy()
@@ -1115,10 +1155,12 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         )
         assert len(ros.calls) == 2
         assert ros.calls[-1][0] == "waypoints"
-        waypoints_arg, strategy_arg = ros.calls[-1][1]
+        waypoints_arg, strategy_arg, generator_arg, controller_arg = ros.calls[-1][1]
         assert len(waypoints_arg) == 2
         # 界面可选避障，但当前实现路径仍传递所选策略枚举；执行侧按直线处理。
         assert strategy_arg is WaypointFlightStrategy.AVOID
+        assert generator_arg is WaypointReferenceGenerator.JERK_LIMITED_S_CURVE
+        assert controller_arg is WaypointTrackingController.TRAJECTORY_PD_DOB
 
         for width, height in ((1180, 700), (1800, 1000)):
             window.resize(width, height)
@@ -1134,6 +1176,48 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
             assert window.operations.manual_panel.width() >= 640
             assert window.waypoints.width() > 380
             assert window.log_panel.height() >= window.log_panel.minimumHeight()
+    finally:
+        _close_window(window)
+
+
+def test_unverified_generator_controller_pair_requires_explicit_confirmation() -> None:
+    """自由组合保持可用，但不推荐搭配在仿真中也必须默认取消告警。"""
+    from ground_station_core.models import (
+        WaypointReferenceGenerator,
+        WaypointTrackingController,
+    )
+
+    window, ros = _window(_operational_snapshot(armed=False))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        window.waypoints.add_button.click()
+        window.waypoints.reference_combo.setCurrentIndex(
+            WaypointReferenceGenerator.JERK_LIMITED_S_CURVE.value
+        )
+        window.waypoints.tracking_combo.setCurrentIndex(
+            WaypointTrackingController.POSITION_PD_DOB.value
+        )
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
+
+        confirmations: list[tuple[str, str]] = []
+        approve = [False]
+
+        def confirm(title: str, message: str, **_kwargs) -> bool:
+            confirmations.append((title, message))
+            return approve[0]
+
+        window._confirm_action = confirm
+        window._send_waypoints(window.waypoints.waypoints)
+        assert not ros.calls
+        assert confirmations[-1][0] == "实验组合警告"
+        assert "不是已验证搭配" in confirmations[-1][1]
+
+        approve[0] = True
+        window._send_waypoints(window.waypoints.waypoints)
+        assert ros.calls[-1][0] == "waypoints"
     finally:
         _close_window(window)
 
@@ -1426,10 +1510,10 @@ def test_manual_coordinate_modes_and_independent_stick_sensitivity() -> None:
 
 
 def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> None:
-    """航点输入含单位/箭头，“+”添加与三项完整向下菜单均可用。"""
+    """航点输入紧凑，执行卡无标题且三种方法选择完整向下显示。"""
     from ground_station_core.qt_ui.theme import COLORS, STYLE_SHEET
 
-    window, _ros = _window(_operational_snapshot(armed=True))
+    window, _ros = _window(_operational_snapshot(armed=False))
     try:
         window._environment_active = True
         window._connection_mode = "simulation"
@@ -1492,6 +1576,17 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         assert "QPushButton#previewWaypointButton" in STYLE_SHEET
         assert "QPushButton#importWaypointButton" in STYLE_SHEET
         assert panel.send_button.property("role") == "primary"
+        assert not panel.parentWidget().isWindow()
+        execution_card = panel.progress.parentWidget()
+        assert execution_card.title_label.text() == ""
+        assert not execution_card.title_label.isVisible()
+        assert abs(
+            panel.progress.geometry().center().y()
+            - panel.send_button.geometry().center().y()
+        ) <= 1
+        assert panel.progress.width() > panel.send_button.width() * 1.8
+        assert panel.reference_combo.count() == 4
+        assert panel.tracking_combo.count() == 2
         # 结果状态仍按原链路更新，但不再作为灰色说明行参与布局。
         assert not panel.status_label.isVisible()
         assert panel.status_label.parentWidget() is not None

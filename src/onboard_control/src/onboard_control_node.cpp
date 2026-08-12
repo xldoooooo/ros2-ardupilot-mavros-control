@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 #include <tf2/LinearMath/Matrix3x3.h>
@@ -20,8 +21,8 @@ namespace onboard_control
 namespace
 {
 
-// 2.2 adds roll telemetry to the atomic onboard status contract.
-constexpr char kInterfaceVersion[] = "2.2";
+// 3.0 adds selectable reference generators and trajectory-feedback diagnostics.
+constexpr char kInterfaceVersion[] = "3.0";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -50,6 +51,16 @@ bool finite_waypoint(const guided_interfaces::msg::Waypoint & waypoint)
          std::isfinite(waypoint.position.z) && std::isfinite(waypoint.yaw);
 }
 
+bool valid_gain_profile(const ControllerParameters & parameters)
+{
+  return std::isfinite(parameters.wn_xy) && parameters.wn_xy > 0.0 &&
+    std::isfinite(parameters.zeta_xy) && parameters.zeta_xy > 0.0 &&
+    std::isfinite(parameters.wn_z) && parameters.wn_z > 0.0 &&
+    std::isfinite(parameters.zeta_z) && parameters.zeta_z > 0.0 &&
+    std::isfinite(parameters.observer_xy) && parameters.observer_xy >= 0.0 &&
+    std::isfinite(parameters.observer_z) && parameters.observer_z >= 0.0;
+}
+
 }  // namespace
 
 OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
@@ -75,6 +86,16 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   max_yaw_rate_ = declare_parameter<double>("max_yaw_rate", 1.0);
   max_reference_error_xy_ = declare_parameter<double>("max_reference_error_xy", 0.8);
   max_reference_error_z_ = declare_parameter<double>("max_reference_error_z", 0.5);
+  waypoint_start_speed_tolerance_ =
+    declare_parameter<double>("waypoint_start_speed_tolerance", 0.20);
+  waypoint_arrival_speed_tolerance_ =
+    declare_parameter<double>("waypoint_arrival_speed_tolerance", 0.10);
+  waypoint_actual_speed_guard_xy_ =
+    declare_parameter<double>("waypoint_actual_speed_guard_xy", 0.42);
+  waypoint_actual_speed_guard_z_ =
+    declare_parameter<double>("waypoint_actual_speed_guard_z", 0.24);
+  waypoint_speed_guard_observations_ =
+    declare_parameter<int>("waypoint_speed_guard_observations", 5);
   max_clock_skew_seconds_ = declare_parameter<double>("max_clock_skew_seconds", 2.0);
   mavros_prefix_ = declare_parameter<std::string>("mavros_prefix", "/mavros");
   interface_prefix_ =
@@ -101,16 +122,88 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   controller_parameters_.min_total_acceleration_z =
     declare_parameter<double>("min_total_acceleration_z", 2.0);
 
+  // 轨迹控制拥有独立低带宽增益，但继续共用推力映射与绝对安全限幅。
+  trajectory_controller_parameters_ = controller_parameters_;
+  trajectory_controller_parameters_.wn_xy =
+    declare_parameter<double>("trajectory_wn_xy", 1.2);
+  trajectory_controller_parameters_.zeta_xy =
+    declare_parameter<double>("trajectory_zeta_xy", 1.1);
+  trajectory_controller_parameters_.wn_z =
+    declare_parameter<double>("trajectory_wn_z", 1.2);
+  trajectory_controller_parameters_.zeta_z =
+    declare_parameter<double>("trajectory_zeta_z", 1.1);
+  trajectory_controller_parameters_.observer_xy =
+    declare_parameter<double>("trajectory_dob_L_xy", 0.5);
+  trajectory_controller_parameters_.observer_z =
+    declare_parameter<double>("trajectory_dob_L_z", 0.3);
+
+  auto & filter = reference_generator_parameters_.second_order;
+  filter.wn_xy = declare_parameter<double>("second_order_filter_wn_xy", 0.8);
+  filter.zeta_xy = declare_parameter<double>("second_order_filter_zeta_xy", 1.1);
+  filter.wn_z = declare_parameter<double>("second_order_filter_wn_z", 0.6);
+  filter.zeta_z = declare_parameter<double>("second_order_filter_zeta_z", 1.1);
+  filter.max_velocity_xy =
+    declare_parameter<double>("second_order_filter_max_velocity_xy", 0.30);
+  filter.max_velocity_z =
+    declare_parameter<double>("second_order_filter_max_velocity_z", 0.15);
+  filter.max_acceleration_xy =
+    declare_parameter<double>("second_order_filter_max_acceleration_xy", 0.18);
+  filter.max_acceleration_z =
+    declare_parameter<double>("second_order_filter_max_acceleration_z", 0.10);
+  filter.completion_position_tolerance =
+    declare_parameter<double>("second_order_filter_completion_position_tolerance", 0.005);
+  filter.completion_velocity_tolerance =
+    declare_parameter<double>("second_order_filter_completion_velocity_tolerance", 0.01);
+
+  auto & trapezoidal = reference_generator_parameters_.trapezoidal;
+  trapezoidal.max_velocity_xy =
+    declare_parameter<double>("trapezoidal_max_velocity_xy", 0.30);
+  trapezoidal.max_velocity_z =
+    declare_parameter<double>("trapezoidal_max_velocity_z", 0.15);
+  trapezoidal.max_acceleration_xy =
+    declare_parameter<double>("trapezoidal_max_acceleration_xy", 0.18);
+  trapezoidal.max_acceleration_z =
+    declare_parameter<double>("trapezoidal_max_acceleration_z", 0.10);
+  trapezoidal.max_deceleration_xy =
+    declare_parameter<double>("trapezoidal_max_deceleration_xy", 0.20);
+  trapezoidal.max_deceleration_z =
+    declare_parameter<double>("trapezoidal_max_deceleration_z", 0.12);
+
+  auto & s_curve = reference_generator_parameters_.s_curve;
+  s_curve.max_velocity_xy =
+    declare_parameter<double>("s_curve_max_velocity_xy", 0.30);
+  s_curve.max_velocity_z =
+    declare_parameter<double>("s_curve_max_velocity_z", 0.15);
+  s_curve.max_acceleration_xy =
+    declare_parameter<double>("s_curve_max_acceleration_xy", 0.18);
+  s_curve.max_acceleration_z =
+    declare_parameter<double>("s_curve_max_acceleration_z", 0.10);
+  s_curve.max_deceleration_xy =
+    declare_parameter<double>("s_curve_max_deceleration_xy", 0.20);
+  s_curve.max_deceleration_z =
+    declare_parameter<double>("s_curve_max_deceleration_z", 0.12);
+  s_curve.max_jerk_xy = declare_parameter<double>("s_curve_max_jerk_xy", 0.15);
+  s_curve.max_jerk_z = declare_parameter<double>("s_curve_max_jerk_z", 0.08);
+
   if (control_frequency_hz_ < 20.0 || control_frequency_hz_ > 400.0 ||
     status_frequency_hz_ <= 0.0 || pose_timeout_seconds_ <= 0.0 ||
     fcu_parameter_check_initial_delay_seconds_ < 0.1 ||
     fcu_parameter_check_initial_delay_seconds_ > 60.0 ||
     link_loss_land_timeout_seconds_ <= 0.0 || land_confirmation_timeout_seconds_ < 10.0 ||
     land_confirmation_timeout_seconds_ > 600.0 || max_velocity_xy_ <= 0.0 ||
-    max_velocity_z_ <= 0.0 || controller_parameters_.hover_throttle <= 0.0 ||
+    max_velocity_z_ <= 0.0 || waypoint_start_speed_tolerance_ <= 0.0 ||
+    waypoint_arrival_speed_tolerance_ <= 0.0 || waypoint_actual_speed_guard_xy_ <= 0.0 ||
+    waypoint_actual_speed_guard_z_ <= 0.0 || waypoint_speed_guard_observations_ < 1 ||
+    controller_parameters_.hover_throttle <= 0.0 ||
     controller_parameters_.hover_throttle >= 1.0 || controller_parameters_.thrust_ratio <= 1.0)
   {
     throw std::invalid_argument("机载控制参数超出安全范围");
+  }
+  if (!valid_gain_profile(controller_parameters_) ||
+    !valid_gain_profile(trajectory_controller_parameters_) ||
+    !valid_reference_generator_parameters(reference_generator_parameters_))
+  {
+    throw std::invalid_argument("控制增益或航点参考生成参数非法");
   }
   controller_ = DobController(controller_parameters_);
 
@@ -240,9 +333,12 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     active_task_ = ActiveTask::kNone;
     waypoints_.clear();
     reference_.velocity.setZero();
+    reference_.acceleration.setZero();
     target_yaw_rate_ = 0.0;
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
-    controller_.reset();
+    reset_waypoint_reference_state();
+    activate_tracking_controller(TrackingControllerType::kPositionPdDob);
+    clear_waypoint_configuration_lock();
     link_loss_started_.reset();
     failsafe_land_requested_ = false;
     set_status_message("飞行器已解除武装，机载控制回到待机");
@@ -511,12 +607,15 @@ void OnboardControlNode::on_motion_intent(
   if (entering_motion) {
     reference_.position = vehicle_.position;
     reference_.velocity.setZero();
+    reference_.acceleration.setZero();
     reference_.yaw = yaw_;
     target_yaw_rate_ = 0.0;
-    controller_.reset();
+    reset_waypoint_reference_state();
+    activate_tracking_controller(TrackingControllerType::kPositionPdDob);
   }
 
   reference_.velocity += delta;
+  reference_.acceleration.setZero();
   const double horizontal_speed = reference_.velocity.head<2>().norm();
   if (horizontal_speed > max_velocity_xy_) {
     reference_.velocity.head<2>() *= max_velocity_xy_ / horizontal_speed;
@@ -689,6 +788,28 @@ void OnboardControlNode::on_execute_waypoints(
     }
   }
 
+  if (request->reference_generator > ExecuteWaypoints::Request::REFERENCE_JERK_LIMITED_S_CURVE) {
+    response->message = "未知命令生成方式";
+    return;
+  }
+  if (request->tracking_controller > ExecuteWaypoints::Request::TRACKING_TRAJECTORY_PD_DOB) {
+    response->message = "未知跟踪控制方式";
+    return;
+  }
+
+  const auto requested_reference_generator =
+    static_cast<ReferenceGeneratorType>(request->reference_generator);
+  const auto requested_tracking_controller =
+    static_cast<TrackingControllerType>(request->tracking_controller);
+  if (waypoint_configuration_change_locked(
+      request->flight_strategy,
+      requested_reference_generator,
+      requested_tracking_controller))
+  {
+    response->message = "飞行过程中禁止修改避障策略、命令生成或跟踪控制；请先降落并解除武装";
+    return;
+  }
+
   // 策略接口已预留；仅 STRAIGHT 有实现，其余暂按直线飞行。
   waypoint_flight_strategy_ = request->flight_strategy;
   if (waypoint_flight_strategy_ != ExecuteWaypoints::Request::STRATEGY_STRAIGHT) {
@@ -701,7 +822,14 @@ void OnboardControlNode::on_execute_waypoints(
 
   CommandIdentity command{request->source_id, request->sequence, "waypoints"};
   cancel_active_task("旧任务已被新的航点任务覆盖");
-  start_waypoint_task(command, request->waypoints);
+  lock_waypoint_configuration(
+    request->flight_strategy,
+    requested_reference_generator,
+    requested_tracking_controller);
+  start_waypoint_task(
+    command, request->waypoints,
+    requested_reference_generator,
+    requested_tracking_controller);
   response->accepted = true;
   response->message = "航点任务已上传至机载执行器";
 }
@@ -795,7 +923,9 @@ void OnboardControlNode::start_takeoff(
 
 void OnboardControlNode::start_waypoint_task(
   const CommandIdentity & command,
-  const std::vector<guided_interfaces::msg::Waypoint> & waypoints)
+  const std::vector<guided_interfaces::msg::Waypoint> & waypoints,
+  const ReferenceGeneratorType reference_generator,
+  const TrackingControllerType tracking_controller)
 {
   active_command_ = command;
   active_task_ = ActiveTask::kWaypoint;
@@ -803,6 +933,12 @@ void OnboardControlNode::start_waypoint_task(
   waypoints_ = waypoints;
   waypoint_index_ = 0;
   waypoint_arrival_started_.reset();
+  active_reference_generator_ = reference_generator;
+  active_tracking_controller_ = tracking_controller;
+  reference_generator_ = make_reference_generator(
+    active_reference_generator_, reference_generator_parameters_);
+  generator_waypoint_initialized_ = false;
+  waypoint_speed_guard_count_ = 0;
   controller_engaged_ = true;
   clear_failsafe_locked();
   publish_result(
@@ -815,16 +951,27 @@ void OnboardControlNode::start_waypoint_task(
       if (!active_task_matches(command) || waypoints_.empty()) {
         return;
       }
-      const auto & waypoint = waypoints_.front();
-      reference_.position = Eigen::Vector3d(
-        waypoint.position.x, waypoint.position.y, waypoint.position.z);
+      if (active_reference_generator_ != ReferenceGeneratorType::kStepPosition &&
+        vehicle_.velocity.norm() > waypoint_start_speed_tolerance_)
+      {
+        std::ostringstream reason;
+        reason << "平滑航点任务要求先悬停，当前速度 " << vehicle_.velocity.norm()
+               << " m/s 超过 " << waypoint_start_speed_tolerance_ << " m/s";
+        fail_active_task(reason.str(), false);
+        return;
+      }
+      reference_.position = vehicle_.position;
       reference_.velocity.setZero();
-      reference_.yaw = normalize_angle(waypoint.yaw);
+      reference_.acceleration.setZero();
+      reference_.yaw = yaw_;
       target_yaw_rate_ = 0.0;
-      controller_.reset();
+      activate_tracking_controller(active_tracking_controller_);
+      initialize_waypoint_segment();
       control_mode_ = guided_interfaces::msg::ControlStatus::MODE_WAYPOINT;
       std::ostringstream stream;
-      stream << "航点任务已在机载端启动，共 " << waypoints_.size() << " 个航点";
+      stream << "航点任务已在机载端启动，共 " << waypoints_.size()
+             << " 个航点，命令生成=" << static_cast<unsigned>(active_reference_generator_)
+             << "，跟踪控制=" << static_cast<unsigned>(active_tracking_controller_);
       set_status_message(stream.str());
       publish_result(
         command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
@@ -841,7 +988,9 @@ void OnboardControlNode::start_land(const CommandIdentity & command, const bool 
   control_mode_ = guided_interfaces::msg::ControlStatus::MODE_LAND;
   controller_engaged_ = false;
   reference_.velocity.setZero();
+  reference_.acceleration.setZero();
   target_yaw_rate_ = 0.0;
+  reset_waypoint_reference_state();
   controller_.reset();
   if (!failsafe) {
     clear_failsafe_locked();
@@ -858,12 +1007,88 @@ void OnboardControlNode::enter_hover(
 {
   reference_.position = vehicle_.position;
   reference_.velocity.setZero();
+  reference_.acceleration.setZero();
   reference_.yaw = yaw_;
   target_yaw_rate_ = 0.0;
+  reset_waypoint_reference_state();
+  activate_tracking_controller(TrackingControllerType::kPositionPdDob);
   control_mode_ = mode;
   controller_engaged_ = armed_;
-  controller_.reset();
   set_status_message(reason, log_level);
+}
+
+void OnboardControlNode::activate_tracking_controller(const TrackingControllerType type)
+{
+  const ControllerParameters & profile =
+    type == TrackingControllerType::kTrajectoryPdDob ?
+    trajectory_controller_parameters_ : controller_parameters_;
+  if (!controller_.set_gain_profile(profile)) {
+    throw std::runtime_error("无法激活非法 PD+DOB 增益配置");
+  }
+  active_tracking_controller_ = type;
+}
+
+void OnboardControlNode::reset_waypoint_reference_state()
+{
+  reference_generator_.reset();
+  generator_waypoint_initialized_ = false;
+  generator_waypoint_index_ = 0;
+  waypoint_speed_guard_count_ = 0;
+  active_reference_generator_ = ReferenceGeneratorType::kStepPosition;
+  active_reference_phase_ = ReferencePhase::kIdle;
+}
+
+bool OnboardControlNode::waypoint_configuration_change_locked(
+  const std::uint8_t flight_strategy,
+  const ReferenceGeneratorType reference_generator,
+  const TrackingControllerType tracking_controller) const
+{
+  // 未武装时允许 GUI 为下一次起飞重新选择；武装后只接受首次锁定的同一组合。
+  if (!armed_) {
+    return false;
+  }
+  return
+    (armed_flight_strategy_lock_.has_value() &&
+    *armed_flight_strategy_lock_ != flight_strategy) ||
+    (armed_reference_generator_lock_.has_value() &&
+    *armed_reference_generator_lock_ != reference_generator) ||
+    (armed_tracking_controller_lock_.has_value() &&
+    *armed_tracking_controller_lock_ != tracking_controller);
+}
+
+void OnboardControlNode::lock_waypoint_configuration(
+  const std::uint8_t flight_strategy,
+  const ReferenceGeneratorType reference_generator,
+  const TrackingControllerType tracking_controller)
+{
+  armed_flight_strategy_lock_ = flight_strategy;
+  armed_reference_generator_lock_ = reference_generator;
+  armed_tracking_controller_lock_ = tracking_controller;
+}
+
+void OnboardControlNode::clear_waypoint_configuration_lock()
+{
+  armed_flight_strategy_lock_.reset();
+  armed_reference_generator_lock_.reset();
+  armed_tracking_controller_lock_.reset();
+}
+
+void OnboardControlNode::initialize_waypoint_segment()
+{
+  if (!reference_generator_ || waypoint_index_ >= waypoints_.size()) {
+    return;
+  }
+  const auto & waypoint = waypoints_[waypoint_index_];
+  const Eigen::Vector3d target(
+    waypoint.position.x, waypoint.position.y, waypoint.position.z);
+  reference_generator_->reset(
+    reference_.position, reference_.yaw, target, normalize_angle(waypoint.yaw));
+  const GeneratedReference generated = reference_generator_->sample();
+  reference_ = generated.control;
+  target_yaw_rate_ = generated.yaw_rate;
+  active_reference_phase_ = generated.phase;
+  generator_waypoint_index_ = waypoint_index_;
+  generator_waypoint_initialized_ = true;
 }
 
 void OnboardControlNode::cancel_active_task(const std::string & reason)
@@ -878,6 +1103,11 @@ void OnboardControlNode::cancel_active_task(const std::string & reason)
   waypoints_.clear();
   waypoint_index_ = 0;
   waypoint_arrival_started_.reset();
+  reset_waypoint_reference_state();
+  if (!armed_) {
+    // 武装前失败/取消不得迫使操作者起飞再降落才能更改实验配置。
+    clear_waypoint_configuration_lock();
+  }
 }
 
 void OnboardControlNode::fail_active_task(const std::string & reason, const bool request_land)
@@ -886,6 +1116,10 @@ void OnboardControlNode::fail_active_task(const std::string & reason, const bool
   active_task_ = ActiveTask::kNone;
   waypoints_.clear();
   waypoint_arrival_started_.reset();
+  reset_waypoint_reference_state();
+  if (!armed_) {
+    clear_waypoint_configuration_lock();
+  }
   publish_result(
     failed, guided_interfaces::msg::CommandResult::STATUS_FAILED, true, reason);
   set_status_message(reason, StatusLogLevel::kError);
@@ -1284,7 +1518,7 @@ void OnboardControlNode::control_tick()
   if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_MOTION) {
     update_motion_reference(dt_seconds);
   } else if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_WAYPOINT) {
-    update_waypoint_executor(now);
+    update_waypoint_executor(now, dt_seconds);
   }
 
   if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_MOTION ||
@@ -1298,6 +1532,7 @@ void OnboardControlNode::control_tick()
 
 void OnboardControlNode::update_motion_reference(const double dt_seconds)
 {
+  reference_.acceleration.setZero();
   reference_.position += reference_.velocity * dt_seconds;
   reference_.yaw = normalize_angle(reference_.yaw + target_yaw_rate_ * dt_seconds);
 
@@ -1316,21 +1551,50 @@ void OnboardControlNode::update_motion_reference(const double dt_seconds)
   reference_.position.z() = std::max(reference_.position.z(), 0.1);
 }
 
-void OnboardControlNode::update_waypoint_executor(const SteadyTime & now)
+void OnboardControlNode::update_waypoint_executor(
+  const SteadyTime & now, const double dt_seconds)
 {
   if (active_task_ != ActiveTask::kWaypoint || waypoint_index_ >= waypoints_.size()) {
     return;
   }
+
+  // 平滑方法额外监控实际速度；基线方法完全保留旧行为与到达语义。
+  if (active_reference_generator_ != ReferenceGeneratorType::kStepPosition) {
+    const bool speed_exceeded =
+      vehicle_.velocity.head<2>().norm() > waypoint_actual_speed_guard_xy_ ||
+      std::abs(vehicle_.velocity.z()) > waypoint_actual_speed_guard_z_;
+    waypoint_speed_guard_count_ = speed_exceeded ? waypoint_speed_guard_count_ + 1 : 0;
+    if (waypoint_speed_guard_count_ >= waypoint_speed_guard_observations_) {
+      std::ostringstream reason;
+      reason << "航点实际速度持续超过保护阈值：XY="
+             << vehicle_.velocity.head<2>().norm() << " m/s, Z="
+             << std::abs(vehicle_.velocity.z()) << " m/s";
+      fail_active_task(reason.str(), false);
+      return;
+    }
+  }
+
+  if (!generator_waypoint_initialized_ || generator_waypoint_index_ != waypoint_index_) {
+    initialize_waypoint_segment();
+  }
+  if (!reference_generator_) {
+    fail_active_task("航点参考生成器未初始化", false);
+    return;
+  }
+
+  const GeneratedReference generated = reference_generator_->update(dt_seconds);
+  reference_ = generated.control;
+  target_yaw_rate_ = generated.yaw_rate;
+  active_reference_phase_ = generated.phase;
   const auto & waypoint = waypoints_[waypoint_index_];
   const Eigen::Vector3d target(
     waypoint.position.x, waypoint.position.y, waypoint.position.z);
-  reference_.position = target;
-  reference_.velocity.setZero();
-  reference_.yaw = normalize_angle(waypoint.yaw);
-  target_yaw_rate_ = 0.0;
 
   const double distance = (vehicle_.position - target).norm();
-  if (distance >= waypoint_tolerance_) {
+  const bool baseline = active_reference_generator_ == ReferenceGeneratorType::kStepPosition;
+  const bool settled = baseline ||
+    (generated.finished && vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_);
+  if (distance >= waypoint_tolerance_ || !settled) {
     waypoint_arrival_started_.reset();
     return;
   }
@@ -1353,7 +1617,10 @@ void OnboardControlNode::update_waypoint_executor(const SteadyTime & now)
     waypoint_index_ = waypoints_.size() - 1;
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_HOVER;
     reference_.velocity.setZero();
+    reference_.acceleration.setZero();
     target_yaw_rate_ = 0.0;
+    active_reference_phase_ = ReferencePhase::kComplete;
+    // 末点保持沿用本任务增益，避免刚停稳就跳变；显式悬停/降落/解锁会恢复基线。
     set_status_message("航点任务完成，机载端保持末航点");
     publish_result(
       completed, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
@@ -1361,6 +1628,8 @@ void OnboardControlNode::update_waypoint_executor(const SteadyTime & now)
     return;
   }
 
+  generator_waypoint_initialized_ = false;
+  waypoint_speed_guard_count_ = 0;
   const auto & next = waypoints_[waypoint_index_];
   std::ostringstream stream;
   stream << "前往航点 " << waypoint_index_ + 1 << "/" << waypoints_.size()
@@ -1413,7 +1682,10 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     controller_engaged_ = false;
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
     active_task_ = ActiveTask::kNone;
-    controller_.reset();
+    waypoints_.clear();
+    waypoint_arrival_started_.reset();
+    reset_waypoint_reference_state();
+    activate_tracking_controller(TrackingControllerType::kPositionPdDob);
     failsafe_reason_ = "飞控模式被外部切换，机载服务已停止发送 setpoint";
     set_status_message(failsafe_reason_, StatusLogLevel::kError);
     return;
@@ -1470,7 +1742,10 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
     return;
   }
 
-  const ControlOutput output = controller_.compute(vehicle_, reference_, dt_seconds);
+  const bool use_acceleration_feedforward =
+    active_tracking_controller_ == TrackingControllerType::kTrajectoryPdDob;
+  const ControlOutput output = controller_.compute(
+    vehicle_, reference_, dt_seconds, use_acceleration_feedforward);
   if (!output.valid) {
     trigger_failsafe_land("PD+DOB 产生非有限控制输出");
     return;
@@ -1559,8 +1834,14 @@ void OnboardControlNode::status_tick()
   message.target_velocity.x = reference_.velocity.x();
   message.target_velocity.y = reference_.velocity.y();
   message.target_velocity.z = reference_.velocity.z();
+  message.target_acceleration.x = reference_.acceleration.x();
+  message.target_acceleration.y = reference_.acceleration.y();
+  message.target_acceleration.z = reference_.acceleration.z();
   message.target_yaw = reference_.yaw;
   message.target_yaw_rate = target_yaw_rate_;
+  message.active_reference_generator = static_cast<std::uint8_t>(active_reference_generator_);
+  message.active_tracking_controller = static_cast<std::uint8_t>(active_tracking_controller_);
+  message.reference_phase = static_cast<std::uint8_t>(active_reference_phase_);
   message.lease_owner = lease_owner_;
   message.lease_active = lease_active_locked();
   message.lease_remaining_ms = lease_remaining_ms_locked();

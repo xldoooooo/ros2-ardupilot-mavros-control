@@ -111,6 +111,11 @@ QLabel#cardTitle {{
     font-weight: 700;
     color: {COLORS['text']};
 }}
+QLabel#waypointMethodLabel {{
+    color: {COLORS['muted']};
+    font-size: 8.5pt;
+    font-weight: 700;
+}}
 QLabel#cardHelpIcon {{
     color: {COLORS['accent']};
     background: #e8f1f7;

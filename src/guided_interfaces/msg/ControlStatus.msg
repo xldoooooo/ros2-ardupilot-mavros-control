@@ -7,6 +7,21 @@ uint8 MODE_WAYPOINT=4
 uint8 MODE_LAND=5
 uint8 MODE_FAILSAFE_HOLD=6
 
+# 航点参考生成器、跟踪器与生成阶段的权威回读值。
+uint8 REFERENCE_STEP_POSITION=0
+uint8 REFERENCE_SECOND_ORDER_FILTER=1
+uint8 REFERENCE_TRAPEZOIDAL_PROFILE=2
+uint8 REFERENCE_JERK_LIMITED_S_CURVE=3
+uint8 TRACKING_POSITION_PD_DOB=0
+uint8 TRACKING_TRAJECTORY_PD_DOB=1
+uint8 REFERENCE_PHASE_IDLE=0
+uint8 REFERENCE_PHASE_STEP=1
+uint8 REFERENCE_PHASE_FILTERING=2
+uint8 REFERENCE_PHASE_ACCELERATING=3
+uint8 REFERENCE_PHASE_CRUISING=4
+uint8 REFERENCE_PHASE_DECELERATING=5
+uint8 REFERENCE_PHASE_COMPLETE=6
+
 std_msgs/Header header
 string interface_version
 bool fcu_connected
@@ -27,8 +42,12 @@ string control_mode_label
 bool controller_active
 geometry_msgs/Point target_position
 geometry_msgs/Vector3 target_velocity
+geometry_msgs/Vector3 target_acceleration
 float64 target_yaw
 float64 target_yaw_rate
+uint8 active_reference_generator
+uint8 active_tracking_controller
+uint8 reference_phase
 string lease_owner
 bool lease_active
 uint32 lease_remaining_ms

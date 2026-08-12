@@ -64,4 +64,36 @@ TEST(DobController, ResetClearsObserverState)
   EXPECT_DOUBLE_EQ(controller.disturbance().norm(), 0.0);
 }
 
+TEST(DobController, TrajectoryModeAddsAccelerationFeedforwardOnlyWhenRequested)
+{
+  DobController controller(ControllerParameters{});
+  ControlReference reference;
+  reference.acceleration = Eigen::Vector3d(0.5, 0.0, 0.0);
+
+  const auto baseline = controller.compute(VehicleKinematics{}, reference, 0.01, false);
+  controller.reset();
+  const auto trajectory = controller.compute(VehicleKinematics{}, reference, 0.01, true);
+
+  ASSERT_TRUE(baseline.valid);
+  ASSERT_TRUE(trajectory.valid);
+  EXPECT_NEAR(baseline.acceleration.x(), 0.0, 1.0e-12);
+  EXPECT_NEAR(trajectory.acceleration.x(), 0.5, 1.0e-12);
+}
+
+TEST(DobController, GainProfileSwitchPreservesHoverThrottleAndRejectsInvalidValues)
+{
+  DobController controller(ControllerParameters{});
+  ASSERT_TRUE(controller.set_hover_throttle(0.42));
+  ControllerParameters low_bandwidth;
+  low_bandwidth.wn_xy = 1.2;
+  low_bandwidth.zeta_xy = 1.1;
+  low_bandwidth.observer_xy = 0.5;
+  EXPECT_TRUE(controller.set_gain_profile(low_bandwidth));
+  EXPECT_DOUBLE_EQ(controller.hover_throttle(), 0.42);
+
+  low_bandwidth.wn_xy = -1.0;
+  EXPECT_FALSE(controller.set_gain_profile(low_bandwidth));
+  EXPECT_DOUBLE_EQ(controller.hover_throttle(), 0.42);
+}
+
 }  // namespace onboard_control
