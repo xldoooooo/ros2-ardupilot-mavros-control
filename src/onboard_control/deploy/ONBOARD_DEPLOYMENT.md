@@ -105,6 +105,11 @@ setpoint_messages=0
 不会 reset、覆盖本地修改或触碰 `/home/xld`，也不会把仅供地面使用的
 `start_ground_all.sh` 检出到无人机。
 
+`update` 只更新源码，不会替代目标机原生构建。源码与 `install/` 中
+`guided_interfaces` 或 `onboard_control` 的包版本不一致时，`start_drone_all.sh` 会在启动
+任何飞行栈进程前安全失败，并提示先执行 `onboard_workspace.sh verify`；禁止绕过该检查继续
+运行旧接口二进制。
+
 ## 5. Humble/Jazzy 网络变量
 
 `ROS_DOMAIN_ID` 只负责把 DDS 参与者划入彼此隔离的逻辑网络，不是地址或链路质量参数。
@@ -168,6 +173,9 @@ bash start_drone_all.sh
 脚本默认让四个组件都使用 ROS domain 0，并等待以下只读安全条件成立后打印
 `READY`：飞控已连接且未解锁、三路必需高频 MAVLink 消息与电池状态频率已配置、推力参数已确认、
 本地位姿有效。它不会请求模式切换、解锁、起飞、控制租约或发送飞行指令。
+就绪探针绕过可能陈旧的 ROS CLI daemon，并以显式 best-effort/volatile QoS 订阅接口版本明确的
+`guided_interfaces/msg/ControlStatus`；这只改善同机只读探针的确定性，不解决跨 ROS 发行版
+DDS 兼容性。
 
 脚本启动时会读取 `/etc/ros2-ardupilot/onboard.env`，也可用
 `ONBOARD_ENV_FILE` 指定另一文件。已人工确认串口或 overlay 后，应在该机专用

@@ -549,3 +549,21 @@
   到达速度和保持时间；这些值通过静态/单元测试但没有真机飞行验证。当前真机启动日志仍提示
   full readiness 未达到，禁止宣称飞行 READY。详见
   `agent/report/report-2026-08-13-onboard-source-sync-local-build-test.md`。
+
+## 2026-08-13 真机通讯/连接接口错配修复
+
+- 地面站无法检测/连接的主因是部署只更新了真机源码到接口 3.0，真机 `install/` 中实际运行的
+  `guided_interfaces`/`onboard_control` 仍为 2.2.0；Jazzy 地面站按 3.0 结构无法反序列化旧
+  `ControlStatus`，因此表现为状态完全收不到，而不是正常的“版本不兼容”提示。排查时服务还已于
+  03:06:49 被停止，这会独立造成无发布者。
+- `start_drone_all.sh` 现在启动任何组件前比较源码/安装包版本；3.0/2.2 错配会明确拒绝。只读
+  READY 探针固定 `--no-daemon`、显式消息类型与 best-effort/volatile QoS；机载状态图查询也在
+  context 关闭竞态中安全退出，不再因 `count_publishers` 导致 SIGINT 阶段 abort。
+- 真机已在提交 `0748dda` 原生完成 Humble/aarch64 Release 构建、13 tests 和隔离 smoke；当前
+  systemd 运行接口 3.0 并打印 READY。被动检测实测 31 条/3 秒、10.29 Hz、最大间隔 110.9 ms；
+  完整连接连续两轮成功获得并释放租约，最终 `armed=false`、STABILIZE、待机、无租约、3 秒零姿态
+  setpoint。
+- Humble/Jazzy Fast DDS 在其他跨发行版端点上仍产生既有 `sequence size exceeds remaining
+  buffer`，本次没有伪称解决 ROS 官方不保证的跨发行版兼容性；它不再阻断当前接口 3.0 状态与
+  高层服务实测，但仍是实飞前必须消除或单独验收的风险。详见
+  `agent/report/report-2026-08-13-hardware-communication-interface-fix.md`。
