@@ -1,0 +1,7 @@
+# 本独立演示的本地 Python 环境、缓存和运行证据不进入版本库。
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+results/*.json
+results/*.log

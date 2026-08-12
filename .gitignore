@@ -109,6 +109,9 @@ compile_commands.json
 docs/_build/
 site/
 
+# Large video captures are local artifacts and must not enter Git history
+*.mp4
+
 # Operating-system metadata
 .DS_Store
 .DS_Store?

@@ -177,6 +177,7 @@
 ## 版本库卫生
 
 - `.gitignore` 排除 Python/colcon 产物、rosbag、ArduPilot/MAVProxy 日志、EEPROM、飞行记录和通用临时文件。
+- 所有 `*.mp4` 视频录屏作为本地证据文件统一忽略，禁止直接纳入 Git 历史；需分发大视频时应使用外部存储或经明确评估后使用 Git LFS。
 - `.deep-copilot/` 运行数据不应重新提交；本机 `AGENTS.md` 保持本地。
 - 仓库不维护 `README.md`；正式执行与部署说明以当日报告、配置注释和 launch/deploy 示例为准。
 
@@ -524,3 +525,11 @@
 - 隔离 domain 232 + `LOCALHOST` 下，机载节点成功读取该文件并以接口 3.0、100 Hz 启动；未启动
   SITL，未连接、解锁或起飞实机。详见
   `agent/report/report-2026-08-13-control-yaml-chinese-comments.md`。
+
+## 2026-08-13 三轮 5 米往返爬升示例航点
+
+- `examples/waypoints-5m-altitude-ladder-3-rounds.csv` 包含 13 个绝对本地 ENU 航点：从
+  `(0, 0, 0.8)` 出发，沿 X 正方向进行三轮 5 m 去程/回程；每个水平航段末端原地上升
+  0.5 m，并在 0°/180°之间交替转向，最终到达 `(0, 0, 3.8)`、航向 0°。
+- 文件已通过项目 CSV 加载器和既有航点导入测试；未启动仿真或操作实机。详见
+  `agent/report/report-2026-08-13-three-round-waypoints.md`。

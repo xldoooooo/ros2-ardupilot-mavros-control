@@ -5,8 +5,10 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-      Splitter Ratio: 0.5
-    Tree Height: 448
+        - /TF1
+        - /TF1/Frames1
+      Splitter Ratio: 0.7541613578796387
+    Tree Height: 490
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -50,7 +52,37 @@ Visualization Manager:
         Expand Joint Details: false
         Expand Link Details: false
         Expand Tree: false
-        Link Tree Style: ""
+        Link Tree Style: Links in Alphabetic Order
+        a1:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        a2:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        a3:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        a4:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        fd:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
       Mass Properties:
         Inertia: false
         Mass: false
@@ -60,26 +92,28 @@ Visualization Manager:
       Value: true
       Visual Enabled: true
     - Class: rviz_default_plugins/TF
-      Enabled: false
+      Enabled: true
       Filter (blacklist): ""
       Filter (whitelist): ""
       Frame Timeout: 15
       Frames:
-        All Enabled: true
-        a1:
-          Value: true
-        a2:
-          Value: true
-        a3:
-          Value: true
-        a4:
-          Value: true
+        All Enabled: false
         base_link:
           Value: true
         base_link_frd:
           Value: true
-        fd:
+        ground_station_preview/a1:
+          Value: false
+        ground_station_preview/a2:
+          Value: false
+        ground_station_preview/a3:
+          Value: false
+        ground_station_preview/a4:
+          Value: false
+        ground_station_preview/base_link:
           Value: true
+        ground_station_preview/fd:
+          Value: false
         map:
           Value: true
         map_ned:
@@ -95,19 +129,30 @@ Visualization Manager:
       Show Names: false
       Tree:
         map:
+          ground_station_preview/base_link:
+            ground_station_preview/a1:
+              {}
+            ground_station_preview/a2:
+              {}
+            ground_station_preview/a3:
+              {}
+            ground_station_preview/a4:
+              {}
+            ground_station_preview/fd:
+              {}
           map_ned:
             {}
       Update Interval: 0
-      Value: false
+      Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: Waypoints
       Namespaces:
-        {}
+        ground_station_waypoint_labels: true
+        ground_station_waypoints: true
       Topic:
         Depth: 1
         Durability Policy: Transient Local
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /ground_station/waypoint_markers
@@ -156,35 +201,35 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 12
+      Distance: 8.097957611083984
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 1.5
+        X: 0.47866836190223694
+        Y: -0.5708019137382507
+        Z: 0.1756029725074768
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.49979737401008606
+      Pitch: 0.2897977828979492
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 6.1781840324401855
+      Yaw: 5.573209762573242
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1432
+  Height: 1505
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000030f000004f8fc0200000002fb000000100044006900730070006c0061007900730100000070000002bc0000018600fffffffb0000000a005600690065007700730100000338000002300000013800ffffff000006e3000004f800000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd00000001000000000000033100000541fc0200000002fb000000100044006900730070006c0061007900730100000070000002e60000018600fffffffb0000000a0056006900650077007301000003620000024f0000013800ffffff000006a40000054100000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 2558
-  X: 2147
-  Y: 460
+  Width: 2529
+  X: 2059
+  Y: 870

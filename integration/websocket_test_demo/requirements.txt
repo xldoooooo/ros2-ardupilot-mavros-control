@@ -1,0 +1,4 @@
+# WebSocket 客户端与测试依赖；仅安装到本目录的 .venv。
+websockets>=13,<16
+pytest>=8,<9
+

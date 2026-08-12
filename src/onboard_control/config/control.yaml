@@ -1,4 +1,9 @@
 # SITL 与实机共同使用的机载控制、安全保护和 PD+DOB 参数。
+# 修改此文件后，重启本地仿真即可使新参数在仿真中生效。
+# 实机需要修改/src/onboard_control/config/control.yaml后本地重新构建
+# 或者临时修改 install/onboard_control/share/onboard_control/config/control.yaml
+# 下次重启会生效，但重新构建时会被覆盖
+
 /**:
   ros__parameters:
     # 固定周期执行与聚合状态发布
@@ -18,7 +23,7 @@
 
     # 航点到达判定与键盘运动参考限制
     waypoint_tolerance: 0.30  # 飞机到航点的三维距离容差，单位：米。
-    waypoint_hold_seconds: 1.0  # 进入航点容差后必须持续保持的时间，单位：秒。
+    waypoint_hold_seconds: 0.3  # 进入航点容差后必须持续保持的时间，单位：秒。
     max_velocity_xy: 1.5  # 键盘运动模式的最大水平参考速度，单位：米/秒。
     max_velocity_z: 0.8  # 键盘运动模式的最大垂直参考速度，单位：米/秒。
     max_yaw_rate: 1.0  # 键盘运动模式的最大偏航角速度，单位：弧度/秒。
@@ -28,9 +33,9 @@
     # 平滑航点方法必须从稳定悬停开始，到达时也要求实际速度足够低；持续超速会取消任务并悬停。
     # 位置阶跃基线会绕过这些新增判据，以完整保留原有基线行为。
     waypoint_start_speed_tolerance: 0.20  # 启动平滑航点任务允许的最大三维实际速度，单位：米/秒。
-    waypoint_arrival_speed_tolerance: 0.10  # 平滑航点到达判定允许的最大三维实际速度，单位：米/秒。
-    waypoint_actual_speed_guard_xy: 0.42  # 平滑航点任务的水平实际速度保护阈值，单位：米/秒。
-    waypoint_actual_speed_guard_z: 0.24  # 平滑航点任务的垂直实际速度保护阈值，单位：米/秒。
+    waypoint_arrival_speed_tolerance: 0.15  # 平滑航点到达判定允许的最大三维实际速度，单位：米/秒。
+    waypoint_actual_speed_guard_xy: 1.20  # 平滑航点任务的水平实际速度保护阈值，单位：米/秒。
+    waypoint_actual_speed_guard_z: 0.30  # 平滑航点任务的垂直实际速度保护阈值，单位：米/秒。
     waypoint_speed_guard_observations: 5  # 实际速度连续超限多少个控制周期后取消任务。
 
     # 位置 PD 与一阶扰动观测器的原有基线参数
@@ -51,34 +56,34 @@
     trajectory_dob_L_z: 0.3  # 轨迹跟踪垂直扰动观测器带宽系数，单位：1/秒。
 
     # 二阶命令滤波器的独立参数；其速度和加速度限幅不影响其他参考生成方法。
-    second_order_filter_wn_xy: 0.8  # 水平二阶命令滤波器自然频率，单位：弧度/秒。
-    second_order_filter_zeta_xy: 1.1  # 水平二阶命令滤波器阻尼比，无量纲。
-    second_order_filter_wn_z: 0.6  # 垂直二阶命令滤波器自然频率，单位：弧度/秒。
-    second_order_filter_zeta_z: 1.1  # 垂直二阶命令滤波器阻尼比，无量纲。
-    second_order_filter_max_velocity_xy: 0.30  # 二阶滤波参考的最大水平速度，单位：米/秒。
-    second_order_filter_max_velocity_z: 0.15  # 二阶滤波参考的最大垂直速度，单位：米/秒。
-    second_order_filter_max_acceleration_xy: 0.18  # 二阶滤波参考的最大水平加速度，单位：米/秒²。
-    second_order_filter_max_acceleration_z: 0.10  # 二阶滤波参考的最大垂直加速度，单位：米/秒²。
-    second_order_filter_completion_position_tolerance: 0.005  # 判定滤波完成的位置误差阈值，单位：米。
-    second_order_filter_completion_velocity_tolerance: 0.01  # 判定滤波完成的速度阈值，单位：米/秒。
+    second_order_filter_wn_xy: 1.2  # 水平二阶命令滤波器自然频率，单位：弧度/秒。
+    second_order_filter_zeta_xy: 1.0  # 水平二阶命令滤波器阻尼比，无量纲。
+    second_order_filter_wn_z: 0.8  # 垂直二阶命令滤波器自然频率，单位：弧度/秒。
+    second_order_filter_zeta_z: 1.0  # 垂直二阶命令滤波器阻尼比，无量纲。
+    second_order_filter_max_velocity_xy: 1.00  # 二阶滤波参考的最大水平速度，单位：米/秒。
+    second_order_filter_max_velocity_z: 0.20  # 二阶滤波参考的最大垂直速度，单位：米/秒。
+    second_order_filter_max_acceleration_xy: 0.35  # 二阶滤波参考的最大水平加速度，单位：米/秒²。
+    second_order_filter_max_acceleration_z: 0.15  # 二阶滤波参考的最大垂直加速度，单位：米/秒²。
+    second_order_filter_completion_position_tolerance: 0.05  # 判定滤波完成的位置误差阈值，单位：米。
+    second_order_filter_completion_velocity_tolerance: 0.05  # 判定滤波完成的速度阈值，单位：米/秒。
 
     # 普通梯形速度参考的独立对照参数；相位交界处允许加速度不连续。
-    trapezoidal_max_velocity_xy: 0.30  # 梯形参考的最大水平匀速速度，单位：米/秒。
-    trapezoidal_max_velocity_z: 0.15  # 梯形参考的最大垂直匀速速度，单位：米/秒。
-    trapezoidal_max_acceleration_xy: 0.18  # 梯形参考的最大水平加速度，单位：米/秒²。
-    trapezoidal_max_acceleration_z: 0.10  # 梯形参考的最大垂直加速度，单位：米/秒²。
-    trapezoidal_max_deceleration_xy: 0.20  # 梯形参考的最大水平减速度绝对值，单位：米/秒²。
-    trapezoidal_max_deceleration_z: 0.12  # 梯形参考的最大垂直减速度绝对值，单位：米/秒²。
+    trapezoidal_max_velocity_xy: 1.00  # 梯形参考的最大水平匀速速度，单位：米/秒。
+    trapezoidal_max_velocity_z: 0.20  # 梯形参考的最大垂直匀速速度，单位：米/秒。
+    trapezoidal_max_acceleration_xy: 0.35  # 梯形参考的最大水平加速度，单位：米/秒²。
+    trapezoidal_max_acceleration_z: 0.15  # 梯形参考的最大垂直加速度，单位：米/秒²。
+    trapezoidal_max_deceleration_xy: 0.40  # 梯形参考的最大水平减速度绝对值，单位：米/秒²。
+    trapezoidal_max_deceleration_z: 0.18  # 梯形参考的最大垂直减速度绝对值，单位：米/秒²。
 
     # 限 jerk S 曲线的主推荐参数；长航段按平滑加速、恒速平台、平滑减速执行。
-    s_curve_max_velocity_xy: 0.30  # S 曲线参考的最大水平匀速速度，单位：米/秒。
-    s_curve_max_velocity_z: 0.15  # S 曲线参考的最大垂直匀速速度，单位：米/秒。
-    s_curve_max_acceleration_xy: 0.18  # S 曲线参考的最大水平加速度，单位：米/秒²。
-    s_curve_max_acceleration_z: 0.10  # S 曲线参考的最大垂直加速度，单位：米/秒²。
-    s_curve_max_deceleration_xy: 0.20  # S 曲线参考的最大水平减速度绝对值，单位：米/秒²。
-    s_curve_max_deceleration_z: 0.12  # S 曲线参考的最大垂直减速度绝对值，单位：米/秒²。
-    s_curve_max_jerk_xy: 0.15  # S 曲线参考的最大水平加加速度，单位：米/秒³。
-    s_curve_max_jerk_z: 0.08  # S 曲线参考的最大垂直加加速度，单位：米/秒³。
+    s_curve_max_velocity_xy: 1.00  # S 曲线参考的最大水平匀速速度，单位：米/秒。
+    s_curve_max_velocity_z: 0.20  # S 曲线参考的最大垂直匀速速度，单位：米/秒。
+    s_curve_max_acceleration_xy: 0.35  # S 曲线参考的最大水平加速度，单位：米/秒²。
+    s_curve_max_acceleration_z: 0.15  # S 曲线参考的最大垂直加速度，单位：米/秒²。
+    s_curve_max_deceleration_xy: 0.40  # S 曲线参考的最大水平减速度绝对值，单位：米/秒²。
+    s_curve_max_deceleration_z: 0.18  # S 曲线参考的最大垂直减速度绝对值，单位：米/秒²。
+    s_curve_max_jerk_xy: 0.40  # S 曲线参考的最大水平加加速度，单位：米/秒³。
+    s_curve_max_jerk_z: 0.16  # S 曲线参考的最大垂直加加速度，单位：米/秒³。
 
     # 推力映射与控制输出硬限幅；启用原始姿态控制前，启动回退值会被飞控标定值替换。
     hover_throttle: 0.39  # 飞控悬停油门的启动回退值，运行时由 MOT_THST_HOVER 覆盖。
