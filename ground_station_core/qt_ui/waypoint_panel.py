@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -21,9 +21,60 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import (
+    WAYPOINT_HORIZONTAL_LIMIT_METERS,
+    WAYPOINT_YAW_LIMIT_DEGREES,
+    WAYPOINT_Z_MAX_METERS,
+    WAYPOINT_Z_MIN_METERS,
+)
 from ..models import VehicleSnapshot, WaypointFlightStrategy
 from .state import UiAvailability
 from .widgets import Card, DownwardComboBox, NoWheelDoubleSpinBox
+
+
+class WaypointDropTable(QTableWidget):
+    """接收一个或多个本地文件路径，由主窗口统一校验并导入。"""
+
+    files_dropped = Signal(object)
+
+    def __init__(self, rows: int, columns: int) -> None:
+        """启用只接收外部文件的拖放模式，不允许表格内部移动。"""
+        super().__init__(rows, columns)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+
+    @staticmethod
+    def _has_local_files(event: QDragEnterEvent | QDragMoveEvent) -> bool:
+        """仅接受带至少一个本地文件 URL 的拖放载荷。"""
+        urls = event.mimeData().urls()
+        return bool(urls) and all(url.isLocalFile() for url in urls)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        """允许资源管理器中的本地文件进入航点列表。"""
+        if self._has_local_files(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
+        """拖动期间持续显示当前载荷可放置。"""
+        if self._has_local_files(event):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        """把全部本地路径交给主窗口，以便明确拒绝多文件导入。"""
+        paths = tuple(
+            url.toLocalFile()
+            for url in event.mimeData().urls()
+            if url.isLocalFile()
+        )
+        if not paths:
+            event.ignore()
+            return
+        self.files_dropped.emit(paths)
+        event.acceptProposedAction()
 
 
 class WaypointPanel(QWidget):
@@ -34,6 +85,8 @@ class WaypointPanel(QWidget):
     # 参数为 (waypoints_tuple, WaypointFlightStrategy)。
     send_requested = Signal(object, object)
     clear_requested = Signal()
+    import_file_requested = Signal()
+    files_dropped = Signal(object)
     waypoints_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -64,10 +117,27 @@ class WaypointPanel(QWidget):
         # 标签与输入同排：X [框] Y [框] Z [框] Yaw [框]，压缩顶部高度留给列表。
         coords = QHBoxLayout()
         coords.setSpacing(3)
-        self.x_input = self._coordinate_input(-10000.0, 10000.0, 2, " m")
-        self.y_input = self._coordinate_input(-10000.0, 10000.0, 2, " m")
-        self.z_input = self._coordinate_input(-1000.0, 10000.0, 2, " m")
-        self.yaw_input = self._coordinate_input(-180.0, 180.0, 1, " °")
+        self.x_input = self._coordinate_input(
+            -WAYPOINT_HORIZONTAL_LIMIT_METERS,
+            WAYPOINT_HORIZONTAL_LIMIT_METERS,
+            2,
+            " m",
+        )
+        self.y_input = self._coordinate_input(
+            -WAYPOINT_HORIZONTAL_LIMIT_METERS,
+            WAYPOINT_HORIZONTAL_LIMIT_METERS,
+            2,
+            " m",
+        )
+        self.z_input = self._coordinate_input(
+            WAYPOINT_Z_MIN_METERS, WAYPOINT_Z_MAX_METERS, 2, " m"
+        )
+        self.yaw_input = self._coordinate_input(
+            -WAYPOINT_YAW_LIMIT_DEGREES,
+            WAYPOINT_YAW_LIMIT_DEGREES,
+            1,
+            " °",
+        )
         self.z_input.setValue(1.0)
         for text, control in (
             ("X", self.x_input),
@@ -95,7 +165,7 @@ class WaypointPanel(QWidget):
         # stretch=0：坐标与添加操作固定为单行，把纵向空间留给表格。
         card.content_layout.addLayout(coords, 0)
 
-        self.table = QTableWidget(0, 5)
+        self.table = WaypointDropTable(0, 5)
         self.table.setObjectName("waypointTable")
         self.table.setHorizontalHeaderLabels(
             ("#", "X / m", "Y / m", "Z / m", "Yaw / °")
@@ -105,7 +175,11 @@ class WaypointPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setMinimumHeight(95)
-        self.table.setProperty("baseToolTip", "")
+        self.table.setToolTip("可将一个 CSV 航点文件直接拖入此列表")
+        self.table.setProperty("baseToolTip", self.table.toolTip())
+        self.table.setAccessibleDescription(
+            "本地 ENU 航点列表；支持拖入一个 CSV 文件并在确认后替换列表"
+        )
         # 取消固定最大高度，使中间列表成为唯一纵向伸缩区。
         self.table.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -120,6 +194,7 @@ class WaypointPanel(QWidget):
         for column in range(1, 5):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._update_local_controls)
+        self.table.files_dropped.connect(self.files_dropped.emit)
         card.content_layout.addWidget(self.table, 1)
 
         controls = QHBoxLayout()
@@ -155,6 +230,17 @@ class WaypointPanel(QWidget):
             button.setProperty("compact", True)
             controls.addWidget(button)
         controls.addStretch(1)
+        self.import_button = self._button(
+            "从文件导入", "neutral", "importWaypointButton"
+        )
+        self.import_button.setProperty("compact", True)
+        self.import_button.setToolTip(
+            "从单个 CSV 文件导入绝对本地 ENU 航点，并替换当前列表"
+        )
+        self.import_button.setProperty("baseToolTip", self.import_button.toolTip())
+        self.import_button.setAccessibleName("从文件导入航点")
+        self.import_button.clicked.connect(self.import_file_requested)
+        controls.addWidget(self.import_button)
         # stretch=0：排序/清空条贴在表格下方、随卡片但不抢高度。
         card.content_layout.addLayout(controls, 0)
 
@@ -319,6 +405,19 @@ class WaypointPanel(QWidget):
         self.status_label.setText("航点列表已清空。")
         self.waypoints_changed.emit(f"已清空 {count} 个航点")
 
+    def replace_waypoints(
+        self,
+        waypoints: tuple[tuple[float, float, float, float], ...],
+        source_label: str,
+    ) -> None:
+        """在主窗口完成文件校验与确认后原子替换本地航点列表。"""
+        self._waypoints[:] = waypoints
+        self._refresh_table(0)
+        self.reset_progress()
+        count = len(self._waypoints)
+        self.status_label.setText(f"已从 {source_label} 导入 {count} 个航点，尚未上传。")
+        self.waypoints_changed.emit(f"已从 {source_label} 导入 {count} 个航点")
+
     def reset_progress(self) -> None:
         """清除已结束任务的进度，并忽略机载端短期残留的旧快照。"""
         self._progress_tracking = False
@@ -355,6 +454,7 @@ class WaypointPanel(QWidget):
             self._editing_enabled and valid and row < len(self._waypoints) - 1
         )
         self.clear_button.setEnabled(self._editing_enabled and bool(self._waypoints))
+        self.import_button.setEnabled(self._editing_enabled)
 
     def apply_availability(self, state: UiAvailability) -> None:
         """仅在已启动仿真/实机会话时可编辑；上传仍受完整飞行门控。"""
@@ -365,6 +465,7 @@ class WaypointPanel(QWidget):
             self.z_input,
             self.yaw_input,
             self.add_button,
+            self.import_button,
             self.strategy_combo,
         ):
             control.setEnabled(state.waypoint_edit)
@@ -386,6 +487,7 @@ class WaypointPanel(QWidget):
                 self.up_button,
                 self.down_button,
                 self.clear_button,
+                self.import_button,
                 self.table,
                 self.strategy_combo,
                 self.send_button,
@@ -402,6 +504,7 @@ class WaypointPanel(QWidget):
                 self.up_button,
                 self.down_button,
                 self.clear_button,
+                self.import_button,
                 self.table,
             ):
                 control.setToolTip(str(control.property("baseToolTip") or ""))

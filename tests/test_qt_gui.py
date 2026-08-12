@@ -12,8 +12,16 @@ from unittest.mock import patch
 # 必须在首次导入 Qt 前选择无显示服务平台，保证测试可在 CI/headless 运行。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QWheelEvent  # noqa: E402
+from PySide6.QtCore import (  # noqa: E402
+    QEvent,
+    QMimeData,
+    QObject,
+    QPoint,
+    QPointF,
+    Qt,
+    QUrl,
+)
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
 
@@ -22,6 +30,7 @@ from ground_station_core.config import (  # noqa: E402
     HARDWARE_BATTERY_WARNING_VOLTAGE,
     INTERFACE_VERSION,
     LAND_SPEED,
+    PROJECT_ROOT,
     SIMULATION_BATTERY_GOOD_PERCENTAGE,
     SIMULATION_BATTERY_WARNING_PERCENTAGE,
     STATUS_RATE_TARGET_HZ,
@@ -345,6 +354,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert not window.operations.disconnect_hardware_button.isEnabled()
         assert not window.waypoints.x_input.isEnabled()
         assert not window.waypoints.add_button.isEnabled()
+        assert not window.waypoints.import_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
         assert not window.waypoints.table.isEnabled()
 
@@ -360,6 +370,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert not window.operations.disconnect_hardware_button.isEnabled()
         assert window.waypoints.x_input.isEnabled()
         assert window.waypoints.add_button.isEnabled()
+        assert window.waypoints.import_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
     finally:
         _close_window(window)
@@ -1404,6 +1415,11 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         assert "删除" in panel.remove_button.accessibleName()
         assert panel.up_button.x() < panel.down_button.x() < panel.remove_button.x()
         assert panel.clear_button.text() == "清空"
+        assert panel.import_button.text() == "从文件导入"
+        assert panel.import_button.property("role") == "neutral"
+        assert panel.import_button.x() > panel.clear_button.x()
+        assert "CSV" in panel.import_button.toolTip()
+        assert "QPushButton#importWaypointButton { background: white; }" in STYLE_SHEET
         assert panel.send_button.property("role") == "primary"
         # 结果状态仍按原链路更新，但不再作为灰色说明行参与布局。
         assert not panel.status_label.isVisible()
@@ -1443,6 +1459,7 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         window._waypoint_running = True
         window._refresh()
         assert not panel.add_button.isEnabled()
+        assert not panel.import_button.isEnabled()
         assert not panel.strategy_combo.isEnabled()
         assert all(
             not control.isEnabled()
@@ -1453,6 +1470,134 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
                 panel.yaw_input,
             )
         )
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_file_button_and_table_drop_replace_only_after_confirmation(
+    tmp_path: Path,
+) -> None:
+    """按钮和真实表格拖放共用解析/确认链，取消不变、确认后按行替换。"""
+    window, _ros = _window(_operational_snapshot(armed=True))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        panel = window.waypoints
+        panel.x_input.setValue(9.0)
+        panel.add_button.click()
+        original = panel.waypoints
+
+        selected = tmp_path / "selected.csv"
+        selected.write_text(
+            "index,x,y,z,yaw\n"
+            "1,1.25,-2.5,3.0,90\n"
+            "2,4.0,5.0,6.0,-180\n",
+            encoding="utf-8",
+        )
+        confirmations: list[tuple[str, str]] = []
+        approve = [False]
+
+        def confirm(title: str, message: str, **_kwargs) -> bool:
+            confirmations.append((title, message))
+            return approve[0]
+
+        window._confirm_action = confirm
+        with patch(
+            "ground_station_core.qt_ui.main_window.QFileDialog.getOpenFileName",
+            return_value=(str(selected), "CSV 文件 (*.csv)"),
+        ) as chooser:
+            panel.import_button.click()
+        chooser.assert_called_once()
+        chooser_arguments = chooser.call_args.args
+        assert Path(chooser_arguments[2]) == PROJECT_ROOT / "examples"
+        assert "*.csv" in chooser_arguments[3]
+        assert panel.waypoints == original
+        assert confirmations[-1][0] == "从文件导入航点"
+        assert "清空并替换当前列表中的 1 个航点" in confirmations[-1][1]
+        assert "绝对本地 ENU" in confirmations[-1][1]
+
+        approve[0] = True
+        with patch(
+            "ground_station_core.qt_ui.main_window.QFileDialog.getOpenFileName",
+            return_value=(str(selected), "CSV 文件 (*.csv)"),
+        ):
+            panel.import_button.click()
+        assert len(panel.waypoints) == panel.table.rowCount() == 2
+        assert panel.waypoints[0][:3] == (1.25, -2.5, 3.0)
+        assert math.isclose(panel.waypoints[0][3], math.pi / 2.0)
+        assert math.isclose(panel.waypoints[1][3], -math.pi)
+        assert panel.table.item(0, 0).text() == "1"
+        assert panel.table.item(0, 1).text() == "+1.25"
+        assert panel.progress.format() == "尚未执行"
+
+        dropped = tmp_path / "dropped.csv"
+        dropped.write_text(
+            "index,x,y,z,yaw\n1,-3.0,7.5,2.0,45\n",
+            encoding="utf-8",
+        )
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(dropped))])
+        drag_event = QDragEnterEvent(
+            QPoint(10, 10),
+            Qt.DropAction.CopyAction,
+            mime_data,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        panel.table.dragEnterEvent(drag_event)
+        assert drag_event.isAccepted()
+        drop_event = QDropEvent(
+            QPointF(10.0, 10.0),
+            Qt.DropAction.CopyAction,
+            mime_data,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        panel.table.dropEvent(drop_event)
+        assert drop_event.isAccepted()
+        assert len(confirmations) == 3
+        assert panel.waypoints[0][:3] == (-3.0, 7.5, 2.0)
+        assert math.isclose(panel.waypoints[0][3], math.pi / 4.0)
+        assert any(
+            event.source == "waypoint-import" and event.level is LogLevel.INFO
+            for event in window.event_log.snapshot()
+        )
+    finally:
+        _close_window(window)
+
+
+def test_invalid_or_multiple_dropped_files_preserve_existing_waypoints(
+    tmp_path: Path,
+) -> None:
+    """拖入错误格式或多个文件会明确告警，且不会部分清空当前列表。"""
+    window, _ros = _window(_operational_snapshot(armed=True))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        window.waypoints.add_button.click()
+        original = window.waypoints.waypoints
+        invalid = tmp_path / "invalid.csv"
+        invalid.write_text("index,x,y,z,yaw\n1,not-a-number,0,1,0\n", encoding="utf-8")
+        second = tmp_path / "second.csv"
+        second.write_text("index,x,y,z,yaw\n1,0,0,1,0\n", encoding="utf-8")
+        notices: list[tuple[str, str]] = []
+        window._show_notice = lambda title, message, _icon: notices.append(
+            (title, message)
+        )
+        window._confirm_action = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("无效或多文件导入不得进入替换确认")
+        )
+
+        window.waypoints.files_dropped.emit((str(invalid),))
+        assert window.waypoints.waypoints == original
+        assert notices[-1][0] == "航点导入失败"
+        assert "不是有效数字" in notices[-1][1]
+
+        window.waypoints.files_dropped.emit((str(invalid), str(second)))
+        assert window.waypoints.waypoints == original
+        assert "一次只能导入一个" in notices[-1][1]
     finally:
         _close_window(window)
 
@@ -1668,7 +1813,9 @@ def test_all_message_boxes_use_frameless_shadow_surface() -> None:
     window, _ros = _window(_operational_snapshot(armed=False))
     dialog = window._message_box(
         "确认起飞",
-        "请确认飞行区域安全。",
+        "已读取 5 个绝对本地 ENU 航点（单次上限 256 个）。\n"
+        "Yaw 按角度读取，确认后将清空并替换当前 GUI 航点列表。\n\n"
+        "该操作不会取消已经发送到机载端的任务。",
         QMessageBox.Icon.Warning,
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         QMessageBox.StandardButton.Cancel,
@@ -1692,6 +1839,11 @@ def test_all_message_boxes_use_frameless_shadow_surface() -> None:
         )
         assert dialog.width() >= 430
         assert dialog.height() >= 180
+        message_label = dialog.findChild(QLabel, "qt_msgbox_label")
+        assert message_label is not None
+        assert message_label.height() >= message_label.heightForWidth(
+            message_label.width()
+        )
     finally:
         dialog.close()
         _close_window(window)

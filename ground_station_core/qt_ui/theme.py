@@ -302,7 +302,14 @@ QPushButton#addWaypointButton {{
     font-weight: 700;
 }}
 QPushButton#addWaypointButton:hover {{ background: #edf3f7; }}
+QPushButton#importWaypointButton {{ background: white; }}
+QPushButton#importWaypointButton:hover {{ background: #edf3f7; }}
 QPushButton#addWaypointButton:disabled {{
+    color: {COLORS['disabled']};
+    background: #edf0f2;
+    border-color: #dbe0e5;
+}}
+QPushButton#importWaypointButton:disabled {{
     color: {COLORS['disabled']};
     background: #edf0f2;
     border-color: #dbe0e5;

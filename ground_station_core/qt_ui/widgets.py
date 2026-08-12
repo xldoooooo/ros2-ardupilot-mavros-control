@@ -162,6 +162,12 @@ class ShadowMessageBox(QMessageBox):
         target_width, target_height = getattr(
             self, "_target_dialog_size", (430, 180)
         )
+        # Qt 会在 showEvent 返回后才完成正文换行；此时 sizeHint 可能比
+        # 首次测量更高。重新取最终提示尺寸，避免长确认文字被旧高度裁掉。
+        hint = self.sizeHint()
+        target_width = max(target_width, 430, hint.width())
+        target_height = max(target_height, 180, hint.height())
+        self._target_dialog_size = (target_width, target_height)
         self.setFixedSize(target_width, target_height)
         self._update_surface_geometry()
 

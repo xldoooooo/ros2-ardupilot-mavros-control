@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
+    QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -39,12 +40,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import INTERFACE_VERSION
+from ..config import INTERFACE_VERSION, MAX_WAYPOINT_COUNT, PROJECT_ROOT
 from ..environment import EnvironmentInitializer
 from ..event_log import EventLog, LogLevel
 from ..models import FlightMode, VehicleSnapshot
 from ..process_manager import CleanupReport
 from ..ros_controller import GroundStationRosController
+from ..waypoint_io import (
+    WaypointImportError,
+    load_waypoint_file,
+    waypoint_file_dialog_filter,
+)
 from .log_panel import LogPanel
 from .operations_panel import OperationsPanel
 from .state import derive_availability
@@ -566,6 +572,8 @@ class GroundStationWindow(QMainWindow):
         )
         self.waypoints.send_requested.connect(self._send_waypoints)
         self.waypoints.clear_requested.connect(self._confirm_clear_waypoints)
+        self.waypoints.import_file_requested.connect(self._choose_waypoint_file)
+        self.waypoints.files_dropped.connect(self._import_dropped_waypoint_files)
         self.waypoints.waypoints_changed.connect(
             lambda message: self._events.debug("waypoint-editor", message)
         )
@@ -965,6 +973,86 @@ class GroundStationWindow(QMainWindow):
         ):
             self.waypoints.clear_waypoints()
             self._refresh()
+
+    def _choose_waypoint_file(self) -> None:
+        """打开单文件选择器，并把选中的受支持文件交给统一导入流程。"""
+        if not self._availability.waypoint_edit:
+            return
+        example_directory = PROJECT_ROOT / "examples"
+        initial_directory = (
+            example_directory if example_directory.is_dir() else PROJECT_ROOT
+        )
+        selected_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择航点文件",
+            str(initial_directory),
+            waypoint_file_dialog_filter(),
+        )
+        if selected_path:
+            self._import_waypoint_file(Path(selected_path))
+
+    def _import_dropped_waypoint_files(self, dropped: object) -> None:
+        """接收列表拖放路径；一次只允许一个文件进入导入流程。"""
+        if isinstance(dropped, (str, Path)):
+            paths = (Path(dropped),)
+        else:
+            try:
+                paths = tuple(Path(item) for item in dropped)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                paths = ()
+        if len(paths) != 1:
+            self._show_waypoint_import_error("一次只能导入一个航点文件")
+            return
+        self._import_waypoint_file(paths[0])
+
+    def _import_waypoint_file(self, path: Path) -> None:
+        """完整解析后默认取消地确认，确认成功才原子替换当前列表。"""
+        if not self._availability.waypoint_edit:
+            self._show_waypoint_import_error(
+                "当前航点列表不可编辑，请先启动仿真或连接机载服务"
+            )
+            return
+        try:
+            imported = load_waypoint_file(path)
+        except WaypointImportError as exc:
+            self._show_waypoint_import_error(str(exc))
+            return
+
+        existing_count = len(self.waypoints.waypoints)
+        source_label = path.name or str(path)
+        if not self._confirm_action(
+            "从文件导入航点",
+            f"已从 {source_label} 读取 {len(imported)} 个航点"
+            f"（单次上限 {MAX_WAYPOINT_COUNT} 个）。\n"
+            "X/Y/Z 将按绝对本地 ENU 坐标（米）导入，Yaw 按角度读取。\n\n"
+            f"继续将清空并替换当前列表中的 {existing_count} 个航点。"
+            "该操作不会取消已发送到机载端的任务。",
+        ):
+            self._events.debug(
+                "waypoint-import", f"操作者取消从 {source_label} 导入航点"
+            )
+            return
+        # 模态确认期间安全状态仍可能变化，替换前再次执行编辑门检查。
+        if not self._availability.waypoint_edit:
+            self._show_waypoint_import_error("航点编辑已被锁定，本次未替换列表")
+            return
+
+        self.waypoints.replace_waypoints(imported, source_label)
+        self._events.info(
+            "waypoint-import",
+            f"已从 {source_label} 导入 {len(imported)} 个绝对 ENU 航点，"
+            f"替换原列表 {existing_count} 个航点",
+        )
+        self.activity_banner.set_message(
+            f"已导入 {len(imported)} 个航点。", LogLevel.INFO
+        )
+        self._refresh()
+
+    def _show_waypoint_import_error(self, message: str) -> None:
+        """统一记录并显示不会改变现有列表的导入失败。"""
+        self._events.warn("waypoint-import", f"航点导入失败：{message}")
+        self.activity_banner.set_message(f"航点导入失败：{message}", LogLevel.WARN)
+        self._show_notice("航点导入失败", message, QMessageBox.Icon.Warning)
 
     # ---- 周期刷新与结果 ----
 

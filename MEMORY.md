@@ -438,3 +438,18 @@
 - 清理了 `agent/ref/` 中与任务 15 素材完全相同的视频副本，以及三张未引用的 8×1 像素空白
   PNG。完整清单与验证结果见
   `agent/report/report-2026-08-12-current-changes-review-and-push.md`。
+
+## 2026-08-12 任务 17 CSV 航点导入
+
+- 航点操作行最右侧新增普通白色“从文件导入”按钮，选择器只允许单文件；航点表支持本地文件
+  URL 拖放，多文件会明确拒绝。导入前完整解析，随后使用默认取消的统一阴影确认框；只有确认后
+  才原子替换 GUI 列表并重置旧进度，取消或失败均保留原列表。
+- CSV 表头为 `index,x,y,z,yaw`，序号必须从 1 连续递增；位置按绝对本地 ENU 米读取，Yaw 从度
+  转内部弧度。单次上限 256，与机载执行器上限一致；UTF-8 BOM、空尾行可接受，缺列、非有限值、
+  越界、乱序和第 257 条均整体拒绝。
+- `ground_station_core/waypoint_io.py` 以格式描述/加载器分派预留未来 Excel 扩展点，但当前只注册
+  CSV。示例为 `examples/waypoints-example.csv`；文件选择器默认打开该目录。
+- 统一 `ShadowMessageBox` 会在 Qt 完成正文换行后重新取最终 `sizeHint`，长导入警告不再裁掉
+  末段。最终 Python 88 passed；三包构建成功，ROS/C++ 5 tests 零失败；环境、compileall、致命
+  flake8 和 88 字符检查通过。本任务未连接实机、未启动飞行仿真、未发送命令、解锁或起飞。详见
+  `agent/report/report-2026-08-12-task17-csv.md`。
