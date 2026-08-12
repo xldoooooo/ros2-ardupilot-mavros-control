@@ -132,7 +132,7 @@ ControlStatus 31 条 / 10.29 Hz
 - `colcon build --packages-select guided_interfaces onboard_control guided_sim`：3 包成功。
 - ROS/C++：13 tests，0 errors、0 failures、0 skipped。
 - Python：104 passed。
-- Bash 语法、shellcheck、`git diff --check` 通过。
+- Bash 语法与 `git diff --check` 通过；本机未安装 `shellcheck`，因此该项未执行，不能报告为通过。
 - 新增回归会构造 source 3.0/install 2.2，确认启动门拒绝；改为 3.0/3.0 后确认通过。
 
 ## 7. 未消除的边界
