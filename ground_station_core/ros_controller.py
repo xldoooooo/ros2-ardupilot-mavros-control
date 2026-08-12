@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import queue
 import socket
@@ -45,6 +46,17 @@ _EXPLICIT_DISCOVERY_ENVIRONMENT = (
     "ROS_STATIC_PEERS",
     "ROS_DISCOVERY_SERVER",
 )
+
+# RViz 只读预览话题固定在地面站命名空间，避免与机载规划/感知话题混淆。
+WAYPOINT_MARKERS_TOPIC = "/ground_station/waypoint_markers"
+WAYPOINT_PATH_TOPIC = "/ground_station/waypoint_path"
+VEHICLE_POSE_TOPIC = "/ground_station/vehicle_pose"
+PREVIEW_FRAME_ID = "map"
+
+# 航点球、编号文字与文字抬升量使用米制，适配当前小型四旋翼模型。
+_WAYPOINT_MARKER_DIAMETER_METERS = 0.32
+_WAYPOINT_LABEL_HEIGHT_METERS = 0.24
+_WAYPOINT_LABEL_OFFSET_METERS = 0.30
 
 
 class _VehicleStateStore:
@@ -190,7 +202,7 @@ class _VehicleStateStore:
 
 
 class GroundStationRosController:
-    """仅发送高层意图并显示机载结果，不创建任何 MAVROS setpoint 发布器。"""
+    """发送高层意图并提供只读预览，不创建任何 MAVROS setpoint 发布器。"""
 
     def __init__(
         self, source_id: str | None = None, event_log: EventLog | None = None
@@ -217,6 +229,9 @@ class GroundStationRosController:
             for name in _EXPLICIT_DISCOVERY_ENVIRONMENT
         }
         self._command_queue: queue.Queue[CommandRequest] = queue.Queue()
+        # 预览是本地显示请求，不进入安全关键命令序号/租约通道；只保留最新快照。
+        self._waypoint_preview_queue: queue.Queue[tuple] = queue.Queue(maxsize=1)
+        self._waypoint_preview_enabled = threading.Event()
         self._ticket_lock = threading.Lock()
         self._next_ticket = 1
         # source_id 在一个 GUI 进程内稳定，因此租约序号也必须跨 ROS context
@@ -362,6 +377,8 @@ class GroundStationRosController:
                 self._release_finished.clear()
                 self._control_enabled.clear()
                 self._remote_logs_enabled.clear()
+                self._waypoint_preview_enabled.clear()
+                self._discard_waypoint_preview_requests()
                 self._thread = threading.Thread(
                     target=self._spin,
                     args=(desired_domain,),
@@ -396,6 +413,8 @@ class GroundStationRosController:
             self._ready = False
             self._remote_logs_enabled.clear()
             self._control_enabled.clear()
+            self._waypoint_preview_enabled.clear()
+            self._discard_waypoint_preview_requests()
             self._state.mark_disconnected()
             if self._thread is None or not self._thread.is_alive():
                 self._active_domain_id = None
@@ -520,6 +539,45 @@ class GroundStationRosController:
             {"waypoints": tuple(waypoints), "strategy": strategy_value},
         )
 
+    def publish_waypoint_preview(self, waypoints) -> bool:
+        """把最新航点快照交给 ROS 线程；不申请租约也不发送飞行命令。"""
+        try:
+            normalized = tuple(
+                tuple(float(value) for value in waypoint)
+                for waypoint in waypoints
+            )
+        except (TypeError, ValueError) as exc:
+            self._events.error("visualization", f"航点预览数据无效：{exc}")
+            return False
+        if any(
+            len(waypoint) != 4
+            or not all(math.isfinite(value) for value in waypoint)
+            for waypoint in normalized
+        ):
+            self._events.error(
+                "visualization", "航点预览要求每行包含四个有限数值 X/Y/Z/Yaw"
+            )
+            return False
+        if not self._ready or self._active_domain_id is None:
+            self._events.warn("visualization", "ROS 2 客户端未就绪，无法发布航点预览")
+            return False
+
+        # 队列满时丢弃旧快照，确保快速编辑后只渲染最后一次完整列表。
+        while True:
+            try:
+                self._waypoint_preview_queue.put_nowait(normalized)
+                break
+            except queue.Full:
+                try:
+                    self._waypoint_preview_queue.get_nowait()
+                except queue.Empty:
+                    continue
+        self._waypoint_preview_enabled.set()
+        self._events.debug(
+            "visualization", f"航点预览已排队：{len(normalized)} 个航点"
+        )
+        return True
+
     def request_set_gp_origin(
         self, latitude: float, longitude: float, altitude: float
     ) -> int:
@@ -534,6 +592,14 @@ class GroundStationRosController:
         self._command_queue.put(CommandRequest(ticket, name, argument))
         self._events.debug("command", f"命令已排队：{name} (ticket={ticket})")
         return ticket
+
+    def _discard_waypoint_preview_requests(self) -> None:
+        """在 context 切换/停止时丢弃旧域中的本地预览快照。"""
+        while True:
+            try:
+                self._waypoint_preview_queue.get_nowait()
+            except queue.Empty:
+                return
 
     def results_after(self, sequence: int) -> list[CommandResult]:
         """返回指定本地结果序号之后的增量事件。"""
@@ -622,6 +688,8 @@ class GroundStationRosController:
             motion_publisher = node.create_publisher(
                 MotionIntent, f"{INTERFACE_PREFIX}/motion_intent", 20
             )
+            # 预览发布者按首次点击懒创建；纯 Wi-Fi 通讯检测保持零可视化数据发送。
+            visualization_entities: dict[str, object] = {"node": node}
             clients = {
                 "lease": node.create_client(
                     AcquireControl, f"{INTERFACE_PREFIX}/acquire_control"
@@ -639,6 +707,16 @@ class GroundStationRosController:
 
             def status_callback(message: ControlStatus) -> None:
                 self._state.update(message)
+                if self._waypoint_preview_enabled.is_set():
+                    try:
+                        self._publish_vehicle_preview_pose(
+                            visualization_entities, message
+                        )
+                    except Exception as exc:
+                        self._waypoint_preview_enabled.clear()
+                        self._events.error(
+                            "visualization", f"实时位姿预览发布失败：{exc}"
+                        )
 
             def result_callback(message: RemoteCommandResult) -> None:
                 if message.source_id != self._source_id:
@@ -743,6 +821,7 @@ class GroundStationRosController:
                 self._poll_pending_services(pending_services)
                 self._update_lease(ros_entities, lease_state)
                 self._process_one_command(ros_entities, pending_services)
+                self._process_one_waypoint_preview(visualization_entities)
 
             self._release_finished.set()
         except Exception as exc:
@@ -772,6 +851,183 @@ class GroundStationRosController:
                         context.shutdown()
                 except Exception:
                     pass
+
+    def _ensure_waypoint_visualization_entities(
+        self, entities: dict[str, object]
+    ) -> None:
+        """在 ROS executor 线程首次创建 RViz 标准消息发布者。"""
+        if entities.get("marker_publisher") is not None:
+            return
+
+        import rclpy
+        from geometry_msgs.msg import PoseStamped
+        from nav_msgs.msg import Path
+        from visualization_msgs.msg import Marker, MarkerArray
+
+        node = entities["node"]
+        retained_qos = rclpy.qos.QoSProfile(
+            depth=1,
+            reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+            durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        pose_qos = rclpy.qos.QoSProfile(
+            depth=1,
+            reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+            durability=rclpy.qos.DurabilityPolicy.VOLATILE,
+        )
+        entities.update(
+            {
+                "Marker": Marker,
+                "MarkerArray": MarkerArray,
+                "Path": Path,
+                "PoseStamped": PoseStamped,
+                "marker_publisher": node.create_publisher(
+                    MarkerArray, WAYPOINT_MARKERS_TOPIC, retained_qos
+                ),
+                "path_publisher": node.create_publisher(
+                    Path, WAYPOINT_PATH_TOPIC, retained_qos
+                ),
+                "vehicle_pose_publisher": node.create_publisher(
+                    PoseStamped, VEHICLE_POSE_TOPIC, pose_qos
+                ),
+            }
+        )
+
+    def _process_one_waypoint_preview(
+        self, entities: dict[str, object]
+    ) -> None:
+        """发布最新航点球、编号和逐点直连 Path；空列表会清除旧预览。"""
+        try:
+            waypoints = self._waypoint_preview_queue.get_nowait()
+        except queue.Empty:
+            return
+
+        try:
+            self._ensure_waypoint_visualization_entities(entities)
+            node = entities["node"]
+            marker_type = entities["Marker"]
+            marker_array = entities["MarkerArray"]()
+            path = entities["Path"]()
+            pose_type = entities["PoseStamped"]
+            stamp = node.get_clock().now().to_msg()
+
+            # DELETEALL 与新 ADD 放在同一有序 MarkerArray，缩短列表时不会残留旧编号。
+            clear_marker = marker_type()
+            clear_marker.header.frame_id = PREVIEW_FRAME_ID
+            clear_marker.header.stamp = stamp
+            clear_marker.action = marker_type.DELETEALL
+            marker_array.markers.append(clear_marker)
+
+            path.header.frame_id = PREVIEW_FRAME_ID
+            path.header.stamp = stamp
+            for index, (x, y, z, yaw) in enumerate(waypoints):
+                sphere = marker_type()
+                sphere.header.frame_id = PREVIEW_FRAME_ID
+                sphere.header.stamp = stamp
+                sphere.ns = "ground_station_waypoints"
+                sphere.id = index
+                sphere.type = marker_type.SPHERE
+                sphere.action = marker_type.ADD
+                sphere.pose.position.x = x
+                sphere.pose.position.y = y
+                sphere.pose.position.z = z
+                sphere.pose.orientation.w = 1.0
+                sphere.scale.x = _WAYPOINT_MARKER_DIAMETER_METERS
+                sphere.scale.y = _WAYPOINT_MARKER_DIAMETER_METERS
+                sphere.scale.z = _WAYPOINT_MARKER_DIAMETER_METERS
+                sphere.color.r = 0.10
+                sphere.color.g = 0.55
+                sphere.color.b = 0.95
+                sphere.color.a = 0.95
+                marker_array.markers.append(sphere)
+
+                label = marker_type()
+                label.header.frame_id = PREVIEW_FRAME_ID
+                label.header.stamp = stamp
+                label.ns = "ground_station_waypoint_labels"
+                label.id = index
+                label.type = marker_type.TEXT_VIEW_FACING
+                label.action = marker_type.ADD
+                label.pose.position.x = x
+                label.pose.position.y = y
+                label.pose.position.z = z + _WAYPOINT_LABEL_OFFSET_METERS
+                label.pose.orientation.w = 1.0
+                label.scale.z = _WAYPOINT_LABEL_HEIGHT_METERS
+                label.color.r = 0.08
+                label.color.g = 0.12
+                label.color.b = 0.18
+                label.color.a = 1.0
+                label.text = str(index + 1)
+                marker_array.markers.append(label)
+
+                pose = pose_type()
+                pose.header.frame_id = PREVIEW_FRAME_ID
+                pose.header.stamp = stamp
+                pose.pose.position.x = x
+                pose.pose.position.y = y
+                pose.pose.position.z = z
+                pose.pose.orientation.z = math.sin(yaw * 0.5)
+                pose.pose.orientation.w = math.cos(yaw * 0.5)
+                path.poses.append(pose)
+
+            entities["marker_publisher"].publish(marker_array)
+            entities["path_publisher"].publish(path)
+            self._events.debug(
+                "visualization",
+                f"RViz 航点预览已发布：{len(waypoints)} 个航点、"
+                f"{max(0, len(waypoints) - 1)} 段直线",
+            )
+        except Exception as exc:
+            self._waypoint_preview_enabled.clear()
+            self._events.error("visualization", f"航点预览发布失败：{exc}")
+
+    @staticmethod
+    def _publish_vehicle_preview_pose(
+        entities: dict[str, object], status_message: object
+    ) -> None:
+        """把机载权威 ControlStatus 欧拉角转换为本地 RViz PoseStamped。"""
+        publisher = entities.get("vehicle_pose_publisher")
+        pose_type = entities.get("PoseStamped")
+        if publisher is None or pose_type is None:
+            return
+        if not bool(getattr(status_message, "local_position_valid", False)):
+            return
+
+        position = getattr(status_message, "position")
+        roll = float(getattr(status_message, "roll"))
+        pitch = float(getattr(status_message, "pitch"))
+        yaw = float(getattr(status_message, "yaw"))
+        values = (
+            float(position.x),
+            float(position.y),
+            float(position.z),
+            roll,
+            pitch,
+            yaw,
+        )
+        if not all(math.isfinite(value) for value in values):
+            return
+
+        half_roll = roll * 0.5
+        half_pitch = pitch * 0.5
+        half_yaw = yaw * 0.5
+        cr, sr = math.cos(half_roll), math.sin(half_roll)
+        cp, sp = math.cos(half_pitch), math.sin(half_pitch)
+        cy, sy = math.cos(half_yaw), math.sin(half_yaw)
+
+        pose = pose_type()
+        pose.header.frame_id = PREVIEW_FRAME_ID
+        pose.header.stamp = entities["node"].get_clock().now().to_msg()
+        (
+            pose.pose.position.x,
+            pose.pose.position.y,
+            pose.pose.position.z,
+        ) = values[:3]
+        pose.pose.orientation.x = sr * cp * cy - cr * sp * sy
+        pose.pose.orientation.y = cr * sp * cy + sr * cp * sy
+        pose.pose.orientation.z = cr * cp * sy - sr * sp * cy
+        pose.pose.orientation.w = cr * cp * cy + sr * sp * sy
+        publisher.publish(pose)
 
     def _log_status_transitions(
         self, previous: VehicleSnapshot, current: VehicleSnapshot
@@ -826,7 +1082,10 @@ class GroundStationRosController:
                 self._events.info("onboard", f"控制模式：{current.active_mode.value}")
         if not previous.setpoint_conflict and current.setpoint_conflict:
             self._events.error("onboard", "检测到姿态 setpoint 多发布者冲突")
-        if current.failsafe_reason and current.failsafe_reason != previous.failsafe_reason:
+        if (
+            current.failsafe_reason
+            and current.failsafe_reason != previous.failsafe_reason
+        ):
             self._events.error("onboard", f"失联保护原因：{current.failsafe_reason}")
         if current.status_message and current.status_message != previous.status_message:
             self._events.debug("onboard", current.status_message)
@@ -879,7 +1138,10 @@ class GroundStationRosController:
             and snapshot.interface_version == INTERFACE_VERSION
             and not snapshot.endpoint_conflict
         )
-        if snapshot.interface_version and snapshot.interface_version != INTERFACE_VERSION:
+        if (
+            snapshot.interface_version
+            and snapshot.interface_version != INTERFACE_VERSION
+        ):
             self._lease_error = (
                 f"接口版本不兼容：地面站 {INTERFACE_VERSION} / "
                 f"机载端 {snapshot.interface_version}"

@@ -103,6 +103,11 @@ class _FakeRosController:
     def request_waypoints(self, waypoints: object, strategy: object = 0) -> int:
         return self._record("waypoints", (tuple(waypoints), strategy))
 
+    def publish_waypoint_preview(self, waypoints: object) -> bool:
+        """记录只读预览快照，不占用飞行命令序号。"""
+        self._record("waypoint_preview", tuple(waypoints))
+        return self.ready
+
     def request_set_gp_origin(self, *origin: float) -> int:
         return self._record("set_gp_origin", origin)
 
@@ -115,6 +120,7 @@ class _FakeEnvironment:
         self.mode = "none"
         self.last_origin = None
         self.communication_tests = 0
+        self.preview_modes: list[str] = []
 
     def initialize_simulation(self, status, done) -> bool:
         # 仿真不接收/不写入 GPS 原点；与 EnvironmentInitializer 一致。
@@ -137,6 +143,15 @@ class _FakeEnvironment:
         status(LogLevel.INFO, "实机通讯零命令检测")
         done(True, "实机通讯链路检测通过；未发送命令")
         return True
+
+    def ensure_waypoint_preview(self, connection_mode: str) -> str:
+        """模拟仿真复用或实机独立 RViz 窗口。"""
+        self.preview_modes.append(connection_mode)
+        return (
+            "已复用仿真会话中的 RViz 窗口"
+            if connection_mode == "simulation"
+            else "已启动地面端独立实机 RViz 预览窗口"
+        )
 
     @staticmethod
     def cancel_hardware_communication_test() -> bool:
@@ -254,6 +269,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert not offline.land
     assert not offline.waypoint_edit
     assert not offline.waypoint_send
+    assert not offline.waypoint_preview
 
     lazy_ros = derive_availability(
         VehicleSnapshot(),
@@ -286,6 +302,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert ready.stop_simulation
     assert not ready.disconnect_hardware
     assert ready.waypoint_edit
+    assert ready.waypoint_preview
     assert ready.motion and ready.hover and ready.land and ready.waypoint_send
 
     hardware = derive_availability(
@@ -308,6 +325,7 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert hardware.motion
     assert hardware.hover
     assert hardware.waypoint_send
+    assert hardware.waypoint_preview
     assert hardware.flight_reason == "飞行控制链路已就绪"
 
     conflict = derive_availability(
@@ -355,6 +373,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert not window.waypoints.x_input.isEnabled()
         assert not window.waypoints.add_button.isEnabled()
         assert not window.waypoints.import_button.isEnabled()
+        assert not window.waypoints.preview_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
         assert not window.waypoints.table.isEnabled()
 
@@ -371,6 +390,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert window.waypoints.x_input.isEnabled()
         assert window.waypoints.add_button.isEnabled()
         assert window.waypoints.import_button.isEnabled()
+        assert not window.waypoints.preview_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
     finally:
         _close_window(window)
@@ -1114,6 +1134,48 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         _close_window(window)
 
 
+def test_waypoint_preview_button_publishes_snapshot_and_tracks_later_edits() -> None:
+    """预览点击只发布可视化，随后编辑/清空会替换 RViz 中的旧快照。"""
+    environment = _FakeEnvironment()
+    window, ros = _window(
+        _operational_snapshot(armed=False), environment=environment
+    )
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        panel = window.waypoints
+        panel.x_input.setValue(1.0)
+        panel.y_input.setValue(-2.0)
+        panel.z_input.setValue(3.0)
+        panel.yaw_input.setValue(90.0)
+        panel.add_button.click()
+        window._refresh()
+
+        assert panel.preview_button.isEnabled()
+        panel.preview_button.click()
+        assert environment.preview_modes == ["simulation"]
+        assert window._waypoint_preview_active
+        preview_calls = [call for call in ros.calls if call[0] == "waypoint_preview"]
+        assert preview_calls[-1][1] == panel.waypoints
+        assert not any(call[0] == "waypoints" for call in ros.calls)
+        assert "复用仿真" in window.activity_banner.message_label.text()
+
+        # 预览激活后不用重新开窗口；列表变化只替换 retained Marker/Path 快照。
+        panel.x_input.setValue(4.0)
+        panel.add_button.click()
+        preview_calls = [call for call in ros.calls if call[0] == "waypoint_preview"]
+        assert len(preview_calls) == 2
+        assert len(preview_calls[-1][1]) == 2
+        assert environment.preview_modes == ["simulation"]
+
+        panel.clear_waypoints()
+        assert ros.calls[-1] == ("waypoint_preview", ())
+        assert not panel.preview_button.isEnabled()
+    finally:
+        _close_window(window)
+
+
 def test_operations_layout_and_us_mode_manual_controls() -> None:
     """双卡标题对齐，手动区使用带反馈和摘要的美国手双摇杆。"""
     window, _ros = _window(_operational_snapshot(armed=True))
@@ -1415,11 +1477,16 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         assert "删除" in panel.remove_button.accessibleName()
         assert panel.up_button.x() < panel.down_button.x() < panel.remove_button.x()
         assert panel.clear_button.text() == "清空"
+        assert panel.preview_button.text() == "预览"
         assert panel.import_button.text() == "从文件导入"
+        assert panel.preview_button.property("role") == "neutral"
         assert panel.import_button.property("role") == "neutral"
-        assert panel.import_button.x() > panel.clear_button.x()
+        assert panel.clear_button.x() < panel.preview_button.x()
+        assert panel.preview_button.x() < panel.import_button.x()
+        assert "RViz" in panel.preview_button.toolTip()
         assert "CSV" in panel.import_button.toolTip()
-        assert "QPushButton#importWaypointButton { background: white; }" in STYLE_SHEET
+        assert "QPushButton#previewWaypointButton" in STYLE_SHEET
+        assert "QPushButton#importWaypointButton" in STYLE_SHEET
         assert panel.send_button.property("role") == "primary"
         # 结果状态仍按原链路更新，但不再作为灰色说明行参与布局。
         assert not panel.status_label.isVisible()
@@ -1460,6 +1527,7 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         window._refresh()
         assert not panel.add_button.isEnabled()
         assert not panel.import_button.isEnabled()
+        assert panel.preview_button.isEnabled()
         assert not panel.strategy_combo.isEnabled()
         assert all(
             not control.isEnabled()

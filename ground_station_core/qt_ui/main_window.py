@@ -107,6 +107,7 @@ class GroundStationWindow(QMainWindow):
         self._communication_busy = False
         self._communication_cancel_pending = False
         self._waypoint_running = False
+        self._waypoint_preview_active = False
         self._pending_commands: set[str] = set()
         self._last_result_sequence = 0
         self._last_ros_error = ""
@@ -572,11 +573,10 @@ class GroundStationWindow(QMainWindow):
         )
         self.waypoints.send_requested.connect(self._send_waypoints)
         self.waypoints.clear_requested.connect(self._confirm_clear_waypoints)
+        self.waypoints.preview_requested.connect(self._preview_waypoints)
         self.waypoints.import_file_requested.connect(self._choose_waypoint_file)
         self.waypoints.files_dropped.connect(self._import_dropped_waypoint_files)
-        self.waypoints.waypoints_changed.connect(
-            lambda message: self._events.debug("waypoint-editor", message)
-        )
+        self.waypoints.waypoints_changed.connect(self._on_waypoints_changed)
         self._bridge.environment_status.connect(self._on_environment_status)
         self._bridge.environment_done.connect(self._on_environment_done)
         self._bridge.communication_done.connect(self._on_communication_done)
@@ -725,6 +725,7 @@ class GroundStationWindow(QMainWindow):
     def _on_environment_done(self, success: bool, message: str) -> None:
         """完成环境切换并解除互斥锁。"""
         self._workflow_busy = False
+        self._waypoint_preview_active = False
         self._environment_active = success
         self._connection_mode = self._pending_environment_mode if success else "none"
         self._pending_environment_mode = "none"
@@ -767,7 +768,8 @@ class GroundStationWindow(QMainWindow):
             progress="正在释放控制权并断开实机机载服务…",
             confirm_body=(
                 "确认断开与远端机载服务的连接并释放控制租约吗？"
-                "远端机载进程不会被终止；本机若有残留仿真进程也会一并清理。"
+                "远端机载进程不会被终止；本机 RViz 预览及残留仿真进程"
+                "会一并清理。"
             ),
         )
 
@@ -779,7 +781,7 @@ class GroundStationWindow(QMainWindow):
         progress: str,
         confirm_body: str,
     ) -> None:
-        """后台执行统一清理：释放租约 + 仅终止本机受管仿真进程。"""
+        """后台统一释放租约，并仅终止本机受管仿真/预览进程。"""
         if self._cleanup_thread is not None and self._cleanup_thread.is_alive():
             return
         active = self._connection_mode == kind or (
@@ -821,6 +823,7 @@ class GroundStationWindow(QMainWindow):
     def _on_cleanup_done(self, report: CleanupReport) -> None:
         """显示可审计清理结果并恢复环境入口。"""
         self._workflow_busy = False
+        self._waypoint_preview_active = False
         self._environment_active = False
         self._connection_mode = "none"
         self._pending_environment_mode = "none"
@@ -973,6 +976,44 @@ class GroundStationWindow(QMainWindow):
         ):
             self.waypoints.clear_waypoints()
             self._refresh()
+
+    def _preview_waypoints(self) -> None:
+        """打开/复用当前会话 RViz，并发布只读航点与直线路径快照。"""
+        values = self.waypoints.waypoints
+        if not values or not self._availability.waypoint_preview:
+            return
+        try:
+            window_message = self._environment.ensure_waypoint_preview(
+                self._connection_mode
+            )
+            if not self._ros.publish_waypoint_preview(values):
+                raise RuntimeError("ROS 预览发布者未就绪")
+        except Exception as exc:
+            self._waypoint_preview_active = False
+            message = f"航点预览失败：{exc}"
+            self._events.error("visualization", message)
+            self.activity_banner.set_message(message, LogLevel.ERROR)
+            return
+
+        self._waypoint_preview_active = True
+        message = (
+            f"{window_message}；已预览 {len(values)} 个航点和 "
+            f"{max(0, len(values) - 1)} 段直线。"
+        )
+        self._events.info("visualization", message)
+        self.activity_banner.set_message(message, LogLevel.INFO)
+
+    def _on_waypoints_changed(self, message: str) -> None:
+        """记录编辑；预览开启后持续替换快照，空列表也会清除旧 Marker。"""
+        self._events.debug("waypoint-editor", message)
+        if not self._waypoint_preview_active:
+            return
+        if not self._ros.publish_waypoint_preview(self.waypoints.waypoints):
+            self._waypoint_preview_active = False
+            self.activity_banner.set_message(
+                "航点列表已更新，但 RViz 预览发布者不可用，请重新点击预览。",
+                LogLevel.WARN,
+            )
 
     def _choose_waypoint_file(self) -> None:
         """打开单文件选择器，并把选中的受支持文件交给统一导入流程。"""
@@ -1284,7 +1325,7 @@ class GroundStationWindow(QMainWindow):
             )
         else:
             message = (
-                "退出将释放控制租约、终止本项目启动的本地仿真进程，"
+                "退出将释放控制租约、终止本项目启动的本地仿真进程和 RViz 预览进程，"
                 "并停止地面站 ROS 客户端。\n\n确认退出吗？"
             )
         if not self._confirm_action(title, message, critical=flight_active):

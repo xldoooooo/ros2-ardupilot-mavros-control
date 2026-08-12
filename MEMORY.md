@@ -453,3 +453,18 @@
   末段。最终 Python 88 passed；三包构建成功，ROS/C++ 5 tests 零失败；环境、compileall、致命
   flake8 和 88 字符检查通过。本任务未连接实机、未启动飞行仿真、未发送命令、解锁或起飞。详见
   `agent/report/report-2026-08-12-task17-csv.md`。
+
+## 2026-08-12 任务 15 RViz 航点预览
+
+- 航点操作行在“从文件导入”左侧新增“预览”；首期只显示编号航点、逐点直连的名义 Path 和
+  `ControlStatus` 权威实时机体位姿。预览激活后的航点编辑会替换 retained 快照，清空会显式删除
+  旧 Marker/Path；它不申请租约、不占飞行命令 ticket，也不创建 MAVROS setpoint publisher。
+- 仿真固定复用 domain 231 + `LOCALHOST` 的受管 `rviz`；实机固定在地面端以 domain 0 + `SUBNET`
+  启动一个 `rviz_hardware_preview` 并复用。模式、控制器实际 domain 和发现范围必须一致，切换/断开
+  时本地预览随会话清理，不建立仿真—实机桥。
+- 预览话题为 `/ground_station/waypoint_markers`、`/ground_station/waypoint_path` 和
+  `/ground_station/vehicle_pose`；模型 description 与 TF 使用 `ground_station_preview` 命名空间，
+  位姿桥不再直订远端 MAVROS。RViz 只保留 Interact 工具。
+- 最终 Python 95 passed；三包构建成功，ROS/C++ 5 tests 零失败。临时 domain 232 实际 RViz 验证
+  3 个航点、2 段直线和实时机体模型成功；没有连接实机、执行飞行、解锁或起飞。详见
+  `agent/report/report-2026-08-12-task15-rviz-waypoint-preview.md`。

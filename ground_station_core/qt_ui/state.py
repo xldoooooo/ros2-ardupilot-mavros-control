@@ -21,6 +21,7 @@ class UiAvailability:
     motion: bool
     hover: bool
     waypoint_send: bool
+    waypoint_preview: bool
     waypoint_edit: bool
     flight_reason: str
 
@@ -128,6 +129,15 @@ def derive_availability(
             and airborne_control_mode
             and waypoint_count > 0
             and not waypoint_running
+        ),
+        # 预览只发布本地只读 Marker/Path，不要求武装或控制租约；仍须绑定明确会话。
+        waypoint_preview=(
+            ros_ready
+            and not busy
+            and not closing
+            and environment_active
+            and mode in {"simulation", "hardware"}
+            and waypoint_count > 0
         ),
         # 无环境会话时禁止编辑/操作任何航点组件；任务运行中同样锁定编辑。
         waypoint_edit=(

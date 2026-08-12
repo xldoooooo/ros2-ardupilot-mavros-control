@@ -3,15 +3,15 @@ visualize.launch.py — Launch visualization tools for the quadcopter.
 
 Starts:
   - robot_state_publisher  (publishes URDF model joints to /tf_static)
-  - pose_to_tf             (bridges /mavros/local_position/pose to TF map->base_link)
+  - pose_to_tf             (bridges the ground-station preview pose to isolated TF)
   - rviz2                  (loads the packaged quadcopter.rviz config)
 
 Usage:
   ros2 launch guided_sim visualize.launch.py
 
 Startup ordering:
-  This launch may start before MAVROS. Its pose subscription waits until
-  /mavros/local_position/pose appears, allowing RViz to warm up in parallel.
+  This launch may start before ControlStatus is available. Its pose subscription
+  waits until the operator enables preview, allowing RViz to warm up in parallel.
 
 The packaged RViz config preselects the map fixed frame, RobotModel and TF.
 """
@@ -34,31 +34,40 @@ def generate_launch_description():
     with open(urdf_path, 'r') as f:
         robot_description = f.read()
 
-    # robot_state_publisher — publishes /robot_description + /tf_static
+    # 地面预览使用独立节点名、description topic 和 TF frame prefix，避免覆盖远端 TF。
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
-        name='robot_state_publisher',
+        name='ground_station_preview_robot_state_publisher',
         output='screen',
         parameters=[{
             'robot_description': robot_description,
             'publish_frequency': 30.0,
+            'frame_prefix': 'ground_station_preview/',
         }],
+        remappings=[
+            ('robot_description', '/ground_station_preview/robot_description'),
+        ],
     )
 
-    # pose_to_tf bridge — subscribes /mavros/local_position/pose → TF map->base_link
+    # 只桥接地面站聚合后的预览位姿，不增加对远端 MAVROS 标准话题的订阅。
     pose_to_tf = Node(
         package='guided_sim',
         executable='pose_to_tf.py',
-        name='pose_to_tf',
+        name='ground_station_preview_pose_to_tf',
         output='screen',
+        parameters=[{
+            'pose_topic': '/ground_station/vehicle_pose',
+            'parent_frame': 'map',
+            'child_frame': 'ground_station_preview/base_link',
+        }],
     )
 
-    # rviz2 — load package config (RobotModel + TF + Fixed Frame=map)
+    # RViz 仅加载只读显示工具，不安装可绕过 Qt 门控的 2D/3D 命令工具。
     rviz2 = Node(
         package='rviz2',
         executable='rviz2',
-        name='rviz2',
+        name='ground_station_waypoint_preview_rviz',
         output='screen',
         arguments=['-d', rviz_config],
     )

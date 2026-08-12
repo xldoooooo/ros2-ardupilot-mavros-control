@@ -89,7 +89,7 @@ def build_sourced_environment(
 
 
 class ProcessSupervisor:
-    """跟踪并清理本项目本地仿真进程，不扫描或终止任意 ROS 工作负载。"""
+    """跟踪本项目仿真/预览进程，不扫描或终止任意 ROS 工作负载。"""
 
     # 只有本项目独有的节点名可以直接匹配；MAVROS/RViz/SITL 等通用进程
     # 必须再带本项目参数，避免在共享开发机上误杀其他 ROS 工作负载。
@@ -224,7 +224,7 @@ class ProcessSupervisor:
 
     def terminate_all(self) -> CleanupReport:
         """分三阶段结束受管进程及历史残留，并在返回前再次扫描验证。"""
-        self._events.info("process", "开始清理本项目本地仿真进程")
+        self._events.info("process", "开始清理本项目本地仿真与 RViz 预览进程")
         errors: list[str] = []
         with self._lock:
             records = tuple(self._managed.values())
@@ -346,6 +346,7 @@ class ProcessSupervisor:
             "mavproxy",
             "onboard",
             "rviz",
+            "rviz_hardware_preview",
             "guided_sim",
         }
     )
@@ -455,12 +456,12 @@ class ProcessSupervisor:
     def _is_related_argv(cls, argv: list[str]) -> bool:
         """基于 argv token 而非 shell 文本匹配，避免误杀包含关键词的诊断命令。"""
         basenames = [Path(token).name for token in argv]
+        command_line = " ".join(argv)
         if "ground_station.py" in basenames:
             return False
         if any(name in cls._PROJECT_EXECUTABLES for name in basenames):
             return True
 
-        command_line = " ".join(argv)
         if "sim_vehicle.py" in basenames and "GUID_OPTIONS=8" in command_line:
             return True
         if any(name in {"MAVProxy.py", "mavproxy.py"} for name in basenames):
@@ -468,7 +469,15 @@ class ProcessSupervisor:
         if "mavros_node" in basenames:
             return "fcu_url:=tcp://127.0.0.1:5762" in command_line
         if any(name in {"rviz2", "robot_state_publisher"} for name in basenames):
-            return "guided_sim" in command_line or "quadcopter.rviz" in command_line
+            return any(
+                marker in command_line
+                for marker in (
+                    "guided_sim",
+                    "quadcopter.rviz",
+                    "ground_station_preview_robot_state_publisher",
+                    "ground_station_waypoint_preview_rviz",
+                )
+            )
         if "arducopter" in basenames:
             has_temporary_defaults = any(
                 token.startswith("/tmp/tmp") for token in argv

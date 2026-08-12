@@ -85,6 +85,7 @@ class WaypointPanel(QWidget):
     # 参数为 (waypoints_tuple, WaypointFlightStrategy)。
     send_requested = Signal(object, object)
     clear_requested = Signal()
+    preview_requested = Signal()
     import_file_requested = Signal()
     files_dropped = Signal(object)
     waypoints_changed = Signal(str)
@@ -96,6 +97,7 @@ class WaypointPanel(QWidget):
         self.setMinimumHeight(500)
         self._waypoints: list[tuple[float, float, float, float]] = []
         self._editing_enabled = True
+        self._preview_enabled = False
         self._progress_tracking = False
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 0, 0, 0)
@@ -230,6 +232,19 @@ class WaypointPanel(QWidget):
             button.setProperty("compact", True)
             controls.addWidget(button)
         controls.addStretch(1)
+        self.preview_button = self._button(
+            "预览", "neutral", "previewWaypointButton"
+        )
+        self.preview_button.setProperty("compact", True)
+        self.preview_button.setToolTip(
+            "在 RViz 中显示当前航点、航点间直线和无人机实时位姿"
+        )
+        self.preview_button.setProperty(
+            "baseToolTip", self.preview_button.toolTip()
+        )
+        self.preview_button.setAccessibleName("在 RViz 中预览航点")
+        self.preview_button.clicked.connect(self.preview_requested)
+        controls.addWidget(self.preview_button)
         self.import_button = self._button(
             "从文件导入", "neutral", "importWaypointButton"
         )
@@ -454,11 +469,21 @@ class WaypointPanel(QWidget):
             self._editing_enabled and valid and row < len(self._waypoints) - 1
         )
         self.clear_button.setEnabled(self._editing_enabled and bool(self._waypoints))
+        self.preview_button.setEnabled(
+            self._preview_enabled and bool(self._waypoints)
+        )
         self.import_button.setEnabled(self._editing_enabled)
+        if not self._waypoints:
+            self.preview_button.setToolTip("请先添加或导入至少一个航点")
+        elif self._preview_enabled or self._editing_enabled:
+            self.preview_button.setToolTip(
+                str(self.preview_button.property("baseToolTip") or "")
+            )
 
     def apply_availability(self, state: UiAvailability) -> None:
         """仅在已启动仿真/实机会话时可编辑；上传仍受完整飞行门控。"""
         self._editing_enabled = state.waypoint_edit
+        self._preview_enabled = state.waypoint_preview
         for control in (
             self.x_input,
             self.y_input,
@@ -513,6 +538,13 @@ class WaypointPanel(QWidget):
                 "航点飞行策略。当前仅实现「直线飞行」；"
                 "「自动避障」与「遇到障碍悬停」为预留选项，发送后仍按直线飞行执行。"
             )
+        if not self._waypoints:
+            preview_tip = "请先添加或导入至少一个航点"
+        elif state.waypoint_preview:
+            preview_tip = str(self.preview_button.property("baseToolTip") or "")
+        else:
+            preview_tip = state.flight_reason or "需先启动仿真或连接机载服务"
+        self.preview_button.setToolTip(preview_tip)
         self._update_local_controls()
 
     def update_progress(self, snapshot: VehicleSnapshot) -> None:

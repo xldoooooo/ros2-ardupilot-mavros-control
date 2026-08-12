@@ -38,6 +38,15 @@ _COMMUNICATION_MIN_RATE_HZ = 5.0
 _COMMUNICATION_MAX_GAP_SECONDS = 0.5
 _CLEANUP_JOIN_TIMEOUT_SECONDS = 15.0
 
+# RViz launch 只管理地面本机模型/TF/窗口，不会启动任何飞行控制节点。
+_WAYPOINT_PREVIEW_COMMAND = (
+    "ros2",
+    "launch",
+    "guided_sim",
+    "visualize.launch.py",
+)
+_WAYPOINT_PREVIEW_STABILITY_SECONDS = 0.35
+
 
 @dataclass(frozen=True)
 class _CommunicationMetrics:
@@ -58,7 +67,7 @@ class _PreflightFailed(RuntimeError):
 
 
 class EnvironmentInitializer:
-    """管理本地 SITL、完整实机连接及零命令实机通讯检测。"""
+    """管理本地 SITL、实机连接、零命令检测及地面 RViz 预览。"""
 
     def __init__(
         self,
@@ -66,7 +75,7 @@ class EnvironmentInitializer:
         supervisor: ProcessSupervisor | None = None,
         event_log: EventLog | None = None,
     ) -> None:
-        """绑定地面站客户端及仅用于本地仿真的进程管理器。"""
+        """绑定地面站客户端及本地仿真/RViz 进程管理器。"""
         self._ros = ros_controller
         self._events = event_log or ros_controller.event_log
         self._supervisor = supervisor or ProcessSupervisor(self._events)
@@ -239,8 +248,8 @@ class EnvironmentInitializer:
             return True
 
     def cleanup(self) -> CleanupReport:
-        """释放租约、结束本机仿真并销毁当前 DDS context。"""
-        self._events.info("environment", "请求断开并清理本地仿真环境")
+        """释放租约、结束本机仿真/预览并销毁当前 DDS context。"""
+        self._events.info("environment", "请求断开并清理本地仿真/RViz 会话进程")
         with self._state_lock:
             self._cancel_event.set()
             workflow_thread = self._workflow_thread
@@ -251,6 +260,86 @@ class EnvironmentInitializer:
         ):
             workflow_thread.join(timeout=6.0)
         return self._terminate_environment_session()
+
+    def ensure_waypoint_preview(self, connection_mode: str) -> str:
+        """复用仿真 RViz；实机会话只启动一个同域的地面独立窗口。"""
+        mode = str(connection_mode or "none").strip().lower()
+        transports = {
+            "simulation": (
+                SIMULATION_DOMAIN_ID,
+                SIMULATION_DISCOVERY_RANGE,
+                "rviz",
+            ),
+            "hardware": (
+                HARDWARE_DOMAIN_ID,
+                HARDWARE_DISCOVERY_RANGE,
+                "rviz_hardware_preview",
+            ),
+        }
+        if mode not in transports:
+            raise RuntimeError("航点预览要求已建立仿真或实机会话")
+        domain_id, discovery_range, process_name = transports[mode]
+
+        with self._state_lock:
+            workflow_thread = self._workflow_thread
+            if workflow_thread is not None and workflow_thread.is_alive():
+                raise RuntimeError("环境工作流仍在执行，暂不能启动航点预览")
+        with self._cleanup_condition:
+            if self._cleanup_running:
+                raise RuntimeError("本地会话正在清理，暂不能启动航点预览")
+
+        active_domain = getattr(self._ros, "domain_id", None)
+        active_discovery = str(
+            getattr(self._ros, "discovery_range", "") or ""
+        ).upper()
+        if not self._ros.ready or active_domain != domain_id:
+            raise RuntimeError(
+                f"预览拒绝跨域启动：期望 domain {domain_id}，"
+                f"实际 {active_domain if active_domain is not None else 'IDLE'}"
+            )
+        if active_discovery != discovery_range:
+            raise RuntimeError(
+                f"预览发现范围不匹配：期望 {discovery_range}，"
+                f"实际 {active_discovery or '--'}"
+            )
+
+        existing = self._supervisor.get(process_name)
+        if existing is not None and existing.running:
+            message = (
+                "已复用仿真会话中的 RViz 窗口"
+                if mode == "simulation"
+                else "已复用地面端实机 RViz 预览窗口"
+            )
+            self._events.info("visualization", message)
+            return message
+
+        # 确保 launch 与 RViz 本体在当前 overlay 可用，再以控制器已核验的域启动。
+        setup_files = ros_setup_files()
+        self._verify_ros_packages_parallel(("guided_sim", "rviz2"), setup_files)
+        preview_environment = {
+            "ROS_DOMAIN_ID": str(domain_id),
+            **ros_discovery_environment(discovery_range),
+        }
+        process = self._supervisor.start(
+            process_name,
+            _WAYPOINT_PREVIEW_COMMAND,
+            setup_files=setup_files,
+            extra_environment=preview_environment,
+        )
+        deadline = time.monotonic() + _WAYPOINT_PREVIEW_STABILITY_SECONDS
+        while time.monotonic() < deadline:
+            self._check_process(process)
+            time.sleep(0.05)
+
+        if mode == "simulation":
+            message = "仿真 RViz 已在原受管窗口位置恢复"
+        else:
+            message = "已启动地面端独立实机 RViz 预览窗口"
+        self._events.info(
+            "visualization",
+            f"{message}（domain={domain_id}，发现={discovery_range}）",
+        )
+        return message
 
     def _simulation_workflow(self, status: StatusCallback) -> str:
         """执行可取消的完整闭环仿真初始化（不写 GPS 原点，沿用 SITL Home）。"""
@@ -744,7 +833,7 @@ class EnvironmentInitializer:
             raise _WorkflowCancelled()
 
     def _terminate_local_processes(self) -> CleanupReport:
-        """合并并发清理请求；任何调用者都不会无限等待另一条清理线程。"""
+        """合并本地仿真/预览清理；任何调用者都不会无限等待。"""
         with self._cleanup_condition:
             if self._cleanup_running:
                 deadline = time.monotonic() + _CLEANUP_JOIN_TIMEOUT_SECONDS

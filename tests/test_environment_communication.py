@@ -90,6 +90,32 @@ class _SimulationSupervisor(_TrackingSupervisor):
         )
 
 
+class _PreviewSupervisor(_TrackingSupervisor):
+    """记录 RViz 复用/启动及其显式 ROS 传输环境。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: dict[str, object] = {}
+        self.start_calls: list[tuple[str, tuple[str, ...], dict[str, object]]] = []
+
+    def get(self, name: str) -> object | None:
+        """返回指定模拟进程记录。"""
+        return self.records.get(name)
+
+    def start(self, name, command, **kwargs) -> object:
+        """记录 launch 命令和环境，并返回稳定存活的进程。"""
+        record = SimpleNamespace(
+            name=str(name),
+            running=True,
+            log_path=Path(f"/tmp/{name}.log"),
+        )
+        self.records[str(name)] = record
+        self.start_calls.append(
+            (str(name), tuple(str(part) for part in command), dict(kwargs))
+        )
+        return record
+
+
 class _DiagnosticRos:
     """生成状态接收统计，并让任何租约、维护或飞行入口立即失败。"""
 
@@ -407,6 +433,86 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
     assert "fcu_parameter_check_initial_delay_seconds:=2.0" in onboard_command
     assert stable_calls == [("mavros_sim", 1.0), ("rviz", 0.2)]
     assert ("set_rates", None) in ros.calls
+
+
+def test_waypoint_preview_reuses_simulation_rviz_without_second_window() -> None:
+    """仿真已有 RViz 时点击预览不得再次调用任何进程启动。"""
+    events = EventLog()
+    ros = SimpleNamespace(
+        ready=True,
+        domain_id=SIMULATION_DOMAIN_ID,
+        discovery_range=SIMULATION_DISCOVERY_RANGE,
+        event_log=events,
+    )
+    supervisor = _PreviewSupervisor()
+    supervisor.records["rviz"] = SimpleNamespace(running=True)
+    initializer = EnvironmentInitializer(
+        ros, supervisor=supervisor, event_log=events
+    )
+
+    message = initializer.ensure_waypoint_preview("simulation")
+
+    assert "复用仿真" in message
+    assert supervisor.start_calls == []
+    assert supervisor.run_calls == 0
+
+
+def test_hardware_waypoint_preview_starts_one_isolated_local_rviz(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """实机预览只启动一个本地窗口，并显式继承 domain 0/SUBNET。"""
+    monkeypatch.setenv("ROS_DISTRO", "jazzy")
+    events = EventLog()
+    ros = SimpleNamespace(
+        ready=True,
+        domain_id=HARDWARE_DOMAIN_ID,
+        discovery_range=HARDWARE_DISCOVERY_RANGE,
+        event_log=events,
+    )
+    supervisor = _PreviewSupervisor()
+    initializer = EnvironmentInitializer(
+        ros, supervisor=supervisor, event_log=events
+    )
+
+    first = initializer.ensure_waypoint_preview("hardware")
+    second = initializer.ensure_waypoint_preview("hardware")
+
+    assert "独立实机 RViz" in first
+    assert "复用地面端实机 RViz" in second
+    assert len(supervisor.start_calls) == 1
+    name, command, kwargs = supervisor.start_calls[0]
+    assert name == "rviz_hardware_preview"
+    assert command == (
+        "ros2",
+        "launch",
+        "guided_sim",
+        "visualize.launch.py",
+    )
+    environment = kwargs["extra_environment"]
+    assert environment["ROS_DOMAIN_ID"] == str(HARDWARE_DOMAIN_ID)
+    assert environment["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "SUBNET"
+    assert supervisor.run_calls == 2
+
+
+def test_waypoint_preview_rejects_transport_mismatch_before_process_access() -> None:
+    """会话模式与当前 DDS domain 不一致时不得尝试打开 RViz。"""
+    events = EventLog()
+    ros = SimpleNamespace(
+        ready=True,
+        domain_id=SIMULATION_DOMAIN_ID,
+        discovery_range=SIMULATION_DISCOVERY_RANGE,
+        event_log=events,
+    )
+    supervisor = _PreviewSupervisor()
+    initializer = EnvironmentInitializer(
+        ros, supervisor=supervisor, event_log=events
+    )
+
+    with pytest.raises(RuntimeError, match="拒绝跨域"):
+        initializer.ensure_waypoint_preview("hardware")
+
+    assert supervisor.start_calls == []
+    assert supervisor.run_calls == 0
 
 
 def test_session_cleanup_stops_dds_context_at_disconnect_boundary() -> None:

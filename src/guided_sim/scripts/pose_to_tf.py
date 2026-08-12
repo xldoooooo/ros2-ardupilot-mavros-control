@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""
-pose_to_tf.py — Bridge MAVROS local_position/pose to TF2 transforms.
-
-Subscribes to /mavros/local_position/pose (PoseStamped) and publishes the
-transform map -> base_link so that RViz2 can display the quadcopter URDF
-model at the correct 3D pose in real time.
-"""
+"""把地面站权威位姿预览转换为隔离命名的 RViz TF2 机体变换。"""
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -15,19 +9,28 @@ from tf2_ros import TransformBroadcaster
 
 
 class PoseToTF(Node):
-    """把 MAVROS 本地位姿转换为 RViz 使用的 map → base_link TF。"""
+    """把本地预览位姿转换为 map → ground_station_preview/base_link TF。"""
 
     def __init__(self):
-        """创建 TF broadcaster 与 MAVROS 位姿订阅。"""
+        """创建可配置的位姿订阅与 TF broadcaster。"""
         super().__init__('pose_to_tf')
 
-        # TF broadcaster
+        self.declare_parameter('pose_topic', '/ground_station/vehicle_pose')
+        self.declare_parameter('parent_frame', 'map')
+        self.declare_parameter(
+            'child_frame', 'ground_station_preview/base_link'
+        )
+        self.pose_topic = str(self.get_parameter('pose_topic').value)
+        self.parent_frame = str(self.get_parameter('parent_frame').value)
+        self.child_frame = str(self.get_parameter('child_frame').value)
+
+        # TF 仅服务地面预览命名空间，不覆盖远端飞控或 Odin 的 frame。
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        # Subscribe to MAVROS local position
+        # 位姿来自地面站已接收的 ControlStatus，避免额外直订远端 MAVROS 话题。
         self.sub = self.create_subscription(
             PoseStamped,
-            '/mavros/local_position/pose',
+            self.pose_topic,
             self.pose_callback,
             rclpy.qos.QoSProfile(
                 depth=10,
@@ -37,16 +40,17 @@ class PoseToTF(Node):
         )
 
         self.get_logger().info(
-            'pose_to_tf node started — bridging /mavros/local_position/pose to TF'
+            f'pose_to_tf started — bridging {self.pose_topic} to '
+            f'{self.parent_frame} -> {self.child_frame}'
         )
 
     def pose_callback(self, msg: PoseStamped):
-        """逐帧转发位移和姿态，保留 MAVROS 原始时间戳。"""
+        """逐帧转发位移和姿态，保留地面站发布的接收时间戳。"""
         t = TransformStamped()
 
         t.header.stamp = msg.header.stamp
-        t.header.frame_id = 'map'
-        t.child_frame_id = 'base_link'
+        t.header.frame_id = self.parent_frame
+        t.child_frame_id = self.child_frame
 
         t.transform.translation.x = msg.pose.position.x
         t.transform.translation.y = msg.pose.position.y

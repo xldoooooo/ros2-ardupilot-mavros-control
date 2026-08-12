@@ -40,10 +40,10 @@ Visualization Manager:
       Description Source: Topic
       Description Topic:
         Depth: 5
-        Durability Policy: Volatile
+        Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: ""
+        Value: /ground_station_preview/robot_description
       Enabled: true
       Links:
         All Links Enabled: true
@@ -55,7 +55,7 @@ Visualization Manager:
         Inertia: false
         Mass: false
       Name: RobotModel
-      TF Prefix: ""
+      TF Prefix: ground_station_preview
       Update Interval: 0
       Value: true
       Visual Enabled: true
@@ -99,6 +99,19 @@ Visualization Manager:
             {}
       Update Interval: 0
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Waypoints
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ground_station/waypoint_markers
+      Value: true
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
@@ -108,8 +121,8 @@ Visualization Manager:
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.029999999329447746
-      Name: Trajectory
+      Line Width: 0.05999999865889549
+      Name: Waypoint Path
       Offset:
         X: 0
         Y: 0
@@ -120,12 +133,12 @@ Visualization Manager:
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
       Topic:
-        Depth: 5
-        Durability Policy: Volatile
+        Depth: 1
+        Durability Policy: Transient Local
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /mavros/local_position/pose
+        Value: /ground_station/waypoint_path
       Value: true
   Enabled: true
   Global Options:
@@ -143,16 +156,16 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 0.9475425481796265
+      Distance: 12
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 3.6123056411743164
-        Y: -0.4255814254283905
-        Z: 2.038559913635254
+        X: 0
+        Y: 0
+        Z: 1.5
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false

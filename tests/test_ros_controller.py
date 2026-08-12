@@ -1,5 +1,6 @@
 """地面站高层协议客户端的排队、状态映射与无服务失败测试。"""
 
+import math
 import os
 import time
 from types import SimpleNamespace
@@ -9,6 +10,10 @@ from ground_station_core.event_log import EventLog, LogLevel
 from ground_station_core.models import FlightMode, VehicleSnapshot
 from ground_station_core.ros_controller import (
     GroundStationRosController,
+    PREVIEW_FRAME_ID,
+    VEHICLE_POSE_TOPIC,
+    WAYPOINT_MARKERS_TOPIC,
+    WAYPOINT_PATH_TOPIC,
     _VehicleStateStore,
 )
 
@@ -46,6 +51,104 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
         "strategy": 1,
     }
     assert takeoff < motion < waypoint
+
+
+def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
+    """预览生成球/编号/直线路径，且不进入飞行命令或租约序号通道。"""
+    from builtin_interfaces.msg import Time
+    from rclpy.qos import DurabilityPolicy
+    from visualization_msgs.msg import Marker
+
+    class FakePublisher:
+        """保存消息与 QoS，模拟 rclpy publisher。"""
+
+        def __init__(self, topic: str, qos: object) -> None:
+            self.topic = topic
+            self.qos = qos
+            self.messages: list[object] = []
+
+        def publish(self, message: object) -> None:
+            self.messages.append(message)
+
+    class FakeNow:
+        """提供标准 builtin_interfaces/Time。"""
+
+        @staticmethod
+        def to_msg() -> Time:
+            return Time(sec=123, nanosec=456)
+
+    class FakeNode:
+        """按话题创建可审计的假 publisher。"""
+
+        def __init__(self) -> None:
+            self.publishers: dict[str, FakePublisher] = {}
+
+        @staticmethod
+        def get_clock() -> object:
+            return SimpleNamespace(now=lambda: FakeNow())
+
+        def create_publisher(
+            self, _message_type: object, topic: str, qos: object
+        ) -> FakePublisher:
+            publisher = FakePublisher(topic, qos)
+            self.publishers[topic] = publisher
+            return publisher
+
+    controller = GroundStationRosController(source_id="gcs-preview-message")
+    controller._ready = True
+    controller._active_domain_id = 231
+    node = FakeNode()
+    entities: dict[str, object] = {"node": node}
+    waypoints = (
+        (1.0, -2.0, 3.0, 0.0),
+        (4.0, 5.0, 6.0, math.pi / 2.0),
+    )
+
+    assert controller.publish_waypoint_preview(waypoints)
+    assert controller._next_ticket == 1
+    assert controller._command_queue.empty()
+    controller._process_one_waypoint_preview(entities)
+
+    marker_publisher = node.publishers[WAYPOINT_MARKERS_TOPIC]
+    path_publisher = node.publishers[WAYPOINT_PATH_TOPIC]
+    pose_publisher = node.publishers[VEHICLE_POSE_TOPIC]
+    assert marker_publisher.qos.durability is DurabilityPolicy.TRANSIENT_LOCAL
+    assert path_publisher.qos.durability is DurabilityPolicy.TRANSIENT_LOCAL
+    marker_array = marker_publisher.messages[-1]
+    assert len(marker_array.markers) == 5
+    assert marker_array.markers[0].action == Marker.DELETEALL
+    assert [marker_array.markers[index].text for index in (2, 4)] == ["1", "2"]
+    path = path_publisher.messages[-1]
+    assert path.header.frame_id == PREVIEW_FRAME_ID
+    assert len(path.poses) == 2
+    assert path.poses[0].pose.position.x == 1.0
+    assert math.isclose(path.poses[1].pose.orientation.z, math.sqrt(0.5))
+    assert math.isclose(path.poses[1].pose.orientation.w, math.sqrt(0.5))
+
+    status = SimpleNamespace(
+        local_position_valid=True,
+        position=SimpleNamespace(x=7.0, y=8.0, z=9.0),
+        roll=0.0,
+        pitch=0.0,
+        yaw=math.pi / 2.0,
+    )
+    controller._publish_vehicle_preview_pose(entities, status)
+    pose = pose_publisher.messages[-1]
+    assert pose.header.frame_id == PREVIEW_FRAME_ID
+    assert (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z) == (
+        7.0,
+        8.0,
+        9.0,
+    )
+    assert math.isclose(pose.pose.orientation.z, math.sqrt(0.5))
+    assert math.isclose(pose.pose.orientation.w, math.sqrt(0.5))
+
+    # 空快照显式删除旧 Marker 并覆盖为空 Path，不会留下上一次较长列表。
+    assert controller.publish_waypoint_preview(())
+    controller._process_one_waypoint_preview(entities)
+    assert len(marker_publisher.messages[-1].markers) == 1
+    assert marker_publisher.messages[-1].markers[0].action == Marker.DELETEALL
+    assert path_publisher.messages[-1].poses == []
 
 
 def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
