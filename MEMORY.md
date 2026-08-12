@@ -515,3 +515,12 @@
   `integration/websocket_test_demo` 缺少 `ws_demo` 在收集阶段失败，没有修改该无关目录。本任务仅
   使用隔离 SITL，未连接、解锁或起飞实机。详见
   `agent/report/report-2026-08-12-waypoint-smooth-reference-methods.md`。
+
+## 2026-08-13 control.yaml 中文注释补全
+
+- `src/onboard_control/config/control.yaml` 的分组说明已全部改为中文，全部 67 个参数均增加同行中文
+  注释，说明用途、单位或判定语义。修改前后通过 YAML 解析比较确认参数键值完全一致，不改变控制
+  效果和安全阈值。
+- 隔离 domain 232 + `LOCALHOST` 下，机载节点成功读取该文件并以接口 3.0、100 Hz 启动；未启动
+  SITL，未连接、解锁或起飞实机。详见
+  `agent/report/report-2026-08-13-control-yaml-chinese-comments.md`。

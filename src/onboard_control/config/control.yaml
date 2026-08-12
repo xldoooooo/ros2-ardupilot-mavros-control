@@ -1,102 +1,95 @@
-# SITL 与实机共同使用的机载控制、安全和 PD+DOB 参数。
+# SITL 与实机共同使用的机载控制、安全保护和 PD+DOB 参数。
 /**:
   ros__parameters:
-    # Fixed-rate execution and aggregated status publication.
-    control_frequency: 100.0
-    status_frequency: 10.0
+    # 固定周期执行与聚合状态发布
+    control_frequency: 100.0  # 机载主控制循环频率，单位：Hz。
+    status_frequency: 10.0  # 聚合控制状态发布频率，单位：Hz。
 
-    # Telemetry and link-loss safety thresholds.
-    pose_timeout_seconds: 0.30
-    state_timeout_seconds: 2.0
-    # Real FCUs need time to expose the complete MAVROS parameter table.
-    # The local simulation launcher alone overrides this startup delay to 2 s.
-    fcu_parameter_check_initial_delay_seconds: 40.0
-    link_loss_land_timeout_seconds: 10.0
-    takeoff_timeout_seconds: 45.0
-    # LAND success is withheld until the FCU reports disarmed.
-    land_confirmation_timeout_seconds: 120.0
-    max_clock_skew_seconds: 2.0
+    # 遥测新鲜度、失联处理与命令时效安全阈值
+    pose_timeout_seconds: 0.30  # 位姿或速度遥测最大允许断流时间，单位：秒。
+    state_timeout_seconds: 2.0  # 飞控连接状态最大允许断流时间，单位：秒。
+    # 实机需要等待 MAVROS 拉取完整飞控参数表；仅本地仿真启动器会覆盖为 2 秒。
+    fcu_parameter_check_initial_delay_seconds: 40.0  # 首次检查飞控推力参数前的等待时间，单位：秒。
+    link_loss_land_timeout_seconds: 10.0  # 地面站失联后悬停多久转入自动降落，单位：秒。
+    takeoff_timeout_seconds: 45.0  # 起飞任务等待高度确认的最长时间，单位：秒。
+    # 降落命令只有在飞控回报解除武装后才判定成功。
+    land_confirmation_timeout_seconds: 120.0  # 等待降落并解除武装确认的最长时间，单位：秒。
+    max_clock_skew_seconds: 2.0  # 接受地面站命令时允许的最大两端时钟偏差，单位：秒。
 
-    # Onboard waypoint arrival and keyboard reference generation.
-    waypoint_tolerance: 0.30
-    waypoint_hold_seconds: 1.0
-    max_velocity_xy: 1.5
-    max_velocity_z: 0.8
-    max_yaw_rate: 1.0
-    max_reference_error_xy: 0.8
-    max_reference_error_z: 0.5
+    # 航点到达判定与键盘运动参考限制
+    waypoint_tolerance: 0.30  # 飞机到航点的三维距离容差，单位：米。
+    waypoint_hold_seconds: 1.0  # 进入航点容差后必须持续保持的时间，单位：秒。
+    max_velocity_xy: 1.5  # 键盘运动模式的最大水平参考速度，单位：米/秒。
+    max_velocity_z: 0.8  # 键盘运动模式的最大垂直参考速度，单位：米/秒。
+    max_yaw_rate: 1.0  # 键盘运动模式的最大偏航角速度，单位：弧度/秒。
+    max_reference_error_xy: 0.8  # 键盘虚拟参考允许领先飞机的最大水平距离，单位：米。
+    max_reference_error_z: 0.5  # 键盘虚拟参考允许领先飞机的最大垂直距离，单位：米。
 
-    # Smooth waypoint methods may only start from a settled hover. Arrival also
-    # requires low actual speed; repeated guard violations cancel into hover.
-    # STEP_POSITION intentionally bypasses these additions to preserve baseline behavior.
-    waypoint_start_speed_tolerance: 0.20
-    waypoint_arrival_speed_tolerance: 0.10
-    waypoint_actual_speed_guard_xy: 0.42
-    waypoint_actual_speed_guard_z: 0.24
-    waypoint_speed_guard_observations: 5
+    # 平滑航点方法必须从稳定悬停开始，到达时也要求实际速度足够低；持续超速会取消任务并悬停。
+    # 位置阶跃基线会绕过这些新增判据，以完整保留原有基线行为。
+    waypoint_start_speed_tolerance: 0.20  # 启动平滑航点任务允许的最大三维实际速度，单位：米/秒。
+    waypoint_arrival_speed_tolerance: 0.10  # 平滑航点到达判定允许的最大三维实际速度，单位：米/秒。
+    waypoint_actual_speed_guard_xy: 0.42  # 平滑航点任务的水平实际速度保护阈值，单位：米/秒。
+    waypoint_actual_speed_guard_z: 0.24  # 平滑航点任务的垂直实际速度保护阈值，单位：米/秒。
+    waypoint_speed_guard_observations: 5  # 实际速度连续超限多少个控制周期后取消任务。
 
-    # Position PD + first-order disturbance observer.
-    hover_wn_xy: 2.236
-    hover_zeta_xy: 0.8
-    hover_wn_z: 2.236
-    hover_zeta_z: 0.6
-    dob_L_xy: 1.5
-    dob_L_z: 0.6
+    # 位置 PD 与一阶扰动观测器的原有基线参数
+    hover_wn_xy: 2.236  # 基线水平位置闭环自然频率，单位：弧度/秒。
+    hover_zeta_xy: 0.8  # 基线水平位置闭环阻尼比，无量纲。
+    hover_wn_z: 2.236  # 基线垂直位置闭环自然频率，单位：弧度/秒。
+    hover_zeta_z: 0.6  # 基线垂直位置闭环阻尼比，无量纲。
+    dob_L_xy: 1.5  # 基线水平扰动观测器带宽系数，单位：1/秒。
+    dob_L_z: 0.6  # 基线垂直扰动观测器带宽系数，单位：1/秒。
 
-    # TRAJECTORY_PD_DOB independent low-bandwidth profile. It adds reference
-    # acceleration feedforward. Explicit hover/manual and POSITION_PD_DOB use the
-    # baseline above; a completed trajectory task keeps this profile for terminal hold.
-    trajectory_wn_xy: 1.2
-    trajectory_zeta_xy: 1.1
-    trajectory_wn_z: 1.2
-    trajectory_zeta_z: 1.1
-    trajectory_dob_L_xy: 0.5
-    trajectory_dob_L_z: 0.3
+    # 轨迹 PD+DOB 的独立低带宽参数，并启用参考加速度前馈。
+    # 显式悬停、键盘运动和位置 PD+DOB 使用上方基线；轨迹结束后的末点保持继续沿用本组增益。
+    trajectory_wn_xy: 1.2  # 轨迹跟踪水平位置闭环自然频率，单位：弧度/秒。
+    trajectory_zeta_xy: 1.1  # 轨迹跟踪水平位置闭环阻尼比，无量纲。
+    trajectory_wn_z: 1.2  # 轨迹跟踪垂直位置闭环自然频率，单位：弧度/秒。
+    trajectory_zeta_z: 1.1  # 轨迹跟踪垂直位置闭环阻尼比，无量纲。
+    trajectory_dob_L_xy: 0.5  # 轨迹跟踪水平扰动观测器带宽系数，单位：1/秒。
+    trajectory_dob_L_z: 0.3  # 轨迹跟踪垂直扰动观测器带宽系数，单位：1/秒。
 
-    # SECOND_ORDER_FILTER independent tuning. The speed/acceleration clamps are
-    # part of this comparison method and do not affect either profile below.
-    second_order_filter_wn_xy: 0.8
-    second_order_filter_zeta_xy: 1.1
-    second_order_filter_wn_z: 0.6
-    second_order_filter_zeta_z: 1.1
-    second_order_filter_max_velocity_xy: 0.30
-    second_order_filter_max_velocity_z: 0.15
-    second_order_filter_max_acceleration_xy: 0.18
-    second_order_filter_max_acceleration_z: 0.10
-    second_order_filter_completion_position_tolerance: 0.005
-    second_order_filter_completion_velocity_tolerance: 0.01
+    # 二阶命令滤波器的独立参数；其速度和加速度限幅不影响其他参考生成方法。
+    second_order_filter_wn_xy: 0.8  # 水平二阶命令滤波器自然频率，单位：弧度/秒。
+    second_order_filter_zeta_xy: 1.1  # 水平二阶命令滤波器阻尼比，无量纲。
+    second_order_filter_wn_z: 0.6  # 垂直二阶命令滤波器自然频率，单位：弧度/秒。
+    second_order_filter_zeta_z: 1.1  # 垂直二阶命令滤波器阻尼比，无量纲。
+    second_order_filter_max_velocity_xy: 0.30  # 二阶滤波参考的最大水平速度，单位：米/秒。
+    second_order_filter_max_velocity_z: 0.15  # 二阶滤波参考的最大垂直速度，单位：米/秒。
+    second_order_filter_max_acceleration_xy: 0.18  # 二阶滤波参考的最大水平加速度，单位：米/秒²。
+    second_order_filter_max_acceleration_z: 0.10  # 二阶滤波参考的最大垂直加速度，单位：米/秒²。
+    second_order_filter_completion_position_tolerance: 0.005  # 判定滤波完成的位置误差阈值，单位：米。
+    second_order_filter_completion_velocity_tolerance: 0.01  # 判定滤波完成的速度阈值，单位：米/秒。
 
-    # TRAPEZOIDAL_PROFILE comparison tuning. It deliberately has acceleration
-    # discontinuities while sharing nominal limits with the S-curve experiment.
-    trapezoidal_max_velocity_xy: 0.30
-    trapezoidal_max_velocity_z: 0.15
-    trapezoidal_max_acceleration_xy: 0.18
-    trapezoidal_max_acceleration_z: 0.10
-    trapezoidal_max_deceleration_xy: 0.20
-    trapezoidal_max_deceleration_z: 0.12
+    # 普通梯形速度参考的独立对照参数；相位交界处允许加速度不连续。
+    trapezoidal_max_velocity_xy: 0.30  # 梯形参考的最大水平匀速速度，单位：米/秒。
+    trapezoidal_max_velocity_z: 0.15  # 梯形参考的最大垂直匀速速度，单位：米/秒。
+    trapezoidal_max_acceleration_xy: 0.18  # 梯形参考的最大水平加速度，单位：米/秒²。
+    trapezoidal_max_acceleration_z: 0.10  # 梯形参考的最大垂直加速度，单位：米/秒²。
+    trapezoidal_max_deceleration_xy: 0.20  # 梯形参考的最大水平减速度绝对值，单位：米/秒²。
+    trapezoidal_max_deceleration_z: 0.12  # 梯形参考的最大垂直减速度绝对值，单位：米/秒²。
 
-    # JERK_LIMITED_S_CURVE recommended inspection profile. Long segments use
-    # smooth acceleration ramps, a constant-speed plateau, then smooth braking.
-    s_curve_max_velocity_xy: 0.30
-    s_curve_max_velocity_z: 0.15
-    s_curve_max_acceleration_xy: 0.18
-    s_curve_max_acceleration_z: 0.10
-    s_curve_max_deceleration_xy: 0.20
-    s_curve_max_deceleration_z: 0.12
-    s_curve_max_jerk_xy: 0.15
-    s_curve_max_jerk_z: 0.08
+    # 限 jerk S 曲线的主推荐参数；长航段按平滑加速、恒速平台、平滑减速执行。
+    s_curve_max_velocity_xy: 0.30  # S 曲线参考的最大水平匀速速度，单位：米/秒。
+    s_curve_max_velocity_z: 0.15  # S 曲线参考的最大垂直匀速速度，单位：米/秒。
+    s_curve_max_acceleration_xy: 0.18  # S 曲线参考的最大水平加速度，单位：米/秒²。
+    s_curve_max_acceleration_z: 0.10  # S 曲线参考的最大垂直加速度，单位：米/秒²。
+    s_curve_max_deceleration_xy: 0.20  # S 曲线参考的最大水平减速度绝对值，单位：米/秒²。
+    s_curve_max_deceleration_z: 0.12  # S 曲线参考的最大垂直减速度绝对值，单位：米/秒²。
+    s_curve_max_jerk_xy: 0.15  # S 曲线参考的最大水平加加速度，单位：米/秒³。
+    s_curve_max_jerk_z: 0.08  # S 曲线参考的最大垂直加加速度，单位：米/秒³。
 
-    # Thrust mapping and hard output limits. The startup fallback is replaced by
-    # the FCU's calibrated MOT_THST_HOVER before raw attitude control is enabled.
-    hover_throttle: 0.39
-    thrust_ratio: 2.5
-    gravity: 9.8
-    max_acceleration_xy: 4.0
-    max_acceleration_z: 4.0
-    max_disturbance: 3.0
-    max_tilt_degrees: 25.0
-    min_total_acceleration_z: 2.0
+    # 推力映射与控制输出硬限幅；启用原始姿态控制前，启动回退值会被飞控标定值替换。
+    hover_throttle: 0.39  # 飞控悬停油门的启动回退值，运行时由 MOT_THST_HOVER 覆盖。
+    thrust_ratio: 2.5  # 最大推力与重力的估计比值，用于分段线性油门映射。
+    gravity: 9.8  # 控制器使用的重力加速度，单位：米/秒²。
+    max_acceleration_xy: 4.0  # 控制器允许输出的最大水平合加速度，单位：米/秒²。
+    max_acceleration_z: 4.0  # 控制器允许输出的最大垂直加速度绝对值，单位：米/秒²。
+    max_disturbance: 3.0  # 扰动观测器各轴估计值的绝对限幅，单位：米/秒²。
+    max_tilt_degrees: 25.0  # 姿态指令允许的最大倾角，单位：度。
+    min_total_acceleration_z: 2.0  # 加入重力补偿后要求的最小竖直加速度，单位：米/秒²。
 
-    # A namespace can be remapped for multi-vehicle work without changing code.
-    mavros_prefix: /mavros
-    interface_prefix: /onboard_control
+    # MAVROS 与机载接口命名空间，可在多机部署时通过参数重映射。
+    mavros_prefix: /mavros  # MAVROS 话题和服务使用的命名空间前缀。
+    interface_prefix: /onboard_control  # 机载控制高层话题和服务使用的命名空间前缀。
