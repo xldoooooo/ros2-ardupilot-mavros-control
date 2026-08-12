@@ -151,6 +151,35 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
     assert path_publisher.messages[-1].poses == []
 
 
+def test_idle_deadline_misses_do_not_spam_warn_but_active_control_still_warns() -> None:
+    """空闲抖动只留在遥测；武装或控制激活后的新增超期仍必须告警。"""
+    events = EventLog()
+    controller = GroundStationRosController(
+        source_id="gcs-deadline-log-gating", event_log=events
+    )
+
+    controller._log_status_transitions(
+        VehicleSnapshot(deadline_miss_count=4),
+        VehicleSnapshot(deadline_miss_count=5, max_jitter_ms=18.0),
+    )
+    assert not any(event.source == "controller" for event in events.snapshot())
+
+    controller._log_status_transitions(
+        VehicleSnapshot(deadline_miss_count=5, controller_active=True),
+        VehicleSnapshot(
+            deadline_miss_count=6,
+            max_jitter_ms=19.0,
+            controller_active=True,
+        ),
+    )
+    controller_events = [
+        event for event in events.snapshot() if event.source == "controller"
+    ]
+    assert len(controller_events) == 1
+    assert controller_events[0].level is LogLevel.WARN
+    assert "累计 6 次" in controller_events[0].message
+
+
 def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     """GUI 展示必须来自机载聚合状态，而不是本地猜测。"""
     monotonic_now = [100.0]

@@ -707,7 +707,11 @@ class GroundStationRosController:
 
             def status_callback(message: ControlStatus) -> None:
                 self._state.update(message)
-                if self._waypoint_preview_enabled.is_set():
+                # 仿真直接复用同域 MAVROS 位姿；只有实机预览需要地面聚合位姿。
+                if (
+                    self._active_domain_id == HARDWARE_DOMAIN_ID
+                    and self._waypoint_preview_enabled.is_set()
+                ):
                     try:
                         self._publish_vehicle_preview_pose(
                             visualization_entities, message
@@ -1089,7 +1093,12 @@ class GroundStationRosController:
             self._events.error("onboard", f"失联保护原因：{current.failsafe_reason}")
         if current.status_message and current.status_message != previous.status_message:
             self._events.debug("onboard", current.status_message)
-        if current.deadline_miss_count > previous.deadline_miss_count:
+        # 空闲、未武装时仍保留计数供工程面板观察，但不把普通桌面调度抖动
+        # 逐次升级为 WARN；控制器工作或飞机已武装时继续完整告警。
+        if (
+            current.deadline_miss_count > previous.deadline_miss_count
+            and (current.controller_active or current.armed)
+        ):
             self._events.warn(
                 "controller",
                 f"控制周期超期累计 {current.deadline_miss_count} 次，"

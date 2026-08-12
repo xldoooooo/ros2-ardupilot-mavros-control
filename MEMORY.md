@@ -468,3 +468,17 @@
 - 最终 Python 95 passed；三包构建成功，ROS/C++ 5 tests 零失败。临时 domain 232 实际 RViz 验证
   3 个航点、2 段直线和实时机体模型成功；没有连接实机、执行飞行、解锁或起飞。详见
   `agent/report/report-2026-08-12-task15-rviz-waypoint-preview.md`。
+
+## 2026-08-12 任务 15 RViz 启动位姿与空闲抖动修复
+
+- 任务 15 初版错误地让仿真模型依赖只有点击“预览”后才启用的 `/ground_station/vehicle_pose`，
+  导致启动 RViz 时 `ground_station_preview/a1`～`a4` 无法连接 `map`。现由 launch 参数选择位姿源：
+  仿真在 domain 231 直用本地域 `/mavros/local_position/pose`，实机 domain 0 仍用地面聚合位姿，
+  不增加远端 MAVROS 订阅或跨域 bridge。
+- 可视化进程组使用 nice 5；RViz 为 15 FPS、RobotModel 0.1 秒更新，调试 TF 图层默认关闭，位姿
+  订阅 depth 1。现场采样 RViz 约从 11% 降至 4.6% 单核 CPU，但 ToDesk/Xorg/MAVROS 高负载下
+  非实时控制周期 miss 仍可能增加，禁止把它报告成零抖动。
+- 空闲且未武装时 deadline miss 只保留在权威遥测/工程面板，不再逐次写 WARN；控制器激活或飞机
+  已武装时告警保持。真实未武装 SITL 在未点击预览时已持续获得机体 TF，30 秒 controller WARN
+  为 0；Python 96 passed，三包构建成功，ROS/C++ 5 tests 零失败。未连接、解锁或起飞实机。详见
+  `agent/report/report-2026-08-12-task15-rviz-startup-and-idle-jitter-fix.md`。

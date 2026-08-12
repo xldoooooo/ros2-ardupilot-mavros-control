@@ -429,8 +429,11 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
     ]
     onboard_command = dict(supervisor.start_calls)["onboard_control"]
     sitl_command = dict(supervisor.start_calls)["sitl"]
+    rviz_command = dict(supervisor.start_calls)["rviz"]
     assert ("--no-rebuild" in sitl_command) is prebuilt_sitl
     assert "fcu_parameter_check_initial_delay_seconds:=2.0" in onboard_command
+    assert rviz_command[:4] == ("nice", "-n", "5", "ros2")
+    assert "pose_topic:=/mavros/local_position/pose" in rviz_command
     assert stable_calls == [("mavros_sim", 1.0), ("rviz", 0.2)]
     assert ("set_rates", None) in ros.calls
 
@@ -483,10 +486,14 @@ def test_hardware_waypoint_preview_starts_one_isolated_local_rviz(
     name, command, kwargs = supervisor.start_calls[0]
     assert name == "rviz_hardware_preview"
     assert command == (
+        "nice",
+        "-n",
+        "5",
         "ros2",
         "launch",
         "guided_sim",
         "visualize.launch.py",
+        "pose_topic:=/ground_station/vehicle_pose",
     )
     environment = kwargs["extra_environment"]
     assert environment["ROS_DOMAIN_ID"] == str(HARDWARE_DOMAIN_ID)

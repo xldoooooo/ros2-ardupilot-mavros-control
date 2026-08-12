@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把地面站权威位姿预览转换为隔离命名的 RViz TF2 机体变换。"""
+"""把当前会话选择的位姿转换为隔离命名的 RViz TF2 机体变换。"""
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -15,7 +15,7 @@ class PoseToTF(Node):
         """创建可配置的位姿订阅与 TF broadcaster。"""
         super().__init__('pose_to_tf')
 
-        self.declare_parameter('pose_topic', '/ground_station/vehicle_pose')
+        self.declare_parameter('pose_topic', '/mavros/local_position/pose')
         self.declare_parameter('parent_frame', 'map')
         self.declare_parameter(
             'child_frame', 'ground_station_preview/base_link'
@@ -27,13 +27,14 @@ class PoseToTF(Node):
         # TF 仅服务地面预览命名空间，不覆盖远端飞控或 Odin 的 frame。
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        # 位姿来自地面站已接收的 ControlStatus，避免额外直订远端 MAVROS 话题。
+        # 仿真选本地域 MAVROS；实机启动器改选地面聚合位姿，二者共用桥接逻辑。
         self.sub = self.create_subscription(
             PoseStamped,
             self.pose_topic,
             self.pose_callback,
             rclpy.qos.QoSProfile(
-                depth=10,
+                # 预览只需要最新位姿；负载高时不得追赶过期姿态形成回调突发。
+                depth=1,
                 durability=rclpy.qos.DurabilityPolicy.VOLATILE,
                 reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
             ),
@@ -45,7 +46,7 @@ class PoseToTF(Node):
         )
 
     def pose_callback(self, msg: PoseStamped):
-        """逐帧转发位移和姿态，保留地面站发布的接收时间戳。"""
+        """逐帧转发位移和姿态，保留上游 PoseStamped 时间戳。"""
         t = TransformStamped()
 
         t.header.stamp = msg.header.stamp

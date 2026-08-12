@@ -56,11 +56,11 @@ Visualization Manager:
         Mass: false
       Name: RobotModel
       TF Prefix: ground_station_preview
-      Update Interval: 0
+      Update Interval: 0.10000000149011612
       Value: true
       Visual Enabled: true
     - Class: rviz_default_plugins/TF
-      Enabled: true
+      Enabled: false
       Filter (blacklist): ""
       Filter (whitelist): ""
       Frame Timeout: 15
@@ -98,7 +98,7 @@ Visualization Manager:
           map_ned:
             {}
       Update Interval: 0
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: Waypoints
@@ -144,7 +144,7 @@ Visualization Manager:
   Global Options:
     Background Color: 255; 255; 255
     Fixed Frame: map
-    Frame Rate: 30
+    Frame Rate: 15
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact

@@ -24,10 +24,17 @@ def test_rviz_config_uses_matching_retained_marker_and_path_topics() -> None:
     assert "TF Prefix: ground_station_preview" in config
     assert "TF Prefix: ground_station_preview/" not in config
     assert "/mavros/local_position/pose" not in config
+    assert "Update Interval: 0.10000000149011612" in config
+    assert "Frame Rate: 15" in config
+    tf_display = config.split("Class: rviz_default_plugins/TF", 1)[1].split(
+        "Class: rviz_default_plugins/MarkerArray", 1
+    )[0]
+    assert "Enabled: false" in tf_display
+    assert "Value: false" in tf_display
 
 
-def test_pose_bridge_uses_ground_status_preview_without_mavros_subscription() -> None:
-    """地面 RViz 位姿只能消费聚合后的本地预览话题，不新增远端 MAVROS 订阅。"""
+def test_pose_bridge_selects_local_sim_or_aggregated_hardware_pose() -> None:
+    """仿真立即消费本地域 MAVROS；实机启动器改用地面聚合位姿。"""
     pose_bridge = (
         PROJECT_ROOT / "src" / "guided_sim" / "scripts" / "pose_to_tf.py"
     ).read_text(encoding="utf-8")
@@ -37,10 +44,17 @@ def test_pose_bridge_uses_ground_status_preview_without_mavros_subscription() ->
     package = (
         PROJECT_ROOT / "src" / "guided_sim" / "package.xml"
     ).read_text(encoding="utf-8")
+    environment = (PROJECT_ROOT / "ground_station_core" / "environment.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert VEHICLE_POSE_TOPIC in pose_bridge
-    assert "/mavros/local_position/pose" not in pose_bridge
-    assert VEHICLE_POSE_TOPIC in launch
+    assert "/mavros/local_position/pose" in pose_bridge
+    assert "depth=1" in pose_bridge
+    assert "DeclareLaunchArgument" in launch
+    assert "default_value='/mavros/local_position/pose'" in launch
+    assert VEHICLE_POSE_TOPIC in environment
+    assert "pose_topic:={pose_topic}" in environment
+    assert '"nice"' in environment
     assert "ground_station_preview/base_link" in launch
     assert "ground_station_preview_robot_state_publisher" in launch
     assert "ground_station_waypoint_preview_rviz" in launch

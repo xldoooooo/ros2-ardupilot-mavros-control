@@ -3,28 +3,32 @@ visualize.launch.py — Launch visualization tools for the quadcopter.
 
 Starts:
   - robot_state_publisher  (publishes URDF model joints to /tf_static)
-  - pose_to_tf             (bridges the ground-station preview pose to isolated TF)
+  - pose_to_tf             (bridges the selected session pose to isolated TF)
   - rviz2                  (loads the packaged quadcopter.rviz config)
 
 Usage:
   ros2 launch guided_sim visualize.launch.py
 
 Startup ordering:
-  This launch may start before ControlStatus is available. Its pose subscription
-  waits until the operator enables preview, allowing RViz to warm up in parallel.
+  Simulation defaults to the local MAVROS pose so the model appears as soon as
+  MAVROS is ready. Hardware launchers override pose_topic with the ground-station
+  aggregate pose, avoiding a second direct subscription to the remote MAVROS topic.
 
 The packaged RViz config preselects the map fixed frame, RobotModel and TF.
 """
 
 import os
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    """Launch the URDF publisher, MAVROS pose bridge and configured RViz2."""
+    """Launch the URDF publisher, selected pose bridge and configured RViz2."""
     pkg_share = get_package_share_directory('guided_sim')
+    pose_topic = LaunchConfiguration('pose_topic')
 
     # Paths
     urdf_path = os.path.join(pkg_share, 'urdf', 'quadcopter.urdf')
@@ -50,14 +54,14 @@ def generate_launch_description():
         ],
     )
 
-    # 只桥接地面站聚合后的预览位姿，不增加对远端 MAVROS 标准话题的订阅。
+    # 仿真使用本地域 MAVROS；实机由启动器切换到地面站聚合位姿，避免远端重复订阅。
     pose_to_tf = Node(
         package='guided_sim',
         executable='pose_to_tf.py',
         name='ground_station_preview_pose_to_tf',
         output='screen',
         parameters=[{
-            'pose_topic': '/ground_station/vehicle_pose',
+            'pose_topic': pose_topic,
             'parent_frame': 'map',
             'child_frame': 'ground_station_preview/base_link',
         }],
@@ -73,6 +77,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'pose_topic',
+            default_value='/mavros/local_position/pose',
+            description='PoseStamped source for the isolated preview model',
+        ),
         robot_state_publisher,
         pose_to_tf,
         rviz2,

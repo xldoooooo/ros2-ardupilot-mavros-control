@@ -38,13 +38,18 @@ _COMMUNICATION_MIN_RATE_HZ = 5.0
 _COMMUNICATION_MAX_GAP_SECONDS = 0.5
 _CLEANUP_JOIN_TIMEOUT_SECONDS = 15.0
 
-# RViz launch 只管理地面本机模型/TF/窗口，不会启动任何飞行控制节点。
+# RViz launch 只管理地面本机模型/TF/窗口，并以较低调度优先级运行。
 _WAYPOINT_PREVIEW_COMMAND = (
+    "nice",
+    "-n",
+    "5",
     "ros2",
     "launch",
     "guided_sim",
     "visualize.launch.py",
 )
+_SIMULATION_PREVIEW_POSE_TOPIC = "/mavros/local_position/pose"
+_HARDWARE_PREVIEW_POSE_TOPIC = "/ground_station/vehicle_pose"
 _WAYPOINT_PREVIEW_STABILITY_SECONDS = 0.35
 
 
@@ -269,16 +274,18 @@ class EnvironmentInitializer:
                 SIMULATION_DOMAIN_ID,
                 SIMULATION_DISCOVERY_RANGE,
                 "rviz",
+                _SIMULATION_PREVIEW_POSE_TOPIC,
             ),
             "hardware": (
                 HARDWARE_DOMAIN_ID,
                 HARDWARE_DISCOVERY_RANGE,
                 "rviz_hardware_preview",
+                _HARDWARE_PREVIEW_POSE_TOPIC,
             ),
         }
         if mode not in transports:
             raise RuntimeError("航点预览要求已建立仿真或实机会话")
-        domain_id, discovery_range, process_name = transports[mode]
+        domain_id, discovery_range, process_name, pose_topic = transports[mode]
 
         with self._state_lock:
             workflow_thread = self._workflow_thread
@@ -322,7 +329,7 @@ class EnvironmentInitializer:
         }
         process = self._supervisor.start(
             process_name,
-            _WAYPOINT_PREVIEW_COMMAND,
+            (*_WAYPOINT_PREVIEW_COMMAND, f"pose_topic:={pose_topic}"),
             setup_files=setup_files,
             extra_environment=preview_environment,
         )
@@ -402,7 +409,10 @@ class EnvironmentInitializer:
         self._publish_status(status, LogLevel.INFO, "2/5 正在并行预热 RViz...")
         rviz = self._supervisor.start(
             "rviz",
-            ["ros2", "launch", "guided_sim", "visualize.launch.py"],
+            (
+                *_WAYPOINT_PREVIEW_COMMAND,
+                f"pose_topic:={_SIMULATION_PREVIEW_POSE_TOPIC}",
+            ),
             setup_files=ros_setup_files(),
             extra_environment=simulation_environment,
         )
