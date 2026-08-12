@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -18,6 +19,7 @@ from .config import (
     SIMULATION_DISCOVERY_RANGE,
     SIMULATION_DOMAIN_ID,
     ardupilot_root,
+    find_mavproxy,
     find_sim_vehicle,
     mavros_apm_config,
     ros_setup_files,
@@ -357,6 +359,18 @@ class EnvironmentInitializer:
             sim_vehicle = find_sim_vehicle()
             if sim_vehicle is None:
                 raise FileNotFoundError("未找到 sim_vehicle.py，请配置 ArduPilot PATH")
+            mavproxy = find_mavproxy()
+            if mavproxy is None:
+                raise FileNotFoundError(
+                    "未找到 mavproxy.py；请重新执行 setup_project.sh，或设置 "
+                    "GROUND_STATION_MAVPROXY"
+                )
+            mavproxy_probe = self._supervisor.run_checked(
+                (str(mavproxy), "--version"), timeout=10.0
+            )
+            if mavproxy_probe.returncode != 0:
+                detail = mavproxy_probe.stdout.strip() or "无输出"
+                raise RuntimeError(f"MAVProxy 运行检查失败: {detail}")
             apm_config = mavros_apm_config()
             if not apm_config.is_file():
                 raise FileNotFoundError(f"MAVROS 参数文件不存在: {apm_config}")
@@ -382,6 +396,11 @@ class EnvironmentInitializer:
         simulation_environment = {
             "ROS_DOMAIN_ID": str(SIMULATION_DOMAIN_ID),
             **ros_discovery_environment(SIMULATION_DISCOVERY_RANGE),
+            # sim_vehicle.py 内部按命令名启动 MAVProxy；只给仿真子进程补入
+            # 已验证的入口目录，不污染地面站或实机 domain 的全局环境。
+            "PATH": os.pathsep.join(
+                (str(mavproxy.parent), os.environ.get("PATH", ""))
+            ),
         }
 
         self._publish_status(status, LogLevel.INFO, "1/5 正在启动 ArduPilot SITL...")

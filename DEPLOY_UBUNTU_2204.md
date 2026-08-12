@@ -20,7 +20,7 @@ bash setup_project.sh
 `setup_project.sh` 自动完成：
 
 - 依据 Ubuntu 22.04/24.04 选择 Humble/Jazzy；
-- 创建项目本地 `.venv` 并安装 Qt 依赖；
+- 创建项目本地 `.venv` 并安装 Qt、MAVProxy/SITL 依赖；
 - 原生构建三个 ROS 包；
 - 执行 ROS/C++ 测试和地面站环境检查。
 
@@ -40,6 +40,8 @@ bash start_ground_all.sh
 
 ArduPilot 会依次从当前 `PATH`、仓库同级目录、当前用户目录、`/opt` 与 `/usr/local/src`
 的常见源码布局中寻找 `sim_vehicle.py`。
+MAVProxy 会依次从显式 `GROUND_STATION_MAVPROXY`、当前 `PATH`、项目 `.venv` 与常见
+ArduPilot 虚拟环境中寻找；找不到时仿真会在启动任何进程前明确失败。
 
 ## 3. 机载四组件发现检查
 

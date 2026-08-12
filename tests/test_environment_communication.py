@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import threading
 import time
@@ -67,21 +68,28 @@ class _SimulationSupervisor(_TrackingSupervisor):
         super().__init__()
         self.package_barrier = threading.Barrier(4)
         self.packages: list[str] = []
+        self.mavproxy_probes = 0
         self.start_calls: list[tuple[str, tuple[str, ...]]] = []
+        self.start_kwargs: dict[str, dict[str, object]] = {}
         self.sequence: list[str] = []
         self.log_directory = Path("/tmp/task13-simulation-test")
 
     def run_checked(self, command, **_kwargs) -> object:
         """四个检查必须同时到达屏障，串行实现会在此测试失败。"""
-        package = str(tuple(command)[-1])
+        argv = tuple(str(part) for part in command)
+        if Path(argv[0]).name == "mavproxy.py":
+            self.mavproxy_probes += 1
+            return SimpleNamespace(returncode=0, stdout="MAVProxy Version: test")
+        package = argv[-1]
         self.packages.append(package)
         self.package_barrier.wait(timeout=2.0)
         return SimpleNamespace(returncode=0, stdout=f"/tmp/{package}")
 
-    def start(self, name, command, **_kwargs) -> object:
+    def start(self, name, command, **kwargs) -> object:
         """记录启动命令并返回始终存活的轻量进程记录。"""
         argv = tuple(str(part) for part in command)
         self.start_calls.append((str(name), argv))
+        self.start_kwargs[str(name)] = dict(kwargs)
         self.sequence.append(f"start:{name}")
         return SimpleNamespace(
             name=str(name),
@@ -374,6 +382,12 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
     monkeypatch.setattr(
         "ground_station_core.environment.find_sim_vehicle", lambda: sim_vehicle
     )
+    mavproxy = tmp_path / "mavproxy-bin" / "mavproxy.py"
+    mavproxy.parent.mkdir()
+    mavproxy.touch()
+    monkeypatch.setattr(
+        "ground_station_core.environment.find_mavproxy", lambda: mavproxy
+    )
     monkeypatch.setattr(
         "ground_station_core.environment.ardupilot_root", lambda _path: tmp_path
     )
@@ -421,6 +435,7 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
         "mavros",
         "onboard_control",
     ]
+    assert supervisor.mavproxy_probes == 1
     assert [name for name, _command in supervisor.start_calls] == [
         "sitl",
         "rviz",
@@ -431,6 +446,8 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
     sitl_command = dict(supervisor.start_calls)["sitl"]
     rviz_command = dict(supervisor.start_calls)["rviz"]
     assert ("--no-rebuild" in sitl_command) is prebuilt_sitl
+    sitl_environment = supervisor.start_kwargs["sitl"]["extra_environment"]
+    assert sitl_environment["PATH"].split(os.pathsep)[0] == str(mavproxy.parent)
     assert "fcu_parameter_check_initial_delay_seconds:=2.0" in onboard_command
     assert rviz_command[:4] == ("nice", "-n", "5", "ros2")
     assert "pose_topic:=/mavros/local_position/pose" in rviz_command

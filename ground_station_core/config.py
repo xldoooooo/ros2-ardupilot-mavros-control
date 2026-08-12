@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -130,6 +131,35 @@ def find_sim_vehicle() -> Path | None:
         Path("/usr/local/src/ardupilot/Tools/autotest/sim_vehicle.py"),
     )
     return next((path.resolve() for path in candidates if path.is_file()), None)
+
+
+def find_mavproxy() -> Path | None:
+    """定位 sim_vehicle.py 启动链需要的可执行 MAVProxy 入口。"""
+    configured = os.environ.get("GROUND_STATION_MAVPROXY")
+    if configured:
+        path = Path(configured).expanduser()
+        return path.resolve() if path.is_file() and os.access(path, os.X_OK) else None
+
+    located = shutil.which("mavproxy.py")
+    if located:
+        return Path(located).resolve()
+
+    # 项目安装环境与 ArduPilot 官方常见独立 venv 都可能没有被加入
+    # 启动终端 PATH；找到后由仿真编排器只为 SITL 子进程补入对应 bin。
+    candidates = (
+        Path(sys.executable).resolve().parent / "mavproxy.py",
+        PROJECT_ROOT / ".venv" / "bin" / "mavproxy.py",
+        Path.home() / "venv-ardupilot" / "bin" / "mavproxy.py",
+        Path.home() / "ardupilot" / "venv" / "bin" / "mavproxy.py",
+    )
+    return next(
+        (
+            path.resolve()
+            for path in candidates
+            if path.is_file() and os.access(path, os.X_OK)
+        ),
+        None,
+    )
 
 
 def ardupilot_root(sim_vehicle: Path) -> Path:

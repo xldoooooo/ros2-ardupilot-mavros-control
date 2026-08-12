@@ -130,3 +130,20 @@ def test_sim_vehicle_is_found_from_a_checkout_neighbour(monkeypatch, tmp_path) -
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
 
     assert project_config.find_sim_vehicle() == sim_vehicle.resolve()
+
+
+def test_mavproxy_is_found_from_project_environment(monkeypatch, tmp_path) -> None:
+    """项目 venv 未加入终端 PATH 时仍应为 SITL 找到 MAVProxy。"""
+    project_root = tmp_path / "project"
+    mavproxy = project_root / ".venv" / "bin" / "mavproxy.py"
+    mavproxy.parent.mkdir(parents=True)
+    mavproxy.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    mavproxy.chmod(0o755)
+
+    monkeypatch.setattr(project_config, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(project_config.sys, "executable", str(tmp_path / "python3"))
+    monkeypatch.delenv("GROUND_STATION_MAVPROXY", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+
+    assert project_config.find_mavproxy() == mavproxy.resolve()

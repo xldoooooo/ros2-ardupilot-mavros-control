@@ -567,3 +567,17 @@
   buffer`，本次没有伪称解决 ROS 官方不保证的跨发行版兼容性；它不再阻断当前接口 3.0 状态与
   高层服务实测，但仍是实飞前必须消除或单独验收的风险。详见
   `agent/report/report-2026-08-13-hardware-communication-interface-fix.md`。
+
+## 2026-08-13 192.168.112.101 仿真启动依赖修复
+
+- 目标机点击启动仿真失败的第一根因是 `sim_vehicle.py` 按命令名启动 `mavproxy.py`，而已有
+  MAVProxy 位于未加入 PATH 的 `/home/scq/venv-ardupilot/bin`；第二根因是 MAVProxy 1.8.74
+  wheel 未声明实际导入的 `future`，导致项目 venv 内运行即退出。
+- `requirements-gui.txt` 现显式安装 MAVProxy 与 future；地面站会从显式配置、PATH、项目 venv
+  和常见 ArduPilot venv 定位可执行入口，只向 SITL 子进程注入其 bin，并在启动任何进程前真实
+  执行 `mavproxy.py --version`。新电脑执行 `setup_project.sh` 不应再漏掉该链路依赖。
+- 目标机完整未武装仿真已达到 SITL/MAVROS/onboard/RViz 就绪；最终状态为 `armed=false`、
+  STABILIZE，本地位姿、租约和推力语义门有效。清理停止 4 个受管进程，5760/5762 无监听且无
+  项目仿真残留。目标机与本机正式 Python 测试均为 105 passed；根目录无范围 pytest 仍受既有
+  `integration/websocket_test_demo` 缺少 `ws_demo` 的收集问题影响。详见
+  `agent/report/report-2026-08-13-remote-simulation-start-fix.md`。
