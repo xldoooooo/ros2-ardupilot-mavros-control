@@ -20,6 +20,49 @@ runtime_source_setup() {
   set -u
 }
 
+# Read one ROS package version from its manifest without loading the overlay.
+runtime_package_manifest_version() {
+  local manifest="$1"
+  local version
+  if [[ ! -r "${manifest}" ]]; then
+    runtime_die "package manifest is not readable: ${manifest}"
+    return 1
+  fi
+  version="$(
+    sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' "${manifest}" |
+      head -n 1
+  )"
+  if [[ -z "${version}" ]]; then
+    runtime_die "package manifest has no version: ${manifest}"
+    return 1
+  fi
+  printf '%s\n' "${version}"
+}
+
+# Refuse to launch a stale install tree after source/interface updates.
+runtime_verify_workspace_package_install() {
+  local runtime_project_root="$1"
+  local package_name="$2"
+  local source_manifest=
+  local installed_manifest=
+  local source_version=
+  local installed_version=
+
+  source_manifest="${runtime_project_root}/src/${package_name}/package.xml"
+  installed_manifest="${runtime_project_root}/install/${package_name}/share/${package_name}/package.xml"
+  source_version="$(runtime_package_manifest_version "${source_manifest}")" || return 1
+  installed_version="$(runtime_package_manifest_version "${installed_manifest}")" || {
+    runtime_die \
+      "${package_name} is not installed from the current checkout; run onboard_workspace.sh verify"
+    return 1
+  }
+  if [[ "${source_version}" != "${installed_version}" ]]; then
+    runtime_die \
+      "stale ${package_name} install: source=${source_version}, installed=${installed_version}; run onboard_workspace.sh verify before starting"
+    return 1
+  fi
+}
+
 # Resolve Humble/Jazzy from an explicit choice, the active shell, or the host OS.
 runtime_detect_ros_setup() {
   local requested_distro="${1:-}"

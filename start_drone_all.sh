@@ -52,7 +52,6 @@ do
 done
 
 runtime_source_setup "${ros_setup}"
-runtime_source_setup "${onboard_setup}"
 
 for required_command in ros2 setsid stdbuf sed tee timeout grep pgrep; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
@@ -60,6 +59,13 @@ for required_command in ros2 setsid stdbuf sed tee timeout grep pgrep; do
     exit 1
   fi
 done
+
+# A source-only Git update must never silently launch an older wire interface.
+for onboard_package in guided_interfaces onboard_control; do
+  runtime_verify_workspace_package_install \
+    "${project_root}" "${onboard_package}" || exit 1
+done
+runtime_source_setup "${onboard_setup}"
 
 runtime_ensure_package mavros
 runtime_ensure_package odin_ros_driver "${ODIN_OVERLAY_SETUP:-}"
@@ -192,7 +198,18 @@ while ((SECONDS < readiness_deadline)); do
     exit 1
   fi
 
-  status_sample="$(timeout 3 ros2 topic echo --once /onboard_control/status 2>&1 || true)"
+  # Bypass a stale ros2 daemon and exactly match the best-effort status publisher.
+  status_sample="$(
+    timeout 4 ros2 topic echo \
+      --no-daemon \
+      --spin-time 1 \
+      --qos-profile sensor_data \
+      --qos-reliability best_effort \
+      --qos-durability volatile \
+      --once \
+      /onboard_control/status guided_interfaces/msg/ControlStatus \
+      2>&1 || true
+  )"
   if grep -q '^armed: true$' <<<"${status_sample}"; then
     echo "[startup] WARNING: FCU reports armed=true; no command was sent by this script" >&2
   fi

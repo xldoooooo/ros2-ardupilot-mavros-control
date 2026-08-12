@@ -1767,7 +1767,19 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
 void OnboardControlNode::status_tick()
 {
   // ROS 图查询可能发生调度抖动，必须放在控制状态互斥锁之外。
-  const std::size_t publisher_count = count_publishers(attitude_topic_);
+  // SIGINT may invalidate the context between the executor wakeup and graph query.
+  if (!rclcpp::ok()) {
+    return;
+  }
+  std::size_t publisher_count = 0U;
+  try {
+    publisher_count = count_publishers(attitude_topic_);
+  } catch (const std::runtime_error &) {
+    if (!rclcpp::ok()) {
+      return;
+    }
+    throw;
+  }
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   check_origin_confirmation_timeout(now);

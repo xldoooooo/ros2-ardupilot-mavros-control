@@ -97,6 +97,42 @@ def test_runtime_discovery_resolves_ros_python_and_unique_serial(tmp_path) -> No
     ]
 
 
+def test_runtime_rejects_stale_onboard_install_versions(tmp_path) -> None:
+    """源码接口升级后，启动器不得继续运行旧 install 中的二进制。"""
+    project_root = tmp_path / "checkout"
+    source_manifest = project_root / "src" / "guided_interfaces" / "package.xml"
+    installed_manifest = (
+        project_root
+        / "install"
+        / "guided_interfaces"
+        / "share"
+        / "guided_interfaces"
+        / "package.xml"
+    )
+    source_manifest.parent.mkdir(parents=True)
+    installed_manifest.parent.mkdir(parents=True)
+    source_manifest.write_text(
+        "<package><version>3.0.0</version></package>\n", encoding="utf-8"
+    )
+    installed_manifest.write_text(
+        "<package><version>2.2.0</version></package>\n", encoding="utf-8"
+    )
+
+    command = (
+        f"source {RUNTIME_HELPERS!s}; "
+        f"runtime_verify_workspace_package_install {project_root!s} guided_interfaces"
+    )
+    stale = run_bash(command)
+    assert stale.returncode != 0
+    assert "source=3.0.0, installed=2.2.0" in stale.stderr
+
+    installed_manifest.write_text(
+        "<package><version>3.0.0</version></package>\n", encoding="utf-8"
+    )
+    current = run_bash(command)
+    assert current.returncode == 0, current.stderr
+
+
 def test_ubuntu_2204_prefers_humble_when_both_distros_are_installed(
     tmp_path,
 ) -> None:
@@ -283,6 +319,10 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
     assert "kill -INT -- \"-${pid}\"" in script
     assert "message_rates_configured: true" in script
     assert "local_position_valid: true" in script
+    assert "runtime_verify_workspace_package_install" in script
+    assert "--no-daemon" in script
+    assert "--qos-reliability best_effort" in script
+    assert "guided_interfaces/msg/ControlStatus" in script
 
     for forbidden in (
         "/home/xld",
