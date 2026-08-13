@@ -58,6 +58,14 @@ bash start_drone_all.sh --check
 bash start_drone_all.sh
 ```
 
+停止 systemd 服务以及其他终端手工启动的机载组件：
+
+```bash
+bash stop_onboard_service.sh
+```
+
+停止入口会清理 MAVROS、Odin、extnav、onboard_control 和相关 RViz，并在发现残留时返回失败。
+
 启动器只在发现唯一串口时继续，优先采用 `/dev/serial/by-id` 稳定名称；否则检查
 `ttyTHS`、`ttyACM` 和 `ttyUSB`。Odin/extnav 通过 ament package index 反查其 overlay，
 不依赖用户名或工作区目录名称。

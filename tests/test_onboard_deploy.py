@@ -15,6 +15,7 @@ WORKSPACE_SCRIPT = DEPLOY_DIR / "onboard_workspace.sh"
 DEPLOYMENT_GUIDE = DEPLOY_DIR / "ONBOARD_DEPLOYMENT.md"
 DRONE_START_DIRECTORY = PROJECT_ROOT / "start_drone"
 INTEGRATED_START = PROJECT_ROOT / "start_drone_all.sh"
+INTEGRATED_STOP = PROJECT_ROOT / "stop_onboard_service.sh"
 GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
 PROJECT_SETUP = PROJECT_ROOT / "setup_project.sh"
 ONBOARD_BUILD = PROJECT_ROOT / "build_onboard_control"
@@ -256,6 +257,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/src/onboard_control/",
         "/start_drone/",
         "/start_drone_all.sh",
+        "/stop_onboard_service.sh",
         "/build_onboard_control",
     ):
         assert sparse_path in script
@@ -370,6 +372,40 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
         "COMMAND_TAKEOFF",
         "set_gp_origin",
         "FlightCommand",
+    ):
+        assert forbidden not in script
+
+
+def test_integrated_stop_cleans_managed_and_manual_flight_stack_processes() -> None:
+    """停止入口须覆盖服务与手工进程，分级清理并验证零残留。"""
+    assert os.access(INTEGRATED_STOP, os.X_OK)
+    syntax = subprocess.run(
+        ["bash", "-n", str(INTEGRATED_STOP)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    script = INTEGRATED_STOP.read_text(encoding="utf-8")
+    for required in (
+        "systemctl stop",
+        "mavros_node",
+        "odin1_ros2",
+        "host_sdk_sample",
+        "extnav_to_vision_pose",
+        "onboard_control_node",
+        "signal_targets INT",
+        "signal_targets TERM",
+        "signal_targets KILL",
+        "systemctl is-active --quiet",
+    ):
+        assert required in script
+    for forbidden in (
+        "/cmd/arming",
+        "/cmd/takeoff",
+        "COMMAND_TAKEOFF",
+        "pkill -f ros2",
     ):
         assert forbidden not in script
 

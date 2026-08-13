@@ -596,3 +596,21 @@
   `ros2-ardupilot-onboard.service` 保持 active，主 PID 2455 和启动时间未变化；没有重启服务或发送
   飞行命令。飞机保留既有未跟踪 `.deployment-backups/`。详见
   `agent/report/report-2026-08-13-portable-onboard-build-entry.md`。
+
+## 2026-08-13 真机彻底停止入口
+
+- 真机实际停止入口为 `/home/xld/stop_onboard_service.sh`，不在机载 sparse Git 工作树内。旧版本
+  只有 `systemctl stop`，只能清理 systemd cgroup，无法结束从桌面终端手动启动的 Odin、MAVROS
+  或 extnav；README 中项目目录相对路径并不准确。
+- 真机脚本已原位改为：先停止 `ros2-ardupilot-onboard.service`，再精确匹配并收集 MAVROS、Odin、
+  extnav、onboard_control、Odin RViz 及启动器的全部后代，依次发送 SIGINT、SIGTERM、必要时
+  SIGKILL，最终同时确认服务 inactive 和目标进程为零。修改前备份为
+  `/home/xld/stop_onboard_service.sh.pre-codex-20260813-163351`。
+- 真实验收清除了 GNOME Terminal scope 中残留的 Odin PID 29919/29921；其未在 5 秒内响应 SIGINT，
+  但在 SIGTERM 阶段退出。随后 `/dev/ttyTHS1` 无占用，`start_drone_all.sh --check` 返回 0 且没有
+  启动组件；停止脚本重复执行也返回 0。没有解锁、起飞或正式重启服务。详见
+  `agent/report/report-2026-08-13-onboard-stop-script-complete.md`。
+- 随后停止入口正式迁入仓库根目录 `stop_onboard_service.sh` 并保留可执行位；机载 sparse checkout、
+  部署文档、README 和自动测试已同步维护。飞机后续应从
+  `/home/onboard/ros2-ardupilot-mavros-control/stop_onboard_service.sh` 执行，不再依赖 `/home/xld`
+  下的工作副本。

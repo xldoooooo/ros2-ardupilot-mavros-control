@@ -28,6 +28,7 @@ git sparse-checkout set \
   '/src/onboard_control/' \
   '/start_drone/' \
   '/start_drone_all.sh' \
+  '/stop_onboard_service.sh' \
   '/build_onboard_control'
 git checkout main
 ```
@@ -39,6 +40,7 @@ src/guided_interfaces/
 src/onboard_control/
 start_drone/
 start_drone_all.sh
+stop_onboard_service.sh
 build_onboard_control
 ```
 
@@ -121,9 +123,9 @@ setpoint_messages=0
 ```
 
 `update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护两个机载 ROS 包、
-`start_drone/` 分步入口、`start_drone_all.sh` 一键入口和根目录
-`build_onboard_control`。更新使用 `git pull --ff-only`，
-不会 reset、覆盖本地修改或触碰 `/home/xld`，也不会把仅供地面使用的
+`start_drone/` 分步入口、`start_drone_all.sh` 一键入口、`stop_onboard_service.sh`
+彻底停止入口和根目录 `build_onboard_control`。更新使用 `git pull --ff-only`，
+不会 reset 或覆盖本地修改，也不会把仅供地面使用的
 `start_ground_all.sh` 检出到无人机。
 
 `update` 只更新源码，不会替代目标机原生构建。源码与 `install/` 中

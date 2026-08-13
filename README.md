@@ -65,14 +65,12 @@ cd /home/onboard/ros2-ardupilot-mavros-control
 ## 结束机载服务
 
 ```bash
-sudo systemctl stop ros2-ardupilot-onboard.service
+cd /home/onboard/ros2-ardupilot-mavros-control
+./stop_onboard_service.sh
 ```
 
-或
-
-```bash
-bash ./stop_onboard_service.sh
-```
+该入口先停止 systemd 服务，再清理从其他终端手工启动的 MAVROS、Odin、extnav、
+onboard_control 和相关 RViz；只有服务 inactive 且目标进程全部退出时才返回成功。
 
 ## 配置
 
