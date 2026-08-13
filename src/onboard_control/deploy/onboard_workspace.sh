@@ -17,7 +17,7 @@ readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly DRONE_START_SPARSE_PATH="/start_drone/"
 readonly DRONE_START_ALL_SPARSE_PATH="/start_drone_all.sh"
 readonly DRONE_STOP_ALL_SPARSE_PATH="/stop_onboard_service.sh"
-readonly ONBOARD_BUILD_SPARSE_PATH="/build_onboard_control"
+readonly ONBOARD_BUILD_SPARSE_PATH="/build_onboard_control.sh"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
 readonly SMOKE_INTERFACE_PREFIX="/_task08_smoke_onboard"
 readonly DEFAULT_SMOKE_DOMAIN_ID="231"
@@ -98,8 +98,8 @@ validate_workspace_layout() {
     die "start_drone_all.sh is missing from ${WORKSPACE_ROOT}"
   [[ -x "${WORKSPACE_ROOT}/stop_onboard_service.sh" ]] ||
     die "stop_onboard_service.sh is missing or not executable in ${WORKSPACE_ROOT}"
-  [[ -x "${WORKSPACE_ROOT}/build_onboard_control" ]] ||
-    die "build_onboard_control is missing or not executable in ${WORKSPACE_ROOT}"
+  [[ -x "${WORKSPACE_ROOT}/build_onboard_control.sh" ]] ||
+    die "build_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
 }
 
 show_config() {

@@ -18,7 +18,7 @@ INTEGRATED_START = PROJECT_ROOT / "start_drone_all.sh"
 INTEGRATED_STOP = PROJECT_ROOT / "stop_onboard_service.sh"
 GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
 PROJECT_SETUP = PROJECT_ROOT / "setup_project.sh"
-ONBOARD_BUILD = PROJECT_ROOT / "build_onboard_control"
+ONBOARD_BUILD = PROJECT_ROOT / "build_onboard_control.sh"
 RUNTIME_HELPERS = DRONE_START_DIRECTORY / "runtime_common.bash"
 
 
@@ -73,7 +73,7 @@ def test_root_onboard_build_entry_is_portable_and_safe() -> None:
         text=True,
     )
     assert help_result.returncode == 0, help_result.stderr
-    assert "./build_onboard_control" in help_result.stdout
+    assert "./build_onboard_control.sh" in help_result.stdout
     assert "--verify" in help_result.stdout
 
     script = ONBOARD_BUILD.read_text(encoding="utf-8")
@@ -258,7 +258,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/start_drone/",
         "/start_drone_all.sh",
         "/stop_onboard_service.sh",
-        "/build_onboard_control",
+        "/build_onboard_control.sh",
     ):
         assert sparse_path in script
         assert sparse_path in guide

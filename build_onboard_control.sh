@@ -8,7 +8,7 @@ readonly workspace_helper="${project_root}/src/onboard_control/deploy/onboard_wo
 
 usage() {
   cat <<'EOF'
-Usage: ./build_onboard_control [--verify]
+Usage: ./build_onboard_control.sh [--verify]
 
 Without arguments, rebuild guided_interfaces and onboard_control in Release mode.
 

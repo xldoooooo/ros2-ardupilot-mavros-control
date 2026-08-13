@@ -12,13 +12,13 @@ ROS_LOCALHOST_ONLY=0
 地面开发机和飞机都在仓库根目录执行同一个命令：
 
 ```bash
-./build_onboard_control
+./build_onboard_control.sh
 ```
 
 如需同时检查依赖、运行单元测试和隔离 smoke：
 
 ```bash
-./build_onboard_control --verify
+./build_onboard_control.sh --verify
 ```
 
 脚本会自动选择地面端 Jazzy 或飞机 Humble。它不会启动、停止或重启机载服务，也不会发送飞行
