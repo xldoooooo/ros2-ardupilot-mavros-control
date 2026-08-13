@@ -27,7 +27,8 @@ git sparse-checkout set \
   '/src/guided_interfaces/' \
   '/src/onboard_control/' \
   '/start_drone/' \
-  '/start_drone_all.sh'
+  '/start_drone_all.sh' \
+  '/build_onboard_control'
 git checkout main
 ```
 
@@ -38,6 +39,7 @@ src/guided_interfaces/
 src/onboard_control/
 start_drone/
 start_drone_all.sh
+build_onboard_control
 ```
 
 不要复制开发机的 `build/` 或 `install/`。目标机必须针对 Humble/aarch64 原生编译。
@@ -70,6 +72,24 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 
 ## 3. 编译、单元测试与安全烟雾测试
 
+地面开发机和飞机都可以直接从仓库根目录执行同一个快捷入口：
+
+```bash
+./build_onboard_control
+```
+
+默认只以 Release 模式重建 `guided_interfaces` 与 `onboard_control`。如需同时执行依赖检查、
+单元测试和隔离 smoke：
+
+```bash
+./build_onboard_control --verify
+```
+
+脚本按主机自动选择 Jazzy/Humble，不启动、停止或重启机载服务，也不发送飞行命令。若构建时服务
+正在运行，当前进程不会被替换；需要让新产物生效时，应另行选择安全窗口重启服务。
+
+底层分阶段入口仍可直接使用：
+
 ```bash
 ./src/onboard_control/deploy/onboard_workspace.sh build
 ./src/onboard_control/deploy/onboard_workspace.sh test
@@ -101,7 +121,8 @@ setpoint_messages=0
 ```
 
 `update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护两个机载 ROS 包、
-`start_drone/` 分步入口和 `start_drone_all.sh` 一键入口。更新使用 `git pull --ff-only`，
+`start_drone/` 分步入口、`start_drone_all.sh` 一键入口和根目录
+`build_onboard_control`。更新使用 `git pull --ff-only`，
 不会 reset、覆盖本地修改或触碰 `/home/xld`，也不会把仅供地面使用的
 `start_ground_all.sh` 检出到无人机。
 

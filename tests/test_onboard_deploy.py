@@ -17,6 +17,7 @@ DRONE_START_DIRECTORY = PROJECT_ROOT / "start_drone"
 INTEGRATED_START = PROJECT_ROOT / "start_drone_all.sh"
 GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
 PROJECT_SETUP = PROJECT_ROOT / "setup_project.sh"
+ONBOARD_BUILD = PROJECT_ROOT / "build_onboard_control"
 RUNTIME_HELPERS = DRONE_START_DIRECTORY / "runtime_common.bash"
 
 
@@ -51,6 +52,41 @@ def test_onboard_workspace_script_has_valid_shell_and_help() -> None:
     assert help_result.returncode == 0, help_result.stderr
     for command in ("update", "deps-check", "build", "test", "smoke", "verify"):
         assert command in help_result.stdout
+
+
+def test_root_onboard_build_entry_is_portable_and_safe() -> None:
+    """根目录快捷入口须复用部署助手，并明确不管理服务或发送飞行命令。"""
+    assert os.access(ONBOARD_BUILD, os.X_OK)
+    syntax = subprocess.run(
+        ["bash", "-n", str(ONBOARD_BUILD)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    help_result = subprocess.run(
+        [str(ONBOARD_BUILD), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "./build_onboard_control" in help_result.stdout
+    assert "--verify" in help_result.stdout
+
+    script = ONBOARD_BUILD.read_text(encoding="utf-8")
+    assert "src/onboard_control/deploy/onboard_workspace.sh" in script
+    assert 'export ONBOARD_WORKSPACE="${project_root}"' in script
+    assert "command=build" in script
+    assert "command=verify" in script
+    for forbidden in (
+        "systemctl",
+        "/cmd/arming",
+        "/cmd/takeoff",
+        "COMMAND_TAKEOFF",
+    ):
+        assert forbidden not in script
 
 
 def test_runtime_discovery_resolves_ros_python_and_unique_serial(tmp_path) -> None:
@@ -220,6 +256,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/src/onboard_control/",
         "/start_drone/",
         "/start_drone_all.sh",
+        "/build_onboard_control",
     ):
         assert sparse_path in script
         assert sparse_path in guide
