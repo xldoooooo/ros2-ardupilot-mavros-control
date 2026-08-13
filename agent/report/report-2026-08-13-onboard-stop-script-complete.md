@@ -56,7 +56,26 @@
 
 本次没有正式启动机载四组件，没有发送飞行命令，没有解锁或起飞。
 
+## 仓库发布与飞机同步
+
+- 功能提交 `b6f9544` 已推送到远端 `main`。
+- 飞机工作树从 `c71df1b` 快进到 `b6f9544`，`HEAD` 与 `origin/main` 一致。
+- 飞机 sparse checkout 已加入 `/stop_onboard_service.sh`；Git 索引模式为 `100755`，实际文件可执行。
+- 飞机项目文件 SHA-256：
+
+```text
+4e2f0ec30f3f9b2c39ee2c77d20ab4b05e4f8fb9ee8c087b2572b39d7c7ac248
+```
+
+- `/home/xld/stop_onboard_service.sh` 已移为
+  `/home/xld/stop_onboard_service.sh.pre-project-move-20260813-210247`；原 51 字节脚本备份
+  `/home/xld/stop_onboard_service.sh.pre-codex-20260813-163351` 继续保留。
+- 同步时飞机 systemd 服务已由外部操作启动。同步前后均保持主 PID 4130、启动时间
+  `2026-08-13 20:40:18 CST`、`NRestarts=0`、active/running，说明 Git 同步没有重启或扰动服务。
+- 由于服务正在运行，`start_drone_all.sh --check` 正确报告现有 MAVROS/Odin/extnav/onboard
+  进程；该检查仅适用于停止后的启动前状态。本次没有为获得通过结果而停止现有服务。
+
 ## 限制
 
 - 本机和真机均未安装 ShellCheck，因此只完成 Bash 语法、真实进程清理、幂等停止和启动前检查。
-- 真机迁移和远端仓库同步完成信息记录在本报告最终提交版本中。
+- 飞机保留既有未跟踪 `.deployment-backups/`，本次没有修改或删除该目录。

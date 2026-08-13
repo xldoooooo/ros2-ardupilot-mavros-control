@@ -614,3 +614,9 @@
   部署文档、README 和自动测试已同步维护。飞机后续应从
   `/home/onboard/ros2-ardupilot-mavros-control/stop_onboard_service.sh` 执行，不再依赖 `/home/xld`
   下的工作副本。
+- 提交 `b6f9544` 已推送远端 main 并快进同步飞机，飞机 Git 索引模式为 `100755`、文件
+  SHA-256 为 `4e2f0ec30f3f9b2c39ee2c77d20ab4b05e4f8fb9ee8c087b2572b39d7c7ac248`。
+  `/home/xld` 工作副本已移为 `stop_onboard_service.sh.pre-project-move-20260813-210247`，原 51 字节
+  版本备份继续保留。同步期间已有 systemd 服务保持同一主 PID 4130、启动时间 20:40:18、零重启；
+  未停止或重启服务。由于服务正在运行，`start_drone_all.sh --check` 按预期报告现有组件，不能把
+  该结果误记为可在运行中通过的检查。
