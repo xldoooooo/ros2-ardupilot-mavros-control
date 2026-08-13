@@ -581,3 +581,18 @@
   项目仿真残留。目标机与本机正式 Python 测试均为 105 passed；根目录无范围 pytest 仍受既有
   `integration/websocket_test_demo` 缺少 `ws_demo` 的收集问题影响。详见
   `agent/report/report-2026-08-13-remote-simulation-start-fix.md`。
+
+## 2026-08-13 跨地面/飞机机载构建快捷入口
+
+- 仓库根目录新增可执行 `./build_onboard_control`：无参数时自动选择当前主机 ROS 发行版，以
+  Release 模式重建 `guided_interfaces` 与 `onboard_control`；`--verify` 额外执行依赖检查、
+  13 项 ROS/C++ 测试和 domain 231/localhost 隔离 smoke。
+- 入口复用 `onboard_workspace.sh`，不启动、停止或重启机载服务，不连接真实 MAVROS，不发送
+  飞行命令。构建期间已有服务继续运行；需要加载新产物时仍须另选安全窗口重启。
+- 机载 non-cone sparse checkout 清单已加入根目录 `/build_onboard_control`，首次检出文档、更新
+  流程和自动回归同步维护。地面 Jazzy 默认构建与 `--verify` 均通过，正式 Python 为 106 passed。
+- 提交 `0d5fb42` 已通过 bundle 快进到飞机，机载 sparse 清单已加入入口；飞机 Humble/aarch64
+  实际执行 `./build_onboard_control`，两包 2.15 秒构建通过。构建前后
+  `ros2-ardupilot-onboard.service` 保持 active，主 PID 2455 和启动时间未变化；没有重启服务或发送
+  飞行命令。飞机保留既有未跟踪 `.deployment-backups/`。详见
+  `agent/report/report-2026-08-13-portable-onboard-build-entry.md`。
