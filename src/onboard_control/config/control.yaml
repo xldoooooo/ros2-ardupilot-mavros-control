@@ -86,7 +86,7 @@
     s_curve_max_jerk_z: 0.16  # S 曲线参考的最大垂直加加速度，单位：米/秒³。
 
     # 推力映射与控制输出硬限幅；启用原始姿态控制前，启动回退值会被飞控标定值替换。
-    hover_throttle: 0.39  # 飞控悬停油门的启动回退值，运行时由 MOT_THST_HOVER 覆盖。
+    hover_throttle: 0.22  # 飞控悬停油门的启动回退值，运行时由 MOT_THST_HOVER 覆盖。
     thrust_ratio: 2.5  # 最大推力与重力的估计比值，用于分段线性油门映射。
     gravity: 9.8  # 控制器使用的重力加速度，单位：米/秒²。
     max_acceleration_xy: 4.0  # 控制器允许输出的最大水平合加速度，单位：米/秒²。
