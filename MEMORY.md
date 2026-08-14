@@ -620,3 +620,16 @@
   版本备份继续保留。同步期间已有 systemd 服务保持同一主 PID 4130、启动时间 20:40:18、零重启；
   未停止或重启服务。由于服务正在运行，`start_drone_all.sh --check` 按预期报告现有组件，不能把
   该结果误记为可在运行中通过的检查。
+
+## 2026-08-14 悬停油门回退值 0.22 同步
+
+- `src/onboard_control/config/control.yaml` 的 `hover_throttle` 启动回退值由 0.39 调为 0.22，
+  功能提交 `7e8e219` 已推送 main，并在飞机原生构建到 `install/`。本地两包构建成功，ROS/C++
+  13 tests 零失败；飞机构建成功，服务保持同一 PID 2430、启动时间 11:18:16、零重启。
+- 该 YAML 值不是飞行期间的最终悬停推力。当前运行节点因在构建前启动，其 ROS 参数仍为 0.39；
+  权威状态同时显示 `armed=false`、`thrust_mode_verified=true`、控制器实际
+  `hover_throttle=0.20000000298`，说明飞控 `MOT_THST_HOVER` 已覆盖启动回退值。未来重启会先加载
+  0.22，但参数同步完成后仍采用飞控值；未经明确授权不得写飞控参数。
+- 首次飞机 `git pull` 期间 SSH 与整机网络中断，恢复后确认 pull 未落地且飞机服务于 11:18:16
+  由外部重启；随后重新 pull/build 成功。不得把该外部重启归因于本次 Git 或构建命令。详见
+  `agent/report/report-2026-08-14-hover-throttle-022-sync.md`。
