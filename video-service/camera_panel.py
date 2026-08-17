@@ -7,13 +7,19 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from camera_app.panel import CameraPanelWindow, PANEL_STYLE_SHEET
+from camera_app.panel import (
+    DESKTOP_APPLICATION_NAME,
+    CameraPanelWindow,
+    PANEL_STYLE_SHEET,
+)
 
 
 def main() -> int:
     """创建独立Qt事件循环；退出不停止摄像头后台。"""
+    # GNOME Dock 会读取这两个 Qt 字段；使用 ASCII 名称避免桌面编码误判。
+    QApplication.setApplicationName(DESKTOP_APPLICATION_NAME)
+    QApplication.setApplicationDisplayName(DESKTOP_APPLICATION_NAME)
     application = QApplication(sys.argv)
-    application.setApplicationName("ROS 2 ArduPilot 摄像头配置面板")
     application.setStyle("Fusion")
     application.setStyleSheet(PANEL_STYLE_SHEET)
     window = CameraPanelWindow()

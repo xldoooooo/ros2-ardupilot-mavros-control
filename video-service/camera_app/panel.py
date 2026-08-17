@@ -44,6 +44,7 @@ from .ipc import CameraServiceClient
 
 
 SERVICE_SCRIPT = VIDEO_SERVICE_ROOT / "camera_service.py"
+DESKTOP_APPLICATION_NAME = "ROS 2 ArduPilot Camera Panel"
 
 
 PANEL_STYLE_SHEET = """
@@ -165,7 +166,8 @@ class CameraPanelWindow(QMainWindow):
         self._action_busy = False
         self._stopping_camera = False
 
-        self.setWindowTitle("摄像头配置面板")
+        # 桌面环境可能直接使用窗口标题作为 Dock 名称，保持 ASCII 避免乱码。
+        self.setWindowTitle(DESKTOP_APPLICATION_NAME)
         self.setMinimumSize(980, 680)
         self.resize(1180, 780)
         self._build_ui()

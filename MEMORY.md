@@ -698,3 +698,11 @@
   `#dbe0e5`。
 - 停止态关闭按钮为灰色，运行态开启按钮为灰色；正式回归为 121 passed。详见
   `agent/report/report-2026-08-17-camera-panel-disabled-button-style.md`。
+
+## 2026-08-17 摄像头面板 Dock 英文名称
+
+- Ubuntu Dock 的摄像头程序乱码来自中文 Qt 应用名的桌面编码误判；独立入口现在于创建
+  `QApplication` 前把 `applicationName` 和 `applicationDisplayName` 设为纯 ASCII 的
+  `ROS 2 ArduPilot Camera Panel`，顶层窗口标题也使用同一名称，内部界面继续中文。
+- 已运行的旧面板需要关闭并重新打开才会注册新名称；正式回归为 122 passed。详见
+  `agent/report/report-2026-08-17-camera-panel-dock-name-fix.md`。

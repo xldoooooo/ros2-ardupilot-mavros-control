@@ -29,7 +29,11 @@ from camera_app.config import (
 )
 from camera_app.controller import CameraController, CameraServiceError
 from camera_app.ipc import CameraServiceClient, CameraServiceServer
-from camera_app.panel import CameraPanelWindow, PANEL_STYLE_SHEET
+from camera_app.panel import (
+    DESKTOP_APPLICATION_NAME,
+    CameraPanelWindow,
+    PANEL_STYLE_SHEET,
+)
 
 
 def _runtime_paths(root: Path) -> RuntimePaths:
@@ -84,6 +88,21 @@ def test_panel_role_buttons_use_ground_station_disabled_style() -> None:
     assert PANEL_STYLE_SHEET.index(disabled_selectors) > PANEL_STYLE_SHEET.index(
         'QPushButton[role="danger"]'
     )
+
+
+def test_panel_desktop_name_is_ascii() -> None:
+    """Dock应用名和窗口标题必须使用同一个无编码歧义的英文名称。"""
+    application = _application()
+    window = CameraPanelWindow(auto_bootstrap=False)
+
+    assert DESKTOP_APPLICATION_NAME == "ROS 2 ArduPilot Camera Panel"
+    assert DESKTOP_APPLICATION_NAME.isascii()
+    assert window.windowTitle() == DESKTOP_APPLICATION_NAME
+
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
 
 
 def test_parse_v4l2_formats_keeps_native_h264_and_mjpeg_modes() -> None:
