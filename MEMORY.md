@@ -633,3 +633,27 @@
 - 首次飞机 `git pull` 期间 SSH 与整机网络中断，恢复后确认 pull 未落地且飞机服务于 11:18:16
   由外部重启；随后重新 pull/build 成功。不得把该外部重启归因于本次 Git 或构建命令。详见
   `agent/report/report-2026-08-14-hover-throttle-022-sync.md`。
+
+## 2026-08-14 真机摄像头本地录像脚本
+
+- 真机摄像头示例实际位于 `/home/xld/Project/python_demo/demo2.py`；原文件保持不变，新建
+  `/home/xld/Project/python_demo/demo_2_save.py`。新脚本保留摄像头预览和按 `q` 退出功能，并以
+  MJPG/AVI 将每帧保存到同目录的微秒时间戳文件；摄像头未报告有效帧率时回退到 30 FPS。
+- 真机语法编译及 3 帧合成视频写入/回读通过；未实际打开摄像头，避免抢占用户摄像头会话。
+  原文件 SHA-256 保持
+  `4e94df16f007a62d1c25b8481a4ea56a8af333ba24bb03a831eda823728d2f95`。详见
+  `agent/report/report-2026-08-14-real-camera-video-save.md`。
+- 该脚本随后被外部改名为 `/home/xld/Project/python_demo/demo2_save.py`；按用户追加要求，当前
+  版本已改用 `mp4v` 编码并输出 `.mp4`，摄像头采集端仍使用 MJPG。直接调用脚本写入器的 3 帧
+  MP4 写入/回读验证通过，详见
+  `agent/report/report-2026-08-14-real-camera-mp4-output.md`。
+- 新建 `/home/xld/Project/python_demo/demo2_save_fix.py` 修复旧 MP4 约 4.33 倍加速问题：Wasintek
+  摄像头原生 1280×720@120 H.264 经 GStreamer 直接封装 MP4，独立 Jetson 硬件解码分支只负责
+  预览，不再进行同步 CPU `mp4v` 二次编码。最终真机实测 374 帧/3.1615 秒、平均 118.30 FPS，
+  较长样本为 539 帧/4.5271 秒、平均 119.06 FPS；播放时长与真实采集时长一致。原两个脚本哈希
+  均不变，详见 `agent/report/report-2026-08-14-demo2-native-h264-120fps-fix.md`。
+- 新建 `/home/xld/Project/python_demo/demo2_save_fix_avi.py`，把稳定的原生 MJPEG 1280×720@120
+  直接封装为 AVI，OpenCV仅解码最新帧用于预览。最终实测601帧/5.0083秒、固定120 FPS、
+  约90.53 Mbps；预览约115.32 FPS时录像仍保留全部601帧。原三个脚本均未修改。原码 AVI约
+  11.3 MB/s（40.7 GB/h），OpenCV/FFmpeg回读会对摄像头厂商 APP字段告警但本轮全部帧解码
+  成功，详见 `agent/report/report-2026-08-14-demo2-mjpeg-120fps-avi.md`。
