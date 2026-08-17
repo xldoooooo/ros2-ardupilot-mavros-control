@@ -689,3 +689,12 @@
 - Wasintek 原生 H.264 1280×720@120 隔离实测两轮开启均获得正常非黑画面；四段 MP4
   均为固定 120 fps 且可读。正式 Python 回归为 120 passed，测试后摄像头和临时端口均释放。
   详见 `agent/report/report-2026-08-17-camera-panel-restart-and-layout-fix.md`。
+
+## 2026-08-17 摄像头面板灰色禁用按钮
+
+- 摄像头面板此前的角色颜色规则覆盖了通用 `QPushButton:disabled`，导致按钮逻辑上禁用
+  但仍显示绿色或红色。现在与地面站主 GUI 一致，在角色规则之后显式声明
+  `primary/success/danger:disabled`，使用灰字 `#98a4b1`、灰底 `#edf0f2`、灰边框
+  `#dbe0e5`。
+- 停止态关闭按钮为灰色，运行态开启按钮为灰色；正式回归为 121 passed。详见
+  `agent/report/report-2026-08-17-camera-panel-disabled-button-style.md`。

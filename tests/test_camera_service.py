@@ -29,7 +29,7 @@ from camera_app.config import (
 )
 from camera_app.controller import CameraController, CameraServiceError
 from camera_app.ipc import CameraServiceClient, CameraServiceServer
-from camera_app.panel import CameraPanelWindow
+from camera_app.panel import CameraPanelWindow, PANEL_STYLE_SHEET
 
 
 def _runtime_paths(root: Path) -> RuntimePaths:
@@ -69,6 +69,21 @@ def _camera_config(root: Path, **changes: object) -> CameraConfig:
 def _application() -> QApplication:
     """复用 Qt 全局应用实例。"""
     return QApplication.instance() or QApplication([])
+
+
+def test_panel_role_buttons_use_ground_station_disabled_style() -> None:
+    """彩色角色按钮禁用后必须显式回到主GUI的灰色样式。"""
+    disabled_selectors = (
+        'QPushButton[role="primary"]:disabled,\n'
+        'QPushButton[role="success"]:disabled,\n'
+        'QPushButton[role="danger"]:disabled'
+    )
+
+    assert disabled_selectors in PANEL_STYLE_SHEET
+    assert "color: #98a4b1; background: #edf0f2;" in PANEL_STYLE_SHEET
+    assert PANEL_STYLE_SHEET.index(disabled_selectors) > PANEL_STYLE_SHEET.index(
+        'QPushButton[role="danger"]'
+    )
 
 
 def test_parse_v4l2_formats_keeps_native_h264_and_mjpeg_modes() -> None:

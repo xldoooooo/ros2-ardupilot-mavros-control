@@ -115,6 +115,11 @@ QPushButton[role="danger"] {
 QPushButton[role="danger"]:hover {
     background: #87271f; border-color: #87271f;
 }
+QPushButton[role="primary"]:disabled,
+QPushButton[role="success"]:disabled,
+QPushButton[role="danger"]:disabled {
+    color: #98a4b1; background: #edf0f2; border-color: #dbe0e5;
+}
 QWidget#videoSurface, QLabel#previewPlaceholder { background: #101820; }
 QLabel#previewPlaceholder {
     color: #b8c5cf;
