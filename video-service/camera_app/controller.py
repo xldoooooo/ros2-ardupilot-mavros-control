@@ -16,6 +16,7 @@ from typing import Any, TextIO
 
 from .config import (
     BUNDLED_MEDIAMTX,
+    RTP_JPEG_MAX_DIMENSION,
     CameraConfig,
     RuntimePaths,
     discover_camera_devices,
@@ -23,6 +24,10 @@ from .config import (
     probe_camera_modes,
     save_config,
 )
+
+
+# MediaMTX 官方对“reader is too slow”建议至少使用 1024 个出站包槽位。
+MEDIAMTX_WRITE_QUEUE_SIZE = 1024
 
 
 class CameraServiceError(RuntimeError):
@@ -114,15 +119,27 @@ class CameraController:
         devices = discover_camera_devices()
         selected = device or self.config.device
         modes: list[dict[str, Any]] = []
+        excluded_modes: list[dict[str, Any]] = []
         error = ""
         try:
-            modes = [item.to_dict() for item in probe_camera_modes(selected)]
+            for item in probe_camera_modes(selected):
+                target = (
+                    excluded_modes
+                    if item.codec == "mjpeg"
+                    and (
+                        item.width > RTP_JPEG_MAX_DIMENSION
+                        or item.height > RTP_JPEG_MAX_DIMENSION
+                    )
+                    else modes
+                )
+                target.append(item.to_dict())
         except (OSError, RuntimeError) as exc:
             error = str(exc)
         return {
             "devices": devices,
             "selected_device": selected,
             "modes": modes,
+            "excluded_modes": excluded_modes,
             "error": error,
         }
 
@@ -419,6 +436,14 @@ class CameraController:
     def _preflight(self, config: CameraConfig) -> None:
         """在启动任何子进程前验证依赖、设备模式、端口与目录。"""
         config.validate()
+        if config.codec == "mjpeg" and (
+            config.width > RTP_JPEG_MAX_DIMENSION
+            or config.height > RTP_JPEG_MAX_DIMENSION
+        ):
+            raise CameraServiceError(
+                "RTSP/JPEG受RFC 2435限制，宽和高都不能超过"
+                f" {RTP_JPEG_MAX_DIMENSION} 像素；请选择1080p或更低模式"
+            )
         if not self.mediamtx_binary.is_file() or not os.access(
             self.mediamtx_binary, os.X_OK
         ):
@@ -456,6 +481,7 @@ class CameraController:
             "# Camera service generated MediaMTX v1.20.0 configuration.\n"
             "logLevel: info\n"
             "logDestinations: [stdout]\n"
+            f"writeQueueSize: {MEDIAMTX_WRITE_QUEUE_SIZE}\n"
             "authMethod: internal\n"
             "authInternalUsers:\n"
             "  - user: any\n"

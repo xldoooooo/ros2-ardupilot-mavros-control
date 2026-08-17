@@ -708,6 +708,18 @@
   当前相对 `origin/main` 为 ahead 2/behind 1，`git pull --ff-only` 已安全拒绝；未擅自 merge、
   rebase 或丢弃远端提交。HP 工作树中的两个修复文件与 `c1cb244` 内容一致，功能可直接使用。
 
+## 2026-08-18 HP 高分辨率 MJPEG RTSP 绿屏修复
+
+- HP 内置摄像头的直接 V4L2 2560×1920@30 MJPEG 和零转码 MP4 录像画面均正常，约
+  128.09 Mbps；绿屏不是摄像头、驱动或录像损坏。RFC 2435 的 RTP/JPEG 宽高字段最大只能
+  表示 2040 像素，2560 经 RTSP 后被 Qt/FFmpeg 错误解释为 512×1920，并伴随
+  `Missing packets; dropping frame`；MediaMTX 同时因默认出站队列过小报告 reader too slow。
+- 后台探测现在隐藏宽或高超过2040的MJPEG模式，手工提交同类配置也在启动任何进程前明确拒绝；
+  H.264 高分辨率不受影响。MediaMTX `writeQueueSize` 从默认512提高到官方建议的1024。
+- HP 真实生产链 MJPEG 1920×1080@30 复验：10秒 Qt 收到284个有效1920×1080帧，无 missing
+  packets/reader too slow；录像11.2秒、固定30 fps。远端最终保留 HP MJPEG 1080p30、MP4
+  配置和停止状态，仅摄像头后台待命。
+
 ## 2026-08-17 摄像头面板灰色禁用按钮
 
 - 摄像头面板此前的角色颜色规则覆盖了通用 `QPushButton:disabled`，导致按钮逻辑上禁用

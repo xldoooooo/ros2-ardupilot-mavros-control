@@ -573,9 +573,16 @@ class CameraPanelWindow(QMainWindow):
         if probe_error:
             self.operation_message.setText(f"设备能力读取失败：{probe_error}")
         else:
-            self.operation_message.setText(
-                f"检测到 {len(self._all_modes)} 个离散视频模式。"
+            excluded_modes = data.get("excluded_modes", [])
+            excluded_count = (
+                len(excluded_modes) if isinstance(excluded_modes, list) else 0
             )
+            message = f"检测到 {len(self._all_modes)} 个可用于RTSP的视频模式。"
+            if excluded_count:
+                message += (
+                    f" 已隐藏 {excluded_count} 个超过RTSP/JPEG 2040像素限制的模式。"
+                )
+            self.operation_message.setText(message)
         self._filter_modes()
 
     def _filter_modes(self) -> None:

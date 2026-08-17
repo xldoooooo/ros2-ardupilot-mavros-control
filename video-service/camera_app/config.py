@@ -18,6 +18,8 @@ VIDEO_SERVICE_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = VIDEO_SERVICE_ROOT.parent
 BUNDLED_MEDIAMTX = VIDEO_SERVICE_ROOT / "bin" / "mediamtx" / "mediamtx"
 CONFIG_SCHEMA_VERSION = 1
+# RFC 2435 的 RTP/JPEG 宽高字段为 8 bit、单位为 8 像素。
+RTP_JPEG_MAX_DIMENSION = 2040
 
 SUPPORTED_CODECS = ("h264", "mjpeg")
 SUPPORTED_CONTAINERS = ("mp4", "mkv", "avi")

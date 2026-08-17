@@ -19,8 +19,10 @@ from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication, QLabel
 
 from camera_app import config as config_module
+from camera_app import controller as controller_module
 from camera_app.config import (
     CameraConfig,
+    CameraMode,
     RuntimePaths,
     detect_lan_ipv4,
     load_config,
@@ -253,6 +255,7 @@ def test_generated_mediamtx_config_is_rtsp_tcp_only(tmp_path: Path) -> None:
         controller.close()
 
     assert "rtspTransports: [tcp]" in text
+    assert "writeQueueSize: 1024" in text
     assert 'rtspAddress: "0.0.0.0:18554"' in text
     assert 'ips: ["127.0.0.1", "::1"]' in text
     for protocol in ("rtmp", "hls", "webrtc", "srt", "moq"):
@@ -290,6 +293,51 @@ def test_unix_socket_service_configures_without_ground_station() -> None:
 
         assert not paths.socket_file.exists()
         assert not paths.pid_file.exists()
+
+
+def test_probe_hides_mjpeg_modes_above_rtp_jpeg_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超过RFC 2435尺寸字段的MJPEG不能进入RTSP画质列表。"""
+    modes = [
+        CameraMode("mjpeg", 2560, 1920, 30.0),
+        CameraMode("mjpeg", 1920, 1080, 30.0),
+        CameraMode("h264", 3840, 2160, 30.0),
+    ]
+    monkeypatch.setattr(controller_module, "discover_camera_devices", lambda: [])
+    monkeypatch.setattr(controller_module, "probe_camera_modes", lambda _device: modes)
+    controller = CameraController(paths=_runtime_paths(tmp_path))
+    try:
+        result = controller.probe("/dev/video-test")
+        with pytest.raises(CameraServiceError, match="RFC 2435"):
+            controller._preflight(
+                _camera_config(
+                    tmp_path,
+                    codec="mjpeg",
+                    width=2560,
+                    height=1920,
+                    fps=30.0,
+                )
+            )
+    finally:
+        controller.close()
+
+    supported = {
+        (item["codec"], item["width"], item["height"])
+        for item in result["modes"]
+    }
+    assert supported == {
+        ("mjpeg", 1920, 1080),
+        ("h264", 3840, 2160),
+    }
+    assert result["excluded_modes"] == [
+        {
+            "codec": "mjpeg",
+            "width": 2560,
+            "height": 1920,
+            "fps": 30.0,
+        }
+    ]
 
 
 def test_panel_close_does_not_send_camera_stop(tmp_path: Path) -> None:
@@ -415,6 +463,14 @@ def test_panel_probe_keeps_requested_device_and_matching_modes(
                     "fps": 120.0,
                 }
             ],
+            "excluded_modes": [
+                {
+                    "codec": "mjpeg",
+                    "width": 2560,
+                    "height": 1920,
+                    "fps": 30.0,
+                }
+            ],
             "error": "",
         }
     )
@@ -422,6 +478,7 @@ def test_panel_probe_keeps_requested_device_and_matching_modes(
     assert window.device_combo.currentData() == wasintek_device
     assert window.device_path_label.text() == wasintek_device
     assert window.mode_combo.count() == 1
+    assert "已隐藏 1 个" in window.operation_message.text()
     assert window._configuration_from_fields() == {
         "device": wasintek_device,
         "codec": "h264",
