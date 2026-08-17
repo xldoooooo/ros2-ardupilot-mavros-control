@@ -6,6 +6,7 @@ import os
 from dataclasses import replace
 import math
 from pathlib import Path
+import sys
 import threading
 from unittest.mock import patch
 
@@ -1905,8 +1906,8 @@ def test_opaque_render_hints_only_cover_fully_painted_surfaces() -> None:
         _close_window(window)
 
 
-def test_compact_status_menu_shadow_and_terminal_entry_are_present() -> None:
-    """顶部保留菜单、完整终端文案、红色退出入口和四周阴影。"""
+def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
+    """顶部保留菜单、独立摄像头/终端入口、红色退出和四周阴影。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         assert window.findChild(type(window.connection_label), "windowTitle") is None
@@ -1918,11 +1919,14 @@ def test_compact_status_menu_shadow_and_terminal_entry_are_present() -> None:
             "显示实时日志",
             "恢复默认布局",
         ]
+        assert window.camera_panel_button.isVisible()
+        assert window.camera_panel_button.text() == "摄像头配置面板"
         assert window.terminal_button.isVisible()
         assert window.terminal_button.text() == "在此处打开终端"
         assert window.exit_button.isVisible()
         assert window.exit_button.text() == "退出地面站"
         assert window.exit_button.property("role") == "danger"
+        assert window.terminal_button.x() > window.camera_panel_button.x()
         assert window.exit_button.x() > window.terminal_button.x()
         assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
         assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -2107,6 +2111,31 @@ def test_terminal_launcher_uses_current_directory_without_shell() -> None:
             "/usr/bin/x-terminal-emulator", [], str(Path.cwd())
         )
         assert "已启动当前目录终端" in window.activity_banner.message_label.text()
+    finally:
+        _close_window(window)
+
+
+def test_camera_panel_launcher_is_detached_from_ground_station_cleanup() -> None:
+    """摄像头面板以独立进程启动，且不进入地面站环境清理链。"""
+    environment = _FakeEnvironment()
+    window, _ros = _window(
+        _operational_snapshot(armed=False), environment=environment
+    )
+    try:
+        with patch(
+            "ground_station_core.qt_ui.main_window.QProcess.startDetached",
+            return_value=(True, 4321),
+        ) as start_detached:
+            window._open_camera_panel()
+
+        panel_script = PROJECT_ROOT / "video-service" / "camera_panel.py"
+        start_detached.assert_called_once_with(
+            sys.executable, [str(panel_script)], str(panel_script.parent)
+        )
+        assert environment.cleanup_calls == 0
+        assert "已打开独立摄像头配置面板" in (
+            window.activity_banner.message_label.text()
+        )
     finally:
         _close_window(window)
 

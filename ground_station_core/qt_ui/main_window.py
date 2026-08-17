@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import sys
 import threading
 
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
@@ -428,6 +429,14 @@ class GroundStationWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 4, 0)
         controls_layout.setSpacing(3)
+        self.camera_panel_button = QPushButton("摄像头配置面板")
+        self.camera_panel_button.setObjectName("cameraPanelButton")
+        self.camera_panel_button.setProperty("compact", True)
+        self.camera_panel_button.setToolTip(
+            "打开独立摄像头推流、录像与截图配置面板"
+        )
+        self.camera_panel_button.clicked.connect(self._open_camera_panel)
+        controls_layout.addWidget(self.camera_panel_button)
         self.terminal_button = QPushButton("在此处打开终端")
         self.terminal_button.setObjectName("terminalButton")
         self.terminal_button.setProperty("compact", True)
@@ -559,6 +568,35 @@ class GroundStationWindow(QMainWindow):
         self._events.error("ui", message)
         self.activity_banner.set_message(message, LogLevel.ERROR)
         self._show_notice("无法启动终端", message, QMessageBox.Icon.Warning)
+
+    def _open_camera_panel(self) -> None:
+        """分离启动独立摄像头面板，不纳入ROS或仿真进程清理链。"""
+        panel_script = PROJECT_ROOT / "video-service" / "camera_panel.py"
+        if not panel_script.is_file():
+            message = f"未找到摄像头配置面板：{panel_script}"
+            self._events.error("camera", message)
+            self._show_notice("无法打开摄像头面板", message, QMessageBox.Icon.Warning)
+            return
+        try:
+            started, process_id = QProcess.startDetached(
+                sys.executable,
+                [str(panel_script)],
+                str(panel_script.parent),
+            )
+        except Exception as exc:
+            started, process_id = False, 0
+            self._events.error("camera", f"摄像头面板启动异常：{exc}")
+        if started:
+            self._events.info(
+                "camera", f"已启动独立摄像头配置面板（PID={process_id}）"
+            )
+            self.activity_banner.set_message(
+                "已打开独立摄像头配置面板。", LogLevel.INFO
+            )
+            return
+        message = "摄像头配置面板启动失败，请检查项目Python和PySide6环境。"
+        self._events.error("camera", message)
+        self._show_notice("无法打开摄像头面板", message, QMessageBox.Icon.Warning)
 
     def _connect_signals(self) -> None:
         """连接面板意图、线程桥和主窗口业务槽。"""

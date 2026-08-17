@@ -657,3 +657,24 @@
   约90.53 Mbps；预览约115.32 FPS时录像仍保留全部601帧。原三个脚本均未修改。原码 AVI约
   11.3 MB/s（40.7 GB/h），OpenCV/FFmpeg回读会对摄像头厂商 APP字段告警但本轮全部帧解码
   成功，详见 `agent/report/report-2026-08-14-demo2-mjpeg-120fps-avi.md`。
+
+## 2026-08-17 地面站独立 USB 摄像头服务
+
+- `video-service/` 新增独立 Python 状态机、本机 Unix Socket IPC 和 PySide6 配置/预览面板；
+  地面站右上角只通过 `QProcess.startDetached` 打开面板，摄像头后台不进入 ROS、仿真或地面站
+  退出清理链。面板关闭不会停止推流/录像，配置窗口打开也不会自动占用摄像头。
+- 生产链固定为一个 FFmpeg V4L2 采集进程零转码 tee 到本地录像和 MediaMTX RTSP/TCP；截图从
+  本机 RTSP 取帧，IPC `snapshot` 与服务 `SIGUSR1` 均可触发。默认 H.264+分片 MP4，MJPEG 和
+  MP4/MKV/AVI 可选；旧 `video-service/demo/` 保持未修改。
+- MediaMTX 已从官方资产更新到 v1.20.0 Linux amd64；二进制 SHA-256 为
+  `25947caac403f37ec881c9be213af2cad67e344a6c7098905b0d31c17f40e336`。只开启 RTSP/TCP，
+  只允许回环发布，允许局域网读取；默认局域网 IP 从主路由源地址获取，避免 singbox TUN 地址。
+- Wasintek 实机 H.264 原始 USB 到达时间确有成对/突发现象；生产路径以 FFmpeg `setts` 按实际
+  收到的包重建 CFR 时间戳而不转码。1080p30 为 2246帧/74.866667秒，720p120 为
+  2180帧/18.166667秒，PTS 间隔和封装帧率准确，H.264日志无时间戳/丢帧错误，故不改变默认路线。
+- MJPEG 的 RTSP 与三种封装实测成功；厂商 JPEG APP字段仍会产生非致命解析告警，全部帧可解码。
+  MJPEG 720p120 本机样本可达约129 Mbps（约29 GB/半小时），H.264约21 Mbps（约4.7 GB/半小时）。
+- Qt 面板在 720p120 RTSP 上 5秒收到556个有效1280×720帧；IPC和SIGUSR1均保存有效
+  1920×1080 JPG。正式 Python 为119 passed，环境/编译/致命静态检查通过；未解锁、起飞或发送
+  飞行命令。详见
+  `agent/report/report-2026-08-17-camera-video-service-ground-station-integration.md`。
