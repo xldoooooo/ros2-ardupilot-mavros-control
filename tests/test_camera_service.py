@@ -222,6 +222,70 @@ def test_mjpeg_command_remains_zero_transcode_fallback(tmp_path: Path) -> None:
     assert command[command.index("-bsf:v") + 1].endswith("time_base=1/120")
 
 
+def test_dri_mjpeg_normalizes_only_rtsp_and_preserves_recording_copy(
+    tmp_path: Path,
+) -> None:
+    """含DRI的MJPEG只规范化RTSP分支，原始录像不能被二次编码。"""
+    paths = _runtime_paths(tmp_path)
+    config = _camera_config(
+        tmp_path,
+        codec="mjpeg",
+        width=1920,
+        height=1080,
+        fps=30.0,
+        container="mp4",
+    )
+    recording = tmp_path / "recording.partial.mp4"
+    controller = CameraController(paths=paths)
+    try:
+        command = controller.build_ffmpeg_command(
+            config,
+            recording,
+            normalize_mjpeg_for_rtsp=True,
+        )
+    finally:
+        controller.close()
+
+    codec_positions = [
+        index for index, argument in enumerate(command) if argument == "-c:v"
+    ]
+    assert command.count("-i") == 1
+    assert [command[index + 1] for index in codec_positions] == ["copy", "mjpeg"]
+    assert str(recording) in command
+    assert config.local_rtsp_url == command[-1]
+    assert command[command.index("-pix_fmt") + 1] == "yuvj420p"
+    assert command[command.index("-huffman") + 1] == "default"
+    assert command[command.index("-force_duplicated_matrix") + 1] == "1"
+
+
+@pytest.mark.parametrize("has_dri", [False, True])
+def test_mjpeg_restart_interval_detection_reads_only_jpeg_header(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_dri: bool,
+) -> None:
+    """仅JPEG扫描数据前的DRI标记触发兼容路径，避免误判压缩数据。"""
+    header = b"\xff\xd8\xff\xdb\x00\x04\x00\x00"
+    if has_dri:
+        header += b"\xff\xdd\x00\x04\x00\x78"
+    frame = header + b"\xff\xda\x00\x02payload\xff\xdd\xff\xd9"
+    completed = subprocess.CompletedProcess(
+        args=["ffmpeg"], returncode=0, stdout=frame, stderr=b""
+    )
+    monkeypatch.setattr(
+        controller_module.subprocess, "run", lambda *args, **kwargs: completed
+    )
+    controller = CameraController(paths=_runtime_paths(tmp_path))
+    try:
+        detected = controller._mjpeg_has_restart_interval(
+            _camera_config(tmp_path, codec="mjpeg")
+        )
+    finally:
+        controller.close()
+
+    assert detected is has_dri
+
+
 def test_stream_copy_progress_derives_packet_count_from_media_time(
     tmp_path: Path,
 ) -> None:

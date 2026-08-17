@@ -716,9 +716,21 @@
   `Missing packets; dropping frame`；MediaMTX 同时因默认出站队列过小报告 reader too slow。
 - 后台探测现在隐藏宽或高超过2040的MJPEG模式，手工提交同类配置也在启动任何进程前明确拒绝；
   H.264 高分辨率不受影响。MediaMTX `writeQueueSize` 从默认512提高到官方建议的1024。
-- HP 真实生产链 MJPEG 1920×1080@30 复验：10秒 Qt 收到284个有效1920×1080帧，无 missing
-  packets/reader too slow；录像11.2秒、固定30 fps。远端最终保留 HP MJPEG 1080p30、MP4
-  配置和停止状态，仅摄像头后台待命。
+- HP 真实生产链 MJPEG 1920×1080@30 的尺寸、帧数及队列复验正常，但这只证明传输完整，
+  当时没有检查解码后的实际像素；后续确认该流仍是统一绿色，修正结论见下一节。
+
+## 2026-08-18 HP MJPEG DRI 导致 RTSP 纯绿色修复
+
+- HP Quanta 5MP 的直接 V4L2 1920×1080@30 图像正常，原始 JPEG 头含 `DRI=120`；零转码
+  RTP/JPEG 经 FFmpeg 或 Qt 解码后均为统一 RGB `(0,134,0)`，FFmpeg 同时报
+  `mjpeg_decode_dc: bad vlc`。根因是 FFmpeg 6.1/7.1 的 RTP/JPEG 发送端未携带 RFC 2435
+  restart interval，不是 Qt `QVideoWidget`、Linux 驱动、摄像头固件或代码未同步。
+- 服务启动 MJPEG 前会读取一帧 JPEG 头。无 DRI 时维持原单进程、RTSP/录像双路
+  stream-copy；有 DRI 时仅把 RTSP 分支规范化为 `yuvj420p`、质量2、标准 Huffman 的 MJPEG，
+  录像分支仍保存摄像头原始 `yuvj422p` 码流。H.264 不进入检测或转码路径。
+- HP 修复后 Qt 得到1920×1080正常彩色 NV12 帧，JPG截图正常，约29.80 fps；原始 MP4仍为
+  MJPEG/yuvj422p/30 fps。兼容分支在HP笔记本约43%单核等效CPU、401 MiB RSS。Wasintek
+  原始 JPEG 无 DRI，720p120仍为零转码，Qt彩色帧正常且实测约119.55 fps。
 
 ## 2026-08-17 摄像头面板灰色禁用按钮
 

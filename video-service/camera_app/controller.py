@@ -29,6 +29,9 @@ from .config import (
 # MediaMTX 官方对“reader is too slow”建议至少使用 1024 个出站包槽位。
 MEDIAMTX_WRITE_QUEUE_SIZE = 1024
 
+# RFC 2435 的常规 RTP/JPEG 只携带标准 Huffman 表；质量 2 保持预览清晰度。
+RTP_MJPEG_QUALITY = 2
+
 
 class CameraServiceError(RuntimeError):
     """摄像头服务无法完成请求时返回给 GUI/CLI 的明确错误。"""
@@ -81,6 +84,7 @@ class CameraController:
         self._progress: dict[str, str] = {}
         self._progress_baseline_media: float | None = None
         self._progress_baseline_monotonic: float | None = None
+        self._normalize_mjpeg_for_rtsp = False
 
         self._snapshot_requested = threading.Event()
         self._shutdown_requested = threading.Event()
@@ -144,7 +148,7 @@ class CameraController:
         }
 
     def start(self, raw_config: dict[str, Any] | None = None) -> dict[str, Any]:
-        """启动独立 MediaMTX 与单个 FFmpeg 零转码发布/录像进程。"""
+        """启动独立 MediaMTX，并按帧格式选择零转码或兼容发布路径。"""
         with self._operation_lock:
             with self._state_lock:
                 if self._state in {"starting", "running"}:
@@ -167,13 +171,19 @@ class CameraController:
                 self._started_monotonic = None
                 self._current_recording = None
                 self._partial_recording = None
+                self._normalize_mjpeg_for_rtsp = False
 
             try:
                 self._preflight(config)
+                normalize_mjpeg_for_rtsp = (
+                    config.codec == "mjpeg"
+                    and self._mjpeg_has_restart_interval(config)
+                )
                 save_config(config, self.paths)
                 with self._state_lock:
                     # 启动失败时仍保留用户刚提交的有效配置，便于面板修正后重试。
                     self._config = config
+                    self._normalize_mjpeg_for_rtsp = normalize_mjpeg_for_rtsp
                 self.paths.ensure_directories()
                 video_directory = Path(config.video_directory).expanduser()
                 image_directory = Path(config.image_directory).expanduser()
@@ -187,7 +197,11 @@ class CameraController:
                     # 从采集进程拉起前计时，包含RTSP就绪探测期间已采集的帧。
                     self._started_at = datetime.now()
                     self._started_monotonic = time.monotonic()
-                self._start_ffmpeg(config, partial_recording)
+                self._start_ffmpeg(
+                    config,
+                    partial_recording,
+                    normalize_mjpeg_for_rtsp=normalize_mjpeg_for_rtsp,
+                )
                 self._wait_for_rtsp_stream(config)
             except Exception as exc:
                 self._stop_processes(finalize_recording=False)
@@ -199,6 +213,7 @@ class CameraController:
                     self._started_monotonic = None
                     self._current_recording = None
                     self._partial_recording = None
+                    self._normalize_mjpeg_for_rtsp = False
                 raise CameraServiceError(message) from exc
 
             with self._state_lock:
@@ -228,6 +243,7 @@ class CameraController:
                 self._progress = {}
                 self._progress_baseline_media = None
                 self._progress_baseline_monotonic = None
+                self._normalize_mjpeg_for_rtsp = False
             return self.status()
 
     def request_snapshot(self) -> dict[str, Any]:
@@ -332,6 +348,7 @@ class CameraController:
                 ),
                 "service_pid": os.getpid(),
                 "timestamp_policy": "fixed-cfr-setts",
+                "rtsp_mjpeg_normalization": self._normalize_mjpeg_for_rtsp,
             }
 
     def close(self) -> None:
@@ -345,9 +362,13 @@ class CameraController:
                 self._snapshot_worker.join(timeout=1.0)
 
     def build_ffmpeg_command(
-        self, config: CameraConfig, partial_recording: Path
+        self,
+        config: CameraConfig,
+        partial_recording: Path,
+        *,
+        normalize_mjpeg_for_rtsp: bool = False,
     ) -> list[str]:
-        """构造单次采集、一次零转码、RTSP与录像双输出命令。"""
+        """构造单次采集命令；录像始终保留摄像头原始压缩码流。"""
         codec_input = "h264" if config.codec == "h264" else "mjpeg"
         frame_rate = self._format_fps_argument(config.fps)
         timestamp_filter = (
@@ -368,7 +389,7 @@ class CameraController:
         else:
             record_options = "f=avi:onfail=abort"
         record_output = f"[{record_options}]{partial_recording}"
-        return [
+        common = [
             self.ffmpeg_binary,
             "-hide_banner",
             "-loglevel",
@@ -386,6 +407,54 @@ class CameraController:
             frame_rate,
             "-i",
             config.device,
+        ]
+        if normalize_mjpeg_for_rtsp:
+            # 部分 UVC MJPEG 帧含 DRI；FFmpeg 6/7 的 RTP/JPEG 发送端会丢失
+            # restart interval。只重编码 RTSP 分支，录像仍然 stream-copy。
+            record_muxer = {
+                "mp4": [
+                    "-f",
+                    "mp4",
+                    "-movflags",
+                    "+frag_keyframe+empty_moov+default_base_moof",
+                ],
+                "mkv": ["-f", "matroska"],
+                "avi": ["-f", "avi"],
+            }[config.container]
+            return common + [
+                "-progress",
+                "pipe:1",
+                "-map",
+                "0:v:0",
+                "-an",
+                "-c:v",
+                "copy",
+                "-bsf:v",
+                timestamp_filter,
+                *record_muxer,
+                str(partial_recording),
+                "-map",
+                "0:v:0",
+                "-an",
+                "-c:v",
+                "mjpeg",
+                "-pix_fmt",
+                "yuvj420p",
+                "-q:v",
+                str(RTP_MJPEG_QUALITY),
+                "-huffman",
+                "default",
+                "-force_duplicated_matrix",
+                "1",
+                "-bsf:v",
+                timestamp_filter,
+                "-f",
+                "rtsp",
+                "-rtsp_transport",
+                "tcp",
+                config.local_rtsp_url,
+            ]
+        return common + [
             "-map",
             "0:v:0",
             "-an",
@@ -399,6 +468,55 @@ class CameraController:
             "tee",
             f"{rtsp_output}|{record_output}",
         ]
+
+    def _mjpeg_has_restart_interval(self, config: CameraConfig) -> bool:
+        """读取一帧 MJPEG 头，判断是否需绕过 FFmpeg 的 RTP/DRI 缺陷。"""
+        command = [
+            self.ffmpeg_binary,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "v4l2",
+            "-input_format",
+            "mjpeg",
+            "-video_size",
+            f"{config.width}x{config.height}",
+            "-framerate",
+            self._format_fps_argument(config.fps),
+            "-i",
+            config.device,
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-c:v",
+            "copy",
+            "-f",
+            "image2pipe",
+            "pipe:1",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=self._START_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CameraServiceError("读取MJPEG兼容性信息超时") from exc
+        frame = result.stdout
+        scan_header = frame.find(b"\xff\xda")
+        if result.returncode != 0 or scan_header < 0:
+            detail = self._last_nonempty_line(
+                result.stderr.decode("utf-8", errors="replace")
+            )
+            raise CameraServiceError(
+                "无法读取MJPEG兼容性信息" + (f"：{detail}" if detail else "")
+            )
+        return b"\xff\xdd" in frame[:scan_header]
 
     def build_snapshot_command(
         self, config: CameraConfig, destination: Path
@@ -543,13 +661,23 @@ class CameraController:
             time.sleep(0.05)
         raise CameraServiceError("MediaMTX启动超时")
 
-    def _start_ffmpeg(self, config: CameraConfig, partial_recording: Path) -> None:
+    def _start_ffmpeg(
+        self,
+        config: CameraConfig,
+        partial_recording: Path,
+        *,
+        normalize_mjpeg_for_rtsp: bool = False,
+    ) -> None:
         """启动FFmpeg并用独立线程解析机器可读进度。"""
         self._ffmpeg_log_stream = self.paths.ffmpeg_log.open(
             "a", encoding="utf-8", buffering=1
         )
         self._write_log_header(self._ffmpeg_log_stream, "FFmpeg")
-        command = self.build_ffmpeg_command(config, partial_recording)
+        command = self.build_ffmpeg_command(
+            config,
+            partial_recording,
+            normalize_mjpeg_for_rtsp=normalize_mjpeg_for_rtsp,
+        )
         self._ffmpeg_log_stream.write("command: " + " ".join(command) + "\n")
         self._ffmpeg = subprocess.Popen(
             command,
