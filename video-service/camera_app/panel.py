@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -60,23 +61,6 @@ QFrame#panelHeader, QFrame#previewCard, QGroupBox {
 QFrame#panelHeader { border-left: 4px solid #245f87; }
 QLabel#panelTitle { font-size: 16pt; font-weight: 700; }
 QLabel#mutedLabel { color: #5f6f80; }
-QLabel#stateChip {
-    min-height: 26px;
-    padding: 2px 10px;
-    background: #f7f8fa;
-    border: 1px solid #cfd6de;
-    border-radius: 3px;
-    font-weight: 700;
-}
-QLabel#stateChip[tone="good"] {
-    color: #247457; background: #e7f2ed; border-color: #a8cbbb;
-}
-QLabel#stateChip[tone="warn"] {
-    color: #946200; background: #fff4d6; border-color: #dec789;
-}
-QLabel#stateChip[tone="bad"] {
-    color: #a7352a; background: #fbe9e7; border-color: #dda69f;
-}
 QGroupBox {
     margin-top: 11px;
     padding: 12px 9px 9px 9px;
@@ -174,6 +158,7 @@ class CameraPanelWindow(QMainWindow):
         self._all_modes: list[dict[str, Any]] = []
         self._active_preview_url = ""
         self._action_busy = False
+        self._stopping_camera = False
 
         self.setWindowTitle("摄像头配置面板")
         self.setMinimumSize(980, 680)
@@ -181,6 +166,7 @@ class CameraPanelWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._configure_player()
+        self._refresh_controls()
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(1000)
@@ -190,7 +176,7 @@ class CameraPanelWindow(QMainWindow):
             QTimer.singleShot(0, self._bootstrap_service)
 
     def _build_ui(self) -> None:
-        """构建顶部状态、左侧预览与右侧可滚动配置区。"""
+        """构建顶部操作区、左侧预览与右侧可滚动配置区。"""
         root_widget = QWidget()
         root_widget.setObjectName("cameraPanelRoot")
         self.setCentralWidget(root_widget)
@@ -202,18 +188,9 @@ class CameraPanelWindow(QMainWindow):
         header.setObjectName("panelHeader")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(14, 10, 12, 10)
-        title_column = QVBoxLayout()
         title = QLabel("摄像头配置面板")
         title.setObjectName("panelTitle")
-        subtitle = QLabel("独立 RTSP 推流、录像与截图服务 · 不依赖飞控或 ROS")
-        subtitle.setObjectName("mutedLabel")
-        title_column.addWidget(title)
-        title_column.addWidget(subtitle)
-        header_layout.addLayout(title_column, 1)
-        self.state_chip = QLabel("后台连接中")
-        self.state_chip.setObjectName("stateChip")
-        self.state_chip.setProperty("tone", "warn")
-        header_layout.addWidget(self.state_chip)
+        header_layout.addWidget(title, 1)
         self.start_button = QPushButton("开启摄像头")
         self.start_button.setProperty("role", "success")
         self.stop_button = QPushButton("关闭摄像头")
@@ -242,11 +219,8 @@ class CameraPanelWindow(QMainWindow):
         title_row = QHBoxLayout()
         title = QLabel("RTSP 实时画面")
         title.setStyleSheet("font-size: 11pt; font-weight: 700;")
-        self.preview_state = QLabel("等待摄像头启动")
-        self.preview_state.setObjectName("mutedLabel")
         self.reconnect_button = QPushButton("重新连接预览")
-        title_row.addWidget(title)
-        title_row.addWidget(self.preview_state, 1)
+        title_row.addWidget(title, 1)
         title_row.addWidget(self.reconnect_button)
         layout.addLayout(title_row)
 
@@ -310,12 +284,23 @@ class CameraPanelWindow(QMainWindow):
 
         device_group = QGroupBox("摄像头设备")
         device_layout = QGridLayout(device_group)
+        device_layout.setHorizontalSpacing(8)
+        device_layout.setColumnStretch(0, 0)
+        device_layout.setColumnStretch(1, 1)
+        device_layout.setColumnStretch(2, 0)
         self.device_combo = QComboBox()
         self.device_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
+        self.device_combo.setMinimumContentsLength(10)
+        self.device_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         self.refresh_devices_button = QPushButton("检测设备")
-        device_layout.addWidget(QLabel("设备"), 0, 0)
+        self.refresh_devices_button.setFixedWidth(88)
+        self.device_label = QLabel("设备")
+        device_layout.addWidget(self.device_label, 0, 0)
         device_layout.addWidget(self.device_combo, 0, 1)
         device_layout.addWidget(self.refresh_devices_button, 0, 2)
         self.device_path_label = QLabel("—")
@@ -338,10 +323,6 @@ class CameraPanelWindow(QMainWindow):
         address_layout.addWidget(self.port_input, 1, 1)
         address_layout.addWidget(QLabel("地址路径"), 2, 0)
         address_layout.addWidget(self.path_input, 2, 1)
-        hint = QLabel("服务固定监听所有本机网卡；这里的IP用于生成局域网拉流地址。")
-        hint.setObjectName("mutedLabel")
-        hint.setWordWrap(True)
-        address_layout.addWidget(hint, 3, 0, 1, 2)
         layout.addWidget(address_group)
 
         quality_group = QGroupBox("推流画质与编码")
@@ -355,12 +336,6 @@ class CameraPanelWindow(QMainWindow):
         quality_layout.addWidget(self.codec_combo, 0, 1)
         quality_layout.addWidget(QLabel("分辨率 / 帧率"), 1, 0)
         quality_layout.addWidget(self.mode_combo, 1, 1)
-        codec_hint = QLabel(
-            "H.264默认零转码并修正固定帧率时间戳；MJPEG作为兼容回退。"
-        )
-        codec_hint.setObjectName("mutedLabel")
-        codec_hint.setWordWrap(True)
-        quality_layout.addWidget(codec_hint, 2, 0, 1, 2)
         layout.addWidget(quality_group)
 
         storage_group = QGroupBox("录像与图片保存")
@@ -420,7 +395,27 @@ class CameraPanelWindow(QMainWindow):
         self.player.setVideoOutput(self.video_widget)
         self.player.errorOccurred.connect(self._player_error)
         self.player.mediaStatusChanged.connect(self._player_media_status_changed)
-        self.player.playbackStateChanged.connect(self._player_state_changed)
+
+    def _dispose_player(self) -> None:
+        """彻底卸载当前媒体源和输出，避免同地址重连复用旧RTSP会话。"""
+        player = self.player
+        for signal, slot in (
+            (player.errorOccurred, self._player_error),
+            (player.mediaStatusChanged, self._player_media_status_changed),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        player.stop()
+        player.setSource(QUrl())
+        player.setVideoOutput(None)
+        player.deleteLater()
+
+    def _recreate_player(self) -> None:
+        """为下一次RTSP连接创建全新的Qt/FFmpeg播放后端。"""
+        self._dispose_player()
+        self._configure_player()
 
     def _bootstrap_service(self) -> None:
         """优先连接已有后台；不存在时独立拉起且不绑定面板生命周期。"""
@@ -496,6 +491,8 @@ class CameraPanelWindow(QMainWindow):
             return
 
         self._action_busy = False
+        if name == "stop":
+            self._stopping_camera = False
         if error:
             self.operation_message.setText(error)
             self._show_error("摄像头操作失败", error)
@@ -505,7 +502,7 @@ class CameraPanelWindow(QMainWindow):
             if name == "configure":
                 self.operation_message.setText("摄像头配置已保存。")
             elif name == "start":
-                self.operation_message.setText("摄像头、RTSP和录像已启动。")
+                self.operation_message.clear()
             elif name == "stop":
                 self.operation_message.setText("摄像头已关闭，录像已安全封装。")
             elif name == "snapshot":
@@ -599,16 +596,6 @@ class CameraPanelWindow(QMainWindow):
 
         state = str(status.get("state", "stopped"))
         running = bool(status.get("running", False))
-        state_text = {
-            "stopped": "摄像头已关闭",
-            "starting": "正在启动",
-            "running": "推流与录像中",
-            "stopping": "正在关闭",
-            "error": "摄像头异常",
-        }.get(state, state)
-        tone = "good" if running else "bad" if state == "error" else "warn"
-        self.state_chip.setText(state_text)
-        self._set_dynamic_property(self.state_chip, "tone", tone)
 
         wall_elapsed = float(status.get("elapsed_seconds", 0.0) or 0.0)
         media_elapsed = float(status.get("media_elapsed_seconds", 0.0) or 0.0)
@@ -623,7 +610,7 @@ class CameraPanelWindow(QMainWindow):
         url = str(status.get("rtsp_url", ""))
         if url:
             self.rtsp_url_display.setText(url)
-        if running:
+        if running and not self._stopping_camera:
             self._ensure_preview(url)
         else:
             self._stop_preview("等待摄像头启动")
@@ -702,6 +689,8 @@ class CameraPanelWindow(QMainWindow):
 
     def _stop_camera(self) -> None:
         """请求后台安全封装录像；不关闭地面站或本面板。"""
+        self._stopping_camera = True
+        self._stop_preview("等待摄像头启动")
         self._begin_action("正在安全关闭摄像头并封装录像…")
         self._submit(
             "stop", lambda: self.client.request("stop", timeout=20.0)
@@ -724,7 +713,7 @@ class CameraPanelWindow(QMainWindow):
         """按后台状态统一门控表单与启停按钮。"""
         state = str(self._last_status.get("state", "stopped"))
         running = bool(self._last_status.get("running", False))
-        editable = self._service_ready and state in {"stopped", "error"}
+        editable = self._service_ready and state == "stopped"
         editable = editable and not self._action_busy
         mode_ready = self.mode_combo.count() > 0
 
@@ -744,7 +733,7 @@ class CameraPanelWindow(QMainWindow):
         ):
             widget.setEnabled(editable)
         self.apply_button.setEnabled(editable and mode_ready)
-        self.start_button.setEnabled(editable and mode_ready)
+        self.start_button.setEnabled(editable and mode_ready and not running)
         self.stop_button.setEnabled(
             self._service_ready
             and state in {"starting", "running", "error"}
@@ -757,38 +746,45 @@ class CameraPanelWindow(QMainWindow):
         """仅在服务运行且地址变化时创建RTSP读取会话。"""
         if not url:
             return
-        if self._active_preview_url == url and self.player.playbackState() == (
-            QMediaPlayer.PlaybackState.PlayingState
+        if (
+            self._active_preview_url == url
+            and self.player.source().toString() == url
         ):
             return
+        if self.player.source().isValid():
+            self._recreate_player()
         self._active_preview_url = url
-        self.preview_state.setText("正在连接RTSP…")
+        self.preview_placeholder.setText("正在连接RTSP…")
+        self.preview_stack.setCurrentWidget(self.preview_placeholder)
         self.player.setSource(QUrl(url))
         self.player.play()
 
     def _reconnect_preview(self) -> None:
         """只重建本面板RTSP客户端，不触碰摄像头或录像进程。"""
         url = str(self._last_status.get("rtsp_url", ""))
-        self.player.stop()
+        url = url or self._active_preview_url
+        self._recreate_player()
         self._active_preview_url = ""
         self._ensure_preview(url)
 
     def _stop_preview(self, message: str) -> None:
-        """停止面板自身解码器，摄像头后台保持原状态。"""
-        if self.player.playbackState() != QMediaPlayer.PlaybackState.StoppedState:
+        """卸载本次解码会话并预建新播放器，摄像头后台不受影响。"""
+        had_session = bool(self._active_preview_url) or self.player.source().isValid()
+        if had_session:
+            self._recreate_player()
+        else:
             self.player.stop()
+            self.player.setSource(QUrl())
         self._active_preview_url = ""
         self.preview_placeholder.setText(message)
         self.preview_stack.setCurrentWidget(self.preview_placeholder)
-        self.preview_state.setText(message)
 
     def _player_error(
         self, _error: QMediaPlayer.Error, message: str
     ) -> None:
         """预览错误仅显示在面板，不改变推流和录像状态。"""
-        self.preview_state.setText(f"预览失败：{message}")
         self.preview_placeholder.setText(
-            "RTSP预览暂不可用\n推流和录像后台不受影响"
+            f"RTSP预览暂不可用\n{message}\n推流和录像后台不受影响"
         )
         self.preview_stack.setCurrentWidget(self.preview_placeholder)
 
@@ -799,16 +795,9 @@ class CameraPanelWindow(QMainWindow):
             QMediaPlayer.MediaStatus.BufferedMedia,
         }:
             self.preview_stack.setCurrentWidget(self.video_widget)
-            self.preview_state.setText("RTSP实时预览")
         elif status == QMediaPlayer.MediaStatus.LoadingMedia:
-            self.preview_state.setText("正在连接RTSP…")
-
-    def _player_state_changed(
-        self, state: QMediaPlayer.PlaybackState
-    ) -> None:
-        """播放态变化只更新提示，不驱动摄像头服务状态机。"""
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            self.preview_state.setText("RTSP实时预览")
+            self.preview_placeholder.setText("正在连接RTSP…")
+            self.preview_stack.setCurrentWidget(self.preview_placeholder)
 
     def _device_changed(self) -> None:
         """设备变化后更新完整路径并重新读取该节点能力。"""
@@ -845,8 +834,6 @@ class CameraPanelWindow(QMainWindow):
     def _set_service_failure(self, message: str) -> None:
         """标记后台离线；地面站和当前窗口本身继续可用。"""
         self._service_ready = False
-        self.state_chip.setText("后台离线")
-        self._set_dynamic_property(self.state_chip, "tone", "bad")
         self.operation_message.setText(message)
         self._stop_preview("摄像头后台服务不可用")
         self._refresh_controls()
@@ -861,17 +848,6 @@ class CameraPanelWindow(QMainWindow):
         dialog.exec()
 
     @staticmethod
-    def _set_dynamic_property(widget: QWidget, name: str, value: str) -> None:
-        """变更动态属性后重新应用QSS选择器。"""
-        if widget.property(name) == value:
-            return
-        widget.setProperty(name, value)
-        style = widget.style()
-        style.unpolish(widget)
-        style.polish(widget)
-        widget.update()
-
-    @staticmethod
     def _format_elapsed(seconds: float) -> str:
         """把录像时长格式化为固定宽度时分秒。"""
         total = max(0, int(seconds))
@@ -882,5 +858,5 @@ class CameraPanelWindow(QMainWindow):
     def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
         """关闭面板只停止预览和轮询，独立推流/录像保持运行。"""
         self._poll_timer.stop()
-        self.player.stop()
+        self._dispose_player()
         event.accept()

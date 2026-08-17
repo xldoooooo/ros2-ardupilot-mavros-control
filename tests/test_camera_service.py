@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from camera_app import config as config_module
 from camera_app.config import (
@@ -292,6 +292,28 @@ def test_panel_close_does_not_send_camera_stop(tmp_path: Path) -> None:
             "error": "",
         }
     )
+    application.processEvents()
+
+    labels = {label.text() for label in window.findChildren(QLabel)}
+    assert not hasattr(window, "state_chip")
+    assert not hasattr(window, "preview_state")
+    forbidden_labels = {
+        "独立 RTSP 推流、录像与截图服务 · 不依赖飞控或 ROS",
+        "RTSP实时预览",
+        "服务固定监听所有本机网卡；这里的IP用于生成局域网拉流地址。",
+        "H.264默认零转码并修正固定帧率时间戳；MJPEG作为兼容回退。",
+        "摄像头、RTSP和录像已启动。",
+    }
+    assert labels.isdisjoint(forbidden_labels)
+    assert window.device_label.x() < window.device_combo.x()
+    assert window.refresh_devices_button.x() > (
+        window.device_combo.x() + window.device_combo.width()
+    )
+    assert window.device_combo.width() > window.refresh_devices_button.width()
+    assert window.refresh_devices_button.width() == 88
+    assert window.start_button.isEnabled()
+    assert not window.stop_button.isEnabled()
+
     preview_urls: list[str] = []
     window._ensure_preview = preview_urls.append  # type: ignore[method-assign]
     window._apply_status(
@@ -309,6 +331,8 @@ def test_panel_close_does_not_send_camera_stop(tmp_path: Path) -> None:
 
     assert preview_urls == [config["rtsp_url"]]
     assert not window.codec_combo.isEnabled()
+    assert not window.start_button.isEnabled()
+    assert window.stop_button.isEnabled()
     assert window.snapshot_button.isEnabled()
     assert window.fps_value.text() == "30.0 fps"
     assert window._request_in_flight == set()
@@ -318,3 +342,41 @@ def test_panel_close_does_not_send_camera_stop(tmp_path: Path) -> None:
     application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     application.processEvents()
     assert window._request_in_flight == set()
+
+
+def test_preview_recreates_player_before_reusing_same_rtsp_url(
+    tmp_path: Path,
+) -> None:
+    """停止或手动重连后必须换新播放器，不能复用已结束的FFmpeg会话。"""
+    application = _application()
+    window = CameraPanelWindow(
+        client=CameraServiceClient(paths=_runtime_paths(tmp_path)),
+        auto_bootstrap=False,
+    )
+    window.show()
+    application.processEvents()
+    url = "rtsp://127.0.0.1:65534/camera"
+
+    first_player = window.player
+    window._ensure_preview(url)
+    assert window.player.source().toString() == url
+    window._stop_preview("等待摄像头启动")
+    second_player = window.player
+
+    assert second_player is not first_player
+    assert not second_player.source().isValid()
+    assert window._active_preview_url == ""
+
+    window._ensure_preview(url)
+    assert window.player is second_player
+    assert window.player.source().toString() == url
+    window._ensure_preview(url)
+    assert window.player is second_player
+    window._reconnect_preview()
+    assert window.player is not second_player
+    assert window.player.source().toString() == url
+
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()

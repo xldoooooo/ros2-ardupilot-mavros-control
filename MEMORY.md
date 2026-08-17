@@ -678,3 +678,14 @@
   1920×1080 JPG。正式 Python 为119 passed，环境/编译/致命静态检查通过；未解锁、起飞或发送
   飞行命令。详见
   `agent/report/report-2026-08-17-camera-video-service-ground-station-integration.md`。
+
+## 2026-08-17 摄像头面板二次启动黑屏修复
+
+- 面板执行开启—关闭—再次开启时的黑屏根因在 Qt `QMediaPlayer` 复用了已结束的
+  RTSP/FFmpeg 会话；停止或手动重连现在会断开信号、清空源、分离输出并销毁旧播放器，
+  再为下一次同 URL 连接创建全新实例。相同 URL 正在加载时不会被状态轮询重复重建。
+- 设备行现在由左右固定控件和中间伸缩下拉框组成，检测按钮固定 88 px；指定说明文字、
+  预览状态文字和顶部状态方框已删除。停止态只启用开启按钮，运行态只启用关闭按钮。
+- Wasintek 原生 H.264 1280×720@120 隔离实测两轮开启均获得正常非黑画面；四段 MP4
+  均为固定 120 fps 且可读。正式 Python 回归为 120 passed，测试后摄像头和临时端口均释放。
+  详见 `agent/report/report-2026-08-17-camera-panel-restart-and-layout-fix.md`。
