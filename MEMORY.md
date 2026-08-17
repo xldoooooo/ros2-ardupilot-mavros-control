@@ -694,6 +694,17 @@
   均为固定 120 fps 且可读。正式 Python 回归为 120 passed，测试后摄像头和临时端口均释放。
   详见 `agent/report/report-2026-08-17-camera-panel-restart-and-layout-fix.md`。
 
+## 2026-08-18 摄像头面板双设备切换修复
+
+- 双摄像头时，后台 `probe` 已返回实际被探测的 `selected_device`，但面板重建设备列表后错误地
+  强制恢复磁盘中的旧配置设备，形成“HP设备路径 + Wasintek模式”的混合配置，导致选择自动
+  跳回且启动报不支持组合。面板现在以本次探测设备为权威选择，并在探测期间禁用配置和启动，
+  防止提交上一设备的旧模式。
+- HP Ubuntu 24.04 双摄像头实测：Qt 按 HP→Wasintek 切换后设备和提交模式一致；Wasintek
+  MJPEG 1280×720@120 实测约119 fps，HP MJPEG 1920×1080@30 实测约29.7 fps，均成功
+  RTSP/录像并安全停止。远端最终保持 Wasintek MJPEG 720p120、MP4 配置和停止状态；仅原有
+  摄像头后台待命，无 FFmpeg/MediaMTX 残留。
+
 ## 2026-08-17 摄像头面板灰色禁用按钮
 
 - 摄像头面板此前的角色颜色规则覆盖了通用 `QPushButton:disabled`，导致按钮逻辑上禁用

@@ -495,6 +495,7 @@ class CameraPanelWindow(QMainWindow):
                 self.operation_message.setText(f"设备检测失败：{error}")
             else:
                 self._apply_probe(data)
+            self._refresh_controls()
             return
 
         self._action_busy = False
@@ -537,11 +538,17 @@ class CameraPanelWindow(QMainWindow):
                 "probe", {"device": str(device)}, timeout=6.0
             ),
         )
+        # 探测结束前不能提交旧设备的模式，避免双摄像头切换时形成混合配置。
+        self._refresh_controls()
 
     def _apply_probe(self, data: dict[str, Any]) -> None:
-        """更新设备和模式下拉框，并保留当前配置选择。"""
+        """更新设备和模式，并保留本次实际探测的设备选择。"""
         configured = self._last_status.get("config", {})
         configured_device = str(configured.get("device", self._configured_device()))
+        current_device = str(self.device_combo.currentData() or "")
+        selected_device = str(
+            data.get("selected_device") or current_device or configured_device
+        )
         devices = data.get("devices", [])
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
@@ -550,9 +557,13 @@ class CameraPanelWindow(QMainWindow):
                 label = str(item.get("label", "摄像头"))
                 self.device_combo.addItem(label, item.get("path"))
         if self.device_combo.count() == 0:
-            self.device_combo.addItem(configured_device, configured_device)
-        selected_index = self.device_combo.findData(configured_device)
-        self.device_combo.setCurrentIndex(max(0, selected_index))
+            self.device_combo.addItem(selected_device, selected_device)
+        selected_index = self.device_combo.findData(selected_device)
+        if selected_index < 0:
+            # 设备可能在枚举和能力读取之间拔出；保留路径以展示真实探测错误。
+            self.device_combo.addItem(selected_device, selected_device)
+            selected_index = self.device_combo.count() - 1
+        self.device_combo.setCurrentIndex(selected_index)
         self.device_combo.blockSignals(False)
         self.device_path_label.setText(str(self.device_combo.currentData() or "—"))
 
@@ -722,6 +733,7 @@ class CameraPanelWindow(QMainWindow):
         running = bool(self._last_status.get("running", False))
         editable = self._service_ready and state == "stopped"
         editable = editable and not self._action_busy
+        editable = editable and "probe" not in self._request_in_flight
         mode_ready = self.mode_combo.count() > 0
 
         for widget in (

@@ -378,6 +378,70 @@ def test_panel_close_does_not_send_camera_stop(tmp_path: Path) -> None:
     assert window._request_in_flight == set()
 
 
+def test_panel_probe_keeps_requested_device_and_matching_modes(
+    tmp_path: Path,
+) -> None:
+    """双摄像头探测结果不能被磁盘中旧设备覆盖成混合配置。"""
+    application = _application()
+    window = CameraPanelWindow(
+        client=CameraServiceClient(paths=_runtime_paths(tmp_path)),
+        auto_bootstrap=False,
+    )
+    hp_device = "/dev/v4l/by-id/usb-Quanta_HP-video-index0"
+    wasintek_device = "/dev/v4l/by-id/usb-Wasintek-camera-video-index0"
+    config = _camera_config(tmp_path, device=hp_device).to_dict()
+    window._service_ready = True
+    window._apply_status(
+        {
+            "state": "stopped",
+            "running": False,
+            "config": config,
+            "rtsp_url": config["rtsp_url"],
+        }
+    )
+
+    window._apply_probe(
+        {
+            "devices": [
+                {"label": "HP 5MP Camera", "path": hp_device},
+                {"label": "Wasintek camera", "path": wasintek_device},
+            ],
+            "selected_device": wasintek_device,
+            "modes": [
+                {
+                    "codec": "h264",
+                    "width": 1280,
+                    "height": 720,
+                    "fps": 120.0,
+                }
+            ],
+            "error": "",
+        }
+    )
+
+    assert window.device_combo.currentData() == wasintek_device
+    assert window.device_path_label.text() == wasintek_device
+    assert window.mode_combo.count() == 1
+    assert window._configuration_from_fields() == {
+        "device": wasintek_device,
+        "codec": "h264",
+        "width": 1280,
+        "height": 720,
+        "fps": 120.0,
+        "rtsp_ip": "192.168.10.20",
+        "rtsp_port": 18554,
+        "rtsp_path": "camera/primary",
+        "container": "mp4",
+        "video_directory": str(tmp_path / "videos"),
+        "image_directory": str(tmp_path / "images"),
+    }
+
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
+
+
 def test_preview_recreates_player_before_reusing_same_rtsp_url(
     tmp_path: Path,
 ) -> None:
