@@ -704,6 +704,9 @@
   MJPEG 1280×720@120 实测约119 fps，HP MJPEG 1920×1080@30 实测约29.7 fps，均成功
   RTSP/录像并安全停止。远端最终保持 Wasintek MJPEG 720p120、MP4 配置和停止状态；仅原有
   摄像头后台待命，无 FFmpeg/MediaMTX 残留。
+- 修复已提交并推送到 GitHub `main` 的 `c1cb244`。HP 仓库自身有 `hover-throttle` 与合并提交，
+  当前相对 `origin/main` 为 ahead 2/behind 1，`git pull --ff-only` 已安全拒绝；未擅自 merge、
+  rebase 或丢弃远端提交。HP 工作树中的两个修复文件与 `c1cb244` 内容一致，功能可直接使用。
 
 ## 2026-08-17 摄像头面板灰色禁用按钮
 

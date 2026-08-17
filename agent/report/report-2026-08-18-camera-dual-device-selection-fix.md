@@ -56,4 +56,8 @@ HP Ubuntu 24.04 笔记本同时连接两个 V4L2 摄像头：
   删除后不可恢复。
 - 最终配置恢复为 Wasintek、MJPEG、1280×720@120、MP4，服务状态为 stopped。
 - 保留用户原先已运行的 `camera_service.py serve` 待命进程；FFmpeg、MediaMTX 和面板无残留。
+- 修复已提交并推送到 GitHub `main`，提交为 `c1cb244`。HP 本地 `main` 另有提交 `6ff7172`
+  和合并提交 `f507771`，因此拉取后呈 ahead 2/behind 1；`git pull --ff-only` 安全退出，没有
+  改写历史。未擅自 merge、rebase 或丢弃这两个本地提交。HP 工作树里的 `panel.py` 和测试文件
+  已是 `c1cb244` 的修复内容，所以当前功能不受该 Git 分叉影响。
 - 没有连接飞控、运行 ROS 飞行链路、解锁或起飞。
