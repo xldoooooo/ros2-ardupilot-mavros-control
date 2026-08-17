@@ -52,3 +52,92 @@ kill -USR1 <service_pid>
 运行依赖为系统 `ffmpeg`、`ffprobe`、`v4l2-ctl` 和项目现有 PySide6。MediaMTX
 Linux amd64 可执行文件已经随目录固定版本提供，不需要安装额外 Python 包或
 引入 ROS、GStreamer、OpenCV、Web 服务与数据库。
+
+## Ubuntu 24.04 部署
+
+摄像头服务本身是 Python 程序，不需要 CMake、`colcon build` 或其他编译步骤，
+也不依赖 ROS 2。克隆或更新仓库后，先从项目根目录安装系统依赖：
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg v4l-utils python3-venv
+```
+
+后端只使用 Python 标准库，不需要安装额外 Python 包。按照本项目约定创建独立
+环境后，即可在一个终端启动服务：
+
+```bash
+python3 -m venv .venv
+./.venv/bin/python video-service/camera_service.py serve
+```
+
+如果需要独立摄像头面板或地面站内的实时预览，还需安装 PySide6。运行完整
+地面站时直接安装项目现有依赖；只使用摄像头面板时可以仅安装 PySide6：
+
+```bash
+# 完整地面站
+./.venv/bin/python -m pip install -r requirements-gui.txt
+
+# 或者：只运行独立摄像头面板
+./.venv/bin/python -m pip install 'PySide6>=6.7,<7'
+./.venv/bin/python video-service/camera_panel.py
+```
+
+若项目已有 `.venv`，不要重复创建，直接补装依赖即可。完整地面站和 ROS 功能
+仍需按项目要求构建 ROS 工作空间；这不是摄像头服务自身的运行条件。
+
+### CPU 架构
+
+仓库内的 `video-service/bin/mediamtx/mediamtx` 是 Linux x86-64 静态可执行文件。
+先确认目标机器架构：
+
+```bash
+uname -m
+file video-service/bin/mediamtx/mediamtx
+```
+
+- 输出 `x86_64` 时可以直接使用仓库内文件，无需另外安装 MediaMTX。
+- 输出 `aarch64` 或 `arm64` 时，必须下载相同版本的 Linux ARM64 MediaMTX，
+  替换上述可执行文件并执行
+  `chmod +x video-service/bin/mediamtx/mediamtx`；Python 代码无需修改或编译。
+
+### 首次运行检查
+
+插入摄像头后先确认 V4L2 设备和可用模式：
+
+```bash
+v4l2-ctl --list-devices
+v4l2-ctl --list-formats-ext -d /dev/video0
+ffmpeg -version
+ffprobe -version
+```
+
+实际设备可能是 `/dev/video1`，也可能位于稳定的
+`/dev/v4l/by-id/...-video-index0` 路径；以配置面板“检测设备”的结果为准。
+如果打开设备时报权限不足，可将当前用户加入 `video` 组，然后注销并重新登录：
+
+```bash
+sudo usermod -aG video "$USER"
+```
+
+新机器不会自动继承另一台机器的用户配置。首次打开面板后，应重新选择设备、
+分辨率、帧率、编码和保存目录。配置保存在
+`~/.config/ros2-ardupilot-camera/config.json`；默认录像和截图目录会自动创建。
+对已发现 H.264 输出不稳定的 Wasintek 摄像头，优先选择摄像头原生 MJPEG 模式，
+例如 `1920x1080@30` 或 `1280x720@120`。
+
+RTSP 默认监听 TCP 8554 端口。启动后可用面板或命令行 `probe` 验证：
+
+```bash
+./.venv/bin/python video-service/camera_service.py probe
+```
+
+如果目标机器启用了 UFW，并且需要其他局域网设备拉流，再开放对应 TCP 端口：
+
+```bash
+sudo ufw allow 8554/tcp
+```
+
+局域网播放器使用面板显示的完整地址，例如
+`rtsp://192.168.1.10:8554/camera`。RTSP 固定走 TCP，因此客户端也应优先选择
+RTSP-over-TCP。

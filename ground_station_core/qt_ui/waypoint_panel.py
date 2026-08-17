@@ -28,6 +28,7 @@ from ..config import (
     WAYPOINT_Z_MIN_METERS,
 )
 from ..models import (
+    FlightMode,
     VehicleSnapshot,
     WaypointFlightStrategy,
     WaypointReferenceGenerator,
@@ -625,15 +626,18 @@ class WaypointPanel(QWidget):
         self._update_local_controls()
 
     def update_progress(self, snapshot: VehicleSnapshot) -> None:
-        """直接显示机载报告的 1-based 航点索引和总数。"""
+        """把机载 1-based 当前目标索引换算为实际已完成航点格数。"""
         if self._progress_tracking and snapshot.waypoint_count > 0:
             self.progress.setRange(0, snapshot.waypoint_count)
-            progress_value = min(
-                snapshot.waypoint_index, snapshot.waypoint_count
-            )
+            # WAYPOINT 模式中的索引指向“正在飞往”的目标，因此完成数少一；
+            # 可靠终态切到 HOVER 后索引等于总数，最后一格才真正填满。
+            progress_value = snapshot.waypoint_index
+            if snapshot.active_mode is FlightMode.WAYPOINT:
+                progress_value = max(0, progress_value - 1)
+            progress_value = min(progress_value, snapshot.waypoint_count)
             self.progress.setValue(progress_value)
             self.progress.setFormat(
-                f"机载进度 {snapshot.waypoint_index}/{snapshot.waypoint_count}"
+                f"已完成 {progress_value}/{snapshot.waypoint_count}"
             )
 
     def set_result(self, message: str, running: bool) -> None:

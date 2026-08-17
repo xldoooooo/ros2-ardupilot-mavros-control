@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
-from dataclasses import replace
 import math
-from pathlib import Path
+import os
 import sys
 import threading
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 # 必须在首次导入 Qt 前选择无显示服务平台，保证测试可在 CI/headless 运行。
@@ -50,6 +50,14 @@ from ground_station_core.qt_ui.log_panel import LogPanel  # noqa: E402
 from ground_station_core.qt_ui.main_window import GroundStationWindow  # noqa: E402
 from ground_station_core.qt_ui.state import derive_availability  # noqa: E402
 from ground_station_core.qt_ui.theme import apply_theme  # noqa: E402
+from ground_station_core.upstream.journal import RawFrameJournal  # noqa: E402
+from ground_station_core.upstream.mapping import (  # noqa: E402
+    COMMAND_MAPPINGS,
+    parse_command,
+)
+from ground_station_core.upstream.models import (  # noqa: E402
+    UpstreamConnectionSnapshot,
+)
 
 
 class _FakeRosController:
@@ -210,6 +218,62 @@ class _PendingCommunicationEnvironment(_FakeEnvironment):
         self._done(False, "通讯检测已取消；未申请控制权、未发送命令")
 
 
+class _FakeUpstreamService:
+    """隔离 Qt 测试与真实 WebSocket 线程，并记录主窗口薄适配调用。"""
+
+    def __init__(self) -> None:
+        self.journal = RawFrameJournal()
+        self.command_mappings = COMMAND_MAPPINGS
+        self.calls: list[tuple[str, object]] = []
+
+    def start(self) -> None:
+        self.calls.append(("start", None))
+
+    def stop(self, timeout: float = 3.0) -> bool:
+        self.calls.append(("stop", timeout))
+        return True
+
+    def snapshot(self) -> UpstreamConnectionSnapshot:
+        return UpstreamConnectionSnapshot(
+            "ws://127.0.0.1:8581/ws",
+            "UAV01001",
+            False,
+            False,
+            "已断开",
+            "测试替身",
+        )
+
+    def observe_vehicle(self, snapshot: object, mode: str) -> None:
+        self.calls.append(("vehicle", (snapshot, mode)))
+
+    def observe_result(self, result: object) -> None:
+        self.calls.append(("result", result))
+
+    def reset_runtime(self) -> None:
+        self.calls.append(("reset", None))
+
+    def report_waypoints_staged(self) -> bool:
+        self.calls.append(("staged", None))
+        return True
+
+    def begin_mission(
+        self, ticket: int, kind: str, point_indexes: tuple[int, ...]
+    ) -> None:
+        self.calls.append(("mission", (ticket, kind, point_indexes)))
+
+    def begin_landing(self, ticket: int) -> None:
+        self.calls.append(("landing", ticket))
+
+    def connect(self, url: str, client_no: str) -> None:
+        self.calls.append(("connect", (url, client_no)))
+
+    def disconnect(self) -> None:
+        self.calls.append(("disconnect", None))
+
+    def restart(self, url: str, client_no: str) -> None:
+        self.calls.append(("restart", (url, client_no)))
+
+
 def _application() -> QApplication:
     """复用单一 QApplication，避免 Qt 全局实例冲突。"""
     application = QApplication.instance() or QApplication([])
@@ -248,6 +312,7 @@ def _window(
         event_log=events,
         ros_controller=ros,
         environment=environment or _FakeEnvironment(),
+        upstream_service=_FakeUpstreamService(),
         auto_start=False,
     )
     window.show()
@@ -427,6 +492,7 @@ def test_opening_window_does_not_start_ros_until_a_workflow_is_requested() -> No
         event_log=events,
         ros_controller=ros,
         environment=_FakeEnvironment(),
+        upstream_service=_FakeUpstreamService(),
     )
     window.show()
     application.processEvents()
@@ -496,9 +562,7 @@ def test_log_panel_combines_independent_source_generated_levels() -> None:
     assert "warn line" not in panel.displayed_text
     assert "warning word but source says info" not in panel.displayed_text
     assert panel.search_input.height() == panel.clear_button.height()
-    assert not any(
-        label.text() == "等级" for label in panel.findChildren(QLabel)
-    )
+    assert not any(label.text() == "等级" for label in panel.findChildren(QLabel))
     panel.close()
 
 
@@ -570,12 +634,8 @@ def test_origin_settings_feed_full_hardware_connection_but_not_simulation() -> N
             "手动操纵帮助",
             "航点任务帮助",
         }
-        assert "本地 SITL 使用自身 Home" in help_icons[
-            "环境与连接帮助"
-        ].toolTip()
-        assert "Wi-Fi 按钮仅检测通讯" in help_icons[
-            "环境与连接帮助"
-        ].toolTip()
+        assert "本地 SITL 使用自身 Home" in help_icons["环境与连接帮助"].toolTip()
+        assert "Wi-Fi 按钮仅检测通讯" in help_icons["环境与连接帮助"].toolTip()
         assert window.findChildren(QLabel, "cardSubtitle") == []
 
         # 仿真：不得把 GUI 缓存原点塞进工作流（避免与 SITL Home 冲突）。
@@ -638,9 +698,7 @@ def test_wifi_button_is_right_of_gear_and_does_not_create_control_session() -> N
 def test_wifi_button_turns_into_cancellable_red_stop_control() -> None:
     """检测期间 Wi-Fi 图标切成红色终止方块，第二次点击只取消诊断。"""
     environment = _PendingCommunicationEnvironment()
-    window, ros = _window(
-        _operational_snapshot(armed=False), environment=environment
-    )
+    window, ros = _window(_operational_snapshot(armed=False), environment=environment)
     try:
         wifi = window.operations.communication_test_button
         idle_icon_key = wifi.icon().cacheKey()
@@ -724,6 +782,147 @@ def test_simulation_skips_land_confirmation_but_hardware_keeps_it() -> None:
         window._confirm_action = lambda *_args, **_kwargs: True
         window._land()
         assert ros.calls == [("land", None), ("land", None)]
+    finally:
+        _close_window(window)
+
+
+def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> None:
+    """01/02/03/05/07 复用仿真操作入口，并让航点、按钮和任务状态同步。"""
+    window, ros = _window(_operational_snapshot(armed=False))
+    upstream = window._upstream
+    task = parse_command(
+        {
+            "clientNo": "UAV01001",
+            "commandNo": "02",
+            "taskPoints": [
+                {
+                    "index": 8,
+                    "x": 1.0,
+                    "y": 2.0,
+                    "z": 1.5,
+                    "forwardAngle": 90,
+                    "cameraAngle": 1495,
+                    "photoNo": 1,
+                }
+            ],
+        },
+        "UAV01001",
+    )
+    try:
+        # 上位机可独立连接，但没有仿真/实机会话时不能产生任何 ROS 动作。
+        window._handle_upstream_command(task)
+        assert not window.waypoints.waypoints
+        assert not ros.calls
+        assert any(
+            "尚未启动仿真或连接实机" in event.message
+            for event in window.event_log.snapshot()
+        )
+
+        window._initialize_simulation()
+        window._handle_upstream_command(task)
+        assert window.waypoints.table.rowCount() == 1
+        assert window.waypoints.waypoints[0][:3] == (1.0, 2.0, 1.5)
+        assert math.isclose(window.waypoints.waypoints[0][3], math.pi / 2.0)
+        assert ("staged", None) in upstream.calls
+        ignored_logs = [
+            event
+            for event in window.event_log.snapshot()
+            if "cameraAngle 与 photoNo" in event.message
+        ]
+        assert len(ignored_logs) == 1
+
+        execute = parse_command({"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001")
+        window._handle_upstream_command(execute)
+        assert not any(call[0] == "waypoints" for call in ros.calls)
+        assert "尚未起飞" in window.activity_banner.message_label.text()
+
+        return_home = parse_command(
+            {"clientNo": "UAV01001", "commandNo": "05"}, "UAV01001"
+        )
+        calls_before_return = len(ros.calls)
+        window._handle_upstream_command(return_home)
+        assert len(ros.calls) == calls_before_return
+        assert "尚未起飞" in window.activity_banner.message_label.text()
+
+        takeoff = parse_command({"clientNo": "UAV01001", "commandNo": "01"}, "UAV01001")
+        window._handle_upstream_command(takeoff)
+        assert ros.calls[-1][0] == "takeoff"
+        assert not window.operations.takeoff_button.isEnabled()
+
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._pending_commands.clear()
+        window._refresh()
+        window._handle_upstream_command(execute)
+        assert ros.calls[-1][0] == "waypoints"
+        assert window._waypoint_running
+        assert ("mission", (2, "inspection", (8,))) in upstream.calls
+        assert not window.waypoints.send_button.isEnabled()
+
+        window.operations.takeoff_altitude_input.setValue(0.7)
+        window._handle_upstream_command(return_home)
+        assert ros.calls[-1][0] == "waypoints"
+        return_points = ros.calls[-1][1][0]
+        assert return_points[0][:3] == (0.0, 0.0, 0.7)
+        assert window.waypoints.waypoints == return_points
+        assert ("mission", (3, "return", (1,))) in upstream.calls
+
+        emergency_land = parse_command(
+            {"clientNo": "UAV01001", "commandNo": "07"}, "UAV01001"
+        )
+        window._handle_upstream_command(emergency_land)
+        assert ros.calls[-1][0] == "land"
+        assert ("landing", 4) in upstream.calls
+        assert not window.operations.land_button.isEnabled()
+    finally:
+        _close_window(window)
+
+
+def test_upstream_command_06_reuses_normal_land_path() -> None:
+    """新增 06 接口复用原降落门控与可靠 ticket，不建立第二套控制实现。"""
+    window, ros = _window(_operational_snapshot(armed=True))
+    upstream = window._upstream
+    try:
+        window._initialize_simulation()
+        normal_land = parse_command(
+            {"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001"
+        )
+        window._handle_upstream_command(normal_land)
+        assert ros.calls[-1][0] == "land"
+        assert ("landing", 1) in upstream.calls
+        assert not window.operations.land_button.isEnabled()
+    finally:
+        _close_window(window)
+
+
+def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> None:
+    """主按钮打开非模态面板，四类信息完整且关闭不触发断开。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    upstream = window._upstream
+    try:
+        upstream.journal.append("RX", '{"type":"SYSTEM"}')
+        QTest.mouseClick(window.upstream_panel_button, Qt.MouseButton.LeftButton)
+        _application().processEvents()
+        panel = window._upstream_panel
+        assert panel is not None and panel.isVisible()
+        assert [panel.tabs.tabText(index) for index in range(panel.tabs.count())] == [
+            "连接配置",
+            "指令映射",
+            "原始报文",
+            "JSON 格式",
+        ]
+        assert panel.url_input.text() == "ws://127.0.0.1:8581/ws"
+        assert panel.client_no_input.text() == "UAV01001"
+        assert panel.mapping_table.rowCount() == 6
+        panel._poll()
+        assert '{"type":"SYSTEM"}' in panel.raw_log.toPlainText()
+        json_guide = panel.json_text.toPlainText()
+        assert "0C: 仿真低于 20%" in json_guide
+        for command_no in ("01", "02", "03", "05", "06", "07"):
+            assert f"接收命令 {command_no}（BROADCAST）" in json_guide
+        for status_no in ("02", "03", "05", "07", "08", "09", "0A", "0B", "0C"):
+            assert f"状态 {status_no}" in json_guide
+        panel.close()
+        assert not any(call[0] == "disconnect" for call in upstream.calls)
     finally:
         _close_window(window)
 
@@ -845,9 +1044,7 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
             panel.engineering_left_layout.indexOf(panel.position_value)
         )
         increment_row = panel.engineering_increment_layout.getItemPosition(
-            panel.engineering_increment_layout.indexOf(
-                panel.vertical_increment_value
-            )
+            panel.engineering_increment_layout.indexOf(panel.vertical_increment_value)
         )
         assert position_row[1] == 1
         assert increment_row[1] == 1
@@ -870,8 +1067,7 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
             panel.last_manual_command_chip,
         )
         chip_positions = [
-            chip.mapTo(panel.manual_card, QPoint(0, 0)).x()
-            for chip in status_chips
+            chip.mapTo(panel.manual_card, QPoint(0, 0)).x() for chip in status_chips
         ]
         assert chip_positions == sorted(chip_positions)
         assert panel.autopilot_mode_chip.text() == "飞控模式 · GUIDED"
@@ -908,9 +1104,7 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
             "控制周期",
             "安全门控",
         ]
-        assert panel.actual_velocity_value.text() == (
-            "Vx +0.30  Vy +0.40  Vz +0.00"
-        )
+        assert panel.actual_velocity_value.text() == ("Vx +0.30  Vy +0.40  Vz +0.00")
         right_labels = {
             label.text()
             for label in panel.engineering_increment_panel.findChildren(QLabel)
@@ -999,9 +1193,7 @@ def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
         for rate, tone in rate_cases:
             ros.current_snapshot = replace(snapshot, status_rate_hz=rate)
             window._refresh()
-            assert panel.communication_rate_chip.text() == (
-                f"通讯频率 · {rate:.2f} Hz"
-            )
+            assert panel.communication_rate_chip.text() == (f"通讯频率 · {rate:.2f} Hz")
             assert panel.communication_rate_chip.property("tone") == tone
             assert "age" not in panel.communication_rate_chip.text()
 
@@ -1057,8 +1249,7 @@ def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
             chip_bounds.append((origin.x(), origin.x() + chip.width()))
             assert chip.width() >= chip.sizeHint().width()
         assert all(
-            left[1] <= right[0]
-            for left, right in zip(chip_bounds, chip_bounds[1:])
+            left[1] <= right[0] for left, right in zip(chip_bounds, chip_bounds[1:])
         )
         assert chip_bounds[-1][1] <= panel.manual_card.width()
     finally:
@@ -1226,9 +1417,7 @@ def test_unverified_generator_controller_pair_requires_explicit_confirmation() -
 def test_waypoint_preview_button_publishes_snapshot_and_tracks_later_edits() -> None:
     """预览点击只发布可视化，随后编辑/清空会替换 RViz 中的旧快照。"""
     environment = _FakeEnvironment()
-    window, ros = _window(
-        _operational_snapshot(armed=False), environment=environment
-    )
+    window, ros = _window(_operational_snapshot(armed=False), environment=environment)
     try:
         window._environment_active = True
         window._connection_mode = "simulation"
@@ -1274,14 +1463,8 @@ def test_operations_layout_and_us_mode_manual_controls() -> None:
         panel = window.operations
 
         # 上排两卡片同高起点，手动操纵卡片位于它们下方。
-        assert (
-            panel.environment_card.geometry().x()
-            < panel.flight_card.geometry().x()
-        )
-        assert (
-            panel.environment_card.geometry().y()
-            == panel.flight_card.geometry().y()
-        )
+        assert panel.environment_card.geometry().x() < panel.flight_card.geometry().x()
+        assert panel.environment_card.geometry().y() == panel.flight_card.geometry().y()
         top_bottom = max(
             panel.environment_card.geometry().bottom(),
             panel.flight_card.geometry().bottom(),
@@ -1331,14 +1514,12 @@ def test_operations_layout_and_us_mode_manual_controls() -> None:
             assert [action.text() for action in actions] == [
                 combo.itemText(index) for index in range(combo.count())
             ]
-            assert all(
-                popup.actionGeometry(action).height() > 0
-                for action in actions
-            )
+            assert all(popup.actionGeometry(action).height() > 0 for action in actions)
             assert popup.actionGeometry(actions[-1]).bottom() < popup.height()
-            assert popup.frameGeometry().top() >= combo.mapToGlobal(
-                QPoint(0, combo.height())
-            ).y()
+            assert (
+                popup.frameGeometry().top()
+                >= combo.mapToGlobal(QPoint(0, combo.height())).y()
+            )
             combo.hidePopup()
 
         # 仅重排按钮位置，八个按钮对应的速度/偏航增量保持原值。
@@ -1365,9 +1546,7 @@ def test_operations_layout_and_us_mode_manual_controls() -> None:
 
         def stick_spacing() -> tuple[int, int, int]:
             """返回相对手动卡片的左留白、右留白和两个底盘中缝。"""
-            left_origin = panel.left_stick_group.mapTo(
-                panel.manual_card, QPoint(0, 0)
-            )
+            left_origin = panel.left_stick_group.mapTo(panel.manual_card, QPoint(0, 0))
             right_origin = panel.right_stick_group.mapTo(
                 panel.manual_card, QPoint(0, 0)
             )
@@ -1376,22 +1555,19 @@ def test_operations_layout_and_us_mode_manual_controls() -> None:
                 panel.manual_card.width()
                 - right_origin.x()
                 - panel.right_stick_group.width(),
-                right_origin.x()
-                - left_origin.x()
-                - panel.left_stick_group.width(),
+                right_origin.x() - left_origin.x() - panel.left_stick_group.width(),
             )
 
-        left_origin = panel.left_stick_group.mapTo(
-            panel.manual_card, QPoint(0, 0)
+        left_origin = panel.left_stick_group.mapTo(panel.manual_card, QPoint(0, 0))
+        assert hover_origin.y() > (left_origin.y() + panel.left_stick_group.height())
+        assert (
+            abs(
+                hover_origin.x()
+                + panel.hover_button.width() / 2
+                - panel.manual_card.width() / 2
+            )
+            < 20
         )
-        assert hover_origin.y() > (
-            left_origin.y() + panel.left_stick_group.height()
-        )
-        assert abs(
-            hover_origin.x()
-            + panel.hover_button.width() / 2
-            - panel.manual_card.width() / 2
-        ) < 20
         default_spacing = stick_spacing()
         assert min(default_spacing[:2]) > 24
         assert abs(default_spacing[0] - default_spacing[1]) < 12
@@ -1581,19 +1757,23 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         execution_card = panel.progress.parentWidget()
         assert execution_card.title_label.text() == ""
         assert not execution_card.title_label.isVisible()
-        assert abs(
-            panel.progress.geometry().center().y()
-            - panel.send_button.geometry().center().y()
-        ) <= 1
+        assert (
+            abs(
+                panel.progress.geometry().center().y()
+                - panel.send_button.geometry().center().y()
+            )
+            <= 1
+        )
         assert panel.progress.width() > panel.send_button.width() * 1.8
         assert panel.reference_combo.count() == 4
         assert panel.tracking_combo.count() == 2
         # 结果状态仍按原链路更新，但不再作为灰色说明行参与布局。
         assert not panel.status_label.isVisible()
         assert panel.status_label.parentWidget() is not None
-        assert panel.status_label.parentWidget().content_layout.indexOf(
-            panel.status_label
-        ) == -1
+        assert (
+            panel.status_label.parentWidget().content_layout.indexOf(panel.status_label)
+            == -1
+        )
         panel.set_result("航点状态回归", running=False)
         assert panel.status_label.text() == "航点状态回归"
         assert "QProgressBar#waypointProgress::chunk" in STYLE_SHEET
@@ -1658,9 +1838,7 @@ def test_waypoint_file_button_and_table_drop_replace_only_after_confirmation(
 
         selected = tmp_path / "selected.csv"
         selected.write_text(
-            "index,x,y,z,yaw\n"
-            "1,1.25,-2.5,3.0,90\n"
-            "2,4.0,5.0,6.0,-180\n",
+            "index,x,y,z,yaw\n1,1.25,-2.5,3.0,90\n2,4.0,5.0,6.0,-180\n",
             encoding="utf-8",
         )
         confirmations: list[tuple[str, str]] = []
@@ -1804,9 +1982,7 @@ def test_running_waypoint_result_does_not_reset_existing_progress() -> None:
         window.waypoints.add_button.click()
         window._refresh()
         window.waypoints.set_result("任务执行中", running=True)
-        progressed = replace(
-            ros.current_snapshot, waypoint_count=2, waypoint_index=1
-        )
+        progressed = replace(ros.current_snapshot, waypoint_count=2, waypoint_index=1)
         window.waypoints.update_progress(progressed)
         before = (
             window.waypoints.progress.value(),
@@ -1827,6 +2003,62 @@ def test_running_waypoint_result_does_not_reset_existing_progress() -> None:
         window._send_waypoints(window.waypoints.waypoints)
         assert window.waypoints.progress.value() == 0
         assert window.waypoints.progress.format() == "等待机载任务进度…"
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_progress_counts_reached_points_not_current_target() -> None:
+    """飞向首点时为 0 格、切到次点时为 1 格，可靠完成后才满格。"""
+    window, ros = _window(_operational_snapshot(armed=True))
+    try:
+        window.waypoints.set_result("任务执行中", running=True)
+        to_first = replace(
+            ros.current_snapshot,
+            active_mode=FlightMode.WAYPOINT,
+            waypoint_count=2,
+            waypoint_index=1,
+        )
+        window.waypoints.update_progress(to_first)
+        assert window.waypoints.progress.value() == 0
+        assert window.waypoints.progress.format() == "已完成 0/2"
+
+        to_second = replace(to_first, waypoint_index=2)
+        window.waypoints.update_progress(to_second)
+        assert window.waypoints.progress.value() == 1
+        assert window.waypoints.progress.format() == "已完成 1/2"
+
+        complete = replace(to_second, active_mode=FlightMode.HOVER)
+        window.waypoints.update_progress(complete)
+        assert window.waypoints.progress.value() == 2
+        assert window.waypoints.progress.format() == "已完成 2/2"
+    finally:
+        _close_window(window)
+
+
+def test_overridden_waypoint_task_ignores_old_cancellation_result() -> None:
+    """05 覆盖旧任务后，旧 ticket 的取消终态不得解锁新任务 GUI。"""
+    window, ros = _window(_operational_snapshot(armed=True))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window.waypoints.replace_waypoints(((1.0, 0.0, 1.0, 0.0),), "测试")
+        window._refresh()
+        first_ticket = window._send_waypoints(window.waypoints.waypoints)
+        second_ticket = window._send_waypoints(
+            ((0.0, 0.0, 1.0, 0.0),), allow_running_override=True
+        )
+        assert (first_ticket, second_ticket) == (1, 2)
+        ros.results.extend(
+            (
+                CommandResult(1, 1, "waypoints", False, "旧任务已覆盖", True),
+                CommandResult(2, 2, "waypoints", True, "新任务执行中", False),
+            )
+        )
+        window._consume_results()
+        assert window._waypoint_running
+        assert window._active_waypoint_ticket == 2
+        assert "waypoints" in window._pending_commands
+        assert window.waypoints.status_label.text() == "新任务执行中"
     finally:
         _close_window(window)
 
@@ -1907,7 +2139,7 @@ def test_opaque_render_hints_only_cover_fully_painted_surfaces() -> None:
 
 
 def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
-    """顶部保留菜单、独立摄像头/终端入口、红色退出和四周阴影。"""
+    """顶部保留上位机、摄像头、终端、红色退出入口和四周阴影。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         assert window.findChild(type(window.connection_label), "windowTitle") is None
@@ -1919,6 +2151,8 @@ def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
             "显示实时日志",
             "恢复默认布局",
         ]
+        assert window.upstream_panel_button.isVisible()
+        assert window.upstream_panel_button.text() == "上位机通讯面板"
         assert window.camera_panel_button.isVisible()
         assert window.camera_panel_button.text() == "摄像头配置面板"
         assert window.terminal_button.isVisible()
@@ -1926,6 +2160,7 @@ def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
         assert window.exit_button.isVisible()
         assert window.exit_button.text() == "退出地面站"
         assert window.exit_button.property("role") == "danger"
+        assert window.camera_panel_button.x() > window.upstream_panel_button.x()
         assert window.terminal_button.x() > window.camera_panel_button.x()
         assert window.exit_button.x() > window.terminal_button.x()
         assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
@@ -1938,9 +2173,7 @@ def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
         assert window.minimize_button.isVisible()
         assert window.maximize_button.isVisible()
         assert window.close_button.isVisible()
-        assert window._resize_edges_at(0, 0) == (
-            Qt.Edge.LeftEdge | Qt.Edge.TopEdge
-        )
+        assert window._resize_edges_at(0, 0) == (Qt.Edge.LeftEdge | Qt.Edge.TopEdge)
         assert window._resize_edges_at(window.width(), window.height()) == (
             Qt.Edge.RightEdge | Qt.Edge.BottomEdge
         )
@@ -1961,6 +2194,7 @@ def test_exit_button_always_requires_default_cancel_confirmation() -> None:
     window, _ros = _window(_operational_snapshot(armed=False))
     confirmations: list[tuple[str, str, bool]] = []
     try:
+
         def reject_exit(title: str, message: str, critical: bool = False) -> bool:
             confirmations.append((title, message, critical))
             return False
@@ -1982,9 +2216,7 @@ def test_exit_button_always_requires_default_cancel_confirmation() -> None:
 def test_external_termination_skips_dialog_and_cleans_backend_once() -> None:
     """SIGHUP 等外部退出必须完成环境/ROS 清理，且同步兜底不得重复执行。"""
     environment = _FakeEnvironment()
-    window, ros = _window(
-        _operational_snapshot(armed=False), environment=environment
-    )
+    window, ros = _window(_operational_snapshot(armed=False), environment=environment)
     try:
         window._confirm_action = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("外部终止信号不应等待无人可操作的确认框")
@@ -2011,9 +2243,7 @@ def test_external_termination_skips_dialog_and_cleans_backend_once() -> None:
 def test_event_loop_exit_fallback_cleans_without_close_event() -> None:
     """事件循环若绕过窗口关闭事件，进程退出兜底仍必须清理且保持幂等。"""
     environment = _FakeEnvironment()
-    window, ros = _window(
-        _operational_snapshot(armed=False), environment=environment
-    )
+    window, ros = _window(_operational_snapshot(armed=False), environment=environment)
     try:
         first = window.finalize_process_exit()
         second = window.finalize_process_exit()
@@ -2097,9 +2327,11 @@ def test_terminal_launcher_uses_current_directory_without_shell() -> None:
         with (
             patch(
                 "ground_station_core.qt_ui.main_window.shutil.which",
-                side_effect=lambda name: "/usr/bin/x-terminal-emulator"
-                if name == "x-terminal-emulator"
-                else None,
+                side_effect=lambda name: (
+                    "/usr/bin/x-terminal-emulator"
+                    if name == "x-terminal-emulator"
+                    else None
+                ),
             ),
             patch(
                 "ground_station_core.qt_ui.main_window.QProcess.startDetached",
@@ -2118,9 +2350,7 @@ def test_terminal_launcher_uses_current_directory_without_shell() -> None:
 def test_camera_panel_launcher_is_detached_from_ground_station_cleanup() -> None:
     """摄像头面板以独立进程启动，且不进入地面站环境清理链。"""
     environment = _FakeEnvironment()
-    window, _ros = _window(
-        _operational_snapshot(armed=False), environment=environment
-    )
+    window, _ros = _window(_operational_snapshot(armed=False), environment=environment)
     try:
         with patch(
             "ground_station_core.qt_ui.main_window.QProcess.startDetached",

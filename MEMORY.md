@@ -678,6 +678,10 @@
   1920×1080 JPG。正式 Python 为119 passed，环境/编译/致命静态检查通过；未解锁、起飞或发送
   飞行命令。详见
   `agent/report/report-2026-08-17-camera-video-service-ground-station-integration.md`。
+- `video-service/README.md` 已补充 Ubuntu 24.04 迁移部署：摄像头后端无需 ROS/colcon 或额外
+  Python 包，系统依赖为 FFmpeg/FFprobe、v4l-utils；GUI 额外需要 PySide6。仓库所带
+  MediaMTX v1.20.0 是 Linux x86-64 静态程序，ARM64 目标机必须替换同版本架构文件。文档还
+  覆盖 V4L2/权限、用户配置、UFW/RTSP TCP 8554 和首次推荐 MJPEG 模式检查。
 
 ## 2026-08-17 摄像头面板二次启动黑屏修复
 
@@ -706,3 +710,24 @@
   `ROS 2 ArduPilot Camera Panel`，顶层窗口标题也使用同一名称，内部界面继续中文。
 - 已运行的旧面板需要关闭并重新打开才会注册新名称；正式回归为 122 passed。详见
   `agent/report/report-2026-08-17-camera-panel-dock-name-fix.md`。
+
+## 2026-08-18 任务 21 上位机 WebSocket 通讯插件
+
+- `ground_station_core/upstream/` 是独立上位机通讯边界：专用 asyncio 线程负责 JAR
+  `SYSTEM/SUBSCRIBE/SUB_ACK/PUBLISH/BROADCAST`、重连、有界发送队列、严格协议校验和独立原始
+  RX/TX 日志；关闭、断线、依赖缺失或插件故障不改变原地面站 ROS/仿真/实机会话。
+- 命令映射唯一维护在 `upstream/mapping.py`：01 起飞、02 原子替换 GUI 航点、03 执行当前航点、
+  05 以当前三项航点配置覆盖任务并飞至 `(0,0,起飞高度)`、06 降落、07 原地 LAND。
+  `forwardAngle` 从角度转弧度；`cameraAngle/photoNo` 当前校验并忽略。所有动作继续走既有地面站
+  门控和高层 ROS 服务，未修改机载源码或控制算法；实机危险动作仍要求本地人工确认。
+- 主 GUI 新增“上位机通讯面板”，可独立连接/断开/重启并展示 URL、无人机编号、映射、完整
+  JSON 信封和原始帧。状态投影实现 02/03/05/07/08/09、1 Hz 0A/0B 和低电量边沿 0C；01、
+  相机/媒体、0C 自动返航以及无协议编号的通用飞控/控制权状态均明确 TODO 和日志。
+- 航点进度统一为实际完成点数，09 与 GUI 每格进度一致，可靠成功终态补齐最后一个 09 后发送
+  08；新航点 ticket 会屏蔽被覆盖旧任务的迟到取消结果。
+- 最终普通三包构建成功，ROS/C++ 13 tests 零失败，Python 135 passed；真实 JAR 主题收发和
+  domain 231 的 Qt→ROS→SITL 完整 01/02/03/05/07 联调通过，结束时 `armed=false` 且无任务
+  进程残留。未连接或操作实机，未修改 `video-service/`。备份为
+  `/home/nvidia/scq/projects/backups/ros2-ardupilot-sitl-hardware-pre-task21-20260818-001848.tar.gz`，
+  SHA-256 `a218466425123f618acbf8887171fb57dfeb8df23c59482495af8c52a5306591`；详见
+  `agent/report/report-2026-08-18-task21-websocket-implement.md`。

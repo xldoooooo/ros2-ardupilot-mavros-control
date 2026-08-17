@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shlex
 import shutil
 import sys
 import threading
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -52,6 +52,11 @@ from ..models import (
 )
 from ..process_manager import CleanupReport
 from ..ros_controller import GroundStationRosController
+from ..upstream import (
+    UpstreamAction,
+    UpstreamCommand,
+    UpstreamCommunicationService,
+)
 from ..waypoint_io import (
     WaypointImportError,
     load_waypoint_file,
@@ -60,6 +65,7 @@ from ..waypoint_io import (
 from .log_panel import LogPanel
 from .operations_panel import OperationsPanel
 from .state import derive_availability
+from .upstream_panel import UpstreamCommunicationPanel
 from .waypoint_panel import WaypointPanel
 from .widgets import (
     ActivityBanner,
@@ -79,6 +85,7 @@ class _ThreadBridge(QObject):
     communication_done = Signal(bool, str)
     cleanup_done = Signal(object)
     shutdown_done = Signal(object)
+    upstream_command = Signal(object)
 
 
 class GroundStationWindow(QMainWindow):
@@ -93,6 +100,7 @@ class GroundStationWindow(QMainWindow):
         event_log: EventLog | None = None,
         ros_controller: GroundStationRosController | None = None,
         environment: EnvironmentInitializer | None = None,
+        upstream_service: UpstreamCommunicationService | None = None,
         auto_start: bool = False,
         parent: QWidget | None = None,
     ) -> None:
@@ -105,6 +113,11 @@ class GroundStationWindow(QMainWindow):
             self._ros, event_log=self._events
         )
         self._bridge = _ThreadBridge(self)
+        self._upstream = upstream_service or UpstreamCommunicationService(
+            event_log=self._events,
+            on_command=self._bridge.upstream_command.emit,
+        )
+        self._upstream_panel: UpstreamCommunicationPanel | None = None
 
         self._environment_active = False
         self._connection_mode = "none"
@@ -114,7 +127,9 @@ class GroundStationWindow(QMainWindow):
         self._communication_cancel_pending = False
         self._waypoint_running = False
         self._waypoint_preview_active = False
+        self._upstream_point_indexes: tuple[int, ...] = ()
         self._pending_commands: set[str] = set()
+        self._active_waypoint_ticket: int | None = None
         self._last_result_sequence = 0
         self._last_ros_error = ""
         self._cleanup_thread: threading.Thread | None = None
@@ -146,6 +161,12 @@ class GroundStationWindow(QMainWindow):
         self._build_menu_bar()
         self._connect_signals()
         self._setup_shortcuts()
+
+        # 插件启动失败不得影响 ROS、仿真或原有本地操作入口。
+        try:
+            self._upstream.start()
+        except Exception as exc:
+            self._events.warn("upstream", f"上位机通讯模块启动失败：{exc}")
 
         self._timer = QTimer(self)
         self._timer.setInterval(self._REFRESH_INTERVAL_MS)
@@ -429,6 +450,14 @@ class GroundStationWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 4, 0)
         controls_layout.setSpacing(3)
+        self.upstream_panel_button = QPushButton("上位机通讯面板")
+        self.upstream_panel_button.setObjectName("upstreamPanelButton")
+        self.upstream_panel_button.setProperty("compact", True)
+        self.upstream_panel_button.setToolTip(
+            "打开 WebSocket 连接、映射、原始报文与 JSON 配置面板"
+        )
+        self.upstream_panel_button.clicked.connect(self._open_upstream_panel)
+        controls_layout.addWidget(self.upstream_panel_button)
         self.camera_panel_button = QPushButton("摄像头配置面板")
         self.camera_panel_button.setObjectName("cameraPanelButton")
         self.camera_panel_button.setProperty("compact", True)
@@ -598,6 +627,16 @@ class GroundStationWindow(QMainWindow):
         self._events.error("camera", message)
         self._show_notice("无法打开摄像头面板", message, QMessageBox.Icon.Warning)
 
+    def _open_upstream_panel(self) -> None:
+        """打开或复用独立上位机通讯面板，关闭面板不改变连接。"""
+        if self._upstream_panel is None:
+            self._upstream_panel = UpstreamCommunicationPanel(
+                self._upstream, self
+            )
+        self._upstream_panel.show()
+        self._upstream_panel.raise_()
+        self._upstream_panel.activateWindow()
+
     def _connect_signals(self) -> None:
         """连接面板意图、线程桥和主窗口业务槽。"""
         self.operations.simulation_requested.connect(self._initialize_simulation)
@@ -627,6 +666,7 @@ class GroundStationWindow(QMainWindow):
         self._bridge.communication_done.connect(self._on_communication_done)
         self._bridge.cleanup_done.connect(self._on_cleanup_done)
         self._bridge.shutdown_done.connect(self._on_shutdown_done)
+        self._bridge.upstream_command.connect(self._handle_upstream_command)
 
     def _setup_shortcuts(self) -> None:
         """注册原功能键位；输入控件聚焦时由槽函数主动忽略。"""
@@ -774,6 +814,11 @@ class GroundStationWindow(QMainWindow):
         self._environment_active = success
         self._connection_mode = self._pending_environment_mode if success else "none"
         self._pending_environment_mode = "none"
+        if not success:
+            try:
+                self._upstream.reset_runtime()
+            except Exception as exc:
+                self._events.warn("upstream", f"会话状态重置失败：{exc}")
         self.activity_banner.set_message(
             message, LogLevel.INFO if success else LogLevel.ERROR
         )
@@ -872,6 +917,10 @@ class GroundStationWindow(QMainWindow):
         self._environment_active = False
         self._connection_mode = "none"
         self._pending_environment_mode = "none"
+        try:
+            self._upstream.reset_runtime()
+        except Exception as exc:
+            self._events.warn("upstream", f"会话状态重置失败：{exc}")
         if report.success:
             message = (
                 f"断开完成：终止 {report.managed_stopped} 个受管进程、"
@@ -886,6 +935,164 @@ class GroundStationWindow(QMainWindow):
 
     # ---- 飞行动作 ----
 
+    def _handle_upstream_command(self, command: UpstreamCommand) -> None:
+        """在 Qt 主线程按当前活动会话把已映射动作交给原有操作入口。"""
+        if not isinstance(command, UpstreamCommand):
+            self._events.warn("upstream", "拒绝无法识别的上位机命令对象")
+            return
+        # 使用与按钮相同的最新门控；不活动时绝不猜测仿真或实机目标。
+        self._refresh()
+        snapshot = self._ros.snapshot()
+        if (
+            not self._environment_active
+            or self._connection_mode not in {"simulation", "hardware"}
+        ):
+            self._reject_upstream_command(command, "尚未启动仿真或连接实机")
+            return
+        if self._shutting_down or self._workflow_busy:
+            self._reject_upstream_command(command, "地面站工作流正忙或正在退出")
+            return
+
+        if command.action is UpstreamAction.STAGE_WAYPOINTS:
+            if not self._availability.waypoint_edit:
+                self._reject_upstream_command(
+                    command, "当前任务状态不允许替换航点列表"
+                )
+                return
+            self.waypoints.replace_waypoints(command.waypoints, "上位机命令 02")
+            self._upstream_point_indexes = command.point_indexes
+            self._handle_ignored_upstream_point_fields(command)
+            self._events.info(
+                "upstream",
+                f"上位机命令 02 已替换 GUI 航点列表，共 {len(command.waypoints)} 点",
+            )
+            self.activity_banner.set_message(
+                f"已接收上位机航点：{len(command.waypoints)} 个。",
+                LogLevel.INFO,
+            )
+            try:
+                self._upstream.report_waypoints_staged()
+            except Exception as exc:
+                self._events.warn("upstream", f"状态 02 上报失败：{exc}")
+            self._refresh()
+            return
+
+        if command.action is UpstreamAction.EXECUTE_WAYPOINTS:
+            if not snapshot.armed:
+                self._reject_upstream_command(command, "飞行器尚未起飞")
+                return
+            if not self._availability.waypoint_send:
+                self._reject_upstream_command(
+                    command, self._waypoint_rejection_reason(snapshot)
+                )
+                return
+            values = self.waypoints.waypoints
+            ticket = self._send_waypoints(values)
+            if ticket is None:
+                self._reject_upstream_command(command, "航点任务未进入本地发送队列")
+                return
+            point_indexes = self._point_indexes_for(values)
+            try:
+                self._upstream.begin_mission(ticket, "inspection", point_indexes)
+            except Exception as exc:
+                self._events.warn("upstream", f"巡检状态关联失败：{exc}")
+            return
+
+        if command.action is UpstreamAction.RETURN_HOME:
+            if not snapshot.armed:
+                self._reject_upstream_command(command, "飞行器尚未起飞")
+                return
+            if not self._availability.hover:
+                self._reject_upstream_command(command, self._availability.flight_reason)
+                return
+            return_point = (
+                0.0,
+                0.0,
+                float(self.operations.takeoff_altitude()),
+                float(snapshot.yaw),
+            )
+            ticket = self._send_waypoints(
+                (return_point,), allow_running_override=True
+            )
+            if ticket is None:
+                self._reject_upstream_command(command, "返航任务未进入本地发送队列")
+                return
+            # 新航点请求由机载端原子覆盖旧任务；GUI 同步显示实际返航点。
+            self.waypoints.replace_waypoints((return_point,), "上位机返航命令 05")
+            self._upstream_point_indexes = (1,)
+            try:
+                self._upstream.begin_mission(ticket, "return", (1,))
+            except Exception as exc:
+                self._events.warn("upstream", f"返航状态关联失败：{exc}")
+            self._events.info(
+                "upstream",
+                "上位机命令 05 已覆盖当前任务并排队原点航点",
+            )
+            self._refresh()
+            return
+
+        if command.action is UpstreamAction.TAKEOFF:
+            if not self._availability.takeoff:
+                self._reject_upstream_command(command, self._availability.flight_reason)
+                return
+            if self._takeoff() is None:
+                self._reject_upstream_command(command, "起飞操作未获得本地确认")
+            return
+
+        if command.action in {UpstreamAction.LAND, UpstreamAction.EMERGENCY_LAND}:
+            if not self._availability.land:
+                self._reject_upstream_command(command, self._availability.flight_reason)
+                return
+            ticket = self._land()
+            if ticket is None:
+                self._reject_upstream_command(command, "降落操作未获得本地确认")
+                return
+            try:
+                self._upstream.begin_landing(ticket)
+            except Exception as exc:
+                self._events.warn("upstream", f"降落状态关联失败：{exc}")
+            return
+
+        self._reject_upstream_command(command, "当前地面站没有该动作实现")
+
+    def _reject_upstream_command(
+        self, command: UpstreamCommand, reason: str
+    ) -> None:
+        """统一给维护者显示业务拒绝；协议接收确认仍已由通讯线程发送。"""
+        message = f"拒绝上位机命令 {command.command_no}（{command.label}）：{reason}"
+        self._events.warn("upstream", message)
+        self.activity_banner.set_message(message, LogLevel.WARN)
+
+    def _waypoint_rejection_reason(self, snapshot: VehicleSnapshot) -> str:
+        """给 03 返回比通用飞行链路状态更精确的本地门控原因。"""
+        if not self.waypoints.waypoints:
+            return "GUI 航点列表为空，请先下发命令 02"
+        if self._waypoint_running:
+            return "已有航点任务正在执行"
+        if not snapshot.armed:
+            return "飞行器尚未起飞"
+        return self._availability.flight_reason
+
+    def _point_indexes_for(
+        self, waypoints: tuple[tuple[float, float, float, float], ...]
+    ) -> tuple[int, ...]:
+        """保留命令 02 的点号；本地编辑后安全回退为当前 GUI 顺序号。"""
+        if len(self._upstream_point_indexes) == len(waypoints):
+            return self._upstream_point_indexes
+        return tuple(range(1, len(waypoints) + 1))
+
+    def _handle_ignored_upstream_point_fields(
+        self, command: UpstreamCommand
+    ) -> None:
+        """集中记录当前未消费的云台和拍照字段，保留唯一扩展接口。"""
+        if not command.ignored_camera_fields:
+            return
+        # TODO(上位机相机字段): 在相机/云台服务稳定后于此消费 cameraAngle/photoNo。
+        self._events.info(
+            "upstream",
+            "命令 02 的 cameraAngle 与 photoNo 已校验但当前忽略；forwardAngle 已转换为偏航角",
+        )
+
     def _log_coordinate_mode_change(self, mode: str, label: str) -> None:
         """将操作者切换的手动坐标系及其输入语义写入结构化日志。"""
         detail = (
@@ -897,7 +1104,7 @@ class GroundStationWindow(QMainWindow):
             "operator", f"手动操纵坐标系切换为「{label}」：{detail}"
         )
 
-    def _takeoff(self) -> None:
+    def _takeoff(self) -> int | None:
         """仿真直接请求起飞；实机仍须高风险确认。"""
         altitude = self.operations.takeoff_altitude()
         simulation = self._connection_mode == "simulation"
@@ -908,16 +1115,17 @@ class GroundStationWindow(QMainWindow):
                 "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
                 critical=True,
             ):
-                return
+                return None
             self._events.warn("operator", f"操作者确认起飞至 {altitude:.1f} m")
         else:
             self._events.info("operator", f"仿真模式请求起飞至 {altitude:.1f} m")
         self._pending_commands.add("takeoff")
-        self._ros.request_takeoff(altitude)
+        ticket = self._ros.request_takeoff(altitude)
         self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN)
         self._refresh()
+        return ticket
 
-    def _land(self) -> None:
+    def _land(self) -> int | None:
         """仿真直接请求 LAND；实机仍须危险操作确认。"""
         simulation = self._connection_mode == "simulation"
         if not simulation:
@@ -926,14 +1134,15 @@ class GroundStationWindow(QMainWindow):
                 "飞行器将切换 LAND 并开始下降。请确认降落区安全。",
                 critical=True,
             ):
-                return
+                return None
             self._events.warn("operator", "操作者确认发送 LAND")
         else:
             self._events.info("operator", "仿真模式请求发送 LAND")
         self._pending_commands.add("land")
-        self._ros.request_land()
+        ticket = self._ros.request_land()
         self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN)
         self._refresh()
+        return ticket
 
     def _send_motion(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
         """发送一次速度/偏航增量，持续状态仍由机载端持有。"""
@@ -962,13 +1171,20 @@ class GroundStationWindow(QMainWindow):
         strategy: object | None = None,
         reference_generator: object | None = None,
         tracking_controller: object | None = None,
-    ) -> None:
+        *,
+        allow_running_override: bool = False,
+    ) -> int | None:
         """确认组合语义后原子上传航点与三项飞行前锁定配置。"""
         from ..models import WaypointFlightStrategy
 
         values = tuple(waypoints)
-        if not values or not self._availability.waypoint_send:
-            return
+        permitted = (
+            self._availability.hover
+            if allow_running_override
+            else self._availability.waypoint_send
+        )
+        if not values or not permitted:
+            return None
         selected = (
             strategy
             if strategy is not None
@@ -1012,7 +1228,7 @@ class GroundStationWindow(QMainWindow):
             + "\n\n如仍要执行，请确认已理解该组合未经调试。",
             critical=True,
         ):
-            return
+            return None
 
         simulation = self._connection_mode == "simulation"
         if not simulation:
@@ -1027,7 +1243,7 @@ class GroundStationWindow(QMainWindow):
                 "任务执行将覆盖当前手动/悬停模式，确认继续吗？",
                 critical=True,
             ):
-                return
+                return None
             self._events.warn(
                 "operator",
                 f"操作者确认执行 {len(values)} 个航点（避障={flight_strategy.label}，"
@@ -1045,10 +1261,12 @@ class GroundStationWindow(QMainWindow):
         # 新任务先清掉上一任务的完成进度；同一任务后续 RUNNING 回报不会重置。
         self.waypoints.reset_progress()
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
-        self._ros.request_waypoints(
+        ticket = self._ros.request_waypoints(
             values, flight_strategy, generator, controller
         )
+        self._active_waypoint_ticket = ticket
         self._refresh()
+        return ticket
 
     def _confirm_clear_waypoints(self) -> None:
         """避免误触清空尚未上传的任务编辑结果。"""
@@ -1090,6 +1308,10 @@ class GroundStationWindow(QMainWindow):
 
     def _on_waypoints_changed(self, message: str) -> None:
         """记录编辑；预览开启后持续替换快照，空列表也会清除旧 Marker。"""
+        # 普通 GUI 编辑采用当前顺序号；命令 02 的原始点号会在替换后重新写回。
+        self._upstream_point_indexes = tuple(
+            range(1, len(self.waypoints.waypoints) + 1)
+        )
         self._events.debug("waypoint-editor", message)
         if not self._waypoint_preview_active:
             return
@@ -1238,6 +1460,12 @@ class GroundStationWindow(QMainWindow):
                     button.setEnabled(False)
             self._last_availability_render_key = render_key
 
+        try:
+            self._upstream.observe_vehicle(snapshot, self._connection_mode)
+        except Exception as exc:
+            # 通讯插件任何故障都不得中断 10 Hz 原地面站刷新。
+            self._events.warn("upstream", f"状态投影异常：{exc}")
+
         if self._ros.error and self._ros.error != self._last_ros_error:
             self._last_ros_error = self._ros.error
             self.activity_banner.set_message(
@@ -1255,14 +1483,25 @@ class GroundStationWindow(QMainWindow):
             self._last_result_sequence = max(
                 self._last_result_sequence, result.sequence
             )
-            if result.final:
+            stale_waypoint_result = (
+                result.command == "waypoints"
+                and self._active_waypoint_ticket is not None
+                and result.ticket != self._active_waypoint_ticket
+            )
+            if result.final and not stale_waypoint_result:
                 self._pending_commands.discard(result.command)
             level = LogLevel.INFO if result.success else LogLevel.ERROR
-            self.activity_banner.set_message(result.message, level)
-            if result.command == "waypoints":
+            if not stale_waypoint_result:
+                self.activity_banner.set_message(result.message, level)
+            try:
+                self._upstream.observe_result(result)
+            except Exception as exc:
+                self._events.warn("upstream", f"命令结果投影异常：{exc}")
+            if result.command == "waypoints" and not stale_waypoint_result:
                 running = result.success and not result.final
                 if result.final:
                     self._waypoint_running = False
+                    self._active_waypoint_ticket = None
                 self.waypoints.set_result(result.message, running=running)
 
     def _update_status_badges(self, snapshot: VehicleSnapshot) -> None:
@@ -1457,6 +1696,11 @@ class GroundStationWindow(QMainWindow):
         with self._shutdown_cleanup_lock:
             if self._shutdown_report is not None:
                 return self._shutdown_report
+            try:
+                self._upstream.stop(timeout=3.0)
+            except Exception as exc:
+                # 插件退出失败只记录，主体仍继续释放飞行会话和 ROS。
+                self._events.warn("upstream", f"停止上位机通讯模块失败：{exc}")
             try:
                 # EnvironmentInitializer 会合并并发清理请求并设置硬超时；这里
                 # 不再先 join 后二次进入清理，以免两条线程互等同一把锁。

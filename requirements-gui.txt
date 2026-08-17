@@ -3,3 +3,5 @@ PySide6>=6.7,<7
 MAVProxy>=1.8,<2
 # MAVProxy 1.8.74 运行期仍直接导入 future，但其 wheel 元数据未声明该依赖。
 future>=1,<2
+# 上位机通讯插件延迟导入；缺失时原地面站仍可运行，但 WebSocket 功能不可用。
+websockets>=15,<16
