@@ -30,9 +30,11 @@
     max_reference_error_xy: 0.8  # 键盘虚拟参考允许领先飞机的最大水平距离，单位：米。
     max_reference_error_z: 0.5  # 键盘虚拟参考允许领先飞机的最大垂直距离，单位：米。
 
-    # 平滑航点方法必须从稳定悬停开始；所有方法入点时均要求实际速度足够低。
-    # 首次进入航点候选区后若不稳定，继续保持当前航点并每秒计一次失败。
+    # 平滑航点方法必须从稳定悬停开始；启动余速和入点余速分别独立重试。
+    # 两处均在首次失败时立即计数，之后每秒重判，连续失败 10 次标记异常。
     waypoint_start_speed_tolerance: 0.20  # 启动平滑航点任务允许的最大三维实际速度，单位：米/秒。
+    waypoint_start_retry_interval_seconds: 1.0  # 平滑航点启动速度失败的重判间隔，单位：秒。
+    waypoint_start_failure_limit: 10  # 启动速度连续失败达到此次数后标记无人机状态异常。
     waypoint_arrival_speed_tolerance: 0.15  # 航点到达判定允许的最大三维实际速度，单位：米/秒。
     waypoint_arrival_retry_interval_seconds: 1.0  # 入点失败重新判定和计数的间隔，单位：秒。
     waypoint_arrival_failure_limit: 10  # 入点失败达到此次数后标记无人机状态异常。

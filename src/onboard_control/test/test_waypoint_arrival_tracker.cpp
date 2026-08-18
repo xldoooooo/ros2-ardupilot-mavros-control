@@ -1,6 +1,6 @@
 /**
  * @file test_waypoint_arrival_tracker.cpp
- * @brief 航点入点重试频率、异常阈值和成功清零回归测试。
+ * @brief 航点启动及入点重试频率、异常阈值和成功清零回归测试。
  */
 #include <gtest/gtest.h>
 
@@ -22,6 +22,36 @@ WaypointArrivalTracker::TimePoint at(const double seconds)
 }
 
 }  // namespace
+
+TEST(WaypointStartTracker, FailedStartIsSampledOncePerSecondAndThenRecovers)
+{
+  WaypointStartTracker tracker(1.0, 10);
+  EXPECT_EQ(tracker.update(at(0.0), false), WaypointStartState::kWaiting);
+  EXPECT_EQ(tracker.failure_count(), 1);
+  EXPECT_EQ(tracker.update(at(0.99), false), WaypointStartState::kWaiting);
+  EXPECT_EQ(tracker.failure_count(), 1);
+  EXPECT_EQ(tracker.update(at(1.0), false), WaypointStartState::kWaiting);
+  EXPECT_EQ(tracker.failure_count(), 2);
+  EXPECT_EQ(tracker.update(at(1.01), true), WaypointStartState::kReady);
+  EXPECT_EQ(tracker.failure_count(), 0);
+}
+
+TEST(WaypointStartTracker, TenthFailureLatchesAbnormalUntilNewTaskReset)
+{
+  WaypointStartTracker tracker(1.0, 10);
+  for (int second = 0; second < 9; ++second) {
+    EXPECT_EQ(tracker.update(at(second), false), WaypointStartState::kWaiting);
+  }
+  EXPECT_EQ(tracker.failure_count(), 9);
+  EXPECT_EQ(tracker.update(at(9.0), false), WaypointStartState::kAbnormal);
+  EXPECT_EQ(tracker.failure_count(), 10);
+  EXPECT_EQ(tracker.update(at(9.1), true), WaypointStartState::kAbnormal);
+  EXPECT_EQ(tracker.failure_count(), 10);
+
+  tracker.reset();
+  EXPECT_EQ(tracker.update(at(10.0), true), WaypointStartState::kReady);
+  EXPECT_EQ(tracker.failure_count(), 0);
+}
 
 TEST(WaypointArrivalTracker, NormalApproachBeforeCandidateDoesNotCountFailures)
 {

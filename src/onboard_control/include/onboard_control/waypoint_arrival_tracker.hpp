@@ -1,6 +1,6 @@
 /**
  * @file waypoint_arrival_tracker.hpp
- * @brief 航点入点保持、1 Hz 失败采样与异常阈值跟踪器。
+ * @brief 航点启动与入点阶段的定时重试、保持和异常阈值跟踪器。
  */
 #pragma once
 
@@ -12,6 +12,75 @@
 
 namespace onboard_control
 {
+
+/** 平滑航点启动速度检查的一次更新结果。 */
+enum class WaypointStartState
+{
+  kWaiting,
+  kReady,
+  kAbnormal,
+};
+
+/**
+ * 按固定间隔累计平滑航点启动速度失败，成功或显式重置时清零。
+ *
+ * 第一次失败立即计数；达到阈值后保持异常锁存，防止稍后速度偶然下降时
+ * 又启动原巡检任务。新的航点任务会显式 reset 后重新判定。
+ */
+class WaypointStartTracker
+{
+public:
+  using Clock = std::chrono::steady_clock;
+  using TimePoint = Clock::time_point;
+
+  WaypointStartTracker(const double retry_interval_seconds, const int failure_limit)
+  : retry_interval_seconds_(retry_interval_seconds), failure_limit_(failure_limit)
+  {
+    if (!std::isfinite(retry_interval_seconds_) || retry_interval_seconds_ <= 0.0 ||
+      failure_limit_ < 1)
+    {
+      throw std::invalid_argument("航点启动重试参数非法");
+    }
+  }
+
+  /** 记录本次速度检查；合格立即返回 ready，失败按间隔计数。 */
+  WaypointStartState update(const TimePoint & now, const bool speed_satisfied)
+  {
+    if (abnormal_) {
+      return WaypointStartState::kAbnormal;
+    }
+    if (speed_satisfied) {
+      reset();
+      return WaypointStartState::kReady;
+    }
+    if (!last_failed_attempt_.has_value() ||
+      std::chrono::duration<double>(now - *last_failed_attempt_).count() >=
+      retry_interval_seconds_)
+    {
+      failure_count_ = std::min(failure_count_ + 1, failure_limit_);
+      last_failed_attempt_ = now;
+      abnormal_ = failure_count_ >= failure_limit_;
+    }
+    return abnormal_ ? WaypointStartState::kAbnormal : WaypointStartState::kWaiting;
+  }
+
+  /** 新任务、取消或异常清除时清除本次启动判定历史。 */
+  void reset()
+  {
+    failure_count_ = 0;
+    abnormal_ = false;
+    last_failed_attempt_.reset();
+  }
+
+  int failure_count() const {return failure_count_;}
+
+private:
+  double retry_interval_seconds_;
+  int failure_limit_;
+  int failure_count_{0};
+  bool abnormal_{false};
+  std::optional<TimePoint> last_failed_attempt_;
+};
 
 /** 一次入点更新后的权威状态。 */
 enum class WaypointArrivalState

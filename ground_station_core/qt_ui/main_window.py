@@ -1174,8 +1174,8 @@ class GroundStationWindow(QMainWindow):
             # 再增加对接、充电和续检策略。
             self._events.warn("upstream", "低电量已触发自动返航与降落组合")
         elif kind == "abnormal":
-            # TODO(异常策略): 当前只有入点连续失败会标记异常；后续
-            # 应把其他权威健康项纳入同一分类与恢复策略。
+            # TODO(异常策略): 当前由平滑航点启动或入点连续失败标记异常；
+            # 后续应把其他权威健康项纳入同一分类与恢复策略。
             self._events.error(
                 "upstream",
                 "无人机状态异常已触发返航与降落组合："
@@ -1864,7 +1864,7 @@ class GroundStationWindow(QMainWindow):
                 "无人机状态异常",
                 "bad",
                 snapshot.vehicle_abnormal_reason
-                or f"航点入点失败 {snapshot.waypoint_arrival_failure_count} 次",
+                or f"航点稳定判定失败 {snapshot.waypoint_arrival_failure_count} 次",
             )
         else:
             mode_tone = (

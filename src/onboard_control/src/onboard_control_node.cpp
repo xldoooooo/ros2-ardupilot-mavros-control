@@ -88,6 +88,10 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   max_reference_error_z_ = declare_parameter<double>("max_reference_error_z", 0.5);
   waypoint_start_speed_tolerance_ =
     declare_parameter<double>("waypoint_start_speed_tolerance", 0.20);
+  waypoint_start_retry_interval_seconds_ =
+    declare_parameter<double>("waypoint_start_retry_interval_seconds", 1.0);
+  waypoint_start_failure_limit_ =
+    declare_parameter<int>("waypoint_start_failure_limit", 10);
   waypoint_arrival_speed_tolerance_ =
     declare_parameter<double>("waypoint_arrival_speed_tolerance", 0.10);
   waypoint_arrival_retry_interval_seconds_ =
@@ -191,7 +195,10 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     land_confirmation_timeout_seconds_ > 600.0 || max_velocity_xy_ <= 0.0 ||
     max_velocity_z_ <= 0.0 || !std::isfinite(waypoint_tolerance_) ||
     waypoint_tolerance_ <= 0.0 || !std::isfinite(waypoint_hold_seconds_) ||
-    waypoint_hold_seconds_ < 0.0 || waypoint_start_speed_tolerance_ <= 0.0 ||
+    waypoint_hold_seconds_ < 0.0 || !std::isfinite(waypoint_start_speed_tolerance_) ||
+    waypoint_start_speed_tolerance_ <= 0.0 ||
+    !std::isfinite(waypoint_start_retry_interval_seconds_) ||
+    waypoint_start_retry_interval_seconds_ <= 0.0 || waypoint_start_failure_limit_ < 1 ||
     !std::isfinite(waypoint_arrival_speed_tolerance_) ||
     waypoint_arrival_speed_tolerance_ <= 0.0 ||
     !std::isfinite(waypoint_arrival_retry_interval_seconds_) ||
@@ -208,6 +215,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   {
     throw std::invalid_argument("控制增益或航点参考生成参数非法");
   }
+  waypoint_start_tracker_ = WaypointStartTracker(
+    waypoint_start_retry_interval_seconds_, waypoint_start_failure_limit_);
   waypoint_arrival_tracker_ = WaypointArrivalTracker(
     waypoint_arrival_retry_interval_seconds_, waypoint_arrival_failure_limit_);
   controller_ = DobController(controller_parameters_);
@@ -766,6 +775,7 @@ void OnboardControlNode::on_flight_command(
       // 请求清除；待机库设备接入后，还需验证硬件入库证据。
       vehicle_abnormal_ = false;
       vehicle_abnormal_reason_.clear();
+      waypoint_start_tracker_.reset();
       waypoint_arrival_tracker_.reset();
       publish_result(
         command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
@@ -954,6 +964,8 @@ void OnboardControlNode::start_waypoint_task(
   active_task_started_ = SteadyClock::now();
   waypoints_ = waypoints;
   waypoint_index_ = 0;
+  waypoint_start_tracker_.reset();
+  waypoint_start_pending_ = false;
   waypoint_arrival_tracker_.reset();
   active_reference_generator_ = reference_generator;
   active_tracking_controller_ = tracking_controller;
@@ -972,32 +984,93 @@ void OnboardControlNode::start_waypoint_task(
       if (!active_task_matches(command) || waypoints_.empty()) {
         return;
       }
-      if (active_reference_generator_ != ReferenceGeneratorType::kStepPosition &&
-        vehicle_.velocity.norm() > waypoint_start_speed_tolerance_)
-      {
-        std::ostringstream reason;
-        reason << "平滑航点任务要求先悬停，当前速度 " << vehicle_.velocity.norm()
-               << " m/s 超过 " << waypoint_start_speed_tolerance_ << " m/s";
-        fail_active_task(reason.str(), false);
+      if (active_reference_generator_ == ReferenceGeneratorType::kStepPosition) {
+        activate_waypoint_execution(command);
         return;
       }
+
+      // 平滑生成器先抓取当前位置并制动悬停；速度门控由控制周期持续重判，
+      // 不再因起飞终态仍有余速而把整条巡检组合直接判为失败。
       reference_.position = vehicle_.position;
       reference_.velocity.setZero();
       reference_.acceleration.setZero();
       reference_.yaw = yaw_;
       target_yaw_rate_ = 0.0;
       activate_tracking_controller(active_tracking_controller_);
-      initialize_waypoint_segment();
-      control_mode_ = guided_interfaces::msg::ControlStatus::MODE_WAYPOINT;
-      std::ostringstream stream;
-      stream << "航点任务已在机载端启动，共 " << waypoints_.size()
-             << " 个航点，命令生成=" << static_cast<unsigned>(active_reference_generator_)
-             << "，跟踪控制=" << static_cast<unsigned>(active_tracking_controller_);
-      set_status_message(stream.str());
-      publish_result(
-        command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
-        stream.str(), 1, static_cast<std::uint32_t>(waypoints_.size()));
+      control_mode_ = guided_interfaces::msg::ControlStatus::MODE_HOVER;
+      waypoint_start_pending_ = true;
+      update_waypoint_start(SteadyClock::now());
     });
+}
+
+void OnboardControlNode::update_waypoint_start(const SteadyTime & now)
+{
+  if (!waypoint_start_pending_ || active_task_ != ActiveTask::kWaypoint ||
+    waypoints_.empty())
+  {
+    return;
+  }
+
+  const double speed = vehicle_.velocity.norm();
+  const bool speed_satisfied = velocity_valid_ && std::isfinite(speed) &&
+    speed <= waypoint_start_speed_tolerance_;
+  const int previous_failures = waypoint_start_tracker_.failure_count();
+  const WaypointStartState state = waypoint_start_tracker_.update(now, speed_satisfied);
+  if (state == WaypointStartState::kReady) {
+    activate_waypoint_execution(active_command_);
+    return;
+  }
+  if (waypoint_start_tracker_.failure_count() <= previous_failures) {
+    return;
+  }
+
+  std::ostringstream message;
+  if (state == WaypointStartState::kAbnormal) {
+    message << "无人机状态异常：平滑航点任务启动速度连续 "
+            << waypoint_start_tracker_.failure_count() << " 次不符合要求，当前速度 "
+            << speed << " m/s，阈值 " << waypoint_start_speed_tolerance_ << " m/s";
+    if (!vehicle_abnormal_) {
+      vehicle_abnormal_ = true;
+      vehicle_abnormal_reason_ = message.str();
+    }
+    set_status_message(message.str(), StatusLogLevel::kError);
+  } else {
+    message << "平滑航点任务启动速度判定 "
+            << waypoint_start_tracker_.failure_count() << "/"
+            << waypoint_start_failure_limit_ << " 未通过：当前速度 " << speed
+            << " m/s，阈值 " << waypoint_start_speed_tolerance_
+            << " m/s；机载端保持悬停并继续重试";
+    set_status_message(message.str(), StatusLogLevel::kWarn);
+  }
+  // 只发布非终态进度；第 10 次由 ControlStatus 异常边沿触发既有返航组合。
+  publish_result(
+    active_command_, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
+    message.str(), 0, static_cast<std::uint32_t>(waypoints_.size()));
+}
+
+void OnboardControlNode::activate_waypoint_execution(const CommandIdentity & command)
+{
+  if (!active_task_matches(command) || waypoints_.empty()) {
+    return;
+  }
+  waypoint_start_pending_ = false;
+  waypoint_start_tracker_.reset();
+  reference_.position = vehicle_.position;
+  reference_.velocity.setZero();
+  reference_.acceleration.setZero();
+  reference_.yaw = yaw_;
+  target_yaw_rate_ = 0.0;
+  activate_tracking_controller(active_tracking_controller_);
+  initialize_waypoint_segment();
+  control_mode_ = guided_interfaces::msg::ControlStatus::MODE_WAYPOINT;
+  std::ostringstream stream;
+  stream << "航点任务已在机载端启动，共 " << waypoints_.size()
+         << " 个航点，命令生成=" << static_cast<unsigned>(active_reference_generator_)
+         << "，跟踪控制=" << static_cast<unsigned>(active_tracking_controller_);
+  set_status_message(stream.str());
+  publish_result(
+    command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
+    stream.str(), 1, static_cast<std::uint32_t>(waypoints_.size()));
 }
 
 void OnboardControlNode::start_land(const CommandIdentity & command, const bool failsafe)
@@ -1054,6 +1127,8 @@ void OnboardControlNode::reset_waypoint_reference_state()
   reference_generator_.reset();
   generator_waypoint_initialized_ = false;
   generator_waypoint_index_ = 0;
+  waypoint_start_pending_ = false;
+  waypoint_start_tracker_.reset();
   waypoint_arrival_tracker_.reset();
   active_reference_generator_ = ReferenceGeneratorType::kStepPosition;
   active_reference_phase_ = ReferencePhase::kIdle;
@@ -1534,6 +1609,9 @@ void OnboardControlNode::control_tick()
     set_status_message(stream.str(), StatusLogLevel::kError);
   }
 
+  if (active_task_ == ActiveTask::kWaypoint && waypoint_start_pending_) {
+    update_waypoint_start(now);
+  }
   if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_MOTION) {
     update_motion_reference(dt_seconds);
   } else if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_WAYPOINT) {

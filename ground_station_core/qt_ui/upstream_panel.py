@@ -290,7 +290,7 @@ class UpstreamCommunicationPanel(QDialog):
                 "巡检降落后 01 延时: "
                 f"{self._service.standby_policy.inspection_delay_seconds:.1f} s"
             ),
-            "入点连续失败达阈值会标记异常，执行返航降落后入库清除",
+            "平滑任务启动余速或入点连续失败达阈值会标记异常，返航降落后入库清除",
             "相机/云台/照片/FTP/RTSP/媒体路径: 当前未实现",
         ]
         for title, payload in examples:

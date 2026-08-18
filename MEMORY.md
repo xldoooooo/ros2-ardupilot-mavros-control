@@ -792,3 +792,17 @@
   两轮均为 `01=4, 02=1, 03=1, 05=1, 07=3, 08=1, 09=2`，最终解除武装、无异常
   且无测试进程残留。全程未连接或操作实机，`video-service/` 未修改。详见
   `agent/report/report-2026-08-18-task22-timeseq.md`。
+
+## 2026-08-19 平滑航点启动余速重试修复
+
+- 平滑航点任务不再因起飞终态仍有余速而立即失败：机载端先抓取当前位置并进入悬停制动，
+  首次速度超限立即记为 `1/10`，之后默认每 1 秒重判；任一次合格即清零并启动原航点任务。
+- 启动速度连续失败 10 次后，`WaypointStartTracker` 锁存异常并阻止原任务稍后自行启动，
+  机载端设置既有 `vehicle_abnormal` 及明确原因，由任务 22 的异常返航/降落/入库清除链路接管。
+  重试期间只发布 `STATUS_RUNNING`，不会再用终态失败卡死上位机巡检组合。
+- `waypoint_start_retry_interval_seconds` 与 `waypoint_start_failure_limit` 独立可配，默认分别为
+  1 秒和 10 次；启动与入点两套计数互不污染，取消、新任务和异常清除都会重置启动历史。
+- 普通三包构建、ROS/C++ 19 tests、Python 145 passed 和无飞行 smoke 均通过。真实 JAR + Qt +
+  domain 231 SITL 用 S 曲线/轨迹 PD+DOB 连续验证两轮，分别在 `0.529211 m/s`、`0.461221 m/s`
+  命中 `1/10` 后恢复并完成巡检/降落，最终均 `armed=false`、无异常且无残留进程。全程未连接或
+  操作实机。详见 `agent/report/report-2026-08-19-waypoint-start-speed-retry-fix.md`。

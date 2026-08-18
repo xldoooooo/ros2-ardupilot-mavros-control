@@ -1101,6 +1101,7 @@ def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> N
         assert "0C: 仿真低于 20%" in json_guide
         assert "03: 起飞至设定高度" in json_guide
         assert "08: 仅巡检航点全部完成时发送" in json_guide
+        assert "平滑任务启动余速或入点连续失败达阈值" in json_guide
         for command_no in ("01", "02", "03", "05", "06", "07"):
             assert f"接收命令 {command_no}（BROADCAST）" in json_guide
         for status_no in (

@@ -158,6 +158,8 @@ private:
   void check_origin_confirmation_timeout(const SteadyTime & now);
 
   // Onboard task, safety and output helpers.
+  void update_waypoint_start(const SteadyTime & now);
+  void activate_waypoint_execution(const CommandIdentity & command);
   void update_waypoint_executor(const SteadyTime & now, double dt_seconds);
   void update_motion_reference(double dt_seconds);
   void enforce_safety(const SteadyTime & now);
@@ -213,6 +215,8 @@ private:
   double max_reference_error_xy_{0.8};
   double max_reference_error_z_{0.5};
   double waypoint_start_speed_tolerance_{0.20};
+  double waypoint_start_retry_interval_seconds_{1.0};
+  int waypoint_start_failure_limit_{10};
   double waypoint_arrival_speed_tolerance_{0.10};
   double waypoint_arrival_retry_interval_seconds_{1.0};
   int waypoint_arrival_failure_limit_{10};
@@ -258,6 +262,8 @@ private:
   // Waypoint queue and arrival dwell state live onboard, never in the GUI process.
   std::vector<guided_interfaces::msg::Waypoint> waypoints_;
   std::size_t waypoint_index_{0};
+  WaypointStartTracker waypoint_start_tracker_{1.0, 10};
+  bool waypoint_start_pending_{false};
   WaypointArrivalTracker waypoint_arrival_tracker_{1.0, 10};
   bool vehicle_abnormal_{false};
   std::string vehicle_abnormal_reason_;
