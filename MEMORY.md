@@ -769,3 +769,26 @@
   `/home/nvidia/scq/projects/backups/ros2-ardupilot-sitl-hardware-pre-task21-20260818-001848.tar.gz`，
   SHA-256 `a218466425123f618acbf8887171fb57dfeb8df23c59482495af8c52a5306591`；详见
   `agent/report/report-2026-08-18-task21-websocket-implement.md`。
+
+## 2026-08-18 任务 22 上位机交互时序与航点入点恢复
+
+- 任务 22 已取代任务 21 的单动作语义：命令 03 由可靠 ROS ticket 串行推进“起飞至
+  GUI 高度→巡检航点→末点 LAND”；05、低电量和无人机异常均使用当前三项航点组合
+  执行 `(0,0,起飞高度)`，稳定后自动 LAND。返航任务不发 09/08，08 只在巡检全部
+  航点成功后发送一次。
+- 状态 01 已实现为入库边沿：默认严格要求 `|X|<1.0 m`、`|Y|<1.0 m`、`|Z|<0.5 m`；
+  任务下发/执行期间锁定，巡检降落后默认延时 60 s，返航降落入库后立即允许，
+  紧急降落在机库外时继续锁定，异常返航入库后先用新命令 6 清除异常再发 01。
+  阈值和延时由 `UPSTREAM_HANGAR_*` / `UPSTREAM_INSPECTION_STANDBY_DELAY_SECONDS`
+  配置，机库硬件证据仍保留 TODO。
+- 机载航点入点改为 `WaypointArrivalTracker`：首次进入位置候选区但速度不满足时
+  立即计 1 次，之后每 1 s 重判并继续保持当前航点；稳定入点后清零，达 10 次设置
+  持久 `vehicle_abnormal` 及原因，地面站触发异常返航。`ControlStatus` 增加失败数/异常
+  字段，`FlightCommand` 增加清除命令，线级接口和两包版本同步升为 3.1 / 3.1.0。
+- 上位机面板 URL/无人机编号保存到用户配置 JSON，下次进程恢复；原始报文增加
+  循环“查找下一个”，映射和 JSON 说明已同步新时序。
+- 最终普通三包构建成功，ROS/C++ 为 17 tests 零失败，Python 为 145 passed，隔离
+  smoke 确认 3.1 / `armed=false` / 零 setpoint。真实 JAR + Qt + domain 231 SITL 独立运行两轮，
+  两轮均为 `01=4, 02=1, 03=1, 05=1, 07=3, 08=1, 09=2`，最终解除武装、无异常
+  且无测试进程残留。全程未连接或操作实机，`video-service/` 未修改。详见
+  `agent/report/report-2026-08-18-task22-timeseq.md`。

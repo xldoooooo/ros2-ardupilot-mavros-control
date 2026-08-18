@@ -134,8 +134,12 @@ class _VehicleStateStore:
                 and message.lease_active
                 and message.lease_owner == self._source_id
             ),
+            active_command_sequence=message.active_command_sequence,
             waypoint_index=message.waypoint_index,
             waypoint_count=message.waypoint_count,
+            waypoint_arrival_failure_count=message.waypoint_arrival_failure_count,
+            vehicle_abnormal=message.vehicle_abnormal,
+            vehicle_abnormal_reason=message.vehicle_abnormal_reason,
             message_rates_configured=message.message_rates_configured,
             thrust_mode_verified=message.thrust_mode_verified,
             hover_throttle=message.hover_throttle,
@@ -542,6 +546,10 @@ class GroundStationRosController:
     def request_set_rates(self) -> int:
         """请求机载 MAVROS 配置必要高频消息。"""
         return self._enqueue("set_rates")
+
+    def request_clear_abnormal(self) -> int:
+        """在已降落且地面站确认入库后清除机载异常标志。"""
+        return self._enqueue("clear_abnormal")
 
     def request_waypoints(
         self,
@@ -1424,6 +1432,9 @@ class GroundStationRosController:
                     "cancel": ros_entities["FlightCommand"].Request.COMMAND_CANCEL,
                     "set_rates": (
                         ros_entities["FlightCommand"].Request.COMMAND_CONFIGURE_RATES
+                    ),
+                    "clear_abnormal": (
+                        ros_entities["FlightCommand"].Request.COMMAND_CLEAR_ABNORMAL
                     ),
                 }
                 if command.name not in command_codes:

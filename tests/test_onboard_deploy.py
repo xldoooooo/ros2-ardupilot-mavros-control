@@ -149,7 +149,7 @@ def test_runtime_rejects_stale_onboard_install_versions(tmp_path) -> None:
     source_manifest.parent.mkdir(parents=True)
     installed_manifest.parent.mkdir(parents=True)
     source_manifest.write_text(
-        "<package><version>3.0.0</version></package>\n", encoding="utf-8"
+        "<package><version>3.1.0</version></package>\n", encoding="utf-8"
     )
     installed_manifest.write_text(
         "<package><version>2.2.0</version></package>\n", encoding="utf-8"
@@ -161,10 +161,10 @@ def test_runtime_rejects_stale_onboard_install_versions(tmp_path) -> None:
     )
     stale = run_bash(command)
     assert stale.returncode != 0
-    assert "source=3.0.0, installed=2.2.0" in stale.stderr
+    assert "source=3.1.0, installed=2.2.0" in stale.stderr
 
     installed_manifest.write_text(
-        "<package><version>3.0.0</version></package>\n", encoding="utf-8"
+        "<package><version>3.1.0</version></package>\n", encoding="utf-8"
     )
     current = run_bash(command)
     assert current.returncode == 0, current.stderr

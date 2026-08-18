@@ -21,8 +21,8 @@ namespace onboard_control
 namespace
 {
 
-// 3.0 adds selectable reference generators and trajectory-feedback diagnostics.
-constexpr char kInterfaceVersion[] = "3.0";
+// 3.1 adds waypoint-arrival retry diagnostics and an explicit abnormal-state flag.
+constexpr char kInterfaceVersion[] = "3.1";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -90,12 +90,10 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     declare_parameter<double>("waypoint_start_speed_tolerance", 0.20);
   waypoint_arrival_speed_tolerance_ =
     declare_parameter<double>("waypoint_arrival_speed_tolerance", 0.10);
-  waypoint_actual_speed_guard_xy_ =
-    declare_parameter<double>("waypoint_actual_speed_guard_xy", 0.42);
-  waypoint_actual_speed_guard_z_ =
-    declare_parameter<double>("waypoint_actual_speed_guard_z", 0.24);
-  waypoint_speed_guard_observations_ =
-    declare_parameter<int>("waypoint_speed_guard_observations", 5);
+  waypoint_arrival_retry_interval_seconds_ =
+    declare_parameter<double>("waypoint_arrival_retry_interval_seconds", 1.0);
+  waypoint_arrival_failure_limit_ =
+    declare_parameter<int>("waypoint_arrival_failure_limit", 10);
   max_clock_skew_seconds_ = declare_parameter<double>("max_clock_skew_seconds", 2.0);
   mavros_prefix_ = declare_parameter<std::string>("mavros_prefix", "/mavros");
   interface_prefix_ =
@@ -191,9 +189,14 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     fcu_parameter_check_initial_delay_seconds_ > 60.0 ||
     link_loss_land_timeout_seconds_ <= 0.0 || land_confirmation_timeout_seconds_ < 10.0 ||
     land_confirmation_timeout_seconds_ > 600.0 || max_velocity_xy_ <= 0.0 ||
-    max_velocity_z_ <= 0.0 || waypoint_start_speed_tolerance_ <= 0.0 ||
-    waypoint_arrival_speed_tolerance_ <= 0.0 || waypoint_actual_speed_guard_xy_ <= 0.0 ||
-    waypoint_actual_speed_guard_z_ <= 0.0 || waypoint_speed_guard_observations_ < 1 ||
+    max_velocity_z_ <= 0.0 || !std::isfinite(waypoint_tolerance_) ||
+    waypoint_tolerance_ <= 0.0 || !std::isfinite(waypoint_hold_seconds_) ||
+    waypoint_hold_seconds_ < 0.0 || waypoint_start_speed_tolerance_ <= 0.0 ||
+    !std::isfinite(waypoint_arrival_speed_tolerance_) ||
+    waypoint_arrival_speed_tolerance_ <= 0.0 ||
+    !std::isfinite(waypoint_arrival_retry_interval_seconds_) ||
+    waypoint_arrival_retry_interval_seconds_ <= 0.0 ||
+    waypoint_arrival_failure_limit_ < 1 ||
     controller_parameters_.hover_throttle <= 0.0 ||
     controller_parameters_.hover_throttle >= 1.0 || controller_parameters_.thrust_ratio <= 1.0)
   {
@@ -205,6 +208,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   {
     throw std::invalid_argument("控制增益或航点参考生成参数非法");
   }
+  waypoint_arrival_tracker_ = WaypointArrivalTracker(
+    waypoint_arrival_retry_interval_seconds_, waypoint_arrival_failure_limit_);
   controller_ = DobController(controller_parameters_);
 
   attitude_topic_ = mavros_prefix_ + "/setpoint_raw/attitude";
@@ -751,6 +756,23 @@ void OnboardControlNode::on_flight_command(
       response->accepted = true;
       response->message = "消息频率配置已启动";
       break;
+    case FlightCommand::Request::COMMAND_CLEAR_ABNORMAL:
+      command.name = "clear_abnormal";
+      if (armed_) {
+        response->message = "飞行中禁止清除无人机异常状态";
+        return;
+      }
+      // TODO(机库联动): 当前由地面站在解除武装且 XYZ 进入可配机库阈值后
+      // 请求清除；待机库设备接入后，还需验证硬件入库证据。
+      vehicle_abnormal_ = false;
+      vehicle_abnormal_reason_.clear();
+      waypoint_arrival_tracker_.reset();
+      publish_result(
+        command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
+        "无人机异常状态已清除");
+      response->accepted = true;
+      response->message = "无人机异常状态已清除";
+      break;
     default:
       response->message = "未知飞行命令";
       break;
@@ -932,13 +954,12 @@ void OnboardControlNode::start_waypoint_task(
   active_task_started_ = SteadyClock::now();
   waypoints_ = waypoints;
   waypoint_index_ = 0;
-  waypoint_arrival_started_.reset();
+  waypoint_arrival_tracker_.reset();
   active_reference_generator_ = reference_generator;
   active_tracking_controller_ = tracking_controller;
   reference_generator_ = make_reference_generator(
     active_reference_generator_, reference_generator_parameters_);
   generator_waypoint_initialized_ = false;
-  waypoint_speed_guard_count_ = 0;
   controller_engaged_ = true;
   clear_failsafe_locked();
   publish_result(
@@ -1033,7 +1054,7 @@ void OnboardControlNode::reset_waypoint_reference_state()
   reference_generator_.reset();
   generator_waypoint_initialized_ = false;
   generator_waypoint_index_ = 0;
-  waypoint_speed_guard_count_ = 0;
+  waypoint_arrival_tracker_.reset();
   active_reference_generator_ = ReferenceGeneratorType::kStepPosition;
   active_reference_phase_ = ReferencePhase::kIdle;
 }
@@ -1102,7 +1123,6 @@ void OnboardControlNode::cancel_active_task(const std::string & reason)
   active_task_ = ActiveTask::kNone;
   waypoints_.clear();
   waypoint_index_ = 0;
-  waypoint_arrival_started_.reset();
   reset_waypoint_reference_state();
   if (!armed_) {
     // 武装前失败/取消不得迫使操作者起飞再降落才能更改实验配置。
@@ -1115,7 +1135,6 @@ void OnboardControlNode::fail_active_task(const std::string & reason, const bool
   const CommandIdentity failed = active_command_;
   active_task_ = ActiveTask::kNone;
   waypoints_.clear();
-  waypoint_arrival_started_.reset();
   reset_waypoint_reference_state();
   if (!armed_) {
     clear_waypoint_configuration_lock();
@@ -1558,22 +1577,6 @@ void OnboardControlNode::update_waypoint_executor(
     return;
   }
 
-  // 平滑方法额外监控实际速度；基线方法完全保留旧行为与到达语义。
-  if (active_reference_generator_ != ReferenceGeneratorType::kStepPosition) {
-    const bool speed_exceeded =
-      vehicle_.velocity.head<2>().norm() > waypoint_actual_speed_guard_xy_ ||
-      std::abs(vehicle_.velocity.z()) > waypoint_actual_speed_guard_z_;
-    waypoint_speed_guard_count_ = speed_exceeded ? waypoint_speed_guard_count_ + 1 : 0;
-    if (waypoint_speed_guard_count_ >= waypoint_speed_guard_observations_) {
-      std::ostringstream reason;
-      reason << "航点实际速度持续超过保护阈值：XY="
-             << vehicle_.velocity.head<2>().norm() << " m/s, Z="
-             << std::abs(vehicle_.velocity.z()) << " m/s";
-      fail_active_task(reason.str(), false);
-      return;
-    }
-  }
-
   if (!generator_waypoint_initialized_ || generator_waypoint_index_ != waypoint_index_) {
     initialize_waypoint_segment();
   }
@@ -1592,24 +1595,39 @@ void OnboardControlNode::update_waypoint_executor(
 
   const double distance = (vehicle_.position - target).norm();
   const bool baseline = active_reference_generator_ == ReferenceGeneratorType::kStepPosition;
-  const bool settled = baseline ||
-    (generated.finished && vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_);
-  if (distance >= waypoint_tolerance_ || !settled) {
-    waypoint_arrival_started_.reset();
-    return;
-  }
-  if (!waypoint_arrival_started_.has_value()) {
-    waypoint_arrival_started_ = now;
-    return;
-  }
-  if (std::chrono::duration<double>(now - *waypoint_arrival_started_).count() <
-    waypoint_hold_seconds_)
+  const bool reference_ready = baseline || generated.finished;
+  const bool attempt_candidate = reference_ready && distance < waypoint_tolerance_;
+  const bool arrival_satisfied = attempt_candidate &&
+    vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_;
+  const int previous_failures = waypoint_arrival_tracker_.failure_count();
+  const WaypointArrivalState arrival = waypoint_arrival_tracker_.update(
+    now, attempt_candidate, arrival_satisfied, waypoint_hold_seconds_);
+  if (waypoint_arrival_tracker_.failure_count() > previous_failures &&
+    arrival != WaypointArrivalState::kAbnormal)
   {
+    std::ostringstream retry;
+    retry << "航点 " << waypoint_index_ + 1 << "/" << waypoints_.size()
+          << " 入点尝试失败 " << waypoint_arrival_tracker_.failure_count()
+          << "/" << waypoint_arrival_failure_limit_
+          << "，继续保持当前航点并等待稳定";
+    set_status_message(retry.str(), StatusLogLevel::kWarn);
+  }
+  if (arrival == WaypointArrivalState::kAbnormal && !vehicle_abnormal_) {
+    std::ostringstream reason;
+    reason << "无人机状态异常：航点 " << waypoint_index_ + 1 << "/"
+           << waypoints_.size() << " 连续入点失败 "
+           << waypoint_arrival_tracker_.failure_count() << " 次，distance="
+           << distance << " m, speed=" << vehicle_.velocity.norm() << " m/s";
+    vehicle_abnormal_ = true;
+    vehicle_abnormal_reason_ = reason.str();
+    set_status_message(vehicle_abnormal_reason_, StatusLogLevel::kError);
+    // 只标记异常并继续保持当前航点；返航组合由地面站根据权威状态下发。
+  }
+  if (arrival != WaypointArrivalState::kReached) {
     return;
   }
 
   ++waypoint_index_;
-  waypoint_arrival_started_.reset();
   if (waypoint_index_ >= waypoints_.size()) {
     const CommandIdentity completed = active_command_;
     const std::uint32_t count = static_cast<std::uint32_t>(waypoints_.size());
@@ -1629,7 +1647,6 @@ void OnboardControlNode::update_waypoint_executor(
   }
 
   generator_waypoint_initialized_ = false;
-  waypoint_speed_guard_count_ = 0;
   const auto & next = waypoints_[waypoint_index_];
   std::ostringstream stream;
   stream << "前往航点 " << waypoint_index_ + 1 << "/" << waypoints_.size()
@@ -1683,7 +1700,6 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
     active_task_ = ActiveTask::kNone;
     waypoints_.clear();
-    waypoint_arrival_started_.reset();
     reset_waypoint_reference_state();
     activate_tracking_controller(TrackingControllerType::kPositionPdDob);
     failsafe_reason_ = "飞控模式被外部切换，机载服务已停止发送 setpoint";
@@ -1861,6 +1877,10 @@ void OnboardControlNode::status_tick()
   message.waypoint_index = waypoints_.empty() ? 0U :
     static_cast<std::uint32_t>(std::min(waypoint_index_ + 1, waypoints_.size()));
   message.waypoint_count = static_cast<std::uint32_t>(waypoints_.size());
+  message.waypoint_arrival_failure_count =
+    static_cast<std::uint32_t>(waypoint_arrival_tracker_.failure_count());
+  message.vehicle_abnormal = vehicle_abnormal_;
+  message.vehicle_abnormal_reason = vehicle_abnormal_reason_;
   message.message_rates_configured = message_rates_configured_;
   message.thrust_mode_verified = thrust_mode_verified_;
   message.hover_throttle = controller_.hover_throttle();

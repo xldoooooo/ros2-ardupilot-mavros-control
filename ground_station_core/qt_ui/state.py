@@ -80,6 +80,8 @@ def derive_availability(
         reason = "尚未验证 GUID_OPTIONS 真实推力语义"
     elif snapshot.setpoint_conflict:
         reason = "检测到姿态 setpoint 发布者冲突"
+    elif snapshot.vehicle_abnormal:
+        reason = snapshot.vehicle_abnormal_reason or "无人机状态异常"
     else:
         reason = "飞行控制链路已就绪"
 
@@ -113,6 +115,7 @@ def derive_availability(
         origin_settings=origin_settings,
         takeoff=(
             control_ready
+            and not snapshot.vehicle_abnormal
             and not snapshot.armed
             and snapshot.active_mode is FlightMode.IDLE
         ),
@@ -130,6 +133,7 @@ def derive_availability(
             and airborne_control_mode
             and waypoint_count > 0
             and not waypoint_running
+            and not snapshot.vehicle_abnormal
         ),
         # 预览只发布本地只读 Marker/Path，不要求武装或控制租约；仍须绑定明确会话。
         waypoint_preview=(

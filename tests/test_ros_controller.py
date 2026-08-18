@@ -168,6 +168,74 @@ def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
     assert waypoint.yaw == 0.25
 
 
+def test_clear_abnormal_uses_dedicated_flight_command_code() -> None:
+    """入库恢复请求必须使用 3.1 接口的独立命令码。"""
+
+    class FakeRequest:
+        """保存 FlightCommand 服务请求及全部命令常量。"""
+
+        COMMAND_TAKEOFF = 1
+        COMMAND_LAND = 2
+        COMMAND_HOVER = 3
+        COMMAND_CANCEL = 4
+        COMMAND_CONFIGURE_RATES = 5
+        COMMAND_CLEAR_ABNORMAL = 6
+
+        def __init__(self) -> None:
+            self.stamp = None
+            self.source_id = ""
+            self.sequence = 0
+            self.ttl_ms = 0
+            self.command = 0
+            self.value = 0.0
+
+    class FakeClient:
+        """记录一次异步请求。"""
+
+        def __init__(self) -> None:
+            self.requests: list[FakeRequest] = []
+
+        @staticmethod
+        def service_is_ready() -> bool:
+            return True
+
+        def call_async(self, request: FakeRequest) -> object:
+            self.requests.append(request)
+            return SimpleNamespace(done=lambda: False)
+
+    class FakeNow:
+        @staticmethod
+        def to_msg() -> object:
+            return object()
+
+    controller = GroundStationRosController(source_id="gcs-clear-abnormal")
+    controller._state._snapshot = VehicleSnapshot(
+        onboard_available=True,
+        interface_version=INTERFACE_VERSION,
+        control_authority=True,
+        lease_owner="gcs-clear-abnormal",
+    )
+    controller._state._last_status_time = time.monotonic()
+    controller.enable_control()
+    ticket = controller.request_clear_abnormal()
+    client = FakeClient()
+    pending: dict[int, tuple] = {}
+    controller._process_one_command(
+        {
+            "node": SimpleNamespace(
+                get_clock=lambda: SimpleNamespace(now=lambda: FakeNow())
+            ),
+            "clients": {"flight": client},
+            "FlightCommand": SimpleNamespace(Request=FakeRequest),
+        },
+        pending,
+    )
+
+    assert ticket in pending
+    assert len(client.requests) == 1
+    assert client.requests[0].command == FakeRequest.COMMAND_CLEAR_ABNORMAL
+
+
 def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
     """预览生成球/编号/直线路径，且不进入飞行命令或租约序号通道。"""
     from builtin_interfaces.msg import Time
@@ -328,8 +396,12 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
         reference_phase=4,
         lease_owner="gcs-test",
         lease_active=True,
+        active_command_sequence=44,
         waypoint_index=2,
         waypoint_count=3,
+        waypoint_arrival_failure_count=9,
+        vehicle_abnormal=True,
+        vehicle_abnormal_reason="航点入点失败",
         message_rates_configured=True,
         thrust_mode_verified=True,
         hover_throttle=0.39,
@@ -351,6 +423,10 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     assert snapshot.active_mode is FlightMode.WAYPOINT
     assert snapshot.control_authority
     assert snapshot.waypoint_index == 2
+    assert snapshot.active_command_sequence == 44
+    assert snapshot.waypoint_arrival_failure_count == 9
+    assert snapshot.vehicle_abnormal
+    assert snapshot.vehicle_abnormal_reason == "航点入点失败"
     assert snapshot.control_rate_hz == 99.8
     assert snapshot.hover_throttle == 0.39
     assert snapshot.roll == -0.1
@@ -384,7 +460,7 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
 
 
 def test_previous_interface_version_is_rejected_before_command_transport() -> None:
-    """2.2 机载端不得在 ExecuteWaypoints 3.0 结构升级后被误判为兼容。"""
+    """2.2 机载端不得在 ControlStatus 3.1 升级后被误判为兼容。"""
     controller = GroundStationRosController(source_id="gcs-version-gate")
     controller._state._snapshot = VehicleSnapshot(
         onboard_available=True,
@@ -399,7 +475,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "3.0"
+    assert INTERFACE_VERSION == "3.1"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

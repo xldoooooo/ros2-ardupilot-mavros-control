@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,3 +55,28 @@ class UpstreamConnectionSnapshot:
     connected: bool
     state: str
     detail: str
+
+
+@dataclass(frozen=True)
+class UpstreamStandbyPolicy:
+    """机库位置阈值与巡检后待机延时的可配策略。"""
+
+    x_tolerance_meters: float = 1.0
+    y_tolerance_meters: float = 1.0
+    z_tolerance_meters: float = 0.5
+    inspection_delay_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        """拒绝会让机库判定失去边界的非有限或非正参数。"""
+        tolerances = (
+            self.x_tolerance_meters,
+            self.y_tolerance_meters,
+            self.z_tolerance_meters,
+        )
+        if not all(math.isfinite(value) and value > 0.0 for value in tolerances):
+            raise ValueError("机库 XYZ 阈值必须是正的有限数")
+        if (
+            not math.isfinite(self.inspection_delay_seconds)
+            or self.inspection_delay_seconds < 0.0
+        ):
+            raise ValueError("巡检后待机延时必须是非负有限数")

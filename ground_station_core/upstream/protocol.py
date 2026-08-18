@@ -10,6 +10,7 @@ from typing import Any
 from .mapping import UpstreamProtocolError, _client_no
 
 STATUS_LABELS = {
+    "01": "待机",
     "02": "接收航线任务",
     "03": "巡检中",
     "05": "返航",
@@ -54,7 +55,7 @@ def command_ack(client_no: str, command_no: str) -> dict[str, str]:
 def make_status(
     client_no: str, status: str, data: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
-    """构造一条已知状态；01 按任务要求故意不提供。"""
+    """构造一条已知状态。"""
     if status not in STATUS_LABELS:
         raise UpstreamProtocolError(f"不支持的 uavStatus: {status!r}")
     payload: dict[str, Any] = {
@@ -124,6 +125,10 @@ def json_examples(client_no: str) -> tuple[tuple[str, dict[str, Any]], ...]:
             (
                 "命令确认（PUBLISH）",
                 publish_envelope(client_no, command_ack(client_no, "02")),
+            ),
+            (
+                "状态 01 待机",
+                publish_envelope(client_no, make_status(client_no, "01")),
             ),
             (
                 "状态 02 接收航线任务",

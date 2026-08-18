@@ -7,6 +7,8 @@ import shlex
 import shutil
 import sys
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
@@ -47,6 +49,7 @@ from ..event_log import EventLog, LogLevel
 from ..models import (
     FlightMode,
     VehicleSnapshot,
+    WaypointFlightStrategy,
     WaypointReferenceGenerator,
     WaypointTrackingController,
 )
@@ -86,6 +89,25 @@ class _ThreadBridge(QObject):
     cleanup_done = Signal(object)
     shutdown_done = Signal(object)
     upstream_command = Signal(object)
+
+
+@dataclass
+class _UpstreamFlightSequence:
+    """由可靠 ROS ticket 推进的上位机组合飞行动作。"""
+
+    kind: str
+    phase: str
+    waypoints: tuple[tuple[float, float, float, float], ...] = ()
+    point_indexes: tuple[int, ...] = ()
+    strategy: WaypointFlightStrategy = WaypointFlightStrategy.STRAIGHT
+    reference_generator: WaypointReferenceGenerator = (
+        WaypointReferenceGenerator.STEP_POSITION
+    )
+    tracking_controller: WaypointTrackingController = (
+        WaypointTrackingController.POSITION_PD_DOB
+    )
+    ticket: int | None = None
+    standby_not_before: float = 0.0
 
 
 class GroundStationWindow(QMainWindow):
@@ -128,6 +150,8 @@ class GroundStationWindow(QMainWindow):
         self._waypoint_running = False
         self._waypoint_preview_active = False
         self._upstream_point_indexes: tuple[int, ...] = ()
+        self._upstream_sequence: _UpstreamFlightSequence | None = None
+        self._abnormal_return_latched = False
         self._pending_commands: set[str] = set()
         self._active_waypoint_ticket: int | None = None
         self._last_result_sequence = 0
@@ -815,6 +839,8 @@ class GroundStationWindow(QMainWindow):
         self._connection_mode = self._pending_environment_mode if success else "none"
         self._pending_environment_mode = "none"
         if not success:
+            self._upstream_sequence = None
+            self._abnormal_return_latched = False
             try:
                 self._upstream.reset_runtime()
             except Exception as exc:
@@ -917,6 +943,8 @@ class GroundStationWindow(QMainWindow):
         self._environment_active = False
         self._connection_mode = "none"
         self._pending_environment_mode = "none"
+        self._upstream_sequence = None
+        self._abnormal_return_latched = False
         try:
             self._upstream.reset_runtime()
         except Exception as exc:
@@ -961,6 +989,10 @@ class GroundStationWindow(QMainWindow):
                 return
             self.waypoints.replace_waypoints(command.waypoints, "上位机命令 02")
             self._upstream_point_indexes = command.point_indexes
+            try:
+                self._upstream.block_standby()
+            except Exception as exc:
+                self._events.warn("upstream", f"待机状态锁定失败：{exc}")
             self._handle_ignored_upstream_point_fields(command)
             self._events.info(
                 "upstream",
@@ -978,57 +1010,11 @@ class GroundStationWindow(QMainWindow):
             return
 
         if command.action is UpstreamAction.EXECUTE_WAYPOINTS:
-            if not snapshot.armed:
-                self._reject_upstream_command(command, "飞行器尚未起飞")
-                return
-            if not self._availability.waypoint_send:
-                self._reject_upstream_command(
-                    command, self._waypoint_rejection_reason(snapshot)
-                )
-                return
-            values = self.waypoints.waypoints
-            ticket = self._send_waypoints(values)
-            if ticket is None:
-                self._reject_upstream_command(command, "航点任务未进入本地发送队列")
-                return
-            point_indexes = self._point_indexes_for(values)
-            try:
-                self._upstream.begin_mission(ticket, "inspection", point_indexes)
-            except Exception as exc:
-                self._events.warn("upstream", f"巡检状态关联失败：{exc}")
+            self._start_inspection_sequence(command, snapshot)
             return
 
         if command.action is UpstreamAction.RETURN_HOME:
-            if not snapshot.armed:
-                self._reject_upstream_command(command, "飞行器尚未起飞")
-                return
-            if not self._availability.hover:
-                self._reject_upstream_command(command, self._availability.flight_reason)
-                return
-            return_point = (
-                0.0,
-                0.0,
-                float(self.operations.takeoff_altitude()),
-                float(snapshot.yaw),
-            )
-            ticket = self._send_waypoints(
-                (return_point,), allow_running_override=True
-            )
-            if ticket is None:
-                self._reject_upstream_command(command, "返航任务未进入本地发送队列")
-                return
-            # 新航点请求由机载端原子覆盖旧任务；GUI 同步显示实际返航点。
-            self.waypoints.replace_waypoints((return_point,), "上位机返航命令 05")
-            self._upstream_point_indexes = (1,)
-            try:
-                self._upstream.begin_mission(ticket, "return", (1,))
-            except Exception as exc:
-                self._events.warn("upstream", f"返航状态关联失败：{exc}")
-            self._events.info(
-                "upstream",
-                "上位机命令 05 已覆盖当前任务并排队原点航点",
-            )
-            self._refresh()
+            self._start_return_sequence("return", snapshot, command=command)
             return
 
         if command.action is UpstreamAction.TAKEOFF:
@@ -1043,7 +1029,7 @@ class GroundStationWindow(QMainWindow):
             if not self._availability.land:
                 self._reject_upstream_command(command, self._availability.flight_reason)
                 return
-            ticket = self._land()
+            ticket = self._land(refresh_after_queue=False)
             if ticket is None:
                 self._reject_upstream_command(command, "降落操作未获得本地确认")
                 return
@@ -1051,6 +1037,21 @@ class GroundStationWindow(QMainWindow):
                 self._upstream.begin_landing(ticket)
             except Exception as exc:
                 self._events.warn("upstream", f"降落状态关联失败：{exc}")
+            if command.action is UpstreamAction.EMERGENCY_LAND:
+                try:
+                    self._upstream.block_standby()
+                except Exception as exc:
+                    self._events.warn("upstream", f"待机状态锁定失败：{exc}")
+                self._upstream_sequence = _UpstreamFlightSequence(
+                    kind="emergency", phase="land", ticket=ticket
+                )
+            else:
+                self._upstream_sequence = None
+                try:
+                    self._upstream.release_standby()
+                except Exception as exc:
+                    self._events.warn("upstream", f"待机状态解锁失败：{exc}")
+            self._refresh()
             return
 
         self._reject_upstream_command(command, "当前地面站没有该动作实现")
@@ -1063,15 +1064,321 @@ class GroundStationWindow(QMainWindow):
         self._events.warn("upstream", message)
         self.activity_banner.set_message(message, LogLevel.WARN)
 
-    def _waypoint_rejection_reason(self, snapshot: VehicleSnapshot) -> str:
-        """给 03 返回比通用飞行链路状态更精确的本地门控原因。"""
-        if not self.waypoints.waypoints:
-            return "GUI 航点列表为空，请先下发命令 02"
-        if self._waypoint_running:
-            return "已有航点任务正在执行"
+    def _start_inspection_sequence(
+        self, command: UpstreamCommand, snapshot: VehicleSnapshot
+    ) -> None:
+        """把 03 组合为起飞、巡检航点和末点降落。"""
+        values = self.waypoints.waypoints
+        if not values:
+            self._reject_upstream_command(command, "GUI 航点列表为空，请先下发命令 02")
+            return
+        if self._upstream_sequence is not None:
+            self._reject_upstream_command(command, "已有上位机组合动作正在执行")
+            return
+        if snapshot.vehicle_abnormal:
+            self._reject_upstream_command(
+                command,
+                snapshot.vehicle_abnormal_reason or "无人机状态异常",
+            )
+            return
+        # 03 的协议语义是完整组合，已在飞行时不能跳过起飞阶段。
+        if snapshot.armed:
+            self._reject_upstream_command(command, "飞行器已在飞行，命令 03 必须从起飞开始")
+            return
+        if not self._availability.takeoff:
+            self._reject_upstream_command(command, self._availability.flight_reason)
+            return
+
+        sequence = _UpstreamFlightSequence(
+            kind="inspection",
+            phase="takeoff",
+            waypoints=values,
+            point_indexes=self._point_indexes_for(values),
+            strategy=self.waypoints.selected_strategy(),
+            reference_generator=self.waypoints.selected_reference_generator(),
+            tracking_controller=self.waypoints.selected_tracking_controller(),
+        )
+        self._upstream_sequence = sequence
+        try:
+            self._upstream.block_standby()
+        except Exception as exc:
+            self._events.warn("upstream", f"待机状态锁定失败：{exc}")
+
+        ticket = self._takeoff(refresh_after_queue=False)
+        if ticket is None:
+            self._abort_upstream_sequence("起飞操作未获得本地确认")
+            return
+        sequence.ticket = ticket
+        self._events.info(
+            "upstream",
+            "上位机命令 03 已启动组合动作：起飞→巡检航点→末点降落",
+        )
+        self._refresh()
+
+    def _start_return_sequence(
+        self,
+        kind: str,
+        snapshot: VehicleSnapshot,
+        *,
+        command: UpstreamCommand | None = None,
+    ) -> bool:
+        """以当前三项航点组合执行原点航点，稳定后降落。"""
+        active = self._upstream_sequence
+        if active is not None and active.kind in {
+            "return",
+            "low_power",
+            "abnormal",
+            "emergency",
+        }:
+            if command is not None:
+                self._reject_upstream_command(command, "返航或降落组合已在执行")
+            return False
         if not snapshot.armed:
-            return "飞行器尚未起飞"
-        return self._availability.flight_reason
+            if command is not None:
+                self._reject_upstream_command(command, "飞行器尚未起飞")
+            return False
+        if not self._availability.hover:
+            if command is not None:
+                self._reject_upstream_command(command, self._availability.flight_reason)
+            else:
+                self._events.warn(
+                    "upstream",
+                    f"无法启动 {kind} 返航：{self._availability.flight_reason}",
+                )
+            return False
+
+        # TODO(返航机库): 当前以本地 ENU 原点与起飞高度作为机库上方点；
+        # 待机库设备接入后，应改为实际引导/对接位。
+        return_point = (
+            0.0,
+            0.0,
+            float(self.operations.takeoff_altitude()),
+            float(snapshot.yaw),
+        )
+        sequence = _UpstreamFlightSequence(
+            kind=kind,
+            phase="waypoints_pending",
+            waypoints=(return_point,),
+            point_indexes=(1,),
+            strategy=self.waypoints.selected_strategy(),
+            reference_generator=self.waypoints.selected_reference_generator(),
+            tracking_controller=self.waypoints.selected_tracking_controller(),
+        )
+        self._upstream_sequence = sequence
+        try:
+            self._upstream.block_standby()
+        except Exception as exc:
+            self._events.warn("upstream", f"待机状态锁定失败：{exc}")
+        if kind == "low_power":
+            # TODO(低电量充电): 当前仅执行返航与降落，待充电设备接入后
+            # 再增加对接、充电和续检策略。
+            self._events.warn("upstream", "低电量已触发自动返航与降落组合")
+        elif kind == "abnormal":
+            # TODO(异常策略): 当前只有入点连续失败会标记异常；后续
+            # 应把其他权威健康项纳入同一分类与恢复策略。
+            self._events.error(
+                "upstream",
+                "无人机状态异常已触发返航与降落组合："
+                f"{snapshot.vehicle_abnormal_reason or '--'}",
+            )
+        self._submit_sequence_waypoints(sequence)
+        if kind == "abnormal" and sequence.ticket is not None:
+            self._abnormal_return_latched = True
+        return sequence.ticket is not None
+
+    def _handle_vehicle_abnormal(self, snapshot: VehicleSnapshot) -> None:
+        """把机载异常边沿只转换为一次返航/清除组合。"""
+        if not snapshot.vehicle_abnormal:
+            self._abnormal_return_latched = False
+            return
+        sequence = self._upstream_sequence
+        if sequence is not None and sequence.kind in {
+            "return",
+            "low_power",
+            "emergency",
+        }:
+            sequence.kind = "abnormal"
+            self._abnormal_return_latched = True
+            return
+        if self._abnormal_return_latched:
+            return
+        if not snapshot.armed:
+            try:
+                in_hangar = self._upstream.is_in_hangar(snapshot)
+            except Exception as exc:
+                self._events.warn("upstream", f"机库位置判定失败：{exc}")
+                return
+            if not in_hangar:
+                return
+            try:
+                self._upstream.block_standby()
+            except Exception as exc:
+                self._events.warn("upstream", f"待机状态锁定失败：{exc}")
+            self._upstream_sequence = _UpstreamFlightSequence(
+                kind="abnormal", phase="standby"
+            )
+            self._abnormal_return_latched = True
+            return
+        self._start_return_sequence("abnormal", snapshot)
+
+    def _submit_sequence_waypoints(
+        self, sequence: _UpstreamFlightSequence
+    ) -> None:
+        """只在当前序列仍有效时下发其原子航点任务。"""
+        if self._upstream_sequence is not sequence:
+            return
+        # 先切换到不可重入阶段；_send_waypoints 可能会触发 Qt 刷新。
+        sequence.phase = "waypoints_submitting"
+        ticket = self._send_waypoints(
+            sequence.waypoints,
+            sequence.strategy,
+            sequence.reference_generator,
+            sequence.tracking_controller,
+            allow_running_override=sequence.kind != "inspection",
+            refresh_after_queue=False,
+        )
+        if ticket is None:
+            self._abort_upstream_sequence("航点阶段未进入本地发送队列")
+            return
+        sequence.phase = "waypoints"
+        sequence.ticket = ticket
+        mission_kind = "inspection" if sequence.kind == "inspection" else "return"
+        try:
+            self._upstream.begin_mission(
+                ticket, mission_kind, sequence.point_indexes
+            )
+        except Exception as exc:
+            self._events.warn("upstream", f"任务状态关联失败：{exc}")
+        if sequence.kind != "inspection":
+            # 新航点请求由机载端原子覆盖旧任务；GUI 同步显示真实返航点。
+            self.waypoints.replace_waypoints(
+                sequence.waypoints, "上位机返航组合"
+            )
+            self._upstream_point_indexes = (1,)
+        self._events.info(
+            "upstream",
+            f"{sequence.kind} 组合已排队 {len(sequence.waypoints)} 个航点",
+        )
+        self._refresh()
+
+    def _observe_upstream_sequence_result(self, result: object) -> None:
+        """仅用当前阶段 ticket 的可靠终态推进下一阶段。"""
+        from ..models import CommandResult
+
+        if not isinstance(result, CommandResult) or not result.final:
+            return
+        sequence = self._upstream_sequence
+        if sequence is None or result.ticket != sequence.ticket:
+            return
+        if not result.success:
+            self._abort_upstream_sequence(
+                f"{sequence.phase} 阶段失败：{result.message}"
+            )
+            return
+        if sequence.phase == "takeoff":
+            sequence.phase = "waypoints_pending"
+            sequence.ticket = None
+        elif sequence.phase == "waypoints":
+            sequence.phase = "land_pending"
+            sequence.ticket = None
+        elif sequence.phase == "land":
+            sequence.phase = "standby"
+            sequence.ticket = None
+            delay = (
+                self._upstream.standby_policy.inspection_delay_seconds
+                if sequence.kind == "inspection"
+                else 0.0
+            )
+            sequence.standby_not_before = time.monotonic() + delay
+            self._events.info(
+                "upstream",
+                f"{sequence.kind} 已降落，待机判定将在 {delay:.1f} s 后开放",
+            )
+        elif sequence.phase == "clear_abnormal":
+            self._complete_upstream_sequence("异常已清除，允许发送待机 01")
+
+    def _drive_upstream_sequence(self, snapshot: VehicleSnapshot) -> None:
+        """在每次权威快照刷新后驱动已就绪但尚未下发的阶段。"""
+        sequence = self._upstream_sequence
+        if sequence is None:
+            return
+        if sequence.phase == "waypoints_pending":
+            if not snapshot.armed:
+                return
+            allowed = (
+                self._availability.waypoint_send
+                if sequence.kind == "inspection"
+                else self._availability.hover
+            )
+            if allowed:
+                self._submit_sequence_waypoints(sequence)
+            return
+        if sequence.phase == "land_pending":
+            if not snapshot.armed:
+                sequence.phase = "standby"
+                sequence.standby_not_before = time.monotonic()
+                return
+            if not self._availability.land:
+                return
+            # 先离开 pending，防止排队后的刷新重复下发 LAND。
+            sequence.phase = "land_submitting"
+            ticket = self._land(refresh_after_queue=False)
+            if ticket is None:
+                self._abort_upstream_sequence("降落阶段未获得本地确认")
+                return
+            sequence.phase = "land"
+            sequence.ticket = ticket
+            try:
+                self._upstream.begin_landing(ticket)
+            except Exception as exc:
+                self._events.warn("upstream", f"降落状态关联失败：{exc}")
+            self._refresh()
+            return
+        if sequence.phase != "standby":
+            return
+        if snapshot.armed or time.monotonic() < sequence.standby_not_before:
+            return
+        try:
+            in_hangar = self._upstream.is_in_hangar(snapshot)
+        except Exception as exc:
+            self._events.warn("upstream", f"机库位置判定失败：{exc}")
+            return
+        if not in_hangar:
+            return
+        if sequence.kind == "abnormal" and snapshot.vehicle_abnormal:
+            # TODO(异常清除): 现阶段的近原点判定只是机库证据占位；
+            # 未来必须在此叠加机库硬件确认后才允许清除。
+            ticket = self._ros.request_clear_abnormal()
+            self._pending_commands.add("clear_abnormal")
+            sequence.phase = "clear_abnormal"
+            sequence.ticket = ticket
+            self._events.info("upstream", "已入库并请求清除无人机异常状态")
+            return
+        self._complete_upstream_sequence("已降落且位于机库阈值内")
+
+    def _abort_upstream_sequence(self, reason: str) -> None:
+        """如实终止组合，不伪造后续阶段成功。"""
+        sequence = self._upstream_sequence
+        self._upstream_sequence = None
+        try:
+            self._upstream.release_standby()
+        except Exception as exc:
+            self._events.warn("upstream", f"待机状态解锁失败：{exc}")
+        label = sequence.kind if sequence is not None else "upstream"
+        message = f"{label} 组合已终止：{reason}"
+        self._events.error("upstream", message)
+        self.activity_banner.set_message(message, LogLevel.ERROR)
+
+    def _complete_upstream_sequence(self, reason: str) -> None:
+        """完成组合并解锁待机投影；01 仍由权威快照判定。"""
+        sequence = self._upstream_sequence
+        self._upstream_sequence = None
+        try:
+            self._upstream.release_standby()
+        except Exception as exc:
+            self._events.warn("upstream", f"待机状态解锁失败：{exc}")
+        label = sequence.kind if sequence is not None else "upstream"
+        self._events.info("upstream", f"{label} 组合完成：{reason}")
 
     def _point_indexes_for(
         self, waypoints: tuple[tuple[float, float, float, float], ...]
@@ -1104,7 +1411,7 @@ class GroundStationWindow(QMainWindow):
             "operator", f"手动操纵坐标系切换为「{label}」：{detail}"
         )
 
-    def _takeoff(self) -> int | None:
+    def _takeoff(self, *, refresh_after_queue: bool = True) -> int | None:
         """仿真直接请求起飞；实机仍须高风险确认。"""
         altitude = self.operations.takeoff_altitude()
         simulation = self._connection_mode == "simulation"
@@ -1122,10 +1429,11 @@ class GroundStationWindow(QMainWindow):
         self._pending_commands.add("takeoff")
         ticket = self._ros.request_takeoff(altitude)
         self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN)
-        self._refresh()
+        if refresh_after_queue:
+            self._refresh()
         return ticket
 
-    def _land(self) -> int | None:
+    def _land(self, *, refresh_after_queue: bool = True) -> int | None:
         """仿真直接请求 LAND；实机仍须危险操作确认。"""
         simulation = self._connection_mode == "simulation"
         if not simulation:
@@ -1141,7 +1449,8 @@ class GroundStationWindow(QMainWindow):
         self._pending_commands.add("land")
         ticket = self._ros.request_land()
         self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN)
-        self._refresh()
+        if refresh_after_queue:
+            self._refresh()
         return ticket
 
     def _send_motion(self, vx: float, vy: float, vz: float, yaw_rate: float) -> None:
@@ -1173,6 +1482,7 @@ class GroundStationWindow(QMainWindow):
         tracking_controller: object | None = None,
         *,
         allow_running_override: bool = False,
+        refresh_after_queue: bool = True,
     ) -> int | None:
         """确认组合语义后原子上传航点与三项飞行前锁定配置。"""
         from ..models import WaypointFlightStrategy
@@ -1265,7 +1575,8 @@ class GroundStationWindow(QMainWindow):
             values, flight_strategy, generator, controller
         )
         self._active_waypoint_ticket = ticket
-        self._refresh()
+        if refresh_after_queue:
+            self._refresh()
         return ticket
 
     def _confirm_clear_waypoints(self) -> None:
@@ -1460,8 +1771,17 @@ class GroundStationWindow(QMainWindow):
                     button.setEnabled(False)
             self._last_availability_render_key = render_key
 
+        self._drive_upstream_sequence(snapshot)
+        self._handle_vehicle_abnormal(snapshot)
+
         try:
-            self._upstream.observe_vehicle(snapshot, self._connection_mode)
+            low_power_return_required = self._upstream.observe_vehicle(
+                snapshot,
+                self._connection_mode,
+                can_takeoff=self._availability.takeoff,
+            )
+            if low_power_return_required:
+                self._start_return_sequence("low_power", snapshot)
         except Exception as exc:
             # 通讯插件任何故障都不得中断 10 Hz 原地面站刷新。
             self._events.warn("upstream", f"状态投影异常：{exc}")
@@ -1497,6 +1817,7 @@ class GroundStationWindow(QMainWindow):
                 self._upstream.observe_result(result)
             except Exception as exc:
                 self._events.warn("upstream", f"命令结果投影异常：{exc}")
+            self._observe_upstream_sequence_result(result)
             if result.command == "waypoints" and not stale_waypoint_result:
                 running = result.success and not result.final
                 if result.final:
@@ -1538,18 +1859,26 @@ class GroundStationWindow(QMainWindow):
                 f"ArduPilot 模式：{snapshot.autopilot_mode or '--'}",
             )
 
-        mode_tone = (
-            "bad"
-            if snapshot.active_mode is FlightMode.FAILSAFE
-            else "accent"
-            if snapshot.active_mode is not FlightMode.IDLE
-            else "neutral"
-        )
-        self.mode_badge.set_status(
-            snapshot.active_mode.value,
-            mode_tone,
-            snapshot.status_message or snapshot.failsafe_reason,
-        )
+        if snapshot.vehicle_abnormal:
+            self.mode_badge.set_status(
+                "无人机状态异常",
+                "bad",
+                snapshot.vehicle_abnormal_reason
+                or f"航点入点失败 {snapshot.waypoint_arrival_failure_count} 次",
+            )
+        else:
+            mode_tone = (
+                "bad"
+                if snapshot.active_mode is FlightMode.FAILSAFE
+                else "accent"
+                if snapshot.active_mode is not FlightMode.IDLE
+                else "neutral"
+            )
+            self.mode_badge.set_status(
+                snapshot.active_mode.value,
+                mode_tone,
+                snapshot.status_message or snapshot.failsafe_reason,
+            )
 
         if snapshot.setpoint_conflict:
             self.control_badge.set_status("SETPOINT CONFLICT", "bad")

@@ -4,6 +4,7 @@ uint8 COMMAND_LAND=2
 uint8 COMMAND_HOVER=3
 uint8 COMMAND_CANCEL=4
 uint8 COMMAND_CONFIGURE_RATES=5
+uint8 COMMAND_CLEAR_ABNORMAL=6
 
 builtin_interfaces/Time stamp
 string source_id

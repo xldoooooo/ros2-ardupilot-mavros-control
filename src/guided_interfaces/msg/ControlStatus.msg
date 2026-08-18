@@ -54,6 +54,9 @@ uint32 lease_remaining_ms
 uint64 active_command_sequence
 uint32 waypoint_index
 uint32 waypoint_count
+uint32 waypoint_arrival_failure_count
+bool vehicle_abnormal
+string vehicle_abnormal_reason
 bool message_rates_configured
 bool thrust_mode_verified
 float64 hover_throttle

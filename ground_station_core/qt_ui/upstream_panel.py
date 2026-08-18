@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -169,11 +170,20 @@ class UpstreamCommunicationPanel(QDialog):
         controls = QHBoxLayout()
         label = QLabel("RX/TX WebSocket 原始文本帧")
         label.setObjectName("mutedLabel")
+        self.raw_search_input = QLineEdit()
+        self.raw_search_input.setObjectName("upstreamRawFrameSearch")
+        self.raw_search_input.setPlaceholderText("搜索原始报文")
+        self.raw_search_button = QPushButton("查找下一个")
+        self.raw_search_button.setObjectName("searchUpstreamRawFramesButton")
+        self.raw_search_button.clicked.connect(self._find_next_raw_frame)
+        self.raw_search_input.returnPressed.connect(self._find_next_raw_frame)
         self.clear_raw_button = QPushButton("清空原始报文")
         self.clear_raw_button.setObjectName("clearUpstreamRawFramesButton")
         self.clear_raw_button.clicked.connect(self._clear_raw_frames)
         controls.addWidget(label)
         controls.addStretch(1)
+        controls.addWidget(self.raw_search_input)
+        controls.addWidget(self.raw_search_button)
         controls.addWidget(self.clear_raw_button)
         layout.addLayout(controls)
         self.raw_log = QPlainTextEdit()
@@ -235,6 +245,18 @@ class UpstreamCommunicationPanel(QDialog):
         self._service.journal.clear()
         self.raw_log.clear()
 
+    def _find_next_raw_frame(self) -> None:
+        """在当前原始报文文本内循环查找下一个简单关键词。"""
+        query = self.raw_search_input.text()
+        if not query:
+            return
+        if self.raw_log.find(query):
+            return
+        cursor = self.raw_log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        self.raw_log.setTextCursor(cursor)
+        self.raw_log.find(query)
+
     def _render_json_examples(self) -> None:
         """随无人机编号更新主题和完整 JSON 示例。"""
         client_no = self.client_no_input.text().strip()
@@ -254,8 +276,21 @@ class UpstreamCommunicationPanel(QDialog):
             f"控制主题: {control_topic}",
             f"状态主题: {report_topic}",
             "0A: 仿真发送 0~100 百分比；实机发送电压 V",
-            "0C: 仿真低于 20% 或实机低于 22.2 V 时仅告警上报",
-            "01: 当前不发送；异常恢复判定尚未实现",
+            "03: 起飞至设定高度 → 巡检航点 → 末点降落",
+            "05: 当前控制组合返回原点起飞高度 → 稳定降落",
+            "08: 仅巡检航点全部完成时发送；返航航点不发送",
+            "0C: 仿真低于 20% 或实机低于 22.2 V 时上报并触发返航降落",
+            (
+                "01: 可起飞或组合降落后，仅在 "
+                f"|X|<{self._service.standby_policy.x_tolerance_meters:.2f} m、"
+                f"|Y|<{self._service.standby_policy.y_tolerance_meters:.2f} m、"
+                f"|Z|<{self._service.standby_policy.z_tolerance_meters:.2f} m 时发送"
+            ),
+            (
+                "巡检降落后 01 延时: "
+                f"{self._service.standby_policy.inspection_delay_seconds:.1f} s"
+            ),
+            "入点连续失败达阈值会标记异常，执行返航降落后入库清除",
             "相机/云台/照片/FTP/RTSP/媒体路径: 当前未实现",
         ]
         for title, payload in examples:
@@ -263,3 +298,14 @@ class UpstreamCommunicationPanel(QDialog):
                 ("", title, json.dumps(payload, ensure_ascii=False, indent=2))
             )
         self.json_text.setPlainText("\n".join(sections))
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """关闭面板时保存最后有效输入，不断开现有会话。"""
+        try:
+            self._service.save_configuration(
+                self.url_input.text().strip(),
+                self.client_no_input.text().strip(),
+            )
+        except (TypeError, ValueError, UpstreamProtocolError):
+            pass
+        super().closeEvent(event)

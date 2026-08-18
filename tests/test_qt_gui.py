@@ -57,6 +57,7 @@ from ground_station_core.upstream.mapping import (  # noqa: E402
 )
 from ground_station_core.upstream.models import (  # noqa: E402
     UpstreamConnectionSnapshot,
+    UpstreamStandbyPolicy,
 )
 
 
@@ -104,6 +105,10 @@ class _FakeRosController:
 
     def request_land(self) -> int:
         return self._record("land")
+
+    def request_clear_abnormal(self) -> int:
+        """记录入库后的异常清除请求。"""
+        return self._record("clear_abnormal")
 
     def request_hover(self) -> int:
         return self._record("hover")
@@ -224,7 +229,9 @@ class _FakeUpstreamService:
     def __init__(self) -> None:
         self.journal = RawFrameJournal()
         self.command_mappings = COMMAND_MAPPINGS
+        self.standby_policy = UpstreamStandbyPolicy()
         self.calls: list[tuple[str, object]] = []
+        self.low_power_return_required = False
 
     def start(self) -> None:
         self.calls.append(("start", None))
@@ -243,8 +250,11 @@ class _FakeUpstreamService:
             "测试替身",
         )
 
-    def observe_vehicle(self, snapshot: object, mode: str) -> None:
-        self.calls.append(("vehicle", (snapshot, mode)))
+    def observe_vehicle(
+        self, snapshot: object, mode: str, *, can_takeoff: bool = False
+    ) -> bool:
+        self.calls.append(("vehicle", (snapshot, mode, can_takeoff)))
+        return self.low_power_return_required
 
     def observe_result(self, result: object) -> None:
         self.calls.append(("result", result))
@@ -264,6 +274,20 @@ class _FakeUpstreamService:
     def begin_landing(self, ticket: int) -> None:
         self.calls.append(("landing", ticket))
 
+    def block_standby(self) -> None:
+        self.calls.append(("standby_block", None))
+
+    def release_standby(self) -> None:
+        self.calls.append(("standby_release", None))
+
+    def is_in_hangar(self, snapshot: VehicleSnapshot) -> bool:
+        policy = self.standby_policy
+        return snapshot.local_position_valid and (
+            abs(snapshot.x) < policy.x_tolerance_meters
+            and abs(snapshot.y) < policy.y_tolerance_meters
+            and abs(snapshot.z) < policy.z_tolerance_meters
+        )
+
     def connect(self, url: str, client_no: str) -> None:
         self.calls.append(("connect", (url, client_no)))
 
@@ -272,6 +296,9 @@ class _FakeUpstreamService:
 
     def restart(self, url: str, client_no: str) -> None:
         self.calls.append(("restart", (url, client_no)))
+
+    def save_configuration(self, url: str, client_no: str) -> None:
+        self.calls.append(("save", (url, client_no)))
 
 
 def _application() -> QApplication:
@@ -427,6 +454,31 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert not conflict.start_environment
     assert not conflict.motion
     assert conflict.land
+
+    abnormal_ground = derive_availability(
+        replace(_operational_snapshot(armed=False), vehicle_abnormal=True),
+        ros_ready=True,
+        busy=False,
+        closing=False,
+        environment_active=True,
+        connection_mode="simulation",
+        waypoint_count=2,
+        waypoint_running=False,
+    )
+    abnormal_air = derive_availability(
+        replace(snapshot, vehicle_abnormal=True),
+        ros_ready=True,
+        busy=False,
+        closing=False,
+        environment_active=True,
+        connection_mode="simulation",
+        waypoint_count=2,
+        waypoint_running=False,
+    )
+    assert not abnormal_ground.takeoff
+    assert not abnormal_air.waypoint_send
+    assert abnormal_air.land and abnormal_air.hover
+    assert abnormal_air.flight_reason == "无人机状态异常"
 
     endpoint_conflict = derive_availability(
         replace(snapshot, endpoint_conflict=True),
@@ -787,7 +839,7 @@ def test_simulation_skips_land_confirmation_but_hardware_keeps_it() -> None:
 
 
 def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> None:
-    """01/02/03/05/07 复用仿真操作入口，并让航点、按钮和任务状态同步。"""
+    """03/05 按可靠终态串行起飞、航点、降落和待机阶段。"""
     window, ros = _window(_operational_snapshot(armed=False))
     upstream = window._upstream
     task = parse_command(
@@ -833,8 +885,13 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
 
         execute = parse_command({"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001")
         window._handle_upstream_command(execute)
+        assert ros.calls[-1] == (
+            "takeoff",
+            window.operations.takeoff_altitude(),
+        )
         assert not any(call[0] == "waypoints" for call in ros.calls)
-        assert "尚未起飞" in window.activity_banner.message_label.text()
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.phase == "takeoff"
 
         return_home = parse_command(
             {"clientNo": "UAV01001", "commandNo": "05"}, "UAV01001"
@@ -844,34 +901,70 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         assert len(ros.calls) == calls_before_return
         assert "尚未起飞" in window.activity_banner.message_label.text()
 
-        takeoff = parse_command({"clientNo": "UAV01001", "commandNo": "01"}, "UAV01001")
-        window._handle_upstream_command(takeoff)
-        assert ros.calls[-1][0] == "takeoff"
-        assert not window.operations.takeoff_button.isEnabled()
-
-        ros.current_snapshot = _operational_snapshot(armed=True)
-        window._pending_commands.clear()
+        # 只有起飞可靠终态到达后才下发巡检航点。
+        ros.results.append(CommandResult(1, 1, "takeoff", True, "起飞完成"))
+        ros.current_snapshot = replace(
+            _operational_snapshot(armed=True), active_command_sequence=1
+        )
         window._refresh()
-        window._handle_upstream_command(execute)
         assert ros.calls[-1][0] == "waypoints"
         assert window._waypoint_running
         assert ("mission", (2, "inspection", (8,))) in upstream.calls
         assert not window.waypoints.send_button.isEnabled()
 
+        # 巡检航点终态后立即在末点进入 LAND。
+        ros.results.append(CommandResult(2, 2, "waypoints", True, "巡检航点完成"))
+        ros.current_snapshot = replace(
+            ros.current_snapshot,
+            active_mode=FlightMode.HOVER,
+            active_command_sequence=2,
+        )
+        window._refresh()
+        assert ros.calls[-1][0] == "land"
+        assert ("landing", 3) in upstream.calls
+
+        # 巡检降落后的 60 s 参数化等待不能被提前释放。
+        ros.results.append(CommandResult(3, 3, "land", True, "降落完成"))
+        ros.current_snapshot = _operational_snapshot(armed=False)
+        window._refresh()
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.phase == "standby"
+        assert window._upstream_sequence.standby_not_before > 0.0
+        window._upstream_sequence.standby_not_before = 0.0
+        window._refresh()
+        assert window._upstream_sequence is None
+        assert ("standby_release", None) in upstream.calls
+
+        # 05 保留当前三项组合，返回原点起飞高度后降落。
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
         window.operations.takeoff_altitude_input.setValue(0.7)
         window._handle_upstream_command(return_home)
         assert ros.calls[-1][0] == "waypoints"
         return_points = ros.calls[-1][1][0]
         assert return_points[0][:3] == (0.0, 0.0, 0.7)
         assert window.waypoints.waypoints == return_points
-        assert ("mission", (3, "return", (1,))) in upstream.calls
+        assert ("mission", (4, "return", (1,))) in upstream.calls
+        ros.results.append(CommandResult(4, 4, "waypoints", True, "返航点完成"))
+        window._refresh()
+        assert ros.calls[-1][0] == "land"
+        assert ("landing", 5) in upstream.calls
 
+        ros.results.append(CommandResult(5, 5, "land", True, "返航降落完成"))
+        ros.current_snapshot = _operational_snapshot(armed=False)
+        window._refresh()
+        assert window._upstream_sequence is None
+
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
         emergency_land = parse_command(
             {"clientNo": "UAV01001", "commandNo": "07"}, "UAV01001"
         )
         window._handle_upstream_command(emergency_land)
         assert ros.calls[-1][0] == "land"
-        assert ("landing", 4) in upstream.calls
+        assert ("landing", 6) in upstream.calls
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.kind == "emergency"
         assert not window.operations.land_button.isEnabled()
     finally:
         _close_window(window)
@@ -894,8 +987,94 @@ def test_upstream_command_06_reuses_normal_land_path() -> None:
         _close_window(window)
 
 
+def test_emergency_land_keeps_standby_blocked_until_hangar_threshold() -> None:
+    """07 降落在机库外时不释放 01，进入 XYZ 阈值后才释放。"""
+    window, ros = _window(replace(_operational_snapshot(armed=True), x=2.0))
+    upstream = window._upstream
+    try:
+        window._initialize_simulation()
+        emergency_land = parse_command(
+            {"clientNo": "UAV01001", "commandNo": "07"}, "UAV01001"
+        )
+        window._handle_upstream_command(emergency_land)
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.kind == "emergency"
+
+        ros.results.append(CommandResult(1, 1, "land", True, "机库外降落完成"))
+        ros.current_snapshot = replace(_operational_snapshot(armed=False), x=2.0)
+        window._refresh()
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.phase == "standby"
+        releases = upstream.calls.count(("standby_release", None))
+
+        ros.current_snapshot = replace(ros.current_snapshot, x=0.5)
+        window._refresh()
+        assert window._upstream_sequence is None
+        assert upstream.calls.count(("standby_release", None)) == releases + 1
+    finally:
+        _close_window(window)
+
+
+def test_low_power_and_abnormal_states_drive_return_and_recovery_sequences() -> None:
+    """低电量自动返航，异常返航入库后才清除并释放待机。"""
+    low_window, low_ros = _window(_operational_snapshot(armed=True))
+    low_upstream = low_window._upstream
+    try:
+        low_window._initialize_simulation()
+        low_upstream.low_power_return_required = True
+        low_window._refresh()
+
+        waypoint_calls = [call for call in low_ros.calls if call[0] == "waypoints"]
+        assert len(waypoint_calls) == 1
+        assert waypoint_calls[0][1][0][0][:3] == (0.0, 0.0, 0.3)
+        assert low_window._upstream_sequence is not None
+        assert low_window._upstream_sequence.kind == "low_power"
+        assert ("mission", (1, "return", (1,))) in low_upstream.calls
+    finally:
+        _close_window(low_window)
+
+    abnormal_snapshot = replace(
+        _operational_snapshot(armed=True),
+        vehicle_abnormal=True,
+        vehicle_abnormal_reason="航点连续入点失败 10 次",
+    )
+    window, ros = _window(abnormal_snapshot)
+    upstream = window._upstream
+    try:
+        window._initialize_simulation()
+        assert ros.calls[-1][0] == "waypoints"
+        assert window.mode_badge.value_label.text() == "无人机状态异常"
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.kind == "abnormal"
+
+        ros.results.append(CommandResult(1, 1, "waypoints", True, "异常返航点完成"))
+        window._refresh()
+        assert ros.calls[-1][0] == "land"
+
+        ros.results.append(CommandResult(2, 2, "land", True, "异常返航降落完成"))
+        ros.current_snapshot = replace(
+            _operational_snapshot(armed=False),
+            vehicle_abnormal=True,
+            vehicle_abnormal_reason=abnormal_snapshot.vehicle_abnormal_reason,
+        )
+        window._refresh()
+        assert ros.calls[-1][0] == "clear_abnormal"
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.phase == "clear_abnormal"
+
+        ros.results.append(
+            CommandResult(3, 3, "clear_abnormal", True, "异常状态已清除")
+        )
+        ros.current_snapshot = _operational_snapshot(armed=False)
+        window._refresh()
+        assert window._upstream_sequence is None
+        assert ("standby_release", None) in upstream.calls
+    finally:
+        _close_window(window)
+
+
 def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> None:
-    """主按钮打开非模态面板，四类信息完整且关闭不触发断开。"""
+    """面板同步新语义，支持原始帧搜索并在关闭时保存输入。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     upstream = window._upstream
     try:
@@ -915,14 +1094,33 @@ def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> N
         assert panel.mapping_table.rowCount() == 6
         panel._poll()
         assert '{"type":"SYSTEM"}' in panel.raw_log.toPlainText()
+        panel.raw_search_input.setText("SYSTEM")
+        QTest.mouseClick(panel.raw_search_button, Qt.MouseButton.LeftButton)
+        assert panel.raw_log.textCursor().selectedText() == "SYSTEM"
         json_guide = panel.json_text.toPlainText()
         assert "0C: 仿真低于 20%" in json_guide
+        assert "03: 起飞至设定高度" in json_guide
+        assert "08: 仅巡检航点全部完成时发送" in json_guide
         for command_no in ("01", "02", "03", "05", "06", "07"):
             assert f"接收命令 {command_no}（BROADCAST）" in json_guide
-        for status_no in ("02", "03", "05", "07", "08", "09", "0A", "0B", "0C"):
+        for status_no in (
+            "01",
+            "02",
+            "03",
+            "05",
+            "07",
+            "08",
+            "09",
+            "0A",
+            "0B",
+            "0C",
+        ):
             assert f"状态 {status_no}" in json_guide
+        panel.url_input.setText("ws://10.0.0.8:8581/ws")
+        panel.client_no_input.setText("UAV02002")
         panel.close()
         assert not any(call[0] == "disconnect" for call in upstream.calls)
+        assert ("save", ("ws://10.0.0.8:8581/ws", "UAV02002")) in upstream.calls
     finally:
         _close_window(window)
 

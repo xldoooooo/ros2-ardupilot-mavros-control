@@ -16,6 +16,7 @@ from ground_station_core.upstream.mapping import (
     UpstreamProtocolError,
     parse_command,
 )
+from ground_station_core.upstream.models import UpstreamStandbyPolicy
 from ground_station_core.upstream.protocol import command_topic, status_topic
 from ground_station_core.upstream.service import UpstreamCommunicationService
 from ground_station_core.upstream.status_projector import UpstreamStatusProjector
@@ -121,7 +122,7 @@ def test_command_mapping_rejects_unsafe_or_ambiguous_values(
 
 
 def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
-    """03/09/08 与已完成格数一致，遥测 1 Hz 且 0C 只发一次边沿。"""
+    """03/09/08 与已完成格数一致，遥测 1 Hz 且 0C 只上报一次。"""
     sent: list[dict[str, object]] = []
     events = EventLog()
     projector = UpstreamStatusProjector(
@@ -129,14 +130,14 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     )
     snapshot = _telemetry_snapshot()
 
-    projector.observe_vehicle(snapshot, "simulation", now=10.0)
+    assert projector.observe_vehicle(snapshot, "simulation", now=10.0)
     projector.observe_vehicle(snapshot, "simulation", now=10.5)
     statuses = [payload["uavStatus"] for payload in sent]
     assert statuses == ["0A", "0B", "0C"]
     assert sent[0]["data"] == {"uavPower": 19.0}
     assert sent[1]["data"] == {"X": 1.234, "Y": -2.346, "Z": 3.457}
 
-    projector.observe_vehicle(snapshot, "simulation", now=11.1)
+    assert projector.observe_vehicle(snapshot, "simulation", now=11.1)
     assert [payload["uavStatus"] for payload in sent].count("0C") == 1
     assert [payload["uavStatus"] for payload in sent].count("0A") == 2
     assert [payload["uavStatus"] for payload in sent].count("0B") == 2
@@ -145,6 +146,7 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     flying_to_first = replace(
         snapshot,
         active_mode=FlightMode.WAYPOINT,
+        active_command_sequence=7,
         waypoint_index=1,
         waypoint_count=2,
     )
@@ -171,6 +173,69 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     assert "01" not in [payload["uavStatus"] for payload in sent]
 
 
+def test_status_projector_standby_hangar_blocking_and_return_completion_rules() -> None:
+    """01 只在可起飞、入库且未锁定时发一次，返航绝不发 08。"""
+    sent: list[dict[str, object]] = []
+    policy = UpstreamStandbyPolicy(
+        x_tolerance_meters=1.0,
+        y_tolerance_meters=1.0,
+        z_tolerance_meters=0.5,
+        inspection_delay_seconds=60.0,
+    )
+    projector = UpstreamStatusProjector(
+        lambda: "UAV01001",
+        lambda payload: not sent.append(dict(payload)),
+        EventLog(),
+        policy,
+    )
+    ready = VehicleSnapshot(
+        local_position_valid=True,
+        x=0.99,
+        y=-0.99,
+        z=0.49,
+    )
+
+    projector.observe_vehicle(ready, "simulation", now=0.0, can_takeoff=True)
+    projector.observe_vehicle(ready, "simulation", now=0.5, can_takeoff=True)
+    assert [payload["uavStatus"] for payload in sent] == ["01"]
+
+    # 武装后产生新待机边沿，但任务锁定期仍不可发送。
+    projector.observe_vehicle(
+        replace(ready, armed=True), "simulation", now=0.6, can_takeoff=False
+    )
+    projector.block_standby()
+    projector.observe_vehicle(ready, "simulation", now=0.7, can_takeoff=True)
+    assert [payload["uavStatus"] for payload in sent].count("01") == 1
+    projector.release_standby()
+    projector.observe_vehicle(ready, "simulation", now=0.8, can_takeoff=True)
+    assert [payload["uavStatus"] for payload in sent].count("01") == 2
+
+    outside = replace(ready, x=1.0)
+    projector.observe_vehicle(
+        replace(ready, armed=True), "simulation", now=0.9, can_takeoff=False
+    )
+    projector.observe_vehicle(outside, "simulation", now=1.0, can_takeoff=True)
+    assert [payload["uavStatus"] for payload in sent].count("01") == 2
+
+    projector.begin_mission(12, "return", (1,))
+    returning = replace(
+        ready,
+        armed=True,
+        active_mode=FlightMode.WAYPOINT,
+        active_command_sequence=12,
+        waypoint_index=1,
+        waypoint_count=1,
+    )
+    projector.observe_vehicle(returning, "simulation", now=1.1)
+    projector.observe_result(
+        CommandResult(1, 12, "waypoints", True, "返航点完成", True)
+    )
+    statuses = [payload["uavStatus"] for payload in sent]
+    assert statuses.count("05") == 1
+    assert "08" not in statuses
+    assert "09" not in statuses
+
+
 def test_status_projector_uses_voltage_for_hardware_and_reports_landing_once() -> None:
     """实机 0A 使用电压；06/07 共用一次进入 LAND 的 07 状态。"""
     sent: list[dict[str, object]] = []
@@ -195,7 +260,34 @@ def test_status_projector_uses_voltage_for_hardware_and_reports_landing_once() -
     assert [payload["uavStatus"] for payload in sent].count("07") == 1
 
 
-def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal() -> None:
+def test_connection_configuration_persists_between_service_instances(
+    tmp_path, monkeypatch
+) -> None:
+    """URL 与无人机编号保存后成为下次面板初始值。"""
+    config_path = tmp_path / "upstream.json"
+    monkeypatch.delenv("UPSTREAM_WS_URL", raising=False)
+    monkeypatch.delenv("UPSTREAM_CLIENT_NO", raising=False)
+    first = UpstreamCommunicationService(
+        event_log=EventLog(),
+        on_command=lambda _command: None,
+        auto_connect=False,
+        config_path=config_path,
+    )
+    first.save_configuration("wss://example.test:9443/ws", "UAV02002")
+
+    restored = UpstreamCommunicationService(
+        event_log=EventLog(),
+        on_command=lambda _command: None,
+        auto_connect=False,
+        config_path=config_path,
+    ).snapshot()
+    assert restored.url == "wss://example.test:9443/ws"
+    assert restored.client_no == "UAV02002"
+
+
+def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
+    tmp_path,
+) -> None:
     """真实 WebSocket 握手、订阅、BROADCAST、确认和独立重连均可工作。"""
     import websockets
 
@@ -252,6 +344,7 @@ def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal() -> No
             url=f"ws://127.0.0.1:{port}/ws",
             client_no="UAV01001",
             auto_connect=True,
+            config_path=tmp_path / "upstream-websocket.json",
         )
         service.start()
 

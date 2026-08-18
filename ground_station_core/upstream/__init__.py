@@ -5,6 +5,7 @@ from .models import (
     UpstreamAction,
     UpstreamCommand,
     UpstreamConnectionSnapshot,
+    UpstreamStandbyPolicy,
 )
 from .service import UpstreamCommunicationService
 
@@ -14,4 +15,5 @@ __all__ = (
     "UpstreamCommand",
     "UpstreamCommunicationService",
     "UpstreamConnectionSnapshot",
+    "UpstreamStandbyPolicy",
 )

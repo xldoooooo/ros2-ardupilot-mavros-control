@@ -145,8 +145,12 @@ class VehicleSnapshot:
     lease_owner: str = ""
     lease_active: bool = False
     control_authority: bool = False
+    active_command_sequence: int = 0
     waypoint_index: int = 0
     waypoint_count: int = 0
+    waypoint_arrival_failure_count: int = 0
+    vehicle_abnormal: bool = False
+    vehicle_abnormal_reason: str = ""
     message_rates_configured: bool = False
     thrust_mode_verified: bool = False
     hover_throttle: float = 0.0

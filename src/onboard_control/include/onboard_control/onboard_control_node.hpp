@@ -41,6 +41,7 @@
 
 #include "onboard_control/dob_controller.hpp"
 #include "onboard_control/reference_generator.hpp"
+#include "onboard_control/waypoint_arrival_tracker.hpp"
 
 namespace onboard_control
 {
@@ -213,9 +214,8 @@ private:
   double max_reference_error_z_{0.5};
   double waypoint_start_speed_tolerance_{0.20};
   double waypoint_arrival_speed_tolerance_{0.10};
-  double waypoint_actual_speed_guard_xy_{0.42};
-  double waypoint_actual_speed_guard_z_{0.24};
-  int waypoint_speed_guard_observations_{5};
+  double waypoint_arrival_retry_interval_seconds_{1.0};
+  int waypoint_arrival_failure_limit_{10};
   double max_clock_skew_seconds_{2.0};
   std::string mavros_prefix_{"/mavros"};
   std::string interface_prefix_{"/onboard_control"};
@@ -258,7 +258,9 @@ private:
   // Waypoint queue and arrival dwell state live onboard, never in the GUI process.
   std::vector<guided_interfaces::msg::Waypoint> waypoints_;
   std::size_t waypoint_index_{0};
-  std::optional<SteadyTime> waypoint_arrival_started_;
+  WaypointArrivalTracker waypoint_arrival_tracker_{1.0, 10};
+  bool vehicle_abnormal_{false};
+  std::string vehicle_abnormal_reason_;
   // ExecuteWaypoints.flight_strategy；非 STRAIGHT 时预留，当前仍走直线飞行。
   std::uint8_t waypoint_flight_strategy_{0};
   ReferenceGeneratorType active_reference_generator_{
@@ -269,7 +271,6 @@ private:
   std::unique_ptr<ReferenceGenerator> reference_generator_;
   std::size_t generator_waypoint_index_{0};
   bool generator_waypoint_initialized_{false};
-  int waypoint_speed_guard_count_{0};
   // 首个航点任务锁定整次武装周期的实验方法；只有解除武装才能重新选择。
   std::optional<std::uint8_t> armed_flight_strategy_lock_;
   std::optional<ReferenceGeneratorType> armed_reference_generator_lock_;

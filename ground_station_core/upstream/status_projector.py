@@ -11,6 +11,7 @@ from typing import Any
 
 from ..event_log import EventLog
 from ..models import CommandResult, FlightMode, VehicleSnapshot
+from .models import UpstreamStandbyPolicy
 from .protocol import make_status
 
 
@@ -37,17 +38,48 @@ class UpstreamStatusProjector:
         client_no: Callable[[], str],
         emit: Callable[[Mapping[str, Any]], bool],
         event_log: EventLog,
+        standby_policy: UpstreamStandbyPolicy | None = None,
     ) -> None:
         self._client_no = client_no
         self._emit = emit
         self._events = event_log
+        self._standby_policy = standby_policy or UpstreamStandbyPolicy()
         self._lock = threading.RLock()
         self._last_telemetry_at = 0.0
         self._low_power_reported = False
         self._mission: _MissionState | None = None
         self._landing_ticket: int | None = None
         self._landing_reported = False
+        self._standby_blocked = False
+        self._standby_reported = False
         self._generic_state_notice_logged = False
+
+    @property
+    def standby_policy(self) -> UpstreamStandbyPolicy:
+        """返回面板和组合动作共用的不可变待机策略。"""
+        return self._standby_policy
+
+    def block_standby(self) -> None:
+        """任务下发或执行期间禁止意外发送 01。"""
+        with self._lock:
+            self._standby_blocked = True
+
+    def release_standby(self) -> None:
+        """组合动作完成后重新允许入库待机边沿。"""
+        with self._lock:
+            self._standby_blocked = False
+
+    def is_in_hangar(self, snapshot: VehicleSnapshot) -> bool:
+        """用当前可配 XYZ 阈值判定飞行器是否位于机库。"""
+        policy = self._standby_policy
+        return snapshot.local_position_valid and all(
+            math.isfinite(value)
+            for value in (snapshot.x, snapshot.y, snapshot.z)
+        ) and (
+            abs(snapshot.x) < policy.x_tolerance_meters
+            and abs(snapshot.y) < policy.y_tolerance_meters
+            and abs(snapshot.z) < policy.z_tolerance_meters
+        )
 
     def report_waypoints_staged(self) -> bool:
         """GUI 已成功替换航点后发送一次 02 状态。"""
@@ -74,15 +106,16 @@ class UpstreamStatusProjector:
         connection_mode: str,
         *,
         now: float | None = None,
-    ) -> None:
-        """以 1 Hz 发送有效遥测，并从航点权威进度生成 03/05/09。"""
+        can_takeoff: bool = False,
+    ) -> bool:
+        """投影任务/待机边沿和 1 Hz 遥测，返回低电量返航需求。"""
         if connection_mode not in {"simulation", "hardware"}:
-            return
+            return False
         current_time = time.monotonic() if now is None else float(now)
         with self._lock:
             if not self._generic_state_notice_logged:
-                # TODO(上位机通用状态): 协议未给飞控/控制权变化独立编号，且 01
-                # 已明确暂缓；现阶段只发送表 2 中有确定映射的任务状态与遥测。
+                # TODO(上位机通用状态): 协议未给飞控/控制权变化独立编号；
+                # 现阶段只发送表 2 中有确定映射的任务状态与遥测。
                 self._events.info(
                     "upstream",
                     "飞控与控制权变化当前没有独立状态编号；仅上报已定义的任务状态和遥测",
@@ -96,10 +129,26 @@ class UpstreamStatusProjector:
             ):
                 self._send("07")
                 self._landing_reported = True
-            if current_time - self._last_telemetry_at < self.TELEMETRY_PERIOD_SECONDS:
-                return
-            self._last_telemetry_at = current_time
-            self._send_telemetry(snapshot, connection_mode)
+            low_power_return_required = False
+            if (
+                current_time - self._last_telemetry_at
+                >= self.TELEMETRY_PERIOD_SECONDS
+            ):
+                self._last_telemetry_at = current_time
+                low_power_return_required = self._send_telemetry(
+                    snapshot, connection_mode
+                )
+            if snapshot.armed:
+                self._standby_reported = False
+            if (
+                can_takeoff
+                and not self._standby_blocked
+                and not self._standby_reported
+                and self.is_in_hangar(snapshot)
+                and self._send("01")
+            ):
+                self._standby_reported = True
+            return low_power_return_required
 
     def observe_result(self, result: CommandResult) -> None:
         """用同一可靠终态驱动 GUI 完成态与上位机 08，杜绝推测完成。"""
@@ -125,9 +174,10 @@ class UpstreamStatusProjector:
             if not result.final:
                 return
             if result.success:
-                self._report_points(mission, len(mission.point_indexes))
-                # TODO(上位机媒体): 相机、照片和媒体尚未接入，路径按空字符串上报。
-                self._send("08", {"videoPath": "", "JPGPath": ""})
+                if mission.kind == "inspection":
+                    self._report_points(mission, len(mission.point_indexes))
+                    # TODO(上位机媒体): 相机、照片和媒体尚未接入，路径按空字符串上报。
+                    self._send("08", {"videoPath": "", "JPGPath": ""})
             else:
                 self._events.warn(
                     "upstream",
@@ -143,16 +193,25 @@ class UpstreamStatusProjector:
             self._landing_reported = False
             self._last_telemetry_at = 0.0
             self._low_power_reported = False
+            self._standby_blocked = False
+            self._standby_reported = False
 
     def _observe_mission(self, snapshot: VehicleSnapshot) -> None:
         """按机载 current-target 索引计算已完成格数，与 GUI 采用同一规则。"""
         mission = self._mission
         if mission is None:
             return
-        if snapshot.active_mode is FlightMode.WAYPOINT and not mission.started:
-            self._send("05" if mission.kind == "return" else "03")
-            mission.started = True
+        if (
+            snapshot.active_mode is FlightMode.WAYPOINT
+            and snapshot.active_command_sequence == mission.ticket
+            and not mission.started
+        ):
+            mission.started = self._send(
+                "05" if mission.kind == "return" else "03"
+            )
         if not mission.started or snapshot.active_mode is not FlightMode.WAYPOINT:
+            return
+        if mission.kind != "inspection":
             return
         completed = max(0, int(snapshot.waypoint_index) - 1)
         completed = min(completed, len(mission.point_indexes))
@@ -174,8 +233,10 @@ class UpstreamStatusProjector:
             )
             mission.reported_points += 1
 
-    def _send_telemetry(self, snapshot: VehicleSnapshot, connection_mode: str) -> None:
-        """仿真发送百分比、实机发送电压，并独立判断 0C 边沿。"""
+    def _send_telemetry(
+        self, snapshot: VehicleSnapshot, connection_mode: str
+    ) -> bool:
+        """仿真发送百分比、实机发送电压，并返回空中低电量需求。"""
         low_power: bool | None = None
         if snapshot.battery_valid:
             if connection_mode == "simulation":
@@ -200,13 +261,14 @@ class UpstreamStatusProjector:
                     "Z": round(snapshot.z, 3),
                 },
             )
-        if low_power is True and not self._low_power_reported:
-            # TODO(上位机低电量): 当前只上报 0C，不暂停任务也不自动返航。
-            self._send("0C")
+        if low_power is True and not self._low_power_reported and self._send("0C"):
             self._low_power_reported = True
-            self._events.warn("upstream", "已上报低电量 0C；当前不会自动暂停或返航")
+            self._events.warn("upstream", "已上报低电量 0C")
         elif low_power is False:
             self._low_power_reported = False
+        # 上报连接不影响本地安全动作；低电量持续时每个
+        # 遥测周期重申，直到组合动作被地面站接受或飞行器降落。
+        return low_power is True and snapshot.armed
 
     def _send(self, status: str, data: Mapping[str, Any] | None = None) -> bool:
         """使用当前面板配置的无人机编号生成并排队状态。"""

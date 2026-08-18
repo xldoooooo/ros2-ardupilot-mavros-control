@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,7 +21,11 @@ from .mapping import (
     UpstreamProtocolError,
     parse_command,
 )
-from .models import UpstreamCommand, UpstreamConnectionSnapshot
+from .models import (
+    UpstreamCommand,
+    UpstreamConnectionSnapshot,
+    UpstreamStandbyPolicy,
+)
 from .protocol import (
     command_ack,
     command_topic,
@@ -37,6 +42,8 @@ class UpstreamCommunicationService:
     _RECONNECT_SECONDS = 3.0
     _HANDSHAKE_TIMEOUT_SECONDS = 5.0
     _OUTBOUND_LIMIT = 256
+    _DEFAULT_URL = "ws://127.0.0.1:8581/ws"
+    _DEFAULT_CLIENT_NO = "UAV01001"
 
     def __init__(
         self,
@@ -46,13 +53,26 @@ class UpstreamCommunicationService:
         url: str | None = None,
         client_no: str | None = None,
         auto_connect: bool | None = None,
+        standby_policy: UpstreamStandbyPolicy | None = None,
+        config_path: str | Path | None = None,
     ) -> None:
         """读取可覆盖配置；构造本身不创建线程或网络连接。"""
-        configured_url = url or os.environ.get(
-            "UPSTREAM_WS_URL", "ws://127.0.0.1:8581/ws"
+        self._events = event_log
+        self._config_path = self._resolve_config_path(config_path)
+        saved = self._load_saved_configuration()
+        configured_url = (
+            url
+            if url is not None
+            else os.environ.get("UPSTREAM_WS_URL")
+            or saved.get("url")
+            or self._DEFAULT_URL
         )
-        configured_client = client_no or os.environ.get(
-            "UPSTREAM_CLIENT_NO", "UAV01001"
+        configured_client = (
+            client_no
+            if client_no is not None
+            else os.environ.get("UPSTREAM_CLIENT_NO")
+            or saved.get("client_no")
+            or self._DEFAULT_CLIENT_NO
         )
         if auto_connect is None:
             auto_connect = os.environ.get(
@@ -64,7 +84,6 @@ class UpstreamCommunicationService:
                 "no",
                 "NO",
             }
-        self._events = event_log
         try:
             self._validate_configuration(configured_url, configured_client)
         except (TypeError, ValueError, UpstreamProtocolError) as exc:
@@ -73,9 +92,18 @@ class UpstreamCommunicationService:
                 "upstream",
                 f"上位机环境配置无效，已回退为断开状态：{exc}",
             )
-            configured_url = "ws://127.0.0.1:8581/ws"
-            configured_client = "UAV01001"
+            configured_url = self._DEFAULT_URL
+            configured_client = self._DEFAULT_CLIENT_NO
             auto_connect = False
+        if standby_policy is None:
+            try:
+                standby_policy = self._standby_policy_from_environment()
+            except ValueError as exc:
+                self._events.warn(
+                    "upstream",
+                    f"上位机待机策略配置无效，已使用默认值：{exc}",
+                )
+                standby_policy = UpstreamStandbyPolicy()
         self._on_command = on_command
         self._journal = RawFrameJournal()
         self._state_lock = threading.RLock()
@@ -94,7 +122,10 @@ class UpstreamCommunicationService:
         self._wake_event: asyncio.Event | None = None
         self._outbound: asyncio.Queue[dict[str, Any]] | None = None
         self._projector = UpstreamStatusProjector(
-            self._current_client_no, self.publish_status, self._events
+            self._current_client_no,
+            self.publish_status,
+            self._events,
+            standby_policy,
         )
 
     @property
@@ -106,6 +137,11 @@ class UpstreamCommunicationService:
     def command_mappings(self):
         """返回独立映射文件中的只读命令表。"""
         return COMMAND_MAPPINGS
+
+    @property
+    def standby_policy(self) -> UpstreamStandbyPolicy:
+        """返回当前机库判定和巡检待机延时策略。"""
+        return self._projector.standby_policy
 
     def start(self) -> None:
         """启动专用线程；默认连接失败不会阻塞或关闭地面站。"""
@@ -122,14 +158,22 @@ class UpstreamCommunicationService:
             )
             self._thread.start()
         self._events.info("upstream", "上位机通讯模块已随地面站启动")
-        # TODO(上位机状态): 01 待机状态需等异常恢复判定逻辑明确后实现。
-        self._events.info("upstream", "状态 01 当前未实现，不会发送待机状态")
+        policy = self.standby_policy
+        self._events.info(
+            "upstream",
+            "状态 01 已启用：机库阈值 "
+            f"X<{policy.x_tolerance_meters:.2f} m, "
+            f"Y<{policy.y_tolerance_meters:.2f} m, "
+            f"Z<{policy.z_tolerance_meters:.2f} m，"
+            f"巡检后延时 {policy.inspection_delay_seconds:.1f} s",
+        )
         # TODO(上位机媒体): FTP、RTSP、云台、拍照及媒体路径暂不实现。
         self._events.info("upstream", "相机、云台、照片、FTP 与媒体路径当前未接入")
 
     def connect(self, url: str, client_no: str) -> None:
         """应用面板配置并请求连接；可在地面站会话外独立执行。"""
         self._validate_configuration(url, client_no)
+        self.save_configuration(url, client_no)
         with self._state_lock:
             self._url = url.strip()
             self._client_no = client_no.strip()
@@ -157,6 +201,29 @@ class UpstreamCommunicationService:
         """应用配置并强制重建一个全新的 WebSocket 会话。"""
         self.connect(url, client_no)
         self._events.info("upstream", "已请求重启上位机通讯连接")
+
+    def save_configuration(self, url: str, client_no: str) -> None:
+        """持久化面板最后填入的有效 URL 和无人机编号。"""
+        self._validate_configuration(url, client_no)
+        payload = {
+            "url": url.strip(),
+            "client_no": client_no.strip(),
+        }
+        target = self._config_path
+        temporary = target.with_name(
+            f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(target)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+            self._events.warn("upstream", f"保存上位机连接配置失败：{exc}")
 
     def stop(self, timeout: float = 3.0) -> bool:
         """在地面站退出时限时停止插件；失败也不阻断主体清理。"""
@@ -218,9 +285,17 @@ class UpstreamCommunicationService:
         """绑定由上位机触发的降落与本地可靠命令 ticket。"""
         self._projector.begin_landing(ticket)
 
-    def observe_vehicle(self, snapshot: VehicleSnapshot, connection_mode: str) -> None:
-        """由 Qt 刷新循环提供当前会话权威快照。"""
-        self._projector.observe_vehicle(snapshot, connection_mode)
+    def observe_vehicle(
+        self,
+        snapshot: VehicleSnapshot,
+        connection_mode: str,
+        *,
+        can_takeoff: bool = False,
+    ) -> bool:
+        """提供权威快照并返回当前是否需启动低电量返航。"""
+        return self._projector.observe_vehicle(
+            snapshot, connection_mode, can_takeoff=can_takeoff
+        )
 
     def observe_result(self, result: CommandResult) -> None:
         """由 GUI 消费同一可靠结果，生成无重复的任务状态。"""
@@ -229,6 +304,18 @@ class UpstreamCommunicationService:
     def reset_runtime(self) -> None:
         """仿真或实机会话断开后清空任务事件关联。"""
         self._projector.reset_runtime()
+
+    def block_standby(self) -> None:
+        """阻止任务组合期间发送 01。"""
+        self._projector.block_standby()
+
+    def release_standby(self) -> None:
+        """重新允许符合入库条件时发送 01。"""
+        self._projector.release_standby()
+
+    def is_in_hangar(self, snapshot: VehicleSnapshot) -> bool:
+        """按单一策略判定快照是否在机库阈值内。"""
+        return self._projector.is_in_hangar(snapshot)
 
     def _thread_main(self) -> None:
         """在线程内部拥有并完整销毁 asyncio 事件循环。"""
@@ -508,6 +595,64 @@ class UpstreamCommunicationService:
                 self._last_connection_warning_at = now
         if should_log:
             self._events.warn("upstream", f"上位机连接中断：{message}")
+
+    @staticmethod
+    def _resolve_config_path(config_path: str | Path | None) -> Path:
+        """解析可测试覆盖的用户级连接配置路径。"""
+        if config_path is not None:
+            return Path(config_path).expanduser()
+        explicit = os.environ.get("UPSTREAM_CONFIG_PATH", "").strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        xdg_root = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        root = Path(xdg_root).expanduser() if xdg_root else Path.home() / ".config"
+        return root / "ros2-ardupilot-ground-station" / "upstream.json"
+
+    def _load_saved_configuration(self) -> dict[str, str]:
+        """读取上次面板配置；损坏文件只禁用本次恢复。"""
+        try:
+            raw = json.loads(self._config_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            self._events.warn("upstream", f"读取上次连接配置失败：{exc}")
+            return {}
+        if not isinstance(raw, dict):
+            self._events.warn("upstream", "上次连接配置不是 JSON 对象，已忽略")
+            return {}
+        return {
+            key: value
+            for key in ("url", "client_no")
+            if isinstance((value := raw.get(key)), str)
+        }
+
+    @staticmethod
+    def _standby_policy_from_environment() -> UpstreamStandbyPolicy:
+        """从环境变量读取机库阈值和巡检后延时。"""
+
+        def number(name: str, default: float) -> float:
+            value = os.environ.get(name)
+            if value is None or not value.strip():
+                return default
+            try:
+                return float(value)
+            except ValueError as exc:
+                raise ValueError(f"{name} 必须是数值") from exc
+
+        return UpstreamStandbyPolicy(
+            x_tolerance_meters=number(
+                "UPSTREAM_HANGAR_X_TOLERANCE_METERS", 1.0
+            ),
+            y_tolerance_meters=number(
+                "UPSTREAM_HANGAR_Y_TOLERANCE_METERS", 1.0
+            ),
+            z_tolerance_meters=number(
+                "UPSTREAM_HANGAR_Z_TOLERANCE_METERS", 0.5
+            ),
+            inspection_delay_seconds=number(
+                "UPSTREAM_INSPECTION_STANDBY_DELAY_SECONDS", 60.0
+            ),
+        )
 
     @staticmethod
     def _validate_configuration(url: str, client_no: str) -> None:
