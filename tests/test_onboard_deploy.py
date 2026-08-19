@@ -14,12 +14,24 @@ DEPLOY_DIR = PROJECT_ROOT / "src" / "onboard_control" / "deploy"
 WORKSPACE_SCRIPT = DEPLOY_DIR / "onboard_workspace.sh"
 DEPLOYMENT_GUIDE = DEPLOY_DIR / "ONBOARD_DEPLOYMENT.md"
 DRONE_START_DIRECTORY = PROJECT_ROOT / "start_drone"
-INTEGRATED_START = PROJECT_ROOT / "start_drone_all.sh"
-INTEGRATED_STOP = PROJECT_ROOT / "stop_onboard_service.sh"
+INTEGRATED_START = PROJECT_ROOT / "start_onboard_control.sh"
+INTEGRATED_STOP = PROJECT_ROOT / "stop_onboard_control.sh"
 GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
-PROJECT_SETUP = PROJECT_ROOT / "setup_project.sh"
+GROUND_SETUP = PROJECT_ROOT / "setup_ground_station.sh"
 ONBOARD_BUILD = PROJECT_ROOT / "build_onboard_control.sh"
 RUNTIME_HELPERS = DRONE_START_DIRECTORY / "runtime_common.bash"
+VIDEO_LAUNCHER = PROJECT_ROOT / "start_onboard_video.sh"
+VIDEO_STOPPER = PROJECT_ROOT / "stop_onboard_video.sh"
+VIDEO_INSTALLER = (
+    PROJECT_ROOT / "video_service" / "deploy" / "install_onboard_video_service.sh"
+)
+ONBOARD_INSTALLER = DEPLOY_DIR / "install_onboard_service.sh"
+VIDEO_SERVICE_UNIT = (
+    PROJECT_ROOT / "video_service" / "deploy" / "video-service.service.example"
+)
+REMOVED_BUNDLED_MEDIAMTX = (
+    PROJECT_ROOT / "video_service" / "bin" / "mediamtx" / "mediamtx"
+)
 
 
 def run_bash(script: str, environment: dict[str, str] | None = None):
@@ -53,6 +65,85 @@ def test_onboard_workspace_script_has_valid_shell_and_help() -> None:
     assert help_result.returncode == 0, help_result.stderr
     for command in ("update", "deps-check", "build", "test", "smoke", "verify"):
         assert command in help_result.stdout
+
+
+def test_video_service_installer_is_one_command_and_preserves_isolation() -> None:
+    """一键安装器应收拢系统配置，同时不得管理飞控 unit。"""
+    assert os.access(VIDEO_INSTALLER, os.X_OK)
+    syntax = subprocess.run(
+        ["bash", "-n", str(VIDEO_INSTALLER)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    help_result = subprocess.run(
+        [str(VIDEO_INSTALLER), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "enable and start" in help_result.stdout
+
+    installer = VIDEO_INSTALLER.read_text(encoding="utf-8")
+    for required in (
+        "/usr/local/bin/mediamtx",
+        "/etc/ros2-ardupilot/camera.conf",
+        "/home/share/jpg",
+        "systemctl enable --now",
+    ):
+        assert required in installer
+    assert "ros2-ardupilot-onboard.service" not in installer
+    assert "apt-get" not in installer
+    assert "github.com/bluenviron" not in installer
+    assert "[[ ! -e /etc/ros2-ardupilot/camera.conf ]]" in installer
+
+
+def test_mediamtx_is_a_system_dependency_not_a_repository_binary() -> None:
+    """架构相关大文件不得回到 Git，默认路径必须指向系统安装。"""
+    assert not REMOVED_BUNDLED_MEDIAMTX.exists()
+    config_source = (
+        PROJECT_ROOT / "video_service" / "camera_app" / "config.py"
+    ).read_text(encoding="utf-8")
+    onboard_config = (
+        PROJECT_ROOT / "video_service" / "config" / "camera.conf"
+    ).read_text(encoding="utf-8")
+    assert "/usr/local/bin/mediamtx" in config_source
+    assert "bin\" / \"mediamtx" not in config_source
+    assert "mediamtx_binary = /usr/local/bin/mediamtx" in onboard_config
+
+
+def test_onboard_service_installer_builds_and_installs_integrated_unit() -> None:
+    """飞控安装器须一键构建和部署四组件 unit，且不含飞行命令。"""
+    assert os.access(ONBOARD_INSTALLER, os.X_OK)
+    syntax = subprocess.run(
+        ["bash", "-n", str(ONBOARD_INSTALLER)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    help_result = subprocess.run(
+        [str(ONBOARD_INSTALLER), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    installer = ONBOARD_INSTALLER.read_text(encoding="utf-8")
+    for required in (
+        "build_onboard_control.sh\" --verify",
+        "/etc/ros2-ardupilot/onboard.env",
+        "start_onboard_control.sh\" --check",
+        "systemctl enable --now",
+        "systemctl is-active",
+    ):
+        assert required in installer
+    for forbidden in ("/cmd/arming", "/cmd/takeoff", "COMMAND_TAKEOFF"):
+        assert forbidden not in installer
 
 
 def test_root_onboard_build_entry_is_portable_and_safe() -> None:
@@ -255,13 +346,19 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     for sparse_path in (
         "/src/guided_interfaces/",
         "/src/onboard_control/",
+        "/video_service/",
+        "/start_onboard_video.sh",
+        "/stop_onboard_video.sh",
         "/start_drone/",
-        "/start_drone_all.sh",
-        "/stop_onboard_service.sh",
+        "/start_onboard_control.sh",
+        "/stop_onboard_control.sh",
         "/build_onboard_control.sh",
     ):
         assert sparse_path in script
         assert sparse_path in guide
+    assert "video_service/deploy/install_onboard_video_service.sh" in script
+    assert "src/onboard_control/deploy/install_onboard_service.sh" in script
+    assert "./src/onboard_control/deploy/install_onboard_service.sh" in guide
     assert "/ground_station_core/" not in script
     assert "/src/guided_sim/" not in script
     assert "/start_ground_all.sh" not in script
@@ -289,8 +386,62 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         assert forbidden not in script
 
 
+def test_video_service_has_an_independent_lifecycle() -> None:
+    """视频启动器和 unit 不得成为飞行四进程的共同故障域。"""
+    integrated_start = INTEGRATED_START.read_text(encoding="utf-8")
+    service = VIDEO_SERVICE_UNIT.read_text(encoding="utf-8")
+    stopper = VIDEO_STOPPER.read_text(encoding="utf-8")
+    active_directives = [
+        line.strip()
+        for line in service.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert os.access(VIDEO_LAUNCHER, os.X_OK)
+    assert os.access(VIDEO_STOPPER, os.X_OK)
+    syntax = subprocess.run(
+        ["bash", "-n", str(VIDEO_LAUNCHER)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+    stop_syntax = subprocess.run(
+        ["bash", "-n", str(VIDEO_STOPPER)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert stop_syntax.returncode == 0, stop_syntax.stderr
+    stop_help = subprocess.run(
+        [str(VIDEO_STOPPER), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert stop_help.returncode == 0, stop_help.stderr
+    assert "--restart" in stop_help.stdout
+    assert "never stops or restarts ros2-ardupilot-onboard.service" in stop_help.stdout
+    assert "stop_onboard_control.sh" not in stopper
+    assert "systemctl stop \"${SERVICE_NAME}\"" in stopper
+    assert "/dev/v4l/by-id/*-video-index*" in stopper
+    assert 'collect_fuser_pids "${rtsp_port}/tcp"' in stopper
+    assert "ros2-ardupilot-onboard.service" not in stopper.replace(
+        "This script never stops or restarts ros2-ardupilot-onboard.service.", ""
+    )
+    assert "video_service" not in integrated_start
+    assert not any(
+        line.startswith(("Requires=", "PartOf=", "BindsTo="))
+        for line in active_directives
+    )
+    assert "User=ONBOARD_USER" in service
+    assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
+    assert "Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH" in service
+    assert '${ONBOARD_WORKSPACE}/start_onboard_video.sh' in service
+
+
 def test_onboard_runtime_dependencies_and_service_template_are_portable() -> None:
-    """launch 运行依赖必须声明，服务模板不得写死用户、Jazzy 或旧 MAVROS 服务。"""
+    """运行依赖必须声明，生产模板须执行四组件入口且不写死用户路径。"""
     package_root = ElementTree.parse(
         PROJECT_ROOT / "src" / "onboard_control" / "package.xml"
     ).getroot()
@@ -305,13 +456,15 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     environment = (DEPLOY_DIR / "onboard.env.example").read_text(encoding="utf-8")
     assert "User=ONBOARD_USER" in service
     assert "/opt/ros/jazzy" not in service
-    assert "/opt/ros/${ROS_DISTRO}/setup.bash" in service
+    assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
+    assert '${ONBOARD_WORKSPACE}/start_onboard_control.sh' in service
     assert "mavros.service" not in service
     assert "systemd-time-wait-sync.service" in service
     assert "After=network-online.target time-sync.target" in service
-    assert "ROS_DISTRO=humble" in environment
-    assert "ONBOARD_WORKSPACE=/home/onboard/ros2-ardupilot-mavros-control" in environment
+    assert "ONBOARD_ROS_DISTRO=ONBOARD_ROS_DISTRO_VALUE" in environment
+    assert "ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH" in environment
     assert "ROS_LOCALHOST_ONLY=0" in environment
+    assert "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET" in environment
     assert "MAVROS_FCU_DEVICE=" in environment
     assert "ODIN_OVERLAY_SETUP=" in environment
     assert "EXTNAV_OVERLAY_SETUP=" in environment
@@ -390,6 +543,7 @@ def test_integrated_stop_cleans_managed_and_manual_flight_stack_processes() -> N
     script = INTEGRATED_STOP.read_text(encoding="utf-8")
     for required in (
         "systemctl stop",
+        "start_onboard_control\\.sh",
         "mavros_node",
         "odin1_ros2",
         "host_sdk_sample",
@@ -425,6 +579,9 @@ def test_synced_split_launchers_and_local_ground_launcher_are_well_scoped() -> N
         "start_drone.sh",
         "start_ground.sh",
         "check.sh",
+        "start_drone_all.sh",
+        "stop_onboard_service.sh",
+        "setup_project.sh",
     ):
         assert not (PROJECT_ROOT / obsolete_name).exists()
 
@@ -457,23 +614,24 @@ def test_synced_split_launchers_and_local_ground_launcher_are_well_scoped() -> N
         assert forbidden not in script
 
 
-def test_project_setup_is_checkout_relative_and_never_contacts_hardware() -> None:
-    """完整部署入口应自动构建本检出，且不接触 MAVROS、串口或飞行命令。"""
-    assert os.access(PROJECT_SETUP, os.X_OK)
+def test_ground_setup_is_checkout_relative_and_never_contacts_hardware() -> None:
+    """完整地面站入口应自动构建本检出，且不接触 MAVROS、串口或飞行命令。"""
+    assert os.access(GROUND_SETUP, os.X_OK)
     syntax = subprocess.run(
-        ["bash", "-n", str(PROJECT_SETUP)],
+        ["bash", "-n", str(GROUND_SETUP)],
         check=False,
         capture_output=True,
         text=True,
     )
     assert syntax.returncode == 0, syntax.stderr
 
-    script = PROJECT_SETUP.read_text(encoding="utf-8")
+    script = GROUND_SETUP.read_text(encoding="utf-8")
     assert "runtime_detect_ros_setup" in script
     assert 'project_root}/.venv' in script
     assert "guided_interfaces onboard_control guided_sim" in script
     assert "--symlink-install" not in script
     assert "ground_station.py --check-environment" in script
+    assert "[ground-setup]" in script
     for forbidden in (
         "/home/nvidia",
         "/home/xld",
@@ -482,5 +640,8 @@ def test_project_setup_is_checkout_relative_and_never_contacts_hardware() -> Non
         "mavros apm.launch",
         "/cmd/arming",
         "/cmd/takeoff",
+        "systemctl enable",
+        "install_onboard_service.sh",
+        "install_onboard_video_service.sh",
     ):
         assert forbidden not in script

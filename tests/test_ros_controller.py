@@ -56,6 +56,7 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
         "strategy": 1,
         "reference_generator": 0,
         "tracking_controller": 0,
+        "photo_nos": (),
     }
     assert takeoff < motion < waypoint
 
@@ -77,6 +78,7 @@ def test_waypoint_request_preserves_three_independent_gui_choices() -> None:
         "strategy": 2,
         "reference_generator": 3,
         "tracking_controller": 1,
+        "photo_nos": (),
     }
 
 
@@ -138,6 +140,7 @@ def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
         strategy=2,
         reference_generator=3,
         tracking_controller=1,
+        photo_nos=("客户/A-7",),
     )
     client = FakeClient()
     pending: dict[int, tuple] = {}
@@ -166,10 +169,12 @@ def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
         1.5,
     )
     assert waypoint.yaw == 0.25
+    assert waypoint.has_photo_no
+    assert waypoint.photo_no == "客户/A-7"
 
 
 def test_clear_abnormal_uses_dedicated_flight_command_code() -> None:
-    """入库恢复请求必须使用 3.1 接口的独立命令码。"""
+    """入库恢复请求必须使用当前接口的独立命令码。"""
 
     class FakeRequest:
         """保存 FlightCommand 服务请求及全部命令常量。"""
@@ -460,7 +465,7 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
 
 
 def test_previous_interface_version_is_rejected_before_command_transport() -> None:
-    """2.2 机载端不得在 ControlStatus 3.1 升级后被误判为兼容。"""
+    """旧 2.2 机载端不得在 ControlStatus 3.2 升级后被误判为兼容。"""
     controller = GroundStationRosController(source_id="gcs-version-gate")
     controller._state._snapshot = VehicleSnapshot(
         onboard_available=True,
@@ -475,7 +480,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "3.1"
+    assert INTERFACE_VERSION == "3.2"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

@@ -182,3 +182,37 @@ class CommandResult:
     success: bool
     message: str
     final: bool = True
+
+
+@dataclass(frozen=True)
+class VideoServiceSnapshot:
+    """独立视频服务的发现地址、媒体路径和带新鲜度的运行快照。"""
+
+    service_available: bool = False
+    interface_version: str = ""
+    running: bool = False
+    state: str = "unavailable"
+    rtsp_url: str = ""
+    video_directory: str = ""
+    image_directory: str = ""
+    current_video_path: str = ""
+    last_video_path: str = ""
+    last_image_path: str = ""
+    last_error: str = ""
+    age_seconds: float = float("inf")
+
+
+@dataclass(frozen=True)
+class VideoCaptureEvent:
+    """地面站按本地顺序消费的一条视频截图完成事件。"""
+
+    event_sequence: int
+    source_id: str
+    command_sequence: int
+    success: bool
+    kind: int
+    mission_sequence: int
+    waypoint_index: int
+    photo_no: str
+    path: str
+    message: str

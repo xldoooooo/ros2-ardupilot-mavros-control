@@ -11,7 +11,13 @@ from dataclasses import replace
 import pytest
 
 from ground_station_core.event_log import EventLog
-from ground_station_core.models import CommandResult, FlightMode, VehicleSnapshot
+from ground_station_core.models import (
+    CommandResult,
+    FlightMode,
+    VideoCaptureEvent,
+    VideoServiceSnapshot,
+    VehicleSnapshot,
+)
 from ground_station_core.upstream.mapping import (
     UpstreamProtocolError,
     parse_command,
@@ -72,6 +78,7 @@ def test_command_mapping_converts_yaw_and_covers_added_interfaces() -> None:
     command = parse_command(_task_payload(), "UAV01001")
     assert command.command_no == "02"
     assert command.point_indexes == (10, 20)
+    assert command.photo_nos == ("3", "4")
     assert command.ignored_camera_fields
     assert command.waypoints[0][:3] == (1.0, -2.0, 1.2)
     assert math.isclose(command.waypoints[0][3], -math.pi / 2.0)
@@ -91,6 +98,17 @@ def test_command_mapping_converts_yaw_and_covers_added_interfaces() -> None:
     )
     assert command_topic("UAV01001") == "drone/UAV01001/command"
     assert status_topic("UAV01001") == "drone/UAV01001/status"
+
+
+def test_command_mapping_preserves_duplicate_negative_photo_numbers() -> None:
+    """photoNo 只作为文件标识传递，不校正重复、负数或先后关系。"""
+    payload = _task_payload()
+    payload["taskPoints"][0]["photoNo"] = -7  # type: ignore[index]
+    payload["taskPoints"][1]["photoNo"] = -7  # type: ignore[index]
+
+    command = parse_command(payload, "UAV01001")
+
+    assert command.photo_nos == ("-7", "-7")
 
 
 @pytest.mark.parametrize(
@@ -156,20 +174,69 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
 
     flying_to_second = replace(flying_to_first, waypoint_index=2)
     projector.observe_vehicle(flying_to_second, "simulation", now=11.3)
+    assert [payload["uavStatus"] for payload in sent][-1] == "03"
+    projector.observe_video_capture(
+        VideoCaptureEvent(
+            1,
+            "UAV01001",
+            101,
+            True,
+            2,
+            7,
+            1,
+            "3",
+            "/home/share/jpg/point-3.jpg",
+            "完成",
+        )
+    )
     first_point = sent[-1]
     assert first_point["uavStatus"] == "09"
     assert first_point["data"] == {
         "pointNo": "10",
         "pointName": "巡检点位 10",
-        "pointPic": "",
+        "pointPic": "/home/share/jpg/point-3.jpg",
     }
 
     projector.observe_result(
         CommandResult(1, 7, "waypoints", True, "航点任务完成", True)
     )
-    tail = [payload["uavStatus"] for payload in sent[-2:]]
-    assert tail == ["09", "08"]
-    assert sent[-1]["data"] == {"videoPath": "", "JPGPath": ""}
+    projector.observe_video_capture(
+        VideoCaptureEvent(
+            2,
+            "UAV01001",
+            102,
+            True,
+            2,
+            7,
+            2,
+            "4",
+            "/home/share/jpg/point-4.jpg",
+            "完成",
+        )
+    )
+    projector.begin_landing(8)
+    projector.observe_result(CommandResult(2, 8, "land", True, "降落完成", True))
+    assert [payload["uavStatus"] for payload in sent][-1] == "07"
+    projector.observe_video_status(
+        VideoServiceSnapshot(
+            service_available=True,
+            interface_version="3.2",
+            running=False,
+            state="stopped",
+            video_directory="/home/share",
+            image_directory="/home/share/jpg",
+            last_video_path="/home/share/recording.mp4",
+            last_image_path="/home/share/jpg/point-4.jpg",
+            age_seconds=0.0,
+        )
+    )
+    mission_statuses = [payload["uavStatus"] for payload in sent]
+    assert mission_statuses.count("09") == 2
+    assert mission_statuses[-2:] == ["07", "08"]
+    assert sent[-1]["data"] == {
+        "videoPath": "/home/share/recording.mp4",
+        "JPGPath": "/home/share/jpg",
+    }
     assert "01" not in [payload["uavStatus"] for payload in sent]
 
 
@@ -234,6 +301,55 @@ def test_status_projector_standby_hangar_blocking_and_return_completion_rules() 
     assert statuses.count("05") == 1
     assert "08" not in statuses
     assert "09" not in statuses
+
+
+def test_status_projector_never_reports_unfinalized_recording_as_video_path() -> None:
+    """媒体等待超时时，运行中的预留文件名不能冒充已封装录像。"""
+    sent: list[dict[str, object]] = []
+    projector = UpstreamStatusProjector(
+        lambda: "UAV01001",
+        lambda payload: not sent.append(dict(payload)),
+        EventLog(),
+    )
+    projector.MEDIA_RESULT_WAIT_SECONDS = 0.0
+    projector.begin_mission(21, "inspection", (5,))
+    projector.observe_result(
+        CommandResult(1, 21, "waypoints", True, "航点任务完成", True)
+    )
+    projector.observe_video_capture(
+        VideoCaptureEvent(
+            1,
+            "UAV01001",
+            1,
+            True,
+            2,
+            21,
+            1,
+            "raw",
+            "/home/share/jpg/point.jpg",
+            "完成",
+        )
+    )
+    projector.observe_video_status(
+        VideoServiceSnapshot(
+            service_available=True,
+            interface_version="3.2",
+            running=True,
+            state="running",
+            image_directory="/home/share/jpg",
+            current_video_path="/home/share/not-finalized.mp4",
+        )
+    )
+    projector.begin_landing(22)
+    projector.observe_result(
+        CommandResult(2, 22, "land", True, "降落完成", True)
+    )
+
+    assert sent[-1]["uavStatus"] == "08"
+    assert sent[-1]["data"] == {
+        "videoPath": "",
+        "JPGPath": "/home/share/jpg",
+    }
 
 
 def test_status_projector_uses_voltage_for_hardware_and_reports_landing_once() -> None:

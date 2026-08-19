@@ -34,8 +34,30 @@ def _interfaces_available() -> bool:
         return False
     if specification is None or specification.origin is None:
         return False
+    origin = Path(specification.origin).absolute()
     try:
-        Path(specification.origin).resolve().relative_to(install_prefix)
+        # `colcon build --symlink-install` keeps the import path inside install/
+        # while the final inode resides in this workspace's build/ tree. Validate
+        # both the advertised overlay path and the symlink target.
+        origin.relative_to(install_prefix)
+        resolved = origin.resolve()
+        allowed_targets = (
+            install_prefix,
+            (PROJECT_ROOT / "build" / "guided_interfaces").resolve(),
+        )
+        if not any(
+            _is_relative_to(resolved, root) for root in allowed_targets
+        ):
+            return False
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    """兼容检查一个已规范化路径是否位于给定工作空间根下。"""
+    try:
+        path.relative_to(root)
     except ValueError:
         return False
     return True

@@ -122,6 +122,7 @@ class _FakeRosController:
         strategy: object = 0,
         reference_generator: object = 0,
         tracking_controller: object = 0,
+        photo_nos: object = (),
     ) -> int:
         return self._record(
             "waypoints",
@@ -130,6 +131,7 @@ class _FakeRosController:
                 strategy,
                 reference_generator,
                 tracking_controller,
+                tuple(photo_nos),
             ),
         )
 
@@ -879,7 +881,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         ignored_logs = [
             event
             for event in window.event_log.snapshot()
-            if "cameraAngle 与 photoNo" in event.message
+            if "photoNo 已随航点" in event.message
         ]
         assert len(ignored_logs) == 1
 
@@ -908,6 +910,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         )
         window._refresh()
         assert ros.calls[-1][0] == "waypoints"
+        assert ros.calls[-1][1][4] == ("1",)
         assert window._waypoint_running
         assert ("mission", (2, "inspection", (8,))) in upstream.calls
         assert not window.waypoints.send_button.isEnabled()
@@ -1546,12 +1549,19 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         )
         assert len(ros.calls) == 2
         assert ros.calls[-1][0] == "waypoints"
-        waypoints_arg, strategy_arg, generator_arg, controller_arg = ros.calls[-1][1]
+        (
+            waypoints_arg,
+            strategy_arg,
+            generator_arg,
+            controller_arg,
+            photo_nos_arg,
+        ) = ros.calls[-1][1]
         assert len(waypoints_arg) == 2
         # 界面可选避障，但当前实现路径仍传递所选策略枚举；执行侧按直线处理。
         assert strategy_arg is WaypointFlightStrategy.AVOID
         assert generator_arg is WaypointReferenceGenerator.JERK_LIMITED_S_CURVE
         assert controller_arg is WaypointTrackingController.TRAJECTORY_PD_DOB
+        assert photo_nos_arg == ()
 
         for width, height in ((1180, 700), (1800, 1000)):
             window.resize(width, height)
@@ -2557,7 +2567,7 @@ def test_camera_panel_launcher_is_detached_from_ground_station_cleanup() -> None
         ) as start_detached:
             window._open_camera_panel()
 
-        panel_script = PROJECT_ROOT / "video-service" / "camera_panel.py"
+        panel_script = PROJECT_ROOT / "video_service" / "camera_panel.py"
         start_detached.assert_called_once_with(
             sys.executable, [str(panel_script)], str(panel_script.parent)
         )

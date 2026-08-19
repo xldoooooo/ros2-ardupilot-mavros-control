@@ -1,0 +1,9 @@
+# 地面站经机载控制节点请求开关独立视频功能；不进入飞行控制租约。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+uint32 ttl_ms
+bool enabled
+---
+bool accepted
+string message

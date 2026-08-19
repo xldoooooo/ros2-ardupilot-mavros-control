@@ -3,7 +3,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>guided_interfaces</name>
-  <version>3.1.0</version>
+  <version>3.2.0</version>
   <description>Versioned high-level interfaces shared by the ground station and onboard controller.</description>
   <maintainer email="xld@todo.todo">xld</maintainer>
   <license>Apache-2.0</license>

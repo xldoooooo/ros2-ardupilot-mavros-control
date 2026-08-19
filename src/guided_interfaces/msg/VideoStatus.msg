@@ -1,0 +1,13 @@
+# 独立视频服务发布的发现地址、媒体路径和非飞行关键运行状态。
+std_msgs/Header header
+string interface_version
+bool service_available
+bool running
+string state
+string rtsp_url
+string video_directory
+string image_directory
+string current_video_path
+string last_video_path
+string last_image_path
+string last_error

@@ -14,7 +14,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..event_log import EventLog
-from ..models import CommandResult, VehicleSnapshot
+from ..models import (
+    CommandResult,
+    VideoCaptureEvent,
+    VideoServiceSnapshot,
+    VehicleSnapshot,
+)
 from .journal import RawFrameJournal
 from .mapping import (
     COMMAND_MAPPINGS,
@@ -300,6 +305,14 @@ class UpstreamCommunicationService:
     def observe_result(self, result: CommandResult) -> None:
         """由 GUI 消费同一可靠结果，生成无重复的任务状态。"""
         self._projector.observe_result(result)
+
+    def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
+        """提供视频服务新鲜状态，用于 08 的真实媒体路径。"""
+        self._projector.observe_video_status(snapshot)
+
+    def observe_video_capture(self, event: VideoCaptureEvent) -> None:
+        """提供逐条截图完成事件，用于 09 的真实 pointPic。"""
+        self._projector.observe_video_capture(event)
 
     def reset_runtime(self) -> None:
         """仿真或实机会话断开后清空任务事件关联。"""

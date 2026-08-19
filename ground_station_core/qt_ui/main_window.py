@@ -99,6 +99,7 @@ class _UpstreamFlightSequence:
     phase: str
     waypoints: tuple[tuple[float, float, float, float], ...] = ()
     point_indexes: tuple[int, ...] = ()
+    photo_nos: tuple[str, ...] = ()
     strategy: WaypointFlightStrategy = WaypointFlightStrategy.STRAIGHT
     reference_generator: WaypointReferenceGenerator = (
         WaypointReferenceGenerator.STEP_POSITION
@@ -150,11 +151,13 @@ class GroundStationWindow(QMainWindow):
         self._waypoint_running = False
         self._waypoint_preview_active = False
         self._upstream_point_indexes: tuple[int, ...] = ()
+        self._upstream_photo_nos: tuple[str, ...] = ()
         self._upstream_sequence: _UpstreamFlightSequence | None = None
         self._abnormal_return_latched = False
         self._pending_commands: set[str] = set()
         self._active_waypoint_ticket: int | None = None
         self._last_result_sequence = 0
+        self._last_video_result_sequence = 0
         self._last_ros_error = ""
         self._cleanup_thread: threading.Thread | None = None
         self._shutdown_thread: threading.Thread | None = None
@@ -624,7 +627,7 @@ class GroundStationWindow(QMainWindow):
 
     def _open_camera_panel(self) -> None:
         """分离启动独立摄像头面板，不纳入ROS或仿真进程清理链。"""
-        panel_script = PROJECT_ROOT / "video-service" / "camera_panel.py"
+        panel_script = PROJECT_ROOT / "video_service" / "camera_panel.py"
         if not panel_script.is_file():
             message = f"未找到摄像头配置面板：{panel_script}"
             self._events.error("camera", message)
@@ -989,6 +992,7 @@ class GroundStationWindow(QMainWindow):
                 return
             self.waypoints.replace_waypoints(command.waypoints, "上位机命令 02")
             self._upstream_point_indexes = command.point_indexes
+            self._upstream_photo_nos = command.photo_nos
             try:
                 self._upstream.block_standby()
             except Exception as exc:
@@ -1094,6 +1098,7 @@ class GroundStationWindow(QMainWindow):
             phase="takeoff",
             waypoints=values,
             point_indexes=self._point_indexes_for(values),
+            photo_nos=self._photo_nos_for(values),
             strategy=self.waypoints.selected_strategy(),
             reference_generator=self.waypoints.selected_reference_generator(),
             tracking_controller=self.waypoints.selected_tracking_controller(),
@@ -1160,6 +1165,7 @@ class GroundStationWindow(QMainWindow):
             phase="waypoints_pending",
             waypoints=(return_point,),
             point_indexes=(1,),
+            photo_nos=(),
             strategy=self.waypoints.selected_strategy(),
             reference_generator=self.waypoints.selected_reference_generator(),
             tracking_controller=self.waypoints.selected_tracking_controller(),
@@ -1234,6 +1240,7 @@ class GroundStationWindow(QMainWindow):
             sequence.strategy,
             sequence.reference_generator,
             sequence.tracking_controller,
+            sequence.photo_nos,
             allow_running_override=sequence.kind != "inspection",
             refresh_after_queue=False,
         )
@@ -1255,6 +1262,7 @@ class GroundStationWindow(QMainWindow):
                 sequence.waypoints, "上位机返航组合"
             )
             self._upstream_point_indexes = (1,)
+            self._upstream_photo_nos = ()
         self._events.info(
             "upstream",
             f"{sequence.kind} 组合已排队 {len(sequence.waypoints)} 个航点",
@@ -1388,16 +1396,23 @@ class GroundStationWindow(QMainWindow):
             return self._upstream_point_indexes
         return tuple(range(1, len(waypoints) + 1))
 
+    def _photo_nos_for(
+        self, waypoints: tuple[tuple[float, float, float, float], ...]
+    ) -> tuple[str, ...]:
+        """只在列表仍对应最近命令 02 时带出甲方 photoNo。"""
+        if len(self._upstream_photo_nos) == len(waypoints):
+            return self._upstream_photo_nos
+        return ()
+
     def _handle_ignored_upstream_point_fields(
         self, command: UpstreamCommand
     ) -> None:
-        """集中记录当前未消费的云台和拍照字段，保留唯一扩展接口。"""
+        """集中记录仍未消费的云台字段；photoNo 已随航点进入机载端。"""
         if not command.ignored_camera_fields:
             return
-        # TODO(上位机相机字段): 在相机/云台服务稳定后于此消费 cameraAngle/photoNo。
         self._events.info(
             "upstream",
-            "命令 02 的 cameraAngle 与 photoNo 已校验但当前忽略；forwardAngle 已转换为偏航角",
+            "命令 02 的 photoNo 已随航点传给视频服务；cameraAngle 仍按要求忽略",
         )
 
     def _log_coordinate_mode_change(self, mode: str, label: str) -> None:
@@ -1480,6 +1495,7 @@ class GroundStationWindow(QMainWindow):
         strategy: object | None = None,
         reference_generator: object | None = None,
         tracking_controller: object | None = None,
+        photo_nos: object | None = None,
         *,
         allow_running_override: bool = False,
         refresh_after_queue: bool = True,
@@ -1572,7 +1588,11 @@ class GroundStationWindow(QMainWindow):
         self.waypoints.reset_progress()
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
         ticket = self._ros.request_waypoints(
-            values, flight_strategy, generator, controller
+            values,
+            flight_strategy,
+            generator,
+            controller,
+            tuple(photo_nos) if photo_nos is not None else (),
         )
         self._active_waypoint_ticket = ticket
         if refresh_after_queue:
@@ -1623,6 +1643,7 @@ class GroundStationWindow(QMainWindow):
         self._upstream_point_indexes = tuple(
             range(1, len(self.waypoints.waypoints) + 1)
         )
+        self._upstream_photo_nos = ()
         self._events.debug("waypoint-editor", message)
         if not self._waypoint_preview_active:
             return
@@ -1721,6 +1742,7 @@ class GroundStationWindow(QMainWindow):
         self._update_status_badges(snapshot)
         self.operations.update_snapshot(snapshot, self._connection_mode)
         self.waypoints.update_progress(snapshot)
+        self._consume_video_results()
         self._consume_results()
 
         cleanup_active = (
@@ -1824,6 +1846,35 @@ class GroundStationWindow(QMainWindow):
                     self._waypoint_running = False
                     self._active_waypoint_ticket = None
                 self.waypoints.set_result(result.message, running=running)
+
+    def _consume_video_results(self) -> None:
+        """把独立视频状态与截图事件投影到上位机，不参与飞行按钮门控。"""
+        video_snapshot = getattr(self._ros, "video_snapshot", None)
+        observe_status = getattr(self._upstream, "observe_video_status", None)
+        if callable(video_snapshot) and callable(observe_status):
+            try:
+                observe_status(video_snapshot())
+            except Exception as exc:
+                self._events.warn("upstream", f"视频状态投影异常：{exc}")
+
+        results_after = getattr(self._ros, "video_capture_results_after", None)
+        observe_capture = getattr(self._upstream, "observe_video_capture", None)
+        if not callable(results_after) or not callable(observe_capture):
+            return
+        try:
+            events = results_after(self._last_video_result_sequence)
+        except Exception as exc:
+            self._events.warn("upstream", f"读取视频截图结果失败：{exc}")
+            return
+        for event in events:
+            self._last_video_result_sequence = max(
+                self._last_video_result_sequence,
+                int(getattr(event, "event_sequence", 0)),
+            )
+            try:
+                observe_capture(event)
+            except Exception as exc:
+                self._events.warn("upstream", f"截图结果投影异常：{exc}")
 
     def _update_status_badges(self, snapshot: VehicleSnapshot) -> None:
         """把权威快照压缩成四个可快速扫描的状态卡。"""

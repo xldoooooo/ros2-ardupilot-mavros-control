@@ -362,7 +362,7 @@ class EnvironmentInitializer:
             mavproxy = find_mavproxy()
             if mavproxy is None:
                 raise FileNotFoundError(
-                    "未找到 mavproxy.py；请重新执行 setup_project.sh，或设置 "
+                    "未找到 mavproxy.py；请重新执行 setup_ground_station.sh，或设置 "
                     "GROUND_STATION_MAVPROXY"
                 )
             mavproxy_probe = self._supervisor.run_checked(

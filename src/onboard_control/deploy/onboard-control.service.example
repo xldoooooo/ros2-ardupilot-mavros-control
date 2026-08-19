@@ -1,5 +1,4 @@
-# Example only; task 08 does not install or enable this unit.
-# Replace ONBOARD_USER and review /etc/ros2-ardupilot/onboard.env before use.
+# 四组件生产模板；安装器替换用户和工作区，占位符不得原样部署。
 [Unit]
 Description=ROS 2 ArduPilot onboard control service
 # ROS wall timers must not be created before the first boot-time clock sync.
@@ -9,11 +8,16 @@ After=network-online.target time-sync.target
 [Service]
 Type=simple
 User=ONBOARD_USER
+Group=ONBOARD_USER
+SupplementaryGroups=dialout
+WorkingDirectory=ONBOARD_WORKSPACE_PATH
 EnvironmentFile=-/etc/ros2-ardupilot/onboard.env
-ExecStart=/bin/bash -lc 'source "/opt/ros/${ROS_DISTRO}/setup.bash" && source "${ONBOARD_WORKSPACE}/install/setup.bash" && exec ros2 launch onboard_control control.launch.py'
+Environment=HOME=ONBOARD_HOME_PATH
+Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH
+ExecStart=/bin/bash -lc 'exec "${ONBOARD_WORKSPACE}/start_onboard_control.sh"'
 Restart=on-failure
-RestartSec=2
-TimeoutStopSec=15
+RestartSec=10
+TimeoutStopSec=30
 KillSignal=SIGINT
 
 [Install]

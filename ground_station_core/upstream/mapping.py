@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from ..config import MAX_WAYPOINT_COUNT, WAYPOINT_HORIZONTAL_LIMIT_METERS
 from .models import UpstreamAction, UpstreamCommand
+from ..config import MAX_WAYPOINT_COUNT, WAYPOINT_HORIZONTAL_LIMIT_METERS
 
 
 class UpstreamProtocolError(ValueError):
@@ -81,9 +82,12 @@ def parse_command(
 
     waypoints: tuple[tuple[float, float, float, float], ...] = ()
     point_indexes: tuple[int, ...] = ()
+    photo_nos: tuple[str, ...] = ()
     ignored = False
     if command_no == "02":
-        waypoints, point_indexes = _parse_task_points(payload.get("taskPoints"))
+        waypoints, point_indexes, photo_nos = _parse_task_points(
+            payload.get("taskPoints")
+        )
         ignored = True
     return UpstreamCommand(
         client_no=client_no,
@@ -93,14 +97,19 @@ def parse_command(
         raw_payload=deepcopy(dict(payload)),
         waypoints=waypoints,
         point_indexes=point_indexes,
+        photo_nos=photo_nos,
         ignored_camera_fields=ignored,
     )
 
 
 def _parse_task_points(
     value: Any,
-) -> tuple[tuple[tuple[float, float, float, float], ...], tuple[int, ...]]:
-    """校验航点数组并保留协议顺序；index 仅作为状态回报编号。"""
+) -> tuple[
+    tuple[tuple[float, float, float, float], ...],
+    tuple[int, ...],
+    tuple[str, ...],
+]:
+    """校验飞行字段，并按协议顺序原样带出 point index 与 photoNo。"""
     if not isinstance(value, list) or not value:
         raise UpstreamProtocolError("commandNo=02 的 taskPoints 必须是非空数组")
     if len(value) > MAX_WAYPOINT_COUNT:
@@ -108,6 +117,7 @@ def _parse_task_points(
 
     normalized: list[tuple[float, float, float, float]] = []
     indexes: list[int] = []
+    photo_nos: list[str] = []
     for position, point in enumerate(value, start=1):
         if not isinstance(point, Mapping):
             raise UpstreamProtocolError(f"taskPoints[{position}] 必须是 JSON 对象")
@@ -122,8 +132,6 @@ def _parse_task_points(
             raise UpstreamProtocolError(f"taskPoints[{position}].index 必须是正整数")
         if index in indexes:
             raise UpstreamProtocolError(f"taskPoints index={index} 重复")
-        if isinstance(photo_no, bool) or not isinstance(photo_no, int):
-            raise UpstreamProtocolError(f"taskPoints[{position}].photoNo 必须是整数")
         x = _finite_number(point["x"], f"taskPoints[{position}].x")
         y = _finite_number(point["y"], f"taskPoints[{position}].y")
         z = _finite_number(point["z"], f"taskPoints[{position}].z")
@@ -143,7 +151,14 @@ def _parse_task_points(
         normalized_angle = ((angle + 180.0) % 360.0) - 180.0
         normalized.append((x, y, z, math.radians(normalized_angle)))
         indexes.append(index)
-    return tuple(normalized), tuple(indexes)
+        # photoNo 是甲方文件标识，不校验递增、重复、正负、类型或范围。
+        # JSON 紧凑序列化保留结构和值；文件名层再做可逆转义。
+        photo_nos.append(
+            json.dumps(photo_no, ensure_ascii=False, separators=(",", ":"))
+            if not isinstance(photo_no, str)
+            else photo_no
+        )
+    return tuple(normalized), tuple(indexes), tuple(photo_nos)
 
 
 def _client_no(value: Any) -> str:

@@ -24,12 +24,16 @@
 #include <guided_interfaces/msg/control_heartbeat.hpp>
 #include <guided_interfaces/msg/control_status.hpp>
 #include <guided_interfaces/msg/motion_intent.hpp>
+#include <guided_interfaces/msg/video_capture.hpp>
+#include <guided_interfaces/msg/video_control.hpp>
 #include <guided_interfaces/msg/waypoint.hpp>
 #include <guided_interfaces/srv/acquire_control.hpp>
 #include <guided_interfaces/srv/execute_waypoints.hpp>
 #include <guided_interfaces/srv/flight_command.hpp>
 #include <guided_interfaces/srv/set_gps_origin.hpp>
+#include <guided_interfaces/srv/set_video_state.hpp>
 #include <mavros_msgs/msg/attitude_target.hpp>
+#include <mavros_msgs/msg/extended_state.hpp>
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
@@ -59,6 +63,7 @@ private:
   using ExecuteWaypoints = guided_interfaces::srv::ExecuteWaypoints;
   using AcquireControl = guided_interfaces::srv::AcquireControl;
   using SetGpsOrigin = guided_interfaces::srv::SetGpsOrigin;
+  using SetVideoState = guided_interfaces::srv::SetVideoState;
 
   enum class ActiveTask
   {
@@ -85,6 +90,7 @@ private:
 
   // ROS subscription callbacks update the authoritative vehicle state.
   void on_fcu_state(const mavros_msgs::msg::State::SharedPtr message);
+  void on_extended_state(const mavros_msgs::msg::ExtendedState::SharedPtr message);
   void on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message);
   void on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message);
   void on_battery(const sensor_msgs::msg::BatteryState::SharedPtr message);
@@ -106,6 +112,9 @@ private:
   void on_set_gps_origin(
     const std::shared_ptr<SetGpsOrigin::Request> request,
     std::shared_ptr<SetGpsOrigin::Response> response);
+  void on_set_video_state(
+    const std::shared_ptr<SetVideoState::Request> request,
+    std::shared_ptr<SetVideoState::Response> response);
 
   // Fixed-rate and diagnostic timers remain entirely onboard.
   void control_tick();
@@ -178,6 +187,8 @@ private:
     ReferenceGeneratorType reference_generator,
     TrackingControllerType tracking_controller);
   void clear_waypoint_configuration_lock();
+  void publish_video_control(bool enabled, const std::string & source, const std::string & reason);
+  void publish_waypoint_capture(const guided_interfaces::msg::Waypoint & waypoint);
   void publish_result(
     const CommandIdentity & command,
     std::uint8_t status,
@@ -223,6 +234,7 @@ private:
   double max_clock_skew_seconds_{2.0};
   std::string mavros_prefix_{"/mavros"};
   std::string interface_prefix_{"/onboard_control"};
+  std::string video_prefix_{"/video_service"};
   ControllerParameters controller_parameters_;
   ControllerParameters trajectory_controller_parameters_;
   ReferenceGeneratorParameters reference_generator_parameters_;
@@ -231,6 +243,8 @@ private:
   // Latest MAVROS state and freshness markers.
   bool fcu_connected_{false};
   bool armed_{false};
+  bool extended_state_observed_{false};
+  bool airborne_{false};
   std::string autopilot_mode_;
   bool pose_valid_{false};
   bool velocity_valid_{false};
@@ -287,6 +301,7 @@ private:
   SteadyTime lease_deadline_{};
   std::unordered_map<std::string, std::uint64_t> last_lease_sequence_;
   std::unordered_map<std::string, std::uint64_t> last_flight_sequence_;
+  std::unordered_map<std::string, std::uint64_t> last_video_sequence_;
   std::optional<SteadyTime> link_loss_started_;
   bool failsafe_land_requested_{false};
 
@@ -319,13 +334,17 @@ private:
   bool setpoint_conflict_{false};
   unsigned int conflict_observations_{0};
   std::string attitude_topic_;
+  std::uint64_t video_command_sequence_{0};
 
   rclcpp::Publisher<mavros_msgs::msg::AttitudeTarget>::SharedPtr attitude_publisher_;
   rclcpp::Publisher<geographic_msgs::msg::GeoPointStamped>::SharedPtr origin_publisher_;
   rclcpp::Publisher<guided_interfaces::msg::ControlStatus>::SharedPtr status_publisher_;
   rclcpp::Publisher<guided_interfaces::msg::CommandResult>::SharedPtr result_publisher_;
+  rclcpp::Publisher<guided_interfaces::msg::VideoControl>::SharedPtr video_control_publisher_;
+  rclcpp::Publisher<guided_interfaces::msg::VideoCapture>::SharedPtr video_capture_publisher_;
 
   rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_subscription_;
+  rclcpp::Subscription<mavros_msgs::msg::ExtendedState>::SharedPtr extended_state_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_subscription_;
@@ -338,6 +357,7 @@ private:
   rclcpp::Service<FlightCommand>::SharedPtr flight_command_service_;
   rclcpp::Service<ExecuteWaypoints>::SharedPtr waypoint_service_;
   rclcpp::Service<SetGpsOrigin>::SharedPtr origin_service_;
+  rclcpp::Service<SetVideoState>::SharedPtr video_state_service_;
 
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;

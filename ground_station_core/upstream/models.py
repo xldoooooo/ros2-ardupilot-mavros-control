@@ -32,6 +32,7 @@ class UpstreamCommand:
     raw_payload: Mapping[str, Any]
     waypoints: tuple[tuple[float, float, float, float], ...] = ()
     point_indexes: tuple[int, ...] = ()
+    photo_nos: tuple[str, ...] = ()
     ignored_camera_fields: bool = False
 
 

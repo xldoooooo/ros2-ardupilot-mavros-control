@@ -159,13 +159,15 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         assert spin_until(lambda: bool(statuses)), "机载状态话题未启动"
         publish_state(True)
         assert spin_until(lambda: any(status.fcu_connected for status in statuses))
-        assert spin_until(lambda: len(interval_requests) == 4)
+        assert spin_until(lambda: len(interval_requests) == 5)
         assert {message_id for message_id, _rate in interval_requests} == {
             1,
             31,
             32,
             105,
+            245,
         }
+        assert dict(interval_requests)[245] == pytest.approx(2.0)
 
         assert spin_until(
             lambda: statuses and statuses[-1].message_rates_configured
@@ -214,7 +216,7 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
             executor.spin_once(timeout_sec=0.01)
             time.sleep(0.04)
         measured = statuses[-1]
-        assert measured.interface_version == "3.1"
+        assert measured.interface_version == "3.2"
         assert measured.waypoint_arrival_failure_count == 0
         assert not measured.vehicle_abnormal
         assert measured.vehicle_abnormal_reason == ""

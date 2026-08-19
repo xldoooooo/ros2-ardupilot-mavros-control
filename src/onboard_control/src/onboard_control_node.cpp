@@ -21,8 +21,8 @@ namespace onboard_control
 namespace
 {
 
-// 3.1 adds waypoint-arrival retry diagnostics and an explicit abnormal-state flag.
-constexpr char kInterfaceVersion[] = "3.1";
+// 3.2 adds an isolated video-service protocol and per-waypoint photo metadata.
+constexpr char kInterfaceVersion[] = "3.2";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -38,11 +38,14 @@ constexpr double kOriginConfirmationTimeoutSeconds = 8.0;
 constexpr double kOriginHorizontalToleranceDegrees = 2.0e-7;
 constexpr double kOriginAltitudeToleranceMeters = 0.5;
 
-const std::array<std::pair<std::uint32_t, float>, 4> kMessageIntervals{{
+const std::array<std::pair<std::uint32_t, float>, 5> kMessageIntervals{{
   {32U, 100.0F},   // LOCAL_POSITION_NED
   {31U, 100.0F},   // ATTITUDE_QUATERNION
   {105U, 100.0F},  // HIGHRES_IMU
   {1U, 1.0F},      // SYS_STATUS (battery fallback used by MAVROS)
+  // ArduPilot does not stream this by default on the real FCU.  Without it,
+  // MAVROS cannot publish ExtendedState and non-GCS takeoff edges are invisible.
+  {245U, 2.0F},    // EXTENDED_SYS_STATE
 }};
 
 bool finite_waypoint(const guided_interfaces::msg::Waypoint & waypoint)
@@ -102,6 +105,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   mavros_prefix_ = declare_parameter<std::string>("mavros_prefix", "/mavros");
   interface_prefix_ =
     declare_parameter<std::string>("interface_prefix", "/onboard_control");
+  video_prefix_ = declare_parameter<std::string>("video_prefix", "/video_service");
 
   controller_parameters_.wn_xy = declare_parameter<double>("hover_wn_xy", 2.236);
   controller_parameters_.zeta_xy = declare_parameter<double>("hover_zeta_xy", 0.8);
@@ -230,10 +234,18 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     interface_prefix_ + "/status", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort());
   result_publisher_ = create_publisher<guided_interfaces::msg::CommandResult>(
     interface_prefix_ + "/command_result", rclcpp::QoS(50).reliable());
+  video_control_publisher_ = create_publisher<guided_interfaces::msg::VideoControl>(
+    video_prefix_ + "/control",
+    rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+  video_capture_publisher_ = create_publisher<guided_interfaces::msg::VideoCapture>(
+    video_prefix_ + "/capture", rclcpp::QoS(256).reliable());
 
   state_subscription_ = create_subscription<mavros_msgs::msg::State>(
     mavros_prefix_ + "/state", rclcpp::QoS(10).reliable(),
     std::bind(&OnboardControlNode::on_fcu_state, this, std::placeholders::_1));
+  extended_state_subscription_ = create_subscription<mavros_msgs::msg::ExtendedState>(
+    mavros_prefix_ + "/extended_state", rclcpp::QoS(10).reliable(),
+    std::bind(&OnboardControlNode::on_extended_state, this, std::placeholders::_1));
   pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(
     mavros_prefix_ + "/local_position/pose", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_pose, this, std::placeholders::_1));
@@ -275,6 +287,11 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     std::bind(
       &OnboardControlNode::on_set_gps_origin, this,
       std::placeholders::_1, std::placeholders::_2));
+  video_state_service_ = create_service<SetVideoState>(
+    interface_prefix_ + "/set_video_state",
+    std::bind(
+      &OnboardControlNode::on_set_video_state, this,
+      std::placeholders::_1, std::placeholders::_2));
 
   set_mode_client_ = create_client<mavros_msgs::srv::SetMode>(mavros_prefix_ + "/set_mode");
   arming_client_ = create_client<mavros_msgs::srv::CommandBool>(mavros_prefix_ + "/cmd/arming");
@@ -297,8 +314,9 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 
   RCLCPP_INFO(
     get_logger(),
-    "机载控制服务 %s 启动：控制 %.1f Hz，接口 %s，MAVROS %s",
-    kInterfaceVersion, control_frequency_hz_, interface_prefix_.c_str(), mavros_prefix_.c_str());
+    "机载控制服务 %s 启动：控制 %.1f Hz，接口 %s，MAVROS %s，视频 %s",
+    kInterfaceVersion, control_frequency_hz_, interface_prefix_.c_str(), mavros_prefix_.c_str(),
+    video_prefix_.c_str());
 }
 
 void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr message)
@@ -341,6 +359,8 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
   }
 
   if (was_armed && !armed_) {
+    airborne_ = false;
+    publish_video_control(false, "onboard-flight", "飞行器已解除武装");
     const ActiveTask completed_task = active_task_;
     const CommandIdentity completed_command = active_command_;
     controller_engaged_ = false;
@@ -361,6 +381,36 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
         completed_command, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
         "飞行器已解除武装，已确认降落完成");
     }
+  }
+}
+
+void OnboardControlNode::on_extended_state(
+  const mavros_msgs::msg::ExtendedState::SharedPtr message)
+{
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  const bool on_ground =
+    message->landed_state == mavros_msgs::msg::ExtendedState::LANDED_STATE_ON_GROUND;
+  const bool in_flight_phase =
+    message->landed_state == mavros_msgs::msg::ExtendedState::LANDED_STATE_TAKEOFF ||
+    message->landed_state == mavros_msgs::msg::ExtendedState::LANDED_STATE_IN_AIR ||
+    message->landed_state == mavros_msgs::msg::ExtendedState::LANDED_STATE_LANDING;
+
+  if (!extended_state_observed_) {
+    extended_state_observed_ = true;
+    airborne_ = in_flight_phase;
+    if (on_ground || in_flight_phase) {
+      publish_video_control(
+        in_flight_phase, "onboard-flight",
+        in_flight_phase ? "检测到飞行器已起飞" : "检测到飞行器位于地面");
+    }
+    return;
+  }
+  if (!airborne_ && in_flight_phase) {
+    airborne_ = true;
+    publish_video_control(true, "onboard-flight", "检测到起飞/空中状态");
+  } else if (airborne_ && on_ground) {
+    airborne_ = false;
+    publish_video_control(false, "onboard-flight", "检测到可靠落地状态");
   }
 }
 
@@ -934,6 +984,30 @@ void OnboardControlNode::on_set_gps_origin(
     stream.str());
   response->accepted = true;
   response->message = stream.str();
+}
+
+void OnboardControlNode::on_set_video_state(
+  const std::shared_ptr<SetVideoState::Request> request,
+  std::shared_ptr<SetVideoState::Response> response)
+{
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  std::string reason;
+  if (!validate_envelope(request->stamp, request->ttl_ms, request->source_id, reason)) {
+    response->message = reason;
+    return;
+  }
+  const auto previous = last_video_sequence_.find(request->source_id);
+  if (previous != last_video_sequence_.end() && request->sequence <= previous->second) {
+    response->message = "视频命令重复或乱序";
+    return;
+  }
+  last_video_sequence_[request->source_id] = request->sequence;
+  publish_video_control(
+    request->enabled, request->source_id,
+    request->enabled ? "地面站请求开启视频" : "地面站请求关闭视频");
+  response->accepted = true;
+  response->message = request->enabled ?
+    "视频开启期望状态已发布" : "视频关闭期望状态已发布";
 }
 
 void OnboardControlNode::start_takeoff(
@@ -1705,6 +1779,9 @@ void OnboardControlNode::update_waypoint_executor(
     return;
   }
 
+  // 到达事件是拍照的唯一权威触发点；先带出当前点元数据，再推进索引。
+  // 发布完全非阻塞，视频服务不存在或失败都不能改变飞行任务终态。
+  publish_waypoint_capture(waypoint);
   ++waypoint_index_;
   if (waypoint_index_ >= waypoints_.size()) {
     const CommandIdentity completed = active_command_;
@@ -1990,6 +2067,37 @@ void OnboardControlNode::publish_result(
   result.waypoint_index = waypoint_index;
   result.waypoint_count = waypoint_count;
   result_publisher_->publish(result);
+}
+
+void OnboardControlNode::publish_video_control(
+  const bool enabled, const std::string & source, const std::string & reason)
+{
+  guided_interfaces::msg::VideoControl message;
+  message.header.stamp = get_clock()->now();
+  message.source_id = source;
+  message.sequence = ++video_command_sequence_;
+  message.enabled = enabled;
+  message.reason = reason;
+  video_control_publisher_->publish(message);
+  RCLCPP_INFO(
+    get_logger(), "视频期望状态已发布：enabled=%s，reason=%s",
+    enabled ? "true" : "false", reason.c_str());
+}
+
+void OnboardControlNode::publish_waypoint_capture(
+  const guided_interfaces::msg::Waypoint & waypoint)
+{
+  guided_interfaces::msg::VideoCapture message;
+  message.header.stamp = get_clock()->now();
+  message.source_id = active_command_.source;
+  message.sequence = ++video_command_sequence_;
+  message.kind = waypoint.has_photo_no ?
+    guided_interfaces::msg::VideoCapture::KIND_UPSTREAM_WAYPOINT :
+    guided_interfaces::msg::VideoCapture::KIND_GCS_WAYPOINT;
+  message.mission_sequence = active_command_.sequence;
+  message.waypoint_index = static_cast<std::uint32_t>(waypoint_index_ + 1);
+  message.photo_no = waypoint.has_photo_no ? waypoint.photo_no : "";
+  video_capture_publisher_->publish(message);
 }
 
 void OnboardControlNode::check_origin_confirmation_timeout(const SteadyTime & now)

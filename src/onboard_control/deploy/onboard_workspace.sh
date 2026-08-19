@@ -14,9 +14,12 @@ readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/start_dron
 source "${RUNTIME_HELPERS}"
 readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
+readonly VIDEO_SPARSE_PATH="/video_service/"
+readonly VIDEO_START_SPARSE_PATH="/start_onboard_video.sh"
+readonly VIDEO_STOP_SPARSE_PATH="/stop_onboard_video.sh"
 readonly DRONE_START_SPARSE_PATH="/start_drone/"
-readonly DRONE_START_ALL_SPARSE_PATH="/start_drone_all.sh"
-readonly DRONE_STOP_ALL_SPARSE_PATH="/stop_onboard_service.sh"
+readonly ONBOARD_CONTROL_START_SPARSE_PATH="/start_onboard_control.sh"
+readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/stop_onboard_control.sh"
 readonly ONBOARD_BUILD_SPARSE_PATH="/build_onboard_control.sh"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
 readonly SMOKE_INTERFACE_PREFIX="/_task08_smoke_onboard"
@@ -92,12 +95,20 @@ validate_workspace_layout() {
     die "guided_interfaces is missing from ${WORKSPACE_ROOT}/src"
   [[ -f "${WORKSPACE_ROOT}/src/onboard_control/package.xml" ]] ||
     die "onboard_control is missing from ${WORKSPACE_ROOT}/src"
+  [[ -x "${WORKSPACE_ROOT}/video_service/deploy/install_onboard_video_service.sh" ]] ||
+    die "independent video service installer is missing or not executable"
+  [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/install_onboard_service.sh" ]] ||
+    die "onboard flight service installer is missing or not executable"
+  [[ -x "${WORKSPACE_ROOT}/start_onboard_video.sh" ]] ||
+    die "independent video service launcher is missing or not executable"
+  [[ -x "${WORKSPACE_ROOT}/stop_onboard_video.sh" ]] ||
+    die "independent video service stop helper is missing or not executable"
   [[ -d "${WORKSPACE_ROOT}/start_drone" ]] ||
     die "start_drone is missing from ${WORKSPACE_ROOT}"
-  [[ -f "${WORKSPACE_ROOT}/start_drone_all.sh" ]] ||
-    die "start_drone_all.sh is missing from ${WORKSPACE_ROOT}"
-  [[ -x "${WORKSPACE_ROOT}/stop_onboard_service.sh" ]] ||
-    die "stop_onboard_service.sh is missing or not executable in ${WORKSPACE_ROOT}"
+  [[ -f "${WORKSPACE_ROOT}/start_onboard_control.sh" ]] ||
+    die "start_onboard_control.sh is missing from ${WORKSPACE_ROOT}"
+  [[ -x "${WORKSPACE_ROOT}/stop_onboard_control.sh" ]] ||
+    die "stop_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
   [[ -x "${WORKSPACE_ROOT}/build_onboard_control.sh" ]] ||
     die "build_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
 }
@@ -124,8 +135,10 @@ update_checkout() {
   # The checkout was initialized in non-cone mode; older Git treats --no-cone here as a path.
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
     "${GUIDED_SPARSE_PATH}" "${ONBOARD_SPARSE_PATH}" \
-    "${DRONE_START_SPARSE_PATH}" "${DRONE_START_ALL_SPARSE_PATH}" \
-    "${DRONE_STOP_ALL_SPARSE_PATH}" \
+    "${VIDEO_SPARSE_PATH}" \
+    "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
+    "${DRONE_START_SPARSE_PATH}" "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
+    "${ONBOARD_CONTROL_STOP_SPARSE_PATH}" \
     "${ONBOARD_BUILD_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"
   validate_workspace_layout
@@ -156,13 +169,17 @@ check_dependencies() {
   require_command cmake
   require_command g++
   require_command ros2
+  require_command python3
+  require_command ffmpeg
+  require_command ffprobe
+  require_command v4l2-ctl
   [[ -f /usr/include/eigen3/Eigen/Core ]] ||
     die "Eigen3 headers are missing: /usr/include/eigen3/Eigen/Core"
   for package in "${ros_packages[@]}"; do
     ros2 pkg prefix "${package}" >/dev/null 2>&1 ||
       die "required ROS package is missing: ${package}"
   done
-  log "dependency check passed (${ROS_DISTRO_RESOLVED}, ${#ros_packages[@]} ROS packages)"
+  log "dependency check passed (${ROS_DISTRO_RESOLVED}, ${#ros_packages[@]} ROS packages, video tools present)"
 }
 
 build_workspace() {
@@ -271,8 +288,8 @@ smoke_test() {
     die "isolated status topic was not received"
   }
 
-  grep -Eq "^interface_version: ['\"]?3\\.1['\"]?$" "${status_log}" ||
-    die "smoke status did not report interface version 3.1"
+  grep -Eq "^interface_version: ['\"]?3\\.2['\"]?$" "${status_log}" ||
+    die "smoke status did not report interface version 3.2"
   grep -q '^fcu_connected: false$' "${status_log}" ||
     die "smoke node unexpectedly reported an FCU connection"
   grep -q '^armed: false$' "${status_log}" ||
@@ -288,7 +305,7 @@ smoke_test() {
   [[ ${echo_status} -eq 124 ]] ||
     die "smoke node emitted an attitude setpoint or the no-output check failed (${echo_status})"
 
-  log "smoke passed: interface=3.1, fcu_connected=false, armed=false, setpoint_messages=0"
+  log "smoke passed: interface=3.2, fcu_connected=false, armed=false, setpoint_messages=0"
   cleanup_smoke
   trap - EXIT INT TERM
 }

@@ -92,9 +92,22 @@ def test_protocol_version_is_synchronized_across_deployments() -> None:
         for package in ("guided_interfaces", "onboard_control")
     }
 
-    assert INTERFACE_VERSION == "3.1"
-    assert 'kInterfaceVersion[] = "3.1"' in onboard_source
-    assert package_versions == {"3.1.0"}
+    assert INTERFACE_VERSION == "3.2"
+    assert 'kInterfaceVersion[] = "3.2"' in onboard_source
+    assert package_versions == {"3.2.0"}
+
+    executor = onboard_source.split(
+        "void OnboardControlNode::update_waypoint_executor", 1
+    )[1].split("void OnboardControlNode::enforce_safety", 1)[0]
+    assert executor.index("publish_waypoint_capture(waypoint)") < executor.index(
+        "++waypoint_index_"
+    )
+    assert "rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()" in (
+        onboard_source
+    )
+    assert 'video_prefix_ + "/capture", rclcpp::QoS(256).reliable()' in (
+        onboard_source
+    )
 
 
 def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_path) -> None:

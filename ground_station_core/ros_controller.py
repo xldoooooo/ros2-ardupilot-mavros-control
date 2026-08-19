@@ -27,6 +27,8 @@ from .models import (
     CommandRequest,
     CommandResult,
     FlightMode,
+    VideoCaptureEvent,
+    VideoServiceSnapshot,
     VehicleSnapshot,
     WaypointReferenceGenerator,
     WaypointTrackingController,
@@ -264,6 +266,11 @@ class GroundStationRosController:
         self._result_sequence = 0
         self._results: deque[CommandResult] = deque(maxlen=512)
         self._ticket_results: dict[int, CommandResult] = {}
+        self._video_lock = threading.RLock()
+        self._video_snapshot = VideoServiceSnapshot()
+        self._video_status_received_at = 0.0
+        self._video_event_sequence = 0
+        self._video_events: deque[VideoCaptureEvent] = deque(maxlen=512)
 
         self._release_requested = threading.Event()
         self._release_finished = threading.Event()
@@ -336,6 +343,27 @@ class GroundStationRosController:
         """返回状态接收统计；读取本地内存，不产生任何 ROS 传输。"""
         return self._state.observation()
 
+    def video_snapshot(self) -> VideoServiceSnapshot:
+        """返回视频服务快照；transient 缓存超过三秒即标记为失联。"""
+        with self._video_lock:
+            snapshot = self._video_snapshot
+            received_at = self._video_status_received_at
+        age = max(0.0, time.monotonic() - received_at) if received_at else float("inf")
+        if age > 3.0:
+            return replace(
+                snapshot,
+                service_available=False,
+                running=False,
+                state="stale" if received_at else "unavailable",
+                age_seconds=age,
+            )
+        return replace(snapshot, age_seconds=age)
+
+    def video_capture_results_after(self, sequence: int) -> list[VideoCaptureEvent]:
+        """按地面站本地序号增量返回截图完成事件。"""
+        with self._video_lock:
+            return [item for item in self._video_events if item.event_sequence > sequence]
+
     def start(
         self,
         timeout: float = 5.0,
@@ -383,6 +411,7 @@ class GroundStationRosController:
                     desired_domain, desired_discovery
                 )
                 self._state.mark_disconnected()
+                self._reset_video_runtime()
                 self._discard_queued_commands("ROS 传输环境已切换，旧命令已取消")
                 self._active_domain_id = desired_domain
                 self._active_discovery_range = desired_discovery
@@ -437,6 +466,7 @@ class GroundStationRosController:
             self._waypoint_preview_enabled.clear()
             self._discard_waypoint_preview_requests()
             self._state.mark_disconnected()
+            self._reset_video_runtime()
             if self._thread is None or not self._thread.is_alive():
                 self._active_domain_id = None
                 self._active_discovery_range = ""
@@ -557,6 +587,7 @@ class GroundStationRosController:
         strategy: int | object = 0,
         reference_generator: int | object = 0,
         tracking_controller: int | object = 0,
+        photo_nos: object = (),
     ) -> int:
         """上传航点、避障空壳与两项独立控制实验选择。
 
@@ -571,13 +602,18 @@ class GroundStationRosController:
         controller_value = int(
             WaypointTrackingController.from_value(tracking_controller)
         )
+        waypoint_values = tuple(waypoints)
+        photo_no_values = tuple(str(value) for value in photo_nos)
+        if photo_no_values and len(photo_no_values) != len(waypoint_values):
+            raise ValueError("photoNo 数量必须与航点数量一致")
         return self._enqueue(
             "waypoints",
             {
-                "waypoints": tuple(waypoints),
+                "waypoints": waypoint_values,
                 "strategy": strategy_value,
                 "reference_generator": generator_value,
                 "tracking_controller": controller_value,
+                "photo_nos": photo_no_values,
             },
         )
 
@@ -663,6 +699,52 @@ class GroundStationRosController:
                     return None
                 self._result_condition.wait(timeout=remaining)
 
+    def _reset_video_runtime(self) -> None:
+        """切换 ROS 域时丢弃旧域视频状态，保留本地事件序号单调性。"""
+        with self._video_lock:
+            self._video_snapshot = VideoServiceSnapshot()
+            self._video_status_received_at = 0.0
+            self._video_events.clear()
+
+    def _ingest_video_status(self, message: object) -> None:
+        """把独立 VideoStatus 原子转换为不污染飞控快照的本地状态。"""
+        snapshot = VideoServiceSnapshot(
+            service_available=bool(getattr(message, "service_available", False)),
+            interface_version=str(getattr(message, "interface_version", "")),
+            running=bool(getattr(message, "running", False)),
+            state=str(getattr(message, "state", "unavailable")),
+            rtsp_url=str(getattr(message, "rtsp_url", "")),
+            video_directory=str(getattr(message, "video_directory", "")),
+            image_directory=str(getattr(message, "image_directory", "")),
+            current_video_path=str(getattr(message, "current_video_path", "")),
+            last_video_path=str(getattr(message, "last_video_path", "")),
+            last_image_path=str(getattr(message, "last_image_path", "")),
+            last_error=str(getattr(message, "last_error", "")),
+            age_seconds=0.0,
+        )
+        with self._video_lock:
+            self._video_snapshot = snapshot
+            self._video_status_received_at = time.monotonic()
+
+    def _ingest_video_capture_result(self, message: object) -> None:
+        """为 ROS 截图结果分配地面站本地序号，供上位机投影增量消费。"""
+        with self._video_lock:
+            self._video_event_sequence += 1
+            self._video_events.append(
+                VideoCaptureEvent(
+                    event_sequence=self._video_event_sequence,
+                    source_id=str(getattr(message, "source_id", "")),
+                    command_sequence=int(getattr(message, "sequence", 0)),
+                    success=bool(getattr(message, "success", False)),
+                    kind=int(getattr(message, "kind", 0)),
+                    mission_sequence=int(getattr(message, "mission_sequence", 0)),
+                    waypoint_index=int(getattr(message, "waypoint_index", 0)),
+                    photo_no=str(getattr(message, "photo_no", "")),
+                    path=str(getattr(message, "path", "")),
+                    message=str(getattr(message, "message", "")),
+                )
+            )
+
     def _emit_result(
         self,
         ticket: int,
@@ -700,6 +782,8 @@ class GroundStationRosController:
                 ControlHeartbeat,
                 ControlStatus,
                 MotionIntent,
+                VideoCaptureResult,
+                VideoStatus,
                 Waypoint,
             )
             from guided_interfaces.srv import (
@@ -779,6 +863,12 @@ class GroundStationRosController:
                     message.final,
                 )
 
+            def video_status_callback(message: VideoStatus) -> None:
+                self._ingest_video_status(message)
+
+            def video_capture_callback(message: VideoCaptureResult) -> None:
+                self._ingest_video_capture_result(message)
+
             def rosout_callback(message: RosLog) -> None:
                 self._ingest_remote_rosout(message)
 
@@ -804,6 +894,25 @@ class GroundStationRosController:
                     f"{INTERFACE_PREFIX}/command_result",
                     result_callback,
                     50,
+                ),
+                node.create_subscription(
+                    VideoStatus,
+                    "/video_service/status",
+                    video_status_callback,
+                    rclpy.qos.QoSProfile(
+                        depth=1,
+                        reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+                        durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+                    ),
+                ),
+                node.create_subscription(
+                    VideoCaptureResult,
+                    "/video_service/capture_result",
+                    video_capture_callback,
+                    rclpy.qos.QoSProfile(
+                        depth=256,
+                        reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+                    ),
                 ),
             )
             rosout_subscription = None
@@ -1385,11 +1494,13 @@ class GroundStationRosController:
                     strategy_value = int(payload.get("strategy", 0))
                     generator_value = int(payload.get("reference_generator", 0))
                     tracking_value = int(payload.get("tracking_controller", 0))
+                    photo_no_values = tuple(payload.get("photo_nos", ()))
                 else:
                     waypoint_values = payload
                     strategy_value = 0
                     generator_value = 0
                     tracking_value = 0
+                    photo_no_values = ()
                 request = ros_entities["ExecuteWaypoints"].Request()
                 request.stamp = node.get_clock().now().to_msg()
                 request.source_id = self._source_id
@@ -1398,12 +1509,18 @@ class GroundStationRosController:
                 request.flight_strategy = strategy_value
                 request.reference_generator = generator_value
                 request.tracking_controller = tracking_value
-                for values in waypoint_values:
+                for position, values in enumerate(waypoint_values):
                     waypoint = ros_entities["Waypoint"]()
                     waypoint.position.x = float(values[0])
                     waypoint.position.y = float(values[1])
                     waypoint.position.z = float(values[2])
                     waypoint.yaw = float(values[3])
+                    waypoint.has_photo_no = position < len(photo_no_values)
+                    waypoint.photo_no = (
+                        str(photo_no_values[position])
+                        if waypoint.has_photo_no
+                        else ""
+                    )
                     request.waypoints.append(waypoint)
                 future = client.call_async(request)
             elif command.name == "set_gp_origin":

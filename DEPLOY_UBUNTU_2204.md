@@ -14,10 +14,10 @@
 ```bash
 git clone https://github.com/xldoooooo/ros2-ardupilot-mavros-control.git
 cd ros2-ardupilot-mavros-control
-bash setup_project.sh
+bash setup_ground_station.sh
 ```
 
-`setup_project.sh` 自动完成：
+`setup_ground_station.sh` 自动完成：
 
 - 依据 Ubuntu 22.04/24.04 选择 Humble/Jazzy；
 - 创建项目本地 `.venv` 并安装 Qt、MAVProxy/SITL 依赖；
@@ -48,20 +48,20 @@ ArduPilot 虚拟环境中寻找；找不到时仿真会在启动任何进程前�
 先执行只发现、不启动：
 
 ```bash
-bash start_drone_all.sh --check
+bash start_onboard_control.sh --check
 ```
 
 成功输出会列出 ROS 发行版、当前仓库、FCU 串口、Odin 和 extnav 的实际安装前缀。
 随后保持拆桨和未解锁，再由操作者运行：
 
 ```bash
-bash start_drone_all.sh
+bash start_onboard_control.sh
 ```
 
 停止 systemd 服务以及其他终端手工启动的机载组件：
 
 ```bash
-bash stop_onboard_service.sh
+bash stop_onboard_control.sh
 ```
 
 停止入口会清理 MAVROS、Odin、extnav、onboard_control 和相关 RViz，并在发现残留时返回失败。
@@ -73,7 +73,7 @@ bash stop_onboard_service.sh
 启动器会先读取 `/etc/ros2-ardupilot/onboard.env`（可用 `ONBOARD_ENV_FILE`
 覆盖路径）。对已确认但存在多个串口候选的飞机，把
 `MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备>` 写入该文件，这样 systemd
-和交互终端直接运行 `./start_drone_all.sh` 使用同一机载配置。
+和交互终端直接运行 `./start_onboard_control.sh` 使用同一机载配置。
 
 ## 4. 无法唯一判断时
 
@@ -82,10 +82,10 @@ bash stop_onboard_service.sh
 提供覆盖值，不需要修改仓库文件：
 
 ```bash
-MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> bash start_drone_all.sh --check
+MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> bash start_onboard_control.sh --check
 ODIN_OVERLAY_SETUP=<已确认的setup.bash> \
 EXTNAV_OVERLAY_SETUP=<已确认的setup.bash> \
-  bash start_drone_all.sh --check
+  bash start_onboard_control.sh --check
 ```
 
 这些覆盖只用于消除真实歧义。不得根据名称猜测设备，更不得把自动发现扩展为自动解锁或起飞。

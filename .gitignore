@@ -112,6 +112,27 @@ site/
 # Large video captures are local artifacts and must not enter Git history
 *.mp4
 
+# Task reference media stays local; Markdown/task text may be committed separately.
+/agent/task/assets/**/*.png
+/agent/task/assets/**/*.jpg
+/agent/task/assets/**/*.jpeg
+/agent/task/assets/**/*.gif
+/agent/task/assets/**/*.webp
+/agent/task/assets/**/*.bmp
+/agent/task/assets/**/*.svg
+/agent/task/assets/**/*.mp4
+/agent/task/assets/**/*.mov
+/agent/task/assets/**/*.avi
+/agent/task/assets/**/*.mkv
+/agent/task/assets/**/*.webm
+
+# MediaMTX is installed per architecture under /usr/local/bin, never bundled in Git.
+/video_service/bin/
+/video-service/bin/
+
+# Historical RTSP demo executables are architecture-specific local artifacts.
+/dev/demo/RTSPDemo/rtsp-server/rtsp-simple-server
+
 # Operating-system metadata
 .DS_Store
 .DS_Store?

@@ -14,11 +14,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ControlHeartbeat.msg"
   "msg/ControlStatus.msg"
   "msg/MotionIntent.msg"
+  "msg/VideoCapture.msg"
+  "msg/VideoCaptureResult.msg"
+  "msg/VideoControl.msg"
+  "msg/VideoStatus.msg"
   "msg/Waypoint.msg"
   "srv/AcquireControl.srv"
   "srv/ExecuteWaypoints.srv"
   "srv/FlightCommand.srv"
   "srv/SetGpsOrigin.srv"
+  "srv/SetVideoState.srv"
   DEPENDENCIES
     builtin_interfaces
     geographic_msgs

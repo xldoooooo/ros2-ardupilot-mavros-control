@@ -1,0 +1,26 @@
+# 独立视频服务示例。不要添加 Requires/PartOf=飞控服务，摄像头失败不得停止飞控。
+[Unit]
+Description=ROS 2 ArduPilot independent onboard video service
+Wants=network-online.target systemd-time-wait-sync.service
+After=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=ONBOARD_USER
+Group=ONBOARD_USER
+# 直接给 systemd 进程摄像头组权限，不依赖重新登录后刷新用户附加组。
+SupplementaryGroups=video
+WorkingDirectory=ONBOARD_WORKSPACE_PATH
+Environment=HOME=ONBOARD_HOME_PATH
+Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH
+EnvironmentFile=-/etc/ros2-ardupilot/onboard.env
+Environment=VIDEO_SERVICE_ONBOARD_CONFIG=/etc/ros2-ardupilot/camera.conf
+Environment=VIDEO_SERVICE_LENS_CONFIG=/etc/ros2-ardupilot/lens.conf
+ExecStart=/bin/bash -lc 'exec "${ONBOARD_WORKSPACE}/start_onboard_video.sh"'
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
