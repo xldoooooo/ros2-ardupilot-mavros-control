@@ -1,9 +1,8 @@
 # 独立摄像头服务
 
 该目录提供一条单摄像头链路：FFmpeg 只打开一次 USB 摄像头，将摄像头原生
-H.264 或 MJPEG 交给 MediaMTX 发布 RTSP，并直接封装为本地录像。截图也从本机
-RTSP 流读取，不会再次占用摄像头。原始 MJPEG 若含 RTP/JPEG 无法直接表达的
-restart interval，服务只规范化 RTSP 分支，录像仍保存摄像头原始码流。
+H.264 或 MJPEG 同时交给 MediaMTX 发布 RTSP，并直接封装为本地录像。截图也从
+本机 RTSP 流读取，不会再次占用摄像头。
 
 ## 图形界面
 
@@ -45,20 +44,10 @@ kill -USR1 <service_pid>
 
 - H.264 是默认路线：摄像头原生码流零转码，并用 FFmpeg `setts` 按选定帧率
   重建稳定时间戳，推荐保存为分片 MP4。
-- MJPEG 是兼容回退。服务启动时读取一帧 JPEG 头：普通摄像头保持 RTSP 和录像
-  双路零转码；若检测到 `DRI` restart interval，则只把 RTSP 分支重编码为高质量
-  RFC 2435 兼容 MJPEG，录像仍为原始 stream-copy。MP4、MKV、AVI 均可用，AVI
-  对传统 MJPEG 播放器兼容性最好，但文件通常明显更大。
-- 标准 RTP/JPEG 的宽和高最多表示 2040 像素，因此面板会隐藏 MJPEG 2560、3840
-  等无法可靠通过 RTSP 传输的模式；MJPEG 1080p 及以下不受影响。高于该尺寸只能
-  使用摄像头原生 H.264 等其他 RTSP 可承载编码，不能用零转码 MJPEG 路线。
+- MJPEG 是兼容回退，同样零转码；MP4、MKV、AVI 均可用，AVI 对传统 MJPEG
+  播放器兼容性最好，但文件通常明显更大。
 - RTSP 固定使用 TCP；MediaMTX 只允许本机发布，局域网客户端可以读取所配置
   的 `rtsp://IP:端口/路径`。
-
-HP Quanta 5MP 内置摄像头实测会输出含 `DRI` 的 MJPEG。Ubuntu 24.04 的 FFmpeg
-6.1 RTP/JPEG 发送端不会携带该 restart interval，直接复制时接收端会出现纯绿色、
-`mjpeg_decode_dc: bad vlc` 或丢帧。上述自动规范化专门处理这一兼容性，不会改变
-无 `DRI` 的 Wasintek MJPEG 路线，也不会改变任何摄像头的 H.264 路线。
 
 运行依赖为系统 `ffmpeg`、`ffprobe`、`v4l2-ctl` 和项目现有 PySide6。MediaMTX
 Linux amd64 可执行文件已经随目录固定版本提供，不需要安装额外 Python 包或
@@ -66,36 +55,32 @@ Linux amd64 可执行文件已经随目录固定版本提供，不需要安装�
 
 ## Ubuntu 24.04 部署
 
-摄像头服务本身是 Python 程序，不需要 CMake、`colcon build` 或其他编译步骤，
-也不依赖 ROS 2。克隆或更新仓库后，先从项目根目录安装系统依赖：
+克隆或更新仓库后，先从项目根目录安装系统依赖：
 
 ```bash
 sudo apt update
 sudo apt install -y ffmpeg v4l-utils python3-venv
 ```
 
-后端只使用 Python 标准库，不需要安装额外 Python 包。按照本项目约定创建独立
-环境后，即可在一个终端启动服务：
+创建独立环境后，即可在终端启动服务：
 
 ```bash
 python3 -m venv .venv
 ./.venv/bin/python video-service/camera_service.py serve
 ```
 
-如果需要独立摄像头面板或地面站内的实时预览，还需安装 PySide6。运行完整
-地面站时直接安装项目现有依赖；只使用摄像头面板时可以仅安装 PySide6：
+如果需要独立摄像头面板或地面站内的实时预览，还需运行完整地面站，安装项目现有依赖；只使用摄像头面板时可以仅安装 PySide6：
 
 ```bash
 # 完整地面站
 ./.venv/bin/python -m pip install -r requirements-gui.txt
 
-# 或者：只运行独立摄像头面板
+# 只运行独立摄像头面板
 ./.venv/bin/python -m pip install 'PySide6>=6.7,<7'
 ./.venv/bin/python video-service/camera_panel.py
 ```
 
-若项目已有 `.venv`，不要重复创建，直接补装依赖即可。完整地面站和 ROS 功能
-仍需按项目要求构建 ROS 工作空间；这不是摄像头服务自身的运行条件。
+若项目已有 `.venv`，不要重复创建，直接补装依赖即可。完整地面站和 ROS 不是摄像头服务的运行条件。
 
 ### CPU 架构
 
