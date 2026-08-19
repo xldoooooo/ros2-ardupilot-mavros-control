@@ -87,6 +87,9 @@
   抓拍只在机载到达判定成立后、推进航点索引前异步发布。
 - MediaMTX 已从当前源码树移除，地面 amd64 与飞机 ARM64 都必须把各自架构的 v1.20.0 安装到
   系统 `/usr/local/bin/mediamtx`；默认配置和代码不再回退到仓库内二进制。
+- 当前地面站已安装并实测 amd64 MediaMTX v1.20.0；`setup_ground_station.sh` 会检查 FFmpeg、
+  ffprobe、v4l2-ctl、固定 MediaMTX 路径及二进制能否在本机执行。删除仓库二进制后若旧面板后台
+  仍存活，必须先对 `camera_service.py` 执行 `shutdown`，否则它仍会使用进程内存中的旧路径。
 - 2026-08-20 经用户明确授权重写 `main`：历史 127 MiB MP4、53 MiB MediaMTX 和 25 MiB
   rtsp-simple-server 三个 blob 已从活动对象库彻底消失；`agent/task/assets` 图片/视频只保留本地，
   不再跟踪。`.git` 从约 290 MiB 降至约 41 MiB。

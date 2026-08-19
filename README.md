@@ -2,7 +2,9 @@
 
 ## 新机部署完整地面站
 
-1. 安装 ROS、MAVROS、项目源码以及 README 所列的系统媒体依赖；
+1. 安装 ROS、MAVROS、项目源码，并按
+   [地面站视频依赖](video_service/README.md#地面站视频依赖ubuntu-2404--amd64)
+   安装 FFmpeg、v4l-utils 与 amd64 MediaMTX；
 2. 在完整项目检出根目录运行：
 
    ```bash

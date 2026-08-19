@@ -632,6 +632,15 @@ def test_ground_setup_is_checkout_relative_and_never_contacts_hardware() -> None
     assert "--symlink-install" not in script
     assert "ground_station.py --check-environment" in script
     assert "[ground-setup]" in script
+    for media_dependency in (
+        "ffmpeg",
+        "ffprobe",
+        "v4l2-ctl",
+        "/usr/local/bin/mediamtx",
+        "mediamtx --version",
+        "video_service/README.md",
+    ):
+        assert media_dependency in script
     for forbidden in (
         "/home/nvidia",
         "/home/xld",

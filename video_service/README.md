@@ -26,6 +26,35 @@ MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任
 播放时长和平均帧数只统计面板真正处于播放状态时收到的画面。切换来源或关闭
 面板只卸载预览和 ROS 客户端，不会向本机或真机发送关闭命令。
 
+### 地面站视频依赖（Ubuntu 24.04 / amd64）
+
+MediaMTX 是与 CPU 架构相关的系统依赖，不随 Git 仓库分发。全新 x86_64 地面站先安装发行版
+媒体工具，再安装并校验官方 MediaMTX v1.20.0 amd64 文件：
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg v4l-utils ca-certificates curl
+
+mediamtx_stage="$(mktemp -d)"
+curl -fL \
+  https://github.com/bluenviron/mediamtx/releases/download/v1.20.0/mediamtx_v1.20.0_linux_amd64.tar.gz \
+  -o "${mediamtx_stage}/mediamtx_v1.20.0_linux_amd64.tar.gz"
+echo '952d5f7d31d1b448ab4da4509550594c511d42636db9d7bb175d377f4ede81df  mediamtx_v1.20.0_linux_amd64.tar.gz' \
+  | (cd "${mediamtx_stage}" && sha256sum -c -)
+tar -xzf "${mediamtx_stage}/mediamtx_v1.20.0_linux_amd64.tar.gz" \
+  -C "${mediamtx_stage}"
+sudo install -m 0755 "${mediamtx_stage}/mediamtx" /usr/local/bin/mediamtx
+file /usr/local/bin/mediamtx
+/usr/local/bin/mediamtx --version
+rm -rf -- "${mediamtx_stage}"
+```
+
+应看到 `x86-64` 与 `v1.20.0`。执行根目录 `./setup_ground_station.sh` 时也会检查
+`ffmpeg`、`ffprobe`、`v4l2-ctl` 和该固定路径，缺失时直接给出安装提示。若面板曾在升级前
+启动过旧 `camera_service.py serve`，先执行
+`./.venv/bin/python video_service/camera_service.py shutdown`；下一次点击“开启本机摄像头”时
+面板会按当前代码重新启动后台，避免旧进程继续持有已经删除的仓库内路径。
+
 ## 本机 Socket 服务
 
 面板会按需分离启动后台，也可手工控制：

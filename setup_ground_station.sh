@@ -23,6 +23,25 @@ for command in colcon cmake g++ python3; do
   }
 done
 
+# 本机摄像头面板依赖系统媒体工具；MediaMTX 是架构相关文件，不随 Git 分发。
+for command in ffmpeg ffprobe v4l2-ctl; do
+  command -v "${command}" >/dev/null 2>&1 || {
+    echo "[ground-setup] required media command is missing: ${command}" >&2
+    echo "[ground-setup] install ffmpeg and v4l-utils, then rerun" >&2
+    exit 1
+  }
+done
+if [[ ! -x /usr/local/bin/mediamtx ]]; then
+  echo "[ground-setup] required MediaMTX is missing: /usr/local/bin/mediamtx" >&2
+  echo "[ground-setup] install the matching architecture from video_service/README.md" >&2
+  exit 1
+fi
+if ! mediamtx_version="$(/usr/local/bin/mediamtx --version 2>/dev/null)"; then
+  echo "[ground-setup] MediaMTX cannot run on this host; verify its CPU architecture" >&2
+  exit 1
+fi
+echo "[ground-setup] MediaMTX ${mediamtx_version}"
+
 cd "${project_root}"
 ./src/onboard_control/deploy/onboard_workspace.sh deps-check
 
