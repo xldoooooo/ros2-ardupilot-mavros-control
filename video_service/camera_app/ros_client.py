@@ -81,7 +81,7 @@ class OnboardVideoClient:
     def request_state(
         self, enabled: bool, callback: ResultCallback | None = None
     ) -> None:
-        """异步请求 onboard_control 发布最新视频期望状态。"""
+        """异步请求独立视频节点切换最新视频期望状态。"""
         self._enqueue(_QueuedCommand("state", bool(enabled), callback))
 
     def request_snapshot(self, callback: ResultCallback | None = None) -> None:
@@ -172,7 +172,7 @@ class OnboardVideoClient:
             )
             state_client = node.create_client(
                 SetVideoState,
-                "/onboard_control/set_video_state",
+                "/video_service/set_video_state",
             )
             executor = SingleThreadedExecutor(context=context)
             executor.add_node(node)
@@ -205,7 +205,7 @@ class OnboardVideoClient:
                         self._callback(
                             command.callback,
                             {},
-                            "机载控制节点的视频状态接口尚未发现",
+                            "独立机载视频状态接口尚未发现",
                         )
                         continue
                     request = SetVideoState.Request()

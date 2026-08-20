@@ -538,8 +538,12 @@ class CameraPanelWindow(QMainWindow):
             self._stopping_camera = False
         if error:
             self.operation_message.setText(error)
-            if name not in {"onboard-start", "onboard-stop", "onboard-snapshot"}:
-                self._show_error("摄像头操作失败", error)
+            title = (
+                "真机摄像头操作失败"
+                if name in {"onboard-start", "onboard-stop", "onboard-snapshot"}
+                else "摄像头操作失败"
+            )
+            self._show_error(title, error)
         else:
             if name in {"start", "stop"}:
                 self._apply_status(data)
@@ -547,8 +551,8 @@ class CameraPanelWindow(QMainWindow):
                 "configure": "本机摄像头配置已保存。",
                 "start": "本机摄像头已启动。",
                 "stop": "本机摄像头已关闭，录像已安全封装。",
-                "onboard-start": "真机视频开启期望已发布，等待状态回报。",
-                "onboard-stop": "真机视频关闭期望已发布，等待状态回报。",
+                "onboard-start": "真机视频开启期望已提交，等待状态回报。",
+                "onboard-stop": "真机视频关闭期望已提交，等待状态回报。",
                 "onboard-snapshot": "真机人工抓拍请求已发布。",
             }
             if name == "snapshot":
@@ -788,12 +792,12 @@ class CameraPanelWindow(QMainWindow):
         )
 
     def _request_onboard_state(self, enabled: bool) -> None:
-        """异步调用视频代理服务，响应只代表期望状态已发布。"""
+        """异步调用独立视频服务，响应只代表期望状态已排队。"""
         client = self._ensure_onboard_client()
         if client is None:
             return
         name = "onboard-start" if enabled else "onboard-stop"
-        self._begin_action("正在发布真机视频状态期望…")
+        self._begin_action("正在提交真机视频状态期望…")
         client.request_state(
             enabled,
             lambda result, error: self._bridge.completed.emit(name, result, error),

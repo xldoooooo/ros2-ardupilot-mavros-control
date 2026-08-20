@@ -78,7 +78,8 @@
 
 - `video_service/` 与 ROS/飞行生命周期解耦。地面站只通过 detached Qt 面板打开它；关闭面板
   不会停止正在运行的推流或录像。机载视频节点使用根目录 `start_onboard_video.sh` 和独立
-  systemd unit，严禁加入 `start_onboard_control.sh` 的共同故障域。
+  systemd unit，严禁加入 `start_onboard_control.sh` 的共同故障域。面板启停直接调用
+  `/video_service/set_video_state`，不得依赖 onboard_control 或飞行租约在线。
 - 生产链只打开一次 V4L2 摄像头，使用 FFmpeg 同时发布 MediaMTX RTSP/TCP 和保存录像；截图从
   本机 RTSP 获取，不会第二次占用摄像头。
 - 机载端通过独立 `VideoControl`、`VideoCapture`、`VideoCaptureResult`、`VideoStatus` 和
@@ -188,7 +189,9 @@
 - 机载默认配置位于 `video_service/config/camera.conf` 与 `lens.conf`，媒体目录为
   `/home/share`、`/home/share/jpg`。默认模式为 H.264 1280×720@120，默认手动曝光为 25、增益
   为 200。FFmpeg 按编码、分辨率和帧率打开设备且 RTSP 可读后，服务等待 1 秒，再分步写入并
-  读回全部镜头参数；设置或读回失败只令视频失败。
+  读回全部镜头参数；设置或读回失败只令视频失败。飞机上手工运行 `start_onboard_video.sh`
+  与 systemd 都优先使用 `/etc/ros2-ardupilot/camera.conf` 和 `lens.conf`，仅未部署系统配置时
+  才回退仓库默认文件。
 - 同型号 Wasintek 已在开发机和当前 Jetson 真机验证 H.264 1080p30/60、H.264 720p120 与 MJPEG
   720p30 的 RTSP、录像、JPG、镜头参数、封装和资源释放。Jetson 使用 NVIDIA FFmpeg 8.0.1；
   MediaMTX v1.20.0 ARM64 安装在 `/usr/local/bin/mediamtx`，SHA-256 为

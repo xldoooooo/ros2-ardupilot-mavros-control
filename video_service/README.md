@@ -234,6 +234,11 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 ./start_onboard_video.sh
 ```
 
+手工执行与 systemd unit 使用相同的生产配置：若未显式设置环境变量，脚本优先读取
+`/etc/ros2-ardupilot/camera.conf` 和 `/etc/ros2-ardupilot/lens.conf`；仅在系统配置不存在时
+回退 `video_service/config/`。直接运行脚本时仍是前台普通进程，生命周期由当前终端管理；配置、
+摄像头行为和 MediaMTX 路径则与 systemd 启动一致。
+
 彻底清理独立 unit、残留机载视频节点、配置的 RTSP 端口和真实摄像头占用者：
 
 ```bash
@@ -262,8 +267,10 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 - `/video_service/status`：reliable + transient-local，周期发布 RTSP 和实际媒体
   路径，消费者超过 3 秒未收到必须判陈旧；
 - `/video_service/capture_result`：每条抓拍都返回成功或失败及任务/航点关联字段；
+- `/video_service/set_video_state`：地面摄像头面板直接调用的独立启停服务，不要求
+  onboard_control、飞行租约或 FCU 在线，响应只表示期望状态已进入视频队列；
 - `/onboard_control/set_video_state`：不申请飞行租约，只确认期望状态已发布，不
-  伪称硬件已经启动。
+  伪称硬件已经启动；保留给飞控侧代理和兼容调用，地面摄像头面板不再依赖它。
 
 机载控制节点从 MAVROS `ExtendedState` 的起飞/空中边沿自动开启视频，在可靠
 落地或解除武装边沿关闭；这覆盖遥控器起飞而不依赖某一种地面命令。航点只有在

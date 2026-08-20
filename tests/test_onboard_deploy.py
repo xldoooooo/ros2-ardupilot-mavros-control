@@ -389,6 +389,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
 def test_video_service_has_an_independent_lifecycle() -> None:
     """视频启动器和 unit 不得成为飞行四进程的共同故障域。"""
     integrated_start = INTEGRATED_START.read_text(encoding="utf-8")
+    launcher = VIDEO_LAUNCHER.read_text(encoding="utf-8")
     service = VIDEO_SERVICE_UNIT.read_text(encoding="utf-8")
     stopper = VIDEO_STOPPER.read_text(encoding="utf-8")
     active_directives = [
@@ -430,6 +431,10 @@ def test_video_service_has_an_independent_lifecycle() -> None:
         "This script never stops or restarts ros2-ardupilot-onboard.service.", ""
     )
     assert "video_service" not in integrated_start
+    assert 'SYSTEM_CAMERA_CONFIG="/etc/ros2-ardupilot/camera.conf"' in launcher
+    assert 'SYSTEM_LENS_CONFIG="/etc/ros2-ardupilot/lens.conf"' in launcher
+    assert '"${VIDEO_SERVICE_ONBOARD_CONFIG:-}"' in launcher
+    assert 'elif [[ -r "${system_config}" ]]' in launcher
     assert not any(
         line.startswith(("Requires=", "PartOf=", "BindsTo="))
         for line in active_directives

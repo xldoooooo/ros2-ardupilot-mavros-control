@@ -18,6 +18,7 @@ from guided_interfaces.msg import (
     VideoControl,
     VideoStatus,
 )
+from guided_interfaces.srv import SetVideoState
 
 import rclpy
 from rclpy.node import Node
@@ -60,6 +61,7 @@ class OnboardVideoNode(Node):
         self._shutdown = threading.Event()
         self._control_queue: queue.Queue[VideoControl] = queue.Queue(maxsize=64)
         self._capture_queue: queue.Queue[VideoCapture] = queue.Queue(maxsize=256)
+        self._last_state_sequence: dict[str, int] = {}
         self._seen_capture_keys: set[tuple[str, int]] = set()
         self._seen_capture_order: deque[tuple[str, int]] = deque(maxlen=1024)
 
@@ -90,6 +92,11 @@ class OnboardVideoNode(Node):
             self._on_capture,
             reliable_events,
         )
+        self._state_service = self.create_service(
+            SetVideoState,
+            f"{VIDEO_PREFIX}/set_video_state",
+            self._on_set_video_state,
+        )
 
         status_period = self._settings.status_period_seconds if self._settings else 1.0
         self._status_timer = self.create_timer(status_period, self._publish_status)
@@ -118,6 +125,49 @@ class OnboardVideoNode(Node):
             except queue.Empty:
                 pass
             self._control_queue.put_nowait(message)
+
+    def _on_set_video_state(
+        self, request: SetVideoState.Request, response: SetVideoState.Response
+    ) -> SetVideoState.Response:
+        """独立接收地面启停请求，不要求 onboard_control 或飞行租约在线。"""
+        source_id = str(request.source_id).strip()
+        if not source_id:
+            response.message = "视频命令 source_id 不能为空"
+            return response
+        if request.ttl_ms == 0:
+            response.message = "视频命令 ttl_ms 必须大于 0"
+            return response
+        stamp_ns = int(request.stamp.sec) * 1_000_000_000 + int(
+            request.stamp.nanosec
+        )
+        age_ms = (self.get_clock().now().nanoseconds - stamp_ns) / 1_000_000.0
+        if age_ms < -1000.0 or age_ms > float(request.ttl_ms):
+            response.message = "视频命令已过期或时间戳异常"
+            return response
+        previous = self._last_state_sequence.get(source_id, 0)
+        if int(request.sequence) <= previous:
+            response.message = "视频命令重复或乱序"
+            return response
+        self._last_state_sequence[source_id] = int(request.sequence)
+
+        command = VideoControl()
+        command.header.stamp = self.get_clock().now().to_msg()
+        command.source_id = source_id
+        command.sequence = request.sequence
+        command.enabled = bool(request.enabled)
+        command.reason = (
+            "地面站直接请求开启视频"
+            if request.enabled
+            else "地面站直接请求关闭视频"
+        )
+        self._on_control(command)
+        response.accepted = True
+        response.message = (
+            "视频开启期望状态已排队"
+            if request.enabled
+            else "视频关闭期望状态已排队"
+        )
+        return response
 
     def _on_capture(self, message: VideoCapture) -> None:
         """每条截图命令独立排队；队列满也逐条发布明确失败结果。"""

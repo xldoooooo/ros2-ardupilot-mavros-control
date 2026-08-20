@@ -110,6 +110,7 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         VideoControl,
         VideoStatus,
     )
+    from guided_interfaces.srv import SetVideoState
     from onboard_video_node import OnboardVideoNode
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
@@ -131,6 +132,7 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
     )
     events = QoSProfile(depth=256, reliability=ReliabilityPolicy.RELIABLE)
     controls = probe.create_publisher(VideoControl, "/video_service/control", transient)
+    states = probe.create_client(SetVideoState, "/video_service/set_video_state")
     captures = probe.create_publisher(VideoCapture, "/video_service/capture", events)
     results: list[VideoCaptureResult] = []
     statuses: list[VideoStatus] = []
@@ -156,14 +158,25 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         return False
 
     try:
-        assert spin_until(lambda: bool(statuses))
-        start = VideoControl()
-        start.source_id = "pytest"
+        assert spin_until(lambda: bool(statuses) and states.service_is_ready())
+        start = SetVideoState.Request()
+        start.stamp = probe.get_clock().now().to_msg()
+        start.source_id = "pytest-direct-video"
         start.sequence = 1
+        start.ttl_ms = 5000
         start.enabled = True
-        controls.publish(start)
+        start_future = states.call_async(start)
+        assert spin_until(start_future.done)
+        assert start_future.result().accepted
+        assert "已排队" in start_future.result().message
         assert spin_until(lambda: fake.start_calls == 1)
         assert spin_until(lambda: statuses and statuses[-1].running)
+
+        duplicate_future = states.call_async(start)
+        assert spin_until(duplicate_future.done)
+        assert not duplicate_future.result().accepted
+        assert "重复或乱序" in duplicate_future.result().message
+        assert fake.start_calls == 1
 
         for sequence, photo_no in enumerate(("A", "fail", "C"), start=10):
             message = VideoCapture()
@@ -372,7 +385,7 @@ def test_panel_ros_client_discovers_status_and_closes_without_stop_command() -> 
         return response
 
     server.create_service(
-        SetVideoState, "/onboard_control/set_video_state", set_state
+        SetVideoState, "/video_service/set_video_state", set_state
     )
     client = OnboardVideoClient(domain_id=227)
     client.start()
@@ -403,7 +416,7 @@ def test_panel_ros_client_discovers_status_and_closes_without_stop_command() -> 
             time.sleep(0.02)
         assert client.status()["rtsp_url"] == message.rtsp_url
         assert spin_until(
-            lambda: server.count_clients("/onboard_control/set_video_state") == 1
+            lambda: server.count_clients("/video_service/set_video_state") == 1
         )
 
         state_done = threading.Event()

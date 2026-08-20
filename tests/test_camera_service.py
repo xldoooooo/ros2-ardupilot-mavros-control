@@ -873,6 +873,37 @@ def test_panel_modes_gate_commands_but_keep_manual_viewer_available(
     application.processEvents()
 
 
+def test_onboard_command_failure_is_shown_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真机启停端点缺失时不得只在底部静默显示错误。"""
+    application = _application()
+    window = CameraPanelWindow(
+        client=CameraServiceClient(paths=_runtime_paths(tmp_path)),
+        onboard_client=_FakeOnboardVideoClient(),
+        auto_bootstrap=False,
+    )
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window, "_show_error", lambda title, message: shown.append((title, message))
+    )
+
+    window._action_busy = True
+    window._on_request_completed(
+        "onboard-start", {}, "独立机载视频状态接口尚未发现"
+    )
+
+    assert not window._action_busy
+    assert window.operation_message.text() == "独立机载视频状态接口尚未发现"
+    assert shown == [
+        ("真机摄像头操作失败", "独立机载视频状态接口尚未发现")
+    ]
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
+
+
 def test_typed_rtsp_url_survives_config_poll_stop_and_backend_failure(
     tmp_path: Path,
 ) -> None:
