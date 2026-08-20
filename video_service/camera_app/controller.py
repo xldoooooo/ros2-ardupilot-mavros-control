@@ -45,6 +45,10 @@ class CameraController:
     _START_TIMEOUT_SECONDS = 8.0
     _STOP_TIMEOUT_SECONDS = 10.0
     _SNAPSHOT_TIMEOUT_SECONDS = 6.0
+    # Wasintek 会在开始流传输时重置内部曝光；确认 RTSP 就绪后再等待一秒写控制。
+    _LENS_STREAM_SETTLE_SECONDS = 1.0
+    # 手动模式和曝光值需要分步生效，复现 qv4l2 验证成功的硬件时序。
+    _LENS_CONTROL_SETTLE_SECONDS = 0.2
 
     def __init__(
         self,
@@ -193,7 +197,6 @@ class CameraController:
 
             try:
                 self._preflight(config)
-                self._apply_lens_controls(config)
                 normalize_mjpeg_for_rtsp = (
                     config.codec == "mjpeg"
                     and self._mjpeg_has_restart_interval(config)
@@ -223,6 +226,7 @@ class CameraController:
                     normalize_mjpeg_for_rtsp=normalize_mjpeg_for_rtsp,
                 )
                 self._wait_for_rtsp_stream(config)
+                self._apply_lens_controls(config)
             except Exception as exc:
                 self._stop_processes(finalize_recording=False)
                 message = str(exc) or exc.__class__.__name__
@@ -620,7 +624,7 @@ class CameraController:
             raise CameraServiceError(f"RTSP端口 {config.rtsp_port} 已被其他服务占用")
 
     def _apply_lens_controls(self, config: CameraConfig) -> None:
-        """每次打开设备前按配置原值应用镜头参数，驱动错误如实终止视频启动。"""
+        """确认视频流稳定后分步应用并读回镜头参数。"""
         if self.lens_config_path is None:
             return
         try:
@@ -629,16 +633,50 @@ class CameraController:
             raise CameraServiceError(str(exc)) from exc
         if not controls:
             return
-        assignment = ",".join(f"{name}={value}" for name, value in controls)
+
+        time.sleep(self._LENS_STREAM_SETTLE_SECONDS)
+        if not self._ffmpeg_running():
+            raise CameraServiceError("应用镜头参数前摄像头流已退出")
+
+        for name, value in controls:
+            self._run_v4l2_control(
+                config.device,
+                "--set-ctrl",
+                f"{name}={value}",
+                action=f"设置镜头参数 {name}",
+            )
+            if name in {"auto_exposure", "exposure_time_absolute"}:
+                time.sleep(self._LENS_CONTROL_SETTLE_SECONDS)
+
+        requested_names = ",".join(name for name, _value in controls)
+        output = self._run_v4l2_control(
+            config.device,
+            f"--get-ctrl={requested_names}",
+            action="读取镜头参数",
+        )
+        actual: dict[str, str] = {}
+        for line in output.splitlines():
+            if ":" not in line:
+                continue
+            name, raw_value = line.split(":", 1)
+            fields = raw_value.strip().split()
+            if fields:
+                actual[name.strip()] = fields[0]
+        mismatches = [
+            f"{name}={actual.get(name, '未返回')}（期望 {value}）"
+            for name, value in controls
+            if actual.get(name) != value
+        ]
+        if mismatches:
+            raise CameraServiceError("镜头参数读回不一致：" + "，".join(mismatches))
+
+    def _run_v4l2_control(
+        self, device: str, *arguments: str, action: str
+    ) -> str:
+        """运行一条有限的 v4l2 控制命令并返回合并输出。"""
         try:
             result = subprocess.run(
-                [
-                    self.v4l2_ctl_binary,
-                    "--device",
-                    config.device,
-                    "--set-ctrl",
-                    assignment,
-                ],
+                [self.v4l2_ctl_binary, "--device", device, *arguments],
                 check=False,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -646,10 +684,11 @@ class CameraController:
                 timeout=5.0,
             )
         except subprocess.TimeoutExpired as exc:
-            raise CameraServiceError("应用镜头参数超时") from exc
+            raise CameraServiceError(f"{action}超时") from exc
         if result.returncode != 0:
             detail = self._last_nonempty_line(result.stdout)
-            raise CameraServiceError(f"应用镜头参数失败：{detail}")
+            raise CameraServiceError(f"{action}失败：{detail}")
+        return result.stdout
 
     def _write_mediamtx_config(self, config: CameraConfig) -> None:
         """生成只开启RTSP/TCP且只允许本机发布的最小MediaMTX配置。"""

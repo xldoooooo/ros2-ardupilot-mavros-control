@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-08-19，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-08-20，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -186,9 +186,10 @@
 - Wasintek 设备已验证 MJPEG 1280×720@120；HP 已验证兼容分支 MJPEG 1920×1080@30。具体设备
   能力仍以目标机 `probe` 为准，不应把某台机器的 `/dev/videoN` 当成稳定标识。
 - 机载默认配置位于 `video_service/config/camera.conf` 与 `lens.conf`，媒体目录为
-  `/home/share`、`/home/share/jpg`。默认模式为 H.264 1280×720@120；镜头参数在每次开启前
-  原值重放，驱动拒绝只令视频失败。
-- 同型号 Wasintek 已在开发机和当前 Jetson 真机验证 H.264 1080p30、H.264 720p120 与 MJPEG
+  `/home/share`、`/home/share/jpg`。默认模式为 H.264 1280×720@120，默认手动曝光为 25、增益
+  为 200。FFmpeg 按编码、分辨率和帧率打开设备且 RTSP 可读后，服务等待 1 秒，再分步写入并
+  读回全部镜头参数；设置或读回失败只令视频失败。
+- 同型号 Wasintek 已在开发机和当前 Jetson 真机验证 H.264 1080p30/60、H.264 720p120 与 MJPEG
   720p30 的 RTSP、录像、JPG、镜头参数、封装和资源释放。Jetson 使用 NVIDIA FFmpeg 8.0.1；
   MediaMTX v1.20.0 ARM64 安装在 `/usr/local/bin/mediamtx`，SHA-256 为
   `2da379972ba86627632aa7e3f779c680ba04a5ee26ef2a20dc61cefcc24f73b8`。

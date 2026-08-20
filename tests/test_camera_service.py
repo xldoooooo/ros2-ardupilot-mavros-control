@@ -703,33 +703,95 @@ def test_onboard_configs_preserve_exact_camera_and_lens_values() -> None:
     }
 
 
-def test_lens_controls_are_applied_as_one_exact_v4l2_transaction(
+def test_lens_controls_apply_after_stream_settle_sequentially_and_verify(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """每次启动前的镜头写入不夹紧、不丢项，也不分裂成中间状态。"""
-    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+    """流稳定一秒后须分步写控制、等待关键项并逐项读回。"""
+    controls = load_lens_controls()
     calls: list[list[str]] = []
+    sleeps: list[float] = []
 
     def run(command, **_kwargs):
         calls.append(list(command))
-        return completed
+        if any(argument.startswith("--get-ctrl=") for argument in command):
+            output = "\n".join(
+                f"{name}: {value}"
+                + (" (Manual Mode)" if name == "auto_exposure" else "")
+                for name, value in controls
+            )
+            return subprocess.CompletedProcess(command, 0, output)
+        return subprocess.CompletedProcess(command, 0, "")
 
     monkeypatch.setattr(controller_module.subprocess, "run", run)
+    monkeypatch.setattr(controller_module.time, "sleep", sleeps.append)
     controller = CameraController(
         paths=_runtime_paths(tmp_path), initial_config=_camera_config(tmp_path)
     )
     try:
+        monkeypatch.setattr(controller, "_ffmpeg_running", lambda: True)
         controller._apply_lens_controls(_camera_config(tmp_path))
     finally:
+        monkeypatch.setattr(controller, "_ffmpeg_running", lambda: False)
         controller.close()
 
-    assert len(calls) == 1
-    assert calls[0][1:3] == ["--device", "/dev/video-test"]
-    assignment = calls[0][calls[0].index("--set-ctrl") + 1]
-    assert assignment.startswith(
-        "auto_exposure=1,exposure_time_absolute=25,gain=200"
+    set_calls = [call for call in calls if "--set-ctrl" in call]
+    assert len(set_calls) == len(controls)
+    assert all(call[1:3] == ["--device", "/dev/video-test"] for call in calls)
+    assert [call[call.index("--set-ctrl") + 1] for call in set_calls[:3]] == [
+        "auto_exposure=1",
+        "exposure_time_absolute=25",
+        "gain=200",
+    ]
+    assert set_calls[-1][-1] == "zoom_absolute=10"
+    assert calls[-1][-1].startswith("--get-ctrl=auto_exposure,")
+    assert sleeps == [1.0, 0.2, 0.2]
+
+
+def test_start_sets_capture_mode_before_post_stream_lens_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """格式由 FFmpeg 打开设备时确定，镜头参数只能在 RTSP 验证后应用。"""
+    events: list[str] = []
+    controller = CameraController(
+        paths=_runtime_paths(tmp_path),
+        initial_config=_camera_config(tmp_path),
+        persist_config=False,
     )
-    assert "zoom_absolute=10" in assignment
+    monkeypatch.setattr(
+        controller, "_preflight", lambda _config: events.append("preflight")
+    )
+    monkeypatch.setattr(
+        controller,
+        "_write_mediamtx_config",
+        lambda _config: events.append("write_mediamtx"),
+    )
+    monkeypatch.setattr(
+        controller, "_start_mediamtx", lambda _config: events.append("mediamtx")
+    )
+    monkeypatch.setattr(
+        controller,
+        "_start_ffmpeg",
+        lambda _config, _recording, **_kwargs: events.append("ffmpeg"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_wait_for_rtsp_stream",
+        lambda _config: events.append("rtsp_ready"),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_apply_lens_controls",
+        lambda _config: events.append("lens"),
+    )
+    try:
+        controller.start()
+    finally:
+        controller._state = "stopped"
+        controller.close()
+
+    assert events.index("preflight") < events.index("ffmpeg")
+    assert events.index("ffmpeg") < events.index("rtsp_ready")
+    assert events.index("rtsp_ready") < events.index("lens")
 
 
 def test_snapshot_names_include_time_source_and_original_photo_no(tmp_path: Path) -> None:
