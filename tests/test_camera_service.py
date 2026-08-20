@@ -685,9 +685,9 @@ def test_onboard_configs_preserve_exact_camera_and_lens_values() -> None:
     assert settings.camera.image_directory == "/home/share/jpg"
     assert settings.camera.container == "mp4"
     assert (settings.camera.width, settings.camera.height, settings.camera.fps) == (
-        1280,
-        720,
-        120.0,
+        1920,
+        1080,
+        60.0,
     )
     assert controls == {
         "auto_exposure": "1",

@@ -83,7 +83,9 @@
 - 生产链只打开一次 V4L2 摄像头，使用 FFmpeg 同时发布 MediaMTX RTSP/TCP 和保存录像；截图从
   本机 RTSP 获取，不会第二次占用摄像头。
 - 机载端通过独立 `VideoControl`、`VideoCapture`、`VideoCaptureResult`、`VideoStatus` 和
-  `SetVideoState` 通讯；视频服务缺失、卡死或失败不得改变飞行状态、任务终态或安全链。
+  `SetVideoState` 通讯；飞行自动事件只从 onboard_control 发布，面板手动操作直接连接
+  video_service，onboard_control 不提供纯视频手动代理。视频服务缺失、卡死或失败不得改变
+  飞行状态、任务终态或安全链。
 - 飞行自动开关以 MAVROS `ExtendedState` 的起飞/空中/落地边沿为准，解除武装是关闭备份；航点
   抓拍只在机载到达判定成立后、推进航点索引前异步发布。
 - MediaMTX 已从当前源码树移除，地面 amd64 与飞机 ARM64 都必须把各自架构的 v1.20.0 安装到
@@ -187,7 +189,7 @@
 - Wasintek 设备已验证 MJPEG 1280×720@120；HP 已验证兼容分支 MJPEG 1920×1080@30。具体设备
   能力仍以目标机 `probe` 为准，不应把某台机器的 `/dev/videoN` 当成稳定标识。
 - 机载默认配置位于 `video_service/config/camera.conf` 与 `lens.conf`，媒体目录为
-  `/home/share`、`/home/share/jpg`。默认模式为 H.264 1280×720@120，默认手动曝光为 25、增益
+  `/home/share`、`/home/share/jpg`。默认模式为 H.264 1920×1080@60，默认手动曝光为 25、增益
   为 200。FFmpeg 按编码、分辨率和帧率打开设备且 RTSP 可读后，服务等待 1 秒，再分步写入并
   读回全部镜头参数；设置或读回失败只令视频失败。飞机上手工运行 `start_onboard_video.sh`
   与 systemd 都优先使用 `/etc/ros2-ardupilot/camera.conf` 和 `lens.conf`，仅未部署系统配置时
@@ -229,9 +231,10 @@
   候选时必须安全失败，不允许猜测。
 - systemd 服务必须等待 `network-online.target` 和首次系统校时；不能用固定 `sleep` 替代
   `systemd-time-wait-sync.service`。开机过早创建 ROS/MAVROS 定时器曾被后续 NTP 墙钟跳变破坏。
-- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2；
-  `ros2-ardupilot-onboard.service` 与独立 `video-service.service` 均 enabled + active，视频默认
-  stopped。机载视频配置位于 `/etc/ros2-ardupilot/camera.conf`、`lens.conf`。
+- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2；独立
+  `video-service.service` 为 enabled + active，摄像头默认 stopped。`ros2-ardupilot-onboard.service`
+  当前是本次任务前已存的 failed 状态，视频测试未启动或修改它。机载视频配置位于
+  `/etc/ros2-ardupilot/camera.conf`、`lens.conf`。
 - 当前飞机 Git HEAD 仍为历史 `6a40713`，任务 22.5 通过逐文件同步部署，因此工作树有明确的
   3.2 修改和 `video_service/` 新目录；另有 Odin 自动生成的 `image/cam_in_ex.txt` 与
   `src/odin_ros_driver/`。在任务改动正式提交并推送前，不得用 reset/clean 或盲目 pull 覆盖。
@@ -241,17 +244,18 @@
 
 ## 当前验证基线（2026-08-20）
 
-- `main` 在本次记忆维护前与 `origin/main` 同步，功能基线提交为 `c3a362d`。
-- 项目正式 Python 范围 `tests/`：161 passed。
+- `main` 在本次修改前与 `origin/main` 同步，功能基线提交为 `d548708`。
+- 项目正式 Python 范围 `tests/`：166 passed。
 - 当前 colcon 结果：19 tests、0 errors、0 failures、0 skipped。
 - 当前 Jetson 已完成接口 3.2 ARM64 Release 构建、19 项测试和无 MAVROS 隔离 smoke；真实 FCU
   最终为 connected、`armed=false`、STABILIZE、无租约/控制器、约 100.03 Hz。真实
   `EXTENDED_SYS_STATE` 连续为 ON_GROUND，自动视频期望为关闭。
 - 真机 H.264 1080p30/MP4、MJPEG 720p30/MKV、三类 JPG、原始 `photoNo`、跨机 FFmpeg/Qt
   拉流、播放暂停、真机地址读取、无租约启停、stale 判定、视频 unit 干净停止、媒体故障隔离和
-  恢复均通过；生产 `/home/share` 与 `/home/share/jpg` 最终为空且摄像头/8554 端口未占用。
-- 新默认 H.264 1280×720@120 已在当前飞机复验：FFprobe 为 120/1，地面实时解码 600 帧成功，
-  28.1 秒 MP4 正常封装；最终视频 stopped、媒体进程/端口/设备均释放，飞控保持 `armed=false`。
+  恢复均通过；当前摄像头/8554 端口未占用，生产媒体目录保留本次 1080p60 验收的 MP4/JPG。
+- 新默认 H.264 1920×1080@60 已在当前飞机复验：RTSP 与 32.17 秒 MP4 均为
+  1920×1080@60，人工 JPG 为 1920×1080，镜头读回曝光 25/增益 200；最终视频 stopped、
+  媒体进程/端口/设备均释放，飞控 unit 未被触及。
 - 上位机任务 22 与平滑航点启动余速修复均完成真实 JAR + Qt + ROS + MAVROS + ArduPilot SITL
   多轮端到端验证，最终解除武装且无残留进程。
 - 本次真机补测始终没有解锁或起飞；实际起飞/落地自动启停和实际飞抵航点自动抓拍仍只完成

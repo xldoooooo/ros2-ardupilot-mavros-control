@@ -122,9 +122,9 @@ class CameraConfig:
 
     device: str
     codec: str = "h264"
-    width: int = 1280
-    height: int = 720
-    fps: float = 120.0
+    width: int = 1920
+    height: int = 1080
+    fps: float = 60.0
     rtsp_ip: str = "127.0.0.1"
     rtsp_port: int = 8554
     rtsp_path: str = "camera"

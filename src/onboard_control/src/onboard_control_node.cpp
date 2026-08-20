@@ -287,11 +287,6 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     std::bind(
       &OnboardControlNode::on_set_gps_origin, this,
       std::placeholders::_1, std::placeholders::_2));
-  video_state_service_ = create_service<SetVideoState>(
-    interface_prefix_ + "/set_video_state",
-    std::bind(
-      &OnboardControlNode::on_set_video_state, this,
-      std::placeholders::_1, std::placeholders::_2));
 
   set_mode_client_ = create_client<mavros_msgs::srv::SetMode>(mavros_prefix_ + "/set_mode");
   arming_client_ = create_client<mavros_msgs::srv::CommandBool>(mavros_prefix_ + "/cmd/arming");
@@ -984,30 +979,6 @@ void OnboardControlNode::on_set_gps_origin(
     stream.str());
   response->accepted = true;
   response->message = stream.str();
-}
-
-void OnboardControlNode::on_set_video_state(
-  const std::shared_ptr<SetVideoState::Request> request,
-  std::shared_ptr<SetVideoState::Response> response)
-{
-  std::lock_guard<std::recursive_mutex> lock(mutex_);
-  std::string reason;
-  if (!validate_envelope(request->stamp, request->ttl_ms, request->source_id, reason)) {
-    response->message = reason;
-    return;
-  }
-  const auto previous = last_video_sequence_.find(request->source_id);
-  if (previous != last_video_sequence_.end() && request->sequence <= previous->second) {
-    response->message = "视频命令重复或乱序";
-    return;
-  }
-  last_video_sequence_[request->source_id] = request->sequence;
-  publish_video_control(
-    request->enabled, request->source_id,
-    request->enabled ? "地面站请求开启视频" : "地面站请求关闭视频");
-  response->accepted = true;
-  response->message = request->enabled ?
-    "视频开启期望状态已发布" : "视频关闭期望状态已发布";
 }
 
 void OnboardControlNode::start_takeoff(

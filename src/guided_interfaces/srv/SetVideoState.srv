@@ -1,4 +1,4 @@
-# 地面站可直接请求独立视频节点，机载控制节点也可代理；均不进入飞行控制租约。
+# 地面站摄像头面板直接请求独立视频节点；不经过机载飞控控制或飞行租约。
 builtin_interfaces/Time stamp
 string source_id
 uint64 sequence

@@ -263,7 +263,7 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 `/usr/local/bin/mediamtx`；Git 仓库不再携带任何架构的 MediaMTX 可执行文件。
 镜头配置应复制为 `/etc/ros2-ardupilot/lens.conf`，媒体目录 `/home/share/jpg` 需由
 视频服务用户可写。模板中的 `ONBOARD_USER`、`ONBOARD_HOME_PATH`、
-`ONBOARD_WORKSPACE_PATH` 必须全部替换。默认采集模式现为 H.264 1280×720@120；完整依赖安装、
+`ONBOARD_WORKSPACE_PATH` 必须全部替换。默认采集模式现为 H.264 1920×1080@60；完整依赖安装、
 配置复制、ARM64 摘要校验、systemd 命令、QoS 和隔离验收步骤见 `video_service/README.md`。
 
 服务通过 `systemd-time-wait-sync.service` 排在首次系统校时之后。机载 ROS/MAVROS

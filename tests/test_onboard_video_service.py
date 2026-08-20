@@ -217,11 +217,10 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
     assert fake.closed
 
 
-def test_onboard_extended_state_and_video_proxy_work_without_flight_lease() -> None:
-    """假 ExtendedState 覆盖任意起降方式，视频代理不需要飞行租约或 FCU。"""
+def test_onboard_extended_state_is_the_only_onboard_video_state_path() -> None:
+    """飞行节点只按 ExtendedState 发布视频状态，不暴露纯视频手动入口。"""
     rclpy = pytest.importorskip("rclpy")
     from guided_interfaces.msg import VideoControl
-    from guided_interfaces.srv import SetVideoState
     from mavros_msgs.msg import ExtendedState
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
@@ -258,8 +257,6 @@ def test_onboard_extended_state_and_video_proxy_work_without_flight_lease() -> N
     probe.create_subscription(
         VideoControl, "/video_truth/control", observed.append, transient
     )
-    proxy = probe.create_client(SetVideoState, "/video_truth_onboard/set_video_state")
-
     environment = os.environ.copy()
     environment["ROS_DOMAIN_ID"] = str(domain_id)
     environment["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
@@ -299,8 +296,11 @@ def test_onboard_extended_state_and_video_proxy_work_without_flight_lease() -> N
     try:
         assert spin_until(
             lambda: probe.count_subscribers("/video_truth_mavros/extended_state") == 1
-            and proxy.service_is_ready()
         )
+        service_names = {
+            name for name, _types in probe.get_service_names_and_types()
+        }
+        assert "/video_truth_onboard/set_video_state" not in service_names
         publish_landed_state(ExtendedState.LANDED_STATE_ON_GROUND)
         assert spin_until(lambda: len(observed) >= 1)
         publish_landed_state(ExtendedState.LANDED_STATE_IN_AIR)
@@ -308,30 +308,6 @@ def test_onboard_extended_state_and_video_proxy_work_without_flight_lease() -> N
         publish_landed_state(ExtendedState.LANDED_STATE_ON_GROUND)
         assert spin_until(lambda: len(observed) >= 3)
         assert [message.enabled for message in observed[:3]] == [False, True, False]
-
-        request = SetVideoState.Request()
-        request.stamp = probe.get_clock().now().to_msg()
-        request.source_id = "lease-free-video-test"
-        request.sequence = 1
-        request.ttl_ms = 5000
-        request.enabled = True
-        future = proxy.call_async(request)
-        assert spin_until(future.done)
-        assert future.result().accepted
-        assert "期望状态已发布" in future.result().message
-        assert spin_until(lambda: len(observed) >= 4)
-        assert observed[-1].enabled
-
-        duplicate = SetVideoState.Request()
-        duplicate.stamp = probe.get_clock().now().to_msg()
-        duplicate.source_id = request.source_id
-        duplicate.sequence = request.sequence
-        duplicate.ttl_ms = request.ttl_ms
-        duplicate.enabled = False
-        duplicate_future = proxy.call_async(duplicate)
-        assert spin_until(duplicate_future.done)
-        assert not duplicate_future.result().accepted
-        assert "重复或乱序" in duplicate_future.result().message
         assert process.poll() is None
     finally:
         if process.poll() is None:

@@ -31,7 +31,6 @@
 #include <guided_interfaces/srv/execute_waypoints.hpp>
 #include <guided_interfaces/srv/flight_command.hpp>
 #include <guided_interfaces/srv/set_gps_origin.hpp>
-#include <guided_interfaces/srv/set_video_state.hpp>
 #include <mavros_msgs/msg/attitude_target.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
 #include <mavros_msgs/msg/state.hpp>
@@ -63,7 +62,6 @@ private:
   using ExecuteWaypoints = guided_interfaces::srv::ExecuteWaypoints;
   using AcquireControl = guided_interfaces::srv::AcquireControl;
   using SetGpsOrigin = guided_interfaces::srv::SetGpsOrigin;
-  using SetVideoState = guided_interfaces::srv::SetVideoState;
 
   enum class ActiveTask
   {
@@ -112,9 +110,6 @@ private:
   void on_set_gps_origin(
     const std::shared_ptr<SetGpsOrigin::Request> request,
     std::shared_ptr<SetGpsOrigin::Response> response);
-  void on_set_video_state(
-    const std::shared_ptr<SetVideoState::Request> request,
-    std::shared_ptr<SetVideoState::Response> response);
 
   // Fixed-rate and diagnostic timers remain entirely onboard.
   void control_tick();
@@ -301,7 +296,6 @@ private:
   SteadyTime lease_deadline_{};
   std::unordered_map<std::string, std::uint64_t> last_lease_sequence_;
   std::unordered_map<std::string, std::uint64_t> last_flight_sequence_;
-  std::unordered_map<std::string, std::uint64_t> last_video_sequence_;
   std::optional<SteadyTime> link_loss_started_;
   bool failsafe_land_requested_{false};
 
@@ -357,7 +351,6 @@ private:
   rclcpp::Service<FlightCommand>::SharedPtr flight_command_service_;
   rclcpp::Service<ExecuteWaypoints>::SharedPtr waypoint_service_;
   rclcpp::Service<SetGpsOrigin>::SharedPtr origin_service_;
-  rclcpp::Service<SetVideoState>::SharedPtr video_state_service_;
 
   rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
   rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;
