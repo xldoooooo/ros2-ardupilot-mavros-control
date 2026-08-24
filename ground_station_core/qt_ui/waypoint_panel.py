@@ -325,7 +325,10 @@ class WaypointPanel(QWidget):
         self.reference_combo.setProperty("baseToolTip", self.reference_combo.toolTip())
         for generator in WaypointReferenceGenerator:
             self.reference_combo.addItem(generator.label, generator)
-        self.reference_combo.setCurrentIndex(0)
+        # GUI 默认使用当前推荐的连续梯形速度参考；协议的未知值回退仍保留基线。
+        self.reference_combo.setCurrentIndex(
+            WaypointReferenceGenerator.TRAPEZOIDAL_PROFILE.value
+        )
 
         self.tracking_combo = DownwardComboBox()
         self.tracking_combo.setObjectName("waypointTrackingControllerCombo")
@@ -335,7 +338,9 @@ class WaypointPanel(QWidget):
         self.tracking_combo.setProperty("baseToolTip", self.tracking_combo.toolTip())
         for controller in WaypointTrackingController:
             self.tracking_combo.addItem(controller.label, controller)
-        self.tracking_combo.setCurrentIndex(0)
+        self.tracking_combo.setCurrentIndex(
+            WaypointTrackingController.TRAJECTORY_PD_DOB.value
+        )
 
         for label_text, combo in (
             ("避障策略", self.strategy_combo),

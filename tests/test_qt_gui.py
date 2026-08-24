@@ -1536,6 +1536,14 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         assert window.waypoints.reference_combo.count() == 4
         assert window.waypoints.tracking_combo.count() == 2
         assert window.waypoints.selected_strategy() is WaypointFlightStrategy.STRAIGHT
+        assert (
+            window.waypoints.selected_reference_generator()
+            is WaypointReferenceGenerator.TRAPEZOIDAL_PROFILE
+        )
+        assert (
+            window.waypoints.selected_tracking_controller()
+            is WaypointTrackingController.TRAJECTORY_PD_DOB
+        )
         window.waypoints.reference_combo.setCurrentIndex(
             WaypointReferenceGenerator.JERK_LIMITED_S_CURVE.value
         )
