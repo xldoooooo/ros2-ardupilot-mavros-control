@@ -151,6 +151,52 @@ def test_panel_desktop_name_is_ascii() -> None:
     application.processEvents()
 
 
+def test_panel_draws_own_window_shadow_and_preserves_window_controls() -> None:
+    """摄像头面板不依赖 Wayland 装饰器，也能显示投影并正常最大化还原。"""
+    application = _application()
+    window = CameraPanelWindow(auto_bootstrap=False)
+    window.setStyleSheet(PANEL_STYLE_SHEET)
+    window.show()
+    application.processEvents()
+
+    assert window.windowType() == Qt.WindowType.Window
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert window.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+    assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert window.outer_window_frame.graphicsEffect() is window._window_shadow
+    assert window._window_shadow.blurRadius() == 30.0
+    assert window._window_shadow.offset().y() == 3.0
+    assert window.contentsMargins().left() == window._SHADOW_MARGIN + 1
+    assert window.outer_window_frame.geometry() == window.rect().adjusted(
+        window._SHADOW_MARGIN,
+        window._SHADOW_MARGIN,
+        -window._SHADOW_MARGIN,
+        -window._SHADOW_MARGIN,
+    )
+    shadow_pixel = (
+        window.grab()
+        .toImage()
+        .pixelColor(window._SHADOW_MARGIN - 4, window.height() // 2)
+    )
+    assert 0 < shadow_pixel.alpha() < 255
+
+    window.showMaximized()
+    application.processEvents()
+    assert window.isMaximized()
+    assert window.contentsMargins().left() == 1
+    assert not window._window_shadow.isEnabled()
+    assert window.maximize_button.toolTip() == "还原"
+    window.showNormal()
+    application.processEvents()
+    assert window.contentsMargins().left() == window._SHADOW_MARGIN + 1
+    assert window._window_shadow.isEnabled()
+
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
+
+
 def test_parse_v4l2_formats_keeps_native_h264_and_mjpeg_modes() -> None:
     """V4L2 离散能力应原样成为 GUI 可选组合。"""
     output = """

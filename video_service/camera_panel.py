@@ -5,6 +5,13 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
+
+
+# 独立脚本的 sys.path 默认只有 video_service/；补入项目根以复用地面端窗口外框。
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 
 def _configure_wayland_window_decorations() -> None:

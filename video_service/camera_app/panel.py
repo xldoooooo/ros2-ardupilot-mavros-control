@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QProcess, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QObject, QProcess, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -45,6 +45,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ground_station_core.qt_ui.window_chrome import ShadowWindowChromeMixin
 
 from .config import (
     CODEC_LABELS,
@@ -104,7 +106,24 @@ QWidget {
     font-family: "Noto Sans CJK SC", "Noto Sans", "DejaVu Sans", sans-serif;
     font-size: 10pt;
 }
-QMainWindow, QWidget#cameraPanelRoot { background: #eef1f4; }
+QMainWindow { background: transparent; }
+QWidget#cameraPanelRoot { background: #eef1f4; }
+QFrame#subpanelWindowFrame {
+    background: #f7f8fa;
+    border: 1px solid #8595a5;
+    border-radius: 8px;
+}
+QFrame#subpanelWindowFrame[windowMaximized="true"] { border-radius: 0; }
+QFrame#subpanelTitleBar {
+    background: #ffffff;
+    border: none;
+    border-bottom: 1px solid #cfd6de;
+}
+QLabel#subpanelWindowTitle {
+    color: #182433;
+    font-size: 11pt;
+    font-weight: 700;
+}
 QFrame#panelHeader, QFrame#previewCard, QGroupBox {
     background: #ffffff;
     border: 1px solid #cfd6de;
@@ -160,6 +179,17 @@ QPushButton[role="success"]:disabled,
 QPushButton[role="danger"]:disabled {
     color: #98a4b1; background: #edf0f2; border-color: #dbe0e5;
 }
+QPushButton[windowControl="true"] {
+    min-height: 25px; max-height: 25px; min-width: 28px;
+    padding: 0; background: transparent; border: 1px solid transparent;
+    border-radius: 3px; font-size: 12pt;
+}
+QPushButton[windowControl="true"]:hover {
+    background: #dfe7ed; border-color: #cfd6de;
+}
+QPushButton[closeControl="true"]:hover {
+    color: white; background: #a7352a; border-color: #a7352a;
+}
 QPushButton#iconButton { min-width: 34px; max-width: 34px; padding: 2px; }
 QWidget#videoSurface, QLabel#previewPlaceholder { background: #000000; }
 QLabel#previewPlaceholder {
@@ -182,7 +212,7 @@ class _PanelBridge(QObject):
     completed = Signal(str, object, str)
 
 
-class CameraPanelWindow(QMainWindow):
+class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
     """本机、真机或指定 RTSP 的配置、命令和独立预览窗口。"""
 
     def __init__(
@@ -215,6 +245,7 @@ class CameraPanelWindow(QMainWindow):
         self._last_preview_frame_at: float | None = None
 
         self.setWindowTitle(DESKTOP_APPLICATION_NAME)
+        self._configure_window_chrome()
         self.setMinimumSize(980, 680)
         self.resize(1180, 780)
         self._build_ui()
@@ -244,8 +275,15 @@ class CameraPanelWindow(QMainWindow):
         root_widget.setObjectName("cameraPanelRoot")
         self.setCentralWidget(root_widget)
         root = QVBoxLayout(root_widget)
-        root.setContentsMargins(14, 14, 14, 10)
-        root.setSpacing(10)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_window_title_bar("摄像头配置面板"))
+
+        body = QWidget()
+        body.setObjectName("subpanelWindowBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 12, 14, 10)
+        body_layout.setSpacing(10)
 
         header = QFrame()
         header.setObjectName("panelHeader")
@@ -263,13 +301,15 @@ class CameraPanelWindow(QMainWindow):
         header_layout.addWidget(self.start_button)
         header_layout.addWidget(self.stop_button)
         header_layout.addWidget(self.snapshot_button)
-        root.addWidget(header)
+        body_layout.addWidget(header)
 
         content = QHBoxLayout()
         content.setSpacing(10)
         content.addWidget(self._build_preview_card(), 7)
         content.addWidget(self._build_settings_scroll(), 4)
-        root.addLayout(content, 1)
+        body_layout.addLayout(content, 1)
+        root.addWidget(body, 1)
+        self._sync_window_chrome()
 
     def _build_preview_card(self) -> QFrame:
         """创建只由地址框和播放键驱动的 RTSP 实时画面。"""

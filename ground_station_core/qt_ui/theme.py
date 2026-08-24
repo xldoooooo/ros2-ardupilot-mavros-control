@@ -53,8 +53,24 @@ QFrame#outerWindowFrame {{
     border: 1px solid #8595a5;
     border-radius: 8px;
 }}
-QFrame#outerWindowFrame[windowMaximized="true"] {{
+QFrame#subpanelWindowFrame {{
+    background: {COLORS['surface_alt']};
+    border: 1px solid #8595a5;
+    border-radius: 8px;
+}}
+QFrame#outerWindowFrame[windowMaximized="true"],
+QFrame#subpanelWindowFrame[windowMaximized="true"] {{
     border-radius: 0;
+}}
+QFrame#subpanelTitleBar {{
+    background: {COLORS['surface']};
+    border: none;
+    border-bottom: 1px solid {COLORS['border']};
+}}
+QLabel#subpanelWindowTitle {{
+    color: {COLORS['text']};
+    font-size: 11pt;
+    font-weight: 700;
 }}
 QFrame#windowSurface {{
     background: {COLORS['surface_alt']};

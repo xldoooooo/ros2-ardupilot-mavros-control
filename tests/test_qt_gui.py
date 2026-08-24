@@ -1236,7 +1236,7 @@ def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> N
 
 
 def test_upstream_panel_is_independent_and_minimizable() -> None:
-    """通讯面板不依附主窗口置顶，并接受原生最小化状态切换。"""
+    """通讯面板保持独立层级，并自行绘制可缩放、可最小化的窗口阴影。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         QTest.mouseClick(window.upstream_panel_button, Qt.MouseButton.LeftButton)
@@ -1246,9 +1246,38 @@ def test_upstream_panel_is_independent_and_minimizable() -> None:
         assert panel.parentWidget() is None
         assert panel.windowType() == Qt.WindowType.Window
         assert panel.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+        assert panel.windowFlags() & Qt.WindowType.FramelessWindowHint
         assert not panel.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+        assert panel.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         assert panel.windowHandle() is not None
         assert panel.windowHandle().transientParent() is None
+        assert panel.outer_window_frame.graphicsEffect() is panel._window_shadow
+        assert panel._window_shadow.blurRadius() == 30.0
+        assert panel._window_shadow.offset().y() == 3.0
+        assert panel.contentsMargins().left() == panel._SHADOW_MARGIN + 1
+        assert panel.outer_window_frame.geometry() == panel.rect().adjusted(
+            panel._SHADOW_MARGIN,
+            panel._SHADOW_MARGIN,
+            -panel._SHADOW_MARGIN,
+            -panel._SHADOW_MARGIN,
+        )
+        shadow_pixel = (
+            panel.grab()
+            .toImage()
+            .pixelColor(panel._SHADOW_MARGIN - 4, panel.height() // 2)
+        )
+        assert 0 < shadow_pixel.alpha() < 255
+
+        panel.showMaximized()
+        _application().processEvents()
+        assert panel.isMaximized()
+        assert panel.contentsMargins().left() == 1
+        assert not panel._window_shadow.isEnabled()
+        assert panel.maximize_button.toolTip() == "还原"
+        panel.showNormal()
+        _application().processEvents()
+        assert panel.contentsMargins().left() == panel._SHADOW_MARGIN + 1
+        assert panel._window_shadow.isEnabled()
 
         panel.showMinimized()
         _application().processEvents()

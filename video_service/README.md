@@ -13,6 +13,10 @@ MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任
 ./.venv/bin/python video_service/camera_panel.py
 ```
 
+面板的 frameless 标题栏、窗口缩放和 Wayland 自绘阴影复用
+`ground_station_core/qt_ui/window_chrome.py`，入口会自动把项目根目录加入 Python 搜索路径；因此
+应继续使用上述项目根目录命令启动。该显示层复用不改变摄像头后台与飞控生命周期隔离。
+
 面板有三个正交来源：
 
 - **本机摄像头**：本机设备、推流、画质与存储配置可编辑，启停和抓拍走私有

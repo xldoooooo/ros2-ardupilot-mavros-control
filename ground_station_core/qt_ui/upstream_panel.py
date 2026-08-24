@@ -25,9 +25,10 @@ from PySide6.QtWidgets import (
 from ..upstream.mapping import UpstreamProtocolError
 from ..upstream.protocol import command_topic, json_examples, status_topic
 from ..upstream.service import UpstreamCommunicationService
+from .window_chrome import ShadowWindowChromeMixin
 
 
-class UpstreamCommunicationPanel(QWidget):
+class UpstreamCommunicationPanel(ShadowWindowChromeMixin, QWidget):
     """独立管理上位机通讯服务；关闭窗口不会关闭连接或地面站。"""
 
     def __init__(
@@ -43,19 +44,28 @@ class UpstreamCommunicationPanel(QWidget):
         self._last_raw_sequence = 0
         self.setWindowTitle("上位机通讯面板")
         self.setObjectName("upstreamCommunicationPanel")
+        self._configure_window_chrome()
         self.resize(980, 720)
         self.setMinimumSize(760, 560)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_window_title_bar(self.windowTitle()))
+
+        body = QWidget()
+        body.setObjectName("subpanelWindowBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(14, 12, 14, 14)
+        body_layout.setSpacing(10)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("upstreamCommunicationTabs")
         self.tabs.addTab(self._build_connection_tab(), "连接配置")
         self.tabs.addTab(self._build_mapping_tab(), "指令映射")
         self.tabs.addTab(self._build_raw_log_tab(), "原始报文")
         self.tabs.addTab(self._build_json_tab(), "JSON 格式")
-        root.addWidget(self.tabs, 1)
+        body_layout.addWidget(self.tabs, 1)
+        root.addWidget(body, 1)
 
         self._render_json_examples()
         self._timer = QTimer(self)
@@ -63,6 +73,7 @@ class UpstreamCommunicationPanel(QWidget):
         self._timer.timeout.connect(self._poll)
         self._timer.start()
         self._poll()
+        self._sync_window_chrome()
 
     def _build_connection_tab(self) -> QWidget:
         """创建 URL、无人机编号、主题和独立生命周期操作。"""

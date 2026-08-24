@@ -152,6 +152,9 @@
   恢复；主窗口退出时必须显式销毁该独立面板。
 - 地面站与独立摄像头入口在原生 Wayland 下、且用户未显式指定时，于创建 `QApplication` 前选择
   Qt `adwaita` 窗口装饰；X11 和显式 `QT_WAYLAND_DECORATION` 配置不得被覆盖。
+- 上位机通讯面板和摄像头配置面板的投影不能依赖 GNOME Wayland 合成器：两者使用与主窗口一致
+  的 frameless 透明顶层窗口、14 px 留边和 Qt 自绘阴影，并保留独立任务栏、标题栏拖动、四边缩放、
+  最小化、最大化/还原和关闭。摄像头的原生 `QVideoWidget` 不挂图形特效，阴影只画在独立背景框。
 - LAND 是已武装状态下的安全动作：只要机载可靠命令链存在并持有控制权，就不得被 GUI busy、
   当前模式、位置/推力诊断或已有 LAND pending 锁死，并允许幂等重发。离线、关闭中、无控制权
   或多个机载状态端点冲突仍必须安全禁用。
@@ -262,11 +265,12 @@
 
 - 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
   `main` 基线；工作树中的用户自有改动仍须保留。
-- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：176 passed。
+- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：177 passed。
 - 当前 colcon 结果：19 tests、0 errors、0 failures、0 skipped。
 - 任务 24 已通过真实 JAR + Qt + ROS + MAVROS + ArduPilot SITL 全流程：最终解除武装、航点进度
   `2/2`，已武装 LAND 误禁用和组合待机起飞误启用记录均为空；Ubuntu 24.04 GNOME Wayland
-  目标机确认加载 Qt `adwaita` 装饰，纯黑预览中心和四角均为不透明 `#000000`。
+  目标机确认纯黑预览中心和四角均为不透明 `#000000`；两个子面板自绘阴影在真实 Wayland 渲染
+  中均得到 alpha 33 的半透明阴影像素，不再依赖 `adwaita` 或合成器外部阴影。
 - 当前 Jetson 已完成接口 3.2 ARM64 Release 构建、19 项测试和无 MAVROS 隔离 smoke；真实 FCU
   最终为 connected、`armed=false`、STABILIZE、无租约/控制器、约 100.03 Hz。真实
   `EXTENDED_SYS_STATE` 连续为 ON_GROUND，自动视频期望为关闭。
