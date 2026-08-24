@@ -62,6 +62,12 @@ ArduPilot / MAVROS
 
 ### 4.1 启动本地测试 JAR
 
+
+java8:
+```bash
+sudo apt install -y openjdk-8-jre-headless
+```
+
 在项目根目录执行：
 
 ```bash
