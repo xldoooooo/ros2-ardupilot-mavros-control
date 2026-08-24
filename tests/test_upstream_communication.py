@@ -401,6 +401,19 @@ def test_connection_configuration_persists_between_service_instances(
     assert restored.client_no == "UAV02002"
 
 
+def test_disconnected_service_never_requests_low_power_return(tmp_path) -> None:
+    """状态投影可继续计算，但 WebSocket 断线时服务不得开放动作触发。"""
+    service = UpstreamCommunicationService(
+        event_log=EventLog(),
+        on_command=lambda _command: None,
+        auto_connect=False,
+        config_path=tmp_path / "upstream-offline.json",
+    )
+
+    assert service.snapshot().connected is False
+    assert not service.observe_vehicle(_telemetry_snapshot(), "simulation")
+
+
 def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
     tmp_path,
 ) -> None:

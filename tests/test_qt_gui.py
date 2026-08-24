@@ -234,6 +234,7 @@ class _FakeUpstreamService:
         self.standby_policy = UpstreamStandbyPolicy()
         self.calls: list[tuple[str, object]] = []
         self.low_power_return_required = False
+        self.connected = False
 
     def start(self) -> None:
         self.calls.append(("start", None))
@@ -246,9 +247,9 @@ class _FakeUpstreamService:
         return UpstreamConnectionSnapshot(
             "ws://127.0.0.1:8581/ws",
             "UAV01001",
-            False,
-            False,
-            "已断开",
+            self.connected,
+            self.connected,
+            "已连接" if self.connected else "已断开",
             "测试替身",
         )
 
@@ -1125,10 +1126,11 @@ def test_emergency_land_keeps_standby_blocked_until_hangar_threshold() -> None:
 
 
 def test_low_power_and_abnormal_states_drive_return_and_recovery_sequences() -> None:
-    """低电量自动返航，异常返航入库后才清除并释放待机。"""
+    """WebSocket 在线仿真才执行低电量/异常返航与恢复组合。"""
     low_window, low_ros = _window(_operational_snapshot(armed=True))
     low_upstream = low_window._upstream
     try:
+        low_upstream.connected = True
         low_window._initialize_simulation()
         low_upstream.low_power_return_required = True
         low_window._refresh()
@@ -1150,6 +1152,7 @@ def test_low_power_and_abnormal_states_drive_return_and_recovery_sequences() -> 
     window, ros = _window(abnormal_snapshot)
     upstream = window._upstream
     try:
+        upstream.connected = True
         window._initialize_simulation()
         assert ros.calls[-1][0] == "waypoints"
         assert window.mode_badge.value_label.text() == "无人机状态异常"
@@ -1182,6 +1185,69 @@ def test_low_power_and_abnormal_states_drive_return_and_recovery_sequences() -> 
         _close_window(window)
 
 
+def test_disconnected_upstream_disables_low_power_and_abnormal_auto_return() -> None:
+    """WebSocket 断线时仿真和实机都不得由两类状态下发飞行命令。"""
+    low_window, low_ros = _window(_operational_snapshot(armed=True))
+    low_upstream = low_window._upstream
+    try:
+        low_window._initialize_simulation()
+        low_upstream.low_power_return_required = True
+        low_window._refresh()
+
+        assert low_upstream.snapshot().connected is False
+        assert not any(call[0] in {"waypoints", "land"} for call in low_ros.calls)
+        assert low_window._upstream_sequence is None
+    finally:
+        _close_window(low_window)
+
+    abnormal_snapshot = replace(
+        _operational_snapshot(armed=True),
+        vehicle_abnormal=True,
+        vehicle_abnormal_reason="航点连续入点失败 10 次",
+    )
+    abnormal_window, abnormal_ros = _window(abnormal_snapshot)
+    try:
+        abnormal_window._environment_active = True
+        abnormal_window._connection_mode = "hardware"
+        abnormal_window._refresh()
+
+        assert abnormal_window._upstream.snapshot().connected is False
+        assert not any(
+            call[0] in {"waypoints", "land"} for call in abnormal_ros.calls
+        )
+        assert abnormal_window._upstream_sequence is None
+    finally:
+        _close_window(abnormal_window)
+
+
+def test_connected_hardware_only_reports_low_power_and_abnormal_states() -> None:
+    """WebSocket 在线实机两类触发只告警一次，TODO 分支不操作飞机。"""
+    snapshot = replace(
+        _operational_snapshot(armed=True),
+        vehicle_abnormal=True,
+        vehicle_abnormal_reason="航点连续入点失败 10 次",
+    )
+    window, ros = _window(snapshot)
+    upstream = window._upstream
+    try:
+        upstream.connected = True
+        upstream.low_power_return_required = True
+        window._environment_active = True
+        window._connection_mode = "hardware"
+
+        window._refresh()
+        window._refresh()
+
+        assert not any(call[0] in {"waypoints", "land"} for call in ros.calls)
+        assert window._upstream_sequence is None
+        messages = [event.message for event in window.event_log.snapshot()]
+        assert sum("实机低电量" in message for message in messages) == 1
+        assert sum("实机无人机状态异常" in message for message in messages) == 1
+        assert "未执行自动返航或降落" in window.activity_banner.message_label.text()
+    finally:
+        _close_window(window)
+
+
 def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> None:
     """面板同步新语义，支持原始帧搜索并在关闭时保存输入。"""
     window, _ros = _window(_operational_snapshot(armed=False))
@@ -1207,10 +1273,12 @@ def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> N
         QTest.mouseClick(panel.raw_search_button, Qt.MouseButton.LeftButton)
         assert panel.raw_log.textCursor().selectedText() == "SYSTEM"
         json_guide = panel.json_text.toPlainText()
-        assert "0C: 仿真低于 20%" in json_guide
+        assert "0C: WebSocket 在线时上报低电量" in json_guide
+        assert "在线实机当前只提示地面站（TODO）" in json_guide
+        assert "断线不触发动作" in json_guide
         assert "03: 起飞至设定高度" in json_guide
         assert "08: 仅巡检航点全部完成时发送" in json_guide
-        assert "平滑任务启动余速或入点连续失败达阈值" in json_guide
+        assert "无人机异常: WebSocket 在线仿真执行返航降落" in json_guide
         for command_no in ("01", "02", "03", "05", "06", "07"):
             assert f"接收命令 {command_no}（BROADCAST）" in json_guide
         for status_no in (

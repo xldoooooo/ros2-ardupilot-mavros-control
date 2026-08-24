@@ -154,6 +154,8 @@ class GroundStationWindow(QMainWindow):
         self._upstream_photo_nos: tuple[str, ...] = ()
         self._upstream_sequence: _UpstreamFlightSequence | None = None
         self._abnormal_return_latched = False
+        self._hardware_low_power_notice_latched = False
+        self._hardware_abnormal_notice_latched = False
         self._pending_commands: set[str] = set()
         self._active_waypoint_ticket: int | None = None
         self._last_result_sequence = 0
@@ -849,6 +851,8 @@ class GroundStationWindow(QMainWindow):
         """完成环境切换并解除互斥锁。"""
         self._workflow_busy = False
         self._waypoint_preview_active = False
+        self._hardware_low_power_notice_latched = False
+        self._hardware_abnormal_notice_latched = False
         self._environment_active = success
         self._connection_mode = self._pending_environment_mode if success else "none"
         self._pending_environment_mode = "none"
@@ -959,6 +963,8 @@ class GroundStationWindow(QMainWindow):
         self._pending_environment_mode = "none"
         self._upstream_sequence = None
         self._abnormal_return_latched = False
+        self._hardware_low_power_notice_latched = False
+        self._hardware_abnormal_notice_latched = False
         try:
             self._upstream.reset_runtime()
         except Exception as exc:
@@ -1207,10 +1213,32 @@ class GroundStationWindow(QMainWindow):
             self._abnormal_return_latched = True
         return sequence.ticket is not None
 
-    def _handle_vehicle_abnormal(self, snapshot: VehicleSnapshot) -> None:
-        """把机载异常边沿只转换为一次返航/清除组合。"""
+    def _handle_vehicle_abnormal(
+        self, snapshot: VehicleSnapshot, *, upstream_connected: bool
+    ) -> None:
+        """按 WebSocket 和环境类型处理机载异常边沿。"""
         if not snapshot.vehicle_abnormal:
             self._abnormal_return_latched = False
+            self._hardware_abnormal_notice_latched = False
+            return
+        if not upstream_connected:
+            # 上位机离线时禁用通讯协议附带的异常自动返航策略。
+            self._hardware_abnormal_notice_latched = False
+            return
+        if self._connection_mode == "hardware":
+            if not self._hardware_abnormal_notice_latched:
+                reason = snapshot.vehicle_abnormal_reason or "原因未提供"
+                message = (
+                    "检测到实机无人机状态异常；当前仅提示地面站，"
+                    f"未执行自动返航或降落：{reason}"
+                )
+                self._events.error("upstream", message)
+                self.activity_banner.set_message(message, LogLevel.ERROR)
+                self._hardware_abnormal_notice_latched = True
+            # TODO(实机异常返航): 完善实机风险确认、接管和返航降落策略后实现。
+            pass  # noqa: PIE790 - 用户要求显式保留空实现。
+            return
+        if self._connection_mode != "simulation":
             return
         sequence = self._upstream_sequence
         if sequence is not None and sequence.kind in {
@@ -1763,6 +1791,12 @@ class GroundStationWindow(QMainWindow):
     def _refresh(self) -> None:
         """统一刷新快照、按钮状态、命令结果和日志，不跨线程触碰 Qt。"""
         snapshot = self._ros.snapshot()
+        try:
+            upstream_connected = bool(self._upstream.snapshot().connected)
+        except Exception as exc:
+            # 无法确认连接即按断线处理，飞行动作保持故障关闭。
+            upstream_connected = False
+            self._events.warn("upstream", f"读取上位机连接状态失败：{exc}")
         self._update_status_badges(snapshot)
         self.operations.update_snapshot(snapshot, self._connection_mode)
         self.waypoints.update_progress(snapshot)
@@ -1816,7 +1850,9 @@ class GroundStationWindow(QMainWindow):
             self._last_availability_render_key = render_key
 
         self._drive_upstream_sequence(snapshot)
-        self._handle_vehicle_abnormal(snapshot)
+        self._handle_vehicle_abnormal(
+            snapshot, upstream_connected=upstream_connected
+        )
 
         try:
             low_power_return_required = self._upstream.observe_vehicle(
@@ -1824,8 +1860,33 @@ class GroundStationWindow(QMainWindow):
                 self._connection_mode,
                 can_takeoff=self._availability.takeoff,
             )
-            if low_power_return_required:
+            if (
+                not upstream_connected
+                or self._connection_mode != "hardware"
+                or not snapshot.armed
+            ):
+                self._hardware_low_power_notice_latched = False
+            if (
+                low_power_return_required
+                and upstream_connected
+                and self._connection_mode == "simulation"
+            ):
                 self._start_return_sequence("low_power", snapshot)
+            elif (
+                low_power_return_required
+                and upstream_connected
+                and self._connection_mode == "hardware"
+            ):
+                if not self._hardware_low_power_notice_latched:
+                    message = (
+                        "检测到实机低电量；当前仅提示地面站，"
+                        "未执行自动返航或降落"
+                    )
+                    self._events.warn("upstream", message)
+                    self.activity_banner.set_message(message, LogLevel.WARN)
+                    self._hardware_low_power_notice_latched = True
+                # TODO(实机低电量返航): 完善实机阈值、接管和返航降落策略后实现。
+                pass  # noqa: PIE790 - 用户要求显式保留空实现。
         except Exception as exc:
             # 通讯插件任何故障都不得中断 10 Hz 原地面站刷新。
             self._events.warn("upstream", f"状态投影异常：{exc}")

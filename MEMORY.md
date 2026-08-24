@@ -180,6 +180,10 @@
 - 命令映射唯一维护在 `ground_station_core/upstream/mapping.py`：01 起飞、02 原子替换 GUI 航点、
   03 起飞→巡检航点→末点 LAND、05 飞至 `(0,0,起飞高度)` 后 LAND、06 正常 LAND、07 原地
   紧急 LAND。所有动作复用现有 GUI 门控和高层 ROS 服务；实机危险动作仍需要本地人工确认。
+- 低电量和无人机异常自动返航只在 WebSocket 实际在线的仿真会话中启用；WebSocket 断线时仿真
+  与实机都不触发这两类自动飞行动作。WebSocket 在线实机当前仅在地面站日志/横幅提示，明确
+  不下发航点或 LAND，实机实现保留为 TODO。该门控只决定是否新触发组合，不强行撤销断线前
+  已经由机载端接收的飞行命令。
 - 09 由真实 `VideoCaptureResult` 驱动，`pointNo` 仍来自 `taskPoints.index`，`pointPic` 使用实际
   JPG 路径；08 在巡检航点与降落可靠终态后等待图片结果和录像封装，再发送实际
   `videoPath/JPGPath`。超时或媒体失败按空路径如实上报，但不反向判定飞行失败；返航不发 08/09。

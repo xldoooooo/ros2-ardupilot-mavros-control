@@ -385,8 +385,8 @@ class UpstreamStatusProjector:
             self._events.warn("upstream", "已上报低电量 0C")
         elif low_power is False:
             self._low_power_reported = False
-        # 上报连接不影响本地安全动作；低电量持续时每个
-        # 遥测周期重申，直到组合动作被地面站接受或飞行器降落。
+        # 投影器只计算低电量候选；服务层仅在 WebSocket 在线时开放动作触发。
+        # 低电量持续时每个遥测周期重申，直到组合被接受或飞行器降落。
         return low_power is True and snapshot.armed
 
     def _send(self, status: str, data: Mapping[str, Any] | None = None) -> bool:

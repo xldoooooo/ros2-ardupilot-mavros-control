@@ -290,7 +290,10 @@ class UpstreamCommunicationPanel(ShadowWindowChromeMixin, QWidget):
             "03: 起飞至设定高度 → 巡检航点 → 末点降落",
             "05: 当前控制组合返回原点起飞高度 → 稳定降落",
             "08: 仅巡检航点全部完成时发送；返航航点不发送",
-            "0C: 仿真低于 20% 或实机低于 22.2 V 时上报并触发返航降落",
+            (
+                "0C: WebSocket 在线时上报低电量；在线仿真触发返航降落，"
+                "在线实机当前只提示地面站（TODO），断线不触发动作"
+            ),
             (
                 "01: 可起飞或组合降落后，仅在 "
                 f"|X|<{self._service.standby_policy.x_tolerance_meters:.2f} m、"
@@ -301,7 +304,10 @@ class UpstreamCommunicationPanel(ShadowWindowChromeMixin, QWidget):
                 "巡检降落后 01 延时: "
                 f"{self._service.standby_policy.inspection_delay_seconds:.1f} s"
             ),
-            "平滑任务启动余速或入点连续失败达阈值会标记异常，返航降落后入库清除",
+            (
+                "无人机异常: WebSocket 在线仿真执行返航降落；在线实机当前只提示"
+                "地面站（TODO），断线不触发动作"
+            ),
             "相机/云台/照片/FTP/RTSP/媒体路径: 当前未实现",
         ]
         for title, payload in examples:

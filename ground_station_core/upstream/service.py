@@ -297,10 +297,13 @@ class UpstreamCommunicationService:
         *,
         can_takeoff: bool = False,
     ) -> bool:
-        """提供权威快照并返回当前是否需启动低电量返航。"""
-        return self._projector.observe_vehicle(
+        """投影权威快照；仅在 WebSocket 在线时开放低电量动作触发。"""
+        low_power_return_required = self._projector.observe_vehicle(
             snapshot, connection_mode, can_takeoff=can_takeoff
         )
+        with self._state_lock:
+            connected = self._connected
+        return connected and low_power_return_required
 
     def observe_result(self, result: CommandResult) -> None:
         """由 GUI 消费同一可靠结果，生成无重复的任务状态。"""
