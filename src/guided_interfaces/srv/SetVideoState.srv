@@ -1,4 +1,5 @@
 # 地面站摄像头面板直接请求独立视频节点；不经过机载飞控控制或飞行租约。
+# stamp 以每个面板进程的首条有序命令建立相对基准，不比较两机绝对日期。
 builtin_interfaces/Time stamp
 string source_id
 uint64 sequence

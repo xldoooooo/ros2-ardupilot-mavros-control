@@ -208,6 +208,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     !std::isfinite(waypoint_arrival_retry_interval_seconds_) ||
     waypoint_arrival_retry_interval_seconds_ <= 0.0 ||
     waypoint_arrival_failure_limit_ < 1 ||
+    !std::isfinite(max_clock_skew_seconds_) || max_clock_skew_seconds_ <= 0.0 ||
     controller_parameters_.hover_throttle <= 0.0 ||
     controller_parameters_.hover_throttle >= 1.0 || controller_parameters_.thrust_ratio <= 1.0)
   {
@@ -468,7 +469,7 @@ void OnboardControlNode::on_global_origin(
     stream.str());
 }
 
-bool OnboardControlNode::validate_envelope(
+bool OnboardControlNode::validate_envelope_fields(
   const builtin_interfaces::msg::Time & stamp,
   const std::uint32_t ttl_ms,
   const std::string & source,
@@ -487,10 +488,32 @@ bool OnboardControlNode::validate_envelope(
     reason = "命令时间戳无效";
     return false;
   }
-  // Node::now() is const in both Humble and Jazzy; Humble's const Clock cannot call now().
-  const double age_seconds = (now() - sent_time).seconds();
+  return true;
+}
+
+bool OnboardControlNode::validate_envelope(
+  const builtin_interfaces::msg::Time & stamp,
+  const std::uint32_t ttl_ms,
+  const std::string & source,
+  std::string & reason) const
+{
+  if (!validate_envelope_fields(stamp, ttl_ms, source, reason)) {
+    return false;
+  }
+  if (sender_clock_source_ != source || sender_clock_received_ == SteadyTime{}) {
+    reason = "地面站本地时间基准未建立，请重新申请控制权";
+    return false;
+  }
+
+  // 绝对墙钟可能因无外网相差数日；只比较租约基准后的两端相对流逝时间。
+  const auto sent_ns = rclcpp::Time(stamp).nanoseconds();
+  const double sender_elapsed_seconds =
+    static_cast<double>(sent_ns - sender_clock_stamp_ns_) / 1.0e9;
+  const double receiver_elapsed_seconds = std::chrono::duration<double>(
+    SteadyClock::now() - sender_clock_received_).count();
+  const double age_seconds = receiver_elapsed_seconds - sender_elapsed_seconds;
   if (age_seconds < -max_clock_skew_seconds_) {
-    reason = "命令时间戳来自未来，请检查两端时间同步";
+    reason = "命令发送时间快于当前地面站本地时间基准";
     return false;
   }
   if (age_seconds * 1000.0 > static_cast<double>(ttl_ms)) {
@@ -498,6 +521,37 @@ bool OnboardControlNode::validate_envelope(
     return false;
   }
   return true;
+}
+
+void OnboardControlNode::align_sender_clock(
+  const builtin_interfaces::msg::Time & stamp,
+  const std::string & source)
+{
+  const auto received = SteadyClock::now();
+  const auto sent_ns = rclcpp::Time(stamp).nanoseconds();
+  if (sender_clock_source_ == source && sender_clock_received_ != SteadyTime{}) {
+    const double sender_elapsed_seconds =
+      static_cast<double>(sent_ns - sender_clock_stamp_ns_) / 1.0e9;
+    const double receiver_elapsed_seconds = std::chrono::duration<double>(
+      received - sender_clock_received_).count();
+    const double discontinuity_seconds = receiver_elapsed_seconds - sender_elapsed_seconds;
+    if (std::abs(discontinuity_seconds) > max_clock_skew_seconds_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "地面站本地时间基准发生 %.3f 秒跳变，已按最新租约心跳重新对齐",
+        discontinuity_seconds);
+    }
+  }
+  sender_clock_source_ = source;
+  sender_clock_stamp_ns_ = sent_ns;
+  sender_clock_received_ = received;
+}
+
+void OnboardControlNode::clear_sender_clock()
+{
+  sender_clock_source_.clear();
+  sender_clock_stamp_ns_ = 0;
+  sender_clock_received_ = SteadyTime{};
 }
 
 bool OnboardControlNode::lease_active_locked() const
@@ -528,7 +582,8 @@ void OnboardControlNode::on_acquire_control(
   std::string reason;
   if (request->lease_duration_ms < kMinimumLeaseMs ||
     request->lease_duration_ms > kMaximumLeaseMs ||
-    !validate_envelope(request->stamp, request->lease_duration_ms, request->source_id, reason))
+    !validate_envelope_fields(
+      request->stamp, request->lease_duration_ms, request->source_id, reason))
   {
     response->message = reason.empty() ? "租约时长超出允许范围" : reason;
     response->owner = lease_owner_;
@@ -551,6 +606,7 @@ void OnboardControlNode::on_acquire_control(
     } else {
       lease_owner_.clear();
       lease_deadline_ = SteadyTime{};
+      clear_sender_clock();
       response->granted = true;
       response->message = "控制权已主动释放";
       set_status_message(response->message);
@@ -570,6 +626,7 @@ void OnboardControlNode::on_acquire_control(
   lease_owner_ = request->source_id;
   lease_deadline_ = SteadyClock::now() +
     std::chrono::milliseconds(request->lease_duration_ms);
+  align_sender_clock(request->stamp, request->source_id);
   response->granted = true;
   response->owner = lease_owner_;
   response->lease_remaining_ms = lease_remaining_ms_locked();
@@ -587,7 +644,7 @@ void OnboardControlNode::on_heartbeat(
     return;
   }
   std::string reason;
-  if (!validate_envelope(
+  if (!validate_envelope_fields(
       message->header.stamp, message->lease_duration_ms, message->source_id, reason))
   {
     return;
@@ -597,6 +654,8 @@ void OnboardControlNode::on_heartbeat(
     return;
   }
   last_sequence = message->sequence;
+  // 当前租约持有者的有序心跳是地面站本地时间的持续权威基准；不依赖 NTP。
+  align_sender_clock(message->header.stamp, message->source_id);
   lease_deadline_ = SteadyClock::now() +
     std::chrono::milliseconds(message->lease_duration_ms);
 }

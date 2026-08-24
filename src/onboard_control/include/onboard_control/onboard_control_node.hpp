@@ -116,11 +116,20 @@ private:
   void status_tick();
 
   // Command validation, arbitration and state transitions.
+  bool validate_envelope_fields(
+    const builtin_interfaces::msg::Time & stamp,
+    std::uint32_t ttl_ms,
+    const std::string & source,
+    std::string & reason) const;
   bool validate_envelope(
     const builtin_interfaces::msg::Time & stamp,
     std::uint32_t ttl_ms,
     const std::string & source,
     std::string & reason) const;
+  void align_sender_clock(
+    const builtin_interfaces::msg::Time & stamp,
+    const std::string & source);
+  void clear_sender_clock();
   bool authorize_flight_sequence(
     const std::string & source,
     std::uint64_t sequence,
@@ -291,9 +300,12 @@ private:
   std::optional<ReferenceGeneratorType> armed_reference_generator_lock_;
   std::optional<TrackingControllerType> armed_tracking_controller_lock_;
 
-  // Lease, replay protection and link-loss state.
+  // Lease, sender-local time alignment, replay protection and link-loss state.
   std::string lease_owner_;
   SteadyTime lease_deadline_{};
+  std::string sender_clock_source_;
+  std::int64_t sender_clock_stamp_ns_{0};
+  SteadyTime sender_clock_received_{};
   std::unordered_map<std::string, std::uint64_t> last_lease_sequence_;
   std::unordered_map<std::string, std::uint64_t> last_flight_sequence_;
   std::optional<SteadyTime> link_loss_started_;

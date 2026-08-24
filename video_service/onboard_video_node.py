@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections import deque
 from typing import Any
 
+import rclpy
 from camera_app.config import DEFAULT_MEDIAMTX_BINARY, CameraConfig
 from camera_app.controller import CameraController, CameraServiceError
 from camera_app.onboard_config import OnboardVideoSettings, load_onboard_settings
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from guided_interfaces.msg import (
     VideoCapture,
@@ -19,11 +23,6 @@ from guided_interfaces.msg import (
     VideoStatus,
 )
 from guided_interfaces.srv import SetVideoState
-
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-
 
 VIDEO_INTERFACE_VERSION = "3.2"
 VIDEO_PREFIX = "/video_service"
@@ -62,6 +61,8 @@ class OnboardVideoNode(Node):
         self._control_queue: queue.Queue[VideoControl] = queue.Queue(maxsize=64)
         self._capture_queue: queue.Queue[VideoCapture] = queue.Queue(maxsize=256)
         self._last_state_sequence: dict[str, int] = {}
+        # 每个面板进程以首条命令建立发送端本地时间基准，绝不比较两机绝对墙钟。
+        self._state_clock_anchors: dict[str, tuple[int, int]] = {}
         self._seen_capture_keys: set[tuple[str, int]] = set()
         self._seen_capture_order: deque[tuple[str, int]] = deque(maxlen=1024)
 
@@ -140,15 +141,31 @@ class OnboardVideoNode(Node):
         stamp_ns = int(request.stamp.sec) * 1_000_000_000 + int(
             request.stamp.nanosec
         )
-        age_ms = (self.get_clock().now().nanoseconds - stamp_ns) / 1_000_000.0
-        if age_ms < -1000.0 or age_ms > float(request.ttl_ms):
-            response.message = "视频命令已过期或时间戳异常"
+        if stamp_ns <= 0:
+            response.message = "视频命令时间戳无效"
             return response
         previous = self._last_state_sequence.get(source_id, 0)
         if int(request.sequence) <= previous:
             response.message = "视频命令重复或乱序"
             return response
+
+        received_ns = time.monotonic_ns()
+        anchor = self._state_clock_anchors.get(source_id)
+        if anchor is not None:
+            anchor_stamp_ns, anchor_received_ns = anchor
+            age_ms = (
+                (received_ns - anchor_received_ns)
+                - (stamp_ns - anchor_stamp_ns)
+            ) / 1_000_000.0
+            if age_ms > float(request.ttl_ms):
+                response.message = "视频命令已过期"
+                return response
+            if age_ms < -1000.0:
+                self.get_logger().warning(
+                    "地面视频面板本地时间基准发生跳变，按最新有序命令重新对齐"
+                )
         self._last_state_sequence[source_id] = int(request.sequence)
+        self._state_clock_anchors[source_id] = (stamp_ns, received_ns)
 
         command = VideoControl()
         command.header.stamp = self.get_clock().now().to_msg()

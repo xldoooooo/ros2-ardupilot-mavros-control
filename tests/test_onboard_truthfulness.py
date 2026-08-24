@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,14 +18,15 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
     rclpy = pytest.importorskip("rclpy")
     from geographic_msgs.msg import GeoPointStamped
     from geometry_msgs.msg import PoseStamped, TwistStamped
-    from guided_interfaces.msg import CommandResult, ControlStatus
-    from guided_interfaces.srv import AcquireControl, FlightCommand, SetGpsOrigin
     from mavros_msgs.msg import State
     from mavros_msgs.srv import MessageInterval, SetMode
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import BatteryState
+
+    from guided_interfaces.msg import CommandResult, ControlHeartbeat, ControlStatus
+    from guided_interfaces.srv import AcquireControl, FlightCommand, SetGpsOrigin
 
     executable = (
         PROJECT_ROOT
@@ -72,6 +72,9 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         GeoPointStamped,
         "/truth_mavros/global_position/gp_origin",
         latched_qos,
+    )
+    heartbeats = node.create_publisher(
+        ControlHeartbeat, "/truth_onboard/heartbeat", 10
     )
 
     interval_requests: list[tuple[int, float]] = []
@@ -154,6 +157,12 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         future = client.call_async(request)
         assert spin_until(future.done, timeout), "服务调用未在期限内返回"
         return future.result()
+
+    def sender_stamp(offset_seconds: int):
+        """构造与机载绝对墙钟相差数日、但在地面端连续递增的发送时间。"""
+        stamp = node.get_clock().now().to_msg()
+        stamp.sec += offset_seconds
+        return stamp
 
     try:
         assert spin_until(lambda: bool(statuses)), "机载状态话题未启动"
@@ -242,15 +251,32 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         assert origin_client.wait_for_service(timeout_sec=3.0)
         assert land_client.wait_for_service(timeout_sec=3.0)
 
+        # 初始绝对墙钟故意快 7 天；租约必须以地面本地时间建立相对基准。
+        sender_offset_seconds = 7 * 24 * 60 * 60
         lease = AcquireControl.Request()
-        lease.stamp = node.get_clock().now().to_msg()
+        lease.stamp = sender_stamp(sender_offset_seconds)
         lease.source_id = "truth-gcs"
         lease.sequence = 1
         lease.lease_duration_ms = 5000
         assert call(lease_client, lease).granted
 
+        # 模拟地面站墙钟被重新校准到慢 11 天；有序心跳应重建基准而不中断租约。
+        assert spin_until(
+            lambda: node.count_subscribers("/truth_onboard/heartbeat") == 1
+        )
+        sender_offset_seconds = -11 * 24 * 60 * 60
+        heartbeat = ControlHeartbeat()
+        heartbeat.header.stamp = sender_stamp(sender_offset_seconds)
+        heartbeat.source_id = "truth-gcs"
+        heartbeat.sequence = 2
+        heartbeat.lease_duration_ms = 5000
+        for _ in range(3):
+            heartbeats.publish(heartbeat)
+            executor.spin_once(timeout_sec=0.05)
+            time.sleep(0.03)
+
         origin = SetGpsOrigin.Request()
-        origin.stamp = node.get_clock().now().to_msg()
+        origin.stamp = sender_stamp(sender_offset_seconds)
         origin.source_id = "truth-gcs"
         origin.sequence = 1
         origin.ttl_ms = 3000
@@ -298,7 +324,7 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         # 已有匹配回读必须幂等成功，并且不发送无意义的第二轮写请求。
         first_request_count = len(origin_requests)
         repeated_origin = SetGpsOrigin.Request()
-        repeated_origin.stamp = node.get_clock().now().to_msg()
+        repeated_origin.stamp = sender_stamp(sender_offset_seconds)
         repeated_origin.source_id = "truth-gcs"
         repeated_origin.sequence = 2
         repeated_origin.ttl_ms = 3000
@@ -317,7 +343,7 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         assert len(origin_requests) == first_request_count
 
         land = FlightCommand.Request()
-        land.stamp = node.get_clock().now().to_msg()
+        land.stamp = sender_stamp(sender_offset_seconds)
         land.source_id = "truth-gcs"
         land.sequence = 3
         land.ttl_ms = 3000
@@ -331,6 +357,17 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
                 for result in results
             )
         )
+
+        # 相对基准不等于取消 TTL：同一来源中故意回退 30 秒的命令仍须拒绝。
+        stale = FlightCommand.Request()
+        stale.stamp = sender_stamp(sender_offset_seconds - 30)
+        stale.source_id = "truth-gcs"
+        stale.sequence = 4
+        stale.ttl_ms = 100
+        stale.command = FlightCommand.Request.COMMAND_CLEAR_ABNORMAL
+        stale_response = call(land_client, stale)
+        assert not stale_response.accepted
+        assert stale_response.message == "命令已过期"
         assert not any(result.command == "land" and result.final for result in results)
 
         publish_state(False)

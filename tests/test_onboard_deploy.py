@@ -9,7 +9,6 @@ from xml.etree import ElementTree
 
 from ground_station_core.config import PROJECT_ROOT
 
-
 DEPLOY_DIR = PROJECT_ROOT / "src" / "onboard_control" / "deploy"
 WORKSPACE_SCRIPT = DEPLOY_DIR / "onboard_workspace.sh"
 DEPLOYMENT_GUIDE = DEPLOY_DIR / "ONBOARD_DEPLOYMENT.md"
@@ -464,8 +463,9 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
     assert '${ONBOARD_WORKSPACE}/start_onboard_control.sh' in service
     assert "mavros.service" not in service
-    assert "systemd-time-wait-sync.service" in service
-    assert "After=network-online.target time-sync.target" in service
+    assert "systemd-time-wait-sync.service" not in service
+    assert "time-sync.target" not in service
+    assert "After=network-online.target" in service
     assert "ONBOARD_ROS_DISTRO=ONBOARD_ROS_DISTRO_VALUE" in environment
     assert "ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH" in environment
     assert "ROS_LOCALHOST_ONLY=0" in environment

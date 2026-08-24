@@ -266,6 +266,8 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 `ONBOARD_WORKSPACE_PATH` 必须全部替换。默认采集模式现为 H.264 1920×1080@60；完整依赖安装、
 配置复制、ARM64 摘要校验、systemd 命令、QoS 和隔离验收步骤见 `video_service/README.md`。
 
-服务通过 `systemd-time-wait-sync.service` 排在首次系统校时之后。机载 ROS/MAVROS
-进程不得在该时点之前启动：开机保存时间与 NTP 时间之间的跳变会破坏已经创建的 ROS
-墙钟定时器。不要用固定秒数的 `sleep` 替代这个就绪条件。
+服务只排在 `network-online.target` 之后，不依赖 `systemd-time-wait-sync.service` 或
+`time-sync.target`。控制租约以地面站首个请求和后续有序心跳建立相对时间基准，机载安全超时使用
+单调时钟，因此自带路由器没有外网时也必须能启动和作业；不得重新加入外网 NTP 完成门槛，也不要
+用固定秒数 `sleep` 伪装就绪。若离线开机后再接入互联网，应在人工解锁前等待系统校时与 MAVROS
+TIMESYNC 重新稳定，并重新核对 FCU、本地位置和推力语义。

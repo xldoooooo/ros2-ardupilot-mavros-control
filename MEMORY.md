@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-08-24，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-08-25，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -108,7 +108,9 @@
 - `ControlStatus` 是 GUI 的权威状态源，包含飞控/武装/位姿/速度/姿态/电池、控制模式、参考值、
   租约、航点进度、航点入点失败计数、无人机异常、推力语义、setpoint 冲突和控制周期诊断。
 - 所有高层输入携带 `source_id`、单调序号、时间戳和 TTL。同一时刻只允许一个租约持有者；地面站
-  以 5 Hz 心跳续租。重复、乱序、过期或非持权命令必须拒绝。
+  以 5 Hz 心跳续租。首次成功租约以地面站发送时间和机载接收单调时钟建立相对基准，有序心跳持续
+  刷新；TTL 比较相对流逝时间，不比较两机绝对日期，也不依赖外网 NTP。重复、乱序、过期或非持权
+  命令仍必须拒绝。
 - 租约丢失时机载端立即抓取当前位置悬停；默认 10 秒未恢复则请求 LAND。外部切走 GUIDED、
   位姿/飞控状态超时、非有限输出、setpoint 冲突或飞行中推力语义失效都属于安全降落条件。
 - ArduPilot 必须启用 `GUID_OPTIONS` bit 3，使 `SET_ATTITUDE_TARGET.thrust` 表示真实归一化推力；
@@ -252,8 +254,9 @@
 - 机载环境文件为 `/etc/ros2-ardupilot/onboard.env`。历史已确认的飞机串口是
   `/dev/ttyTHS1:460800`，但新部署优先使用人工确认的 `/dev/serial/by-id`；多个串口或 overlay
   候选时必须安全失败，不允许猜测。
-- systemd 服务必须等待 `network-online.target` 和首次系统校时；不能用固定 `sleep` 替代
-  `systemd-time-wait-sync.service`。开机过早创建 ROS/MAVROS 定时器曾被后续 NTP 墙钟跳变破坏。
+- systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、
+  `time-sync.target` 或固定 `sleep`；自带路由器无外网时必须启动。离线开机后若再接入互联网，应在
+  人工解锁前等待 Linux/MAVROS 时间状态稳定并重新核对 READY，但外网时间不是控制租约前置条件。
 - 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 维护窗口已把
   61 个机载范围文件与本地 `465ce8a` 逐文件同步并通过 SHA-256 比对，两个安装器已把飞控与视频
   systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
@@ -269,8 +272,17 @@
 - 2026-08-24 同步与 unit 重装前备份为
   `/home/nvidia/backups/onboard-sync-pre-20260824-224307.tar.gz`，SHA-256 为
   `e714dc92bf49153658e3bfb329e4cedcc19dca6591b3325ea33f85547528abd8`。
+- 2026-08-25 离线时间修复已选择性同步并在 Jetson 原生重建；新 unit 无任何外网校时等待，生产
+  source/install/runtime 对齐。部署前备份为
+  `/home/nvidia/backups/offline-clock-predeploy-20260825-0009.tar.gz`，SHA-256 为
+  `7f78963ad63dbf80adb73ec7b9fb0f359ba3236c6bdaab302a90800c29c74368`。
 
-## 当前验证基线（2026-08-24）
+## 当前验证基线（2026-08-25）
+
+- 离线时间修复已通过本地 180 项 Python、19 项 ROS/C++、隔离 smoke，以及 Jetson ARM64 的
+  `+30 天 → -30 天` 地面时间跳变探针；新鲜命令接受、回退 30 秒命令仍按 TTL 拒绝。真实生产服务
+  最终连续两次 `armed=false`、无租约/控制器/冲突/failsafe，约 100.03 Hz、零 deadline miss；
+  全程未向真实 MAVROS 发送飞行命令。真实断 WAN 冷启动仍需下次现场开机补记运维验收。
 
 - 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
   `main` 基线；工作树中的用户自有改动仍须保留。
@@ -313,8 +325,8 @@
   提权。
 - 2026-08-24 重启前 MAVROS 2.14.0 曾多次报告 `Time jump detected`。该告警表示 10 Hz MAVLink
   TIMESYNC 的时钟偏移样本在滤波收敛后连续偏离当前估计，并触发时间同步滤波器重置，不等于 Linux
-  NTP 当前失效或飞控重启。当前飞机 NTP/`systemd-time-wait-sync` 正常，重启后样本 RTT 约
-  7.78 ms、偏移差约 0.9 ms，观察窗口内未再出现；若飞行前持续复现，应记录
+  NTP 当前失效或飞控重启。命令租约已不依赖该绝对时间；若离线开机后联网发生大幅校时或该告警在
+  飞行前持续复现，仍应记录
   `/mavros/timesync_status`、串口负载和飞控端时间源，避免带着不稳定时间戳进入外部定位验收。
 - 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
   视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz

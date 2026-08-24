@@ -1,4 +1,5 @@
 # 由机载服务校验并转发给本机 MAVROS 的 GPS 原点维护接口。
+# stamp 只相对当前租约心跳基准校验 TTL，不要求机载端与地面站绝对墙钟一致。
 builtin_interfaces/Time stamp
 string source_id
 uint64 sequence

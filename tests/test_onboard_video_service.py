@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -104,6 +103,11 @@ def test_video_node_process_exits_cleanly_on_sigint() -> None:
 def test_video_node_processes_every_capture_and_survives_media_failure() -> None:
     """volatile 抓拍逐条回报，单条失败不结束节点或污染后续命令。"""
     rclpy = pytest.importorskip("rclpy")
+    from onboard_video_node import OnboardVideoNode
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
     from guided_interfaces.msg import (
         VideoCapture,
         VideoCaptureResult,
@@ -111,10 +115,6 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         VideoStatus,
     )
     from guided_interfaces.srv import SetVideoState
-    from onboard_video_node import OnboardVideoNode
-    from rclpy.context import Context
-    from rclpy.executors import SingleThreadedExecutor
-    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
     context = Context()
     rclpy.init(args=[], context=context, domain_id=229)
@@ -161,6 +161,8 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         assert spin_until(lambda: bool(statuses) and states.service_is_ready())
         start = SetVideoState.Request()
         start.stamp = probe.get_clock().now().to_msg()
+        # 模拟飞机无外网且绝对墙钟比地面端慢 30 天。
+        start.stamp.sec += 30 * 24 * 60 * 60
         start.source_id = "pytest-direct-video"
         start.sequence = 1
         start.ttl_ms = 5000
@@ -177,6 +179,19 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         assert not duplicate_future.result().accepted
         assert "重复或乱序" in duplicate_future.result().message
         assert fake.start_calls == 1
+
+        stale = SetVideoState.Request()
+        stale.stamp = probe.get_clock().now().to_msg()
+        stale.stamp.sec += 30 * 24 * 60 * 60 - 30
+        stale.source_id = start.source_id
+        stale.sequence = 2
+        stale.ttl_ms = 100
+        stale.enabled = False
+        stale_future = states.call_async(stale)
+        assert spin_until(stale_future.done)
+        assert not stale_future.result().accepted
+        assert stale_future.result().message == "视频命令已过期"
+        assert fake.stop_calls == 0
 
         for sequence, photo_no in enumerate(("A", "fail", "C"), start=10):
             message = VideoCapture()
@@ -220,11 +235,12 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
 def test_onboard_extended_state_is_the_only_onboard_video_state_path() -> None:
     """飞行节点只按 ExtendedState 发布视频状态，不暴露纯视频手动入口。"""
     rclpy = pytest.importorskip("rclpy")
-    from guided_interfaces.msg import VideoControl
     from mavros_msgs.msg import ExtendedState
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+    from guided_interfaces.msg import VideoControl
 
     executable = (
         PROJECT_ROOT
@@ -330,11 +346,12 @@ def test_panel_ros_client_discovers_status_and_closes_without_stop_command() -> 
     """面板独立 context 可自动发现地址；close 只销毁客户端，不发布关闭。"""
     rclpy = pytest.importorskip("rclpy")
     from camera_app.ros_client import OnboardVideoClient
-    from guided_interfaces.msg import VideoCapture, VideoStatus
-    from guided_interfaces.srv import SetVideoState
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+    from guided_interfaces.msg import VideoCapture, VideoStatus
+    from guided_interfaces.srv import SetVideoState
 
     context = Context()
     rclpy.init(args=[], context=context, domain_id=227)

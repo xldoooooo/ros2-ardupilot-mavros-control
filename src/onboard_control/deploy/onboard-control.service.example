@@ -1,9 +1,9 @@
 # 四组件生产模板；安装器替换用户和工作区，占位符不得原样部署。
 [Unit]
 Description=ROS 2 ArduPilot onboard control service
-# ROS wall timers must not be created before the first boot-time clock sync.
-Wants=network-online.target systemd-time-wait-sync.service
-After=network-online.target time-sync.target
+# 命令时效使用地面站相对时间与单调时钟，外网 NTP 不得阻塞离线作业启动。
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
