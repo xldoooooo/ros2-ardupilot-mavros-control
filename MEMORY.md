@@ -254,16 +254,21 @@
   候选时必须安全失败，不允许猜测。
 - systemd 服务必须等待 `network-online.target` 和首次系统校时；不能用固定 `sleep` 替代
   `systemd-time-wait-sync.service`。开机过早创建 ROS/MAVROS 定时器曾被后续 NTP 墙钟跳变破坏。
-- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 只读检查确认
-  `ros2-ardupilot-onboard.service` 与独立 `video-service.service` 均为 active，MAVROS 状态为
-  connected、`armed=false`、STABILIZE；任务 24 未启动、停止或重启这些服务。机载视频配置位于
-  `/etc/ros2-ardupilot/camera.conf`、`lens.conf`。
+- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 维护窗口已把
+  61 个机载范围文件与本地 `465ce8a` 逐文件同步并通过 SHA-256 比对，两个安装器已把飞控与视频
+  systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
+  `armed=false`、STABILIZE。机载视频现场配置仍位于 `/etc/ros2-ardupilot/camera.conf`、
+  `lens.conf`，安装器重装时未覆盖。
 - 当前飞机 Git HEAD 仍为历史 `6a40713`，任务 22.5 通过逐文件同步部署，因此工作树有明确的
-  3.2 修改和 `video_service/` 新目录；另有 Odin 自动生成的 `image/cam_in_ex.txt` 与
-  `src/odin_ros_driver/`。在任务改动正式提交并推送前，不得用 reset/clean 或盲目 pull 覆盖。
+  3.2 修改和 `video_service/` 新目录；2026-08-24 的选择性同步也没有改写该历史 HEAD。另有 Odin
+  自动生成的 `image/cam_in_ex.txt` 与 `src/odin_ros_driver/`。不得用 reset/clean 或盲目 pull
+  覆盖，后续仍应选择性同步或重新建立可安全快进的 sparse checkout。
 - 部署前备份为 `/home/nvidia/backups/task22_5-predeploy-20260819-2317.tar.gz`，SHA-256
   `a070336413b6308db55a2155526be21c87f11fb249ccaca031ca95847697b27c`。真机台架媒体已从生产
   目录移至 `/home/nvidia/task22_5-bench-artifacts-20260819/`。
+- 2026-08-24 同步与 unit 重装前备份为
+  `/home/nvidia/backups/onboard-sync-pre-20260824-224307.tar.gz`，SHA-256 为
+  `e714dc92bf49153658e3bfb329e4cedcc19dca6591b3325ea33f85547528abd8`。
 
 ## 当前验证基线（2026-08-24）
 
@@ -278,6 +283,10 @@
 - 当前 Jetson 已完成接口 3.2 ARM64 Release 构建、19 项测试和无 MAVROS 隔离 smoke；真实 FCU
   最终为 connected、`armed=false`、STABILIZE、无租约/控制器、约 100.03 Hz。真实
   `EXTENDED_SYS_STATE` 连续为 ON_GROUND，自动视频期望为关闭。
+- 2026-08-24 同步重启后再次通过 19 项测试和隔离 smoke；真实控制状态为待机、无租约、无冲突、
+  约 100.04 Hz、该次零 deadline miss。独立视频实际完成开启、RTSP/TCP H.264
+  1920×1080@60 探测和关闭，生成 6.17 秒 MP4；最终视频 stopped，FFmpeg、MediaMTX 与 8554
+  端口均释放。全程没有解锁或起飞。
 - 真机 H.264 1080p30/MP4、MJPEG 720p30/MKV、三类 JPG、原始 `photoNo`、跨机 FFmpeg/Qt
   拉流、播放暂停、真机地址读取、无租约启停、stale 判定、视频 unit 干净停止、媒体故障隔离和
   恢复均通过；当前摄像头/8554 端口未占用，生产媒体目录保留本次 1080p60 验收的 MP4/JPG。
@@ -297,8 +306,16 @@
 
 - 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界；当前主要部署
   风险是飞机 Git HEAD 与已验证的 3.2 工作树未形成可拉取提交，更新时必须保护现有部署文件。
-- Linux 非实时调度下曾出现 deadline miss 和明显 jitter；平均 100 Hz 不等于硬实时。实机前仍需
-  长时间统计、CPU/调度隔离和目标机复验。
+- Linux 非实时调度下曾出现 deadline miss 和明显 jitter；平均 100 Hz 不等于硬实时。当前 Odin
+  进程的 `LimitRTPRIO=0`、无有效 capability，IMU 线程申请 SCHED_FIFO/SCHED_RR 得到 EPERM 后
+  回退 SCHED_OTHER。当前链路能 READY，但高负载下 Odin 时间抖动风险仍未量化；实机前仍需长时间
+  统计，再评审 `LimitRTPRIO`/`CAP_SYS_NICE`、CPU 隔离和优先级，不能未经测试直接给整个飞控 unit
+  提权。
+- 2026-08-24 重启前 MAVROS 2.14.0 曾多次报告 `Time jump detected`。该告警表示 10 Hz MAVLink
+  TIMESYNC 的时钟偏移样本在滤波收敛后连续偏离当前估计，并触发时间同步滤波器重置，不等于 Linux
+  NTP 当前失效或飞控重启。当前飞机 NTP/`systemd-time-wait-sync` 正常，重启后样本 RTT 约
+  7.78 ms、偏移差约 0.9 ms，观察窗口内未再出现；若飞行前持续复现，应记录
+  `/mavros/timesync_status`、串口负载和飞控端时间源，避免带着不稳定时间戳进入外部定位验收。
 - 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
   视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz
   并报 Qt platform 错误，四组件服务仍可达到 READY；后续应作为独立运维任务处理。
