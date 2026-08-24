@@ -247,7 +247,8 @@
 
 ## 当前验证基线（2026-08-24）
 
-- `main` 与 `origin/main` 的提交基线均为 `24235b2`；当前工作树另有尚未提交的用户改动与任务改动。
+- 2026-08-24 完整测试以 `24235b2` 加本次任务工作树为基线；窗口修复已由 `08a3d5f` 推送至
+  `main`，工作树仍保留与本任务无关的用户改动。
 - 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：167 passed。
 - 当前 colcon 结果：19 tests、0 errors、0 failures、0 skipped。
 - 当前 Jetson 已完成接口 3.2 ARM64 Release 构建、19 项测试和无 MAVROS 隔离 smoke；真实 FCU
