@@ -38,6 +38,7 @@ def derive_availability(
     pending_mode: str = "none",
     waypoint_count: int,
     waypoint_running: bool,
+    flight_sequence_active: bool = False,
 ) -> UiAvailability:
     """按连接、租约、飞行安全状态和任务状态计算互斥操作。"""
     mode = str(connection_mode or "none")
@@ -82,12 +83,15 @@ def derive_availability(
         reason = "检测到姿态 setpoint 发布者冲突"
     elif snapshot.vehicle_abnormal:
         reason = snapshot.vehicle_abnormal_reason or "无人机状态异常"
+    elif flight_sequence_active:
+        reason = "上位机组合操作仍在执行"
     else:
         reason = "飞行控制链路已就绪"
 
-    command_link = (
+    # LAND 不应被 UI 工作流互斥锁死；只要可靠的持权命令链仍在，
+    # 即使正处于 LAND 或上一个 LAND 请求尚未终结，也允许幂等重发。
+    reliable_command_link = (
         ros_ready
-        and not busy
         and not closing
         and environment_active
         and snapshot.onboard_available
@@ -95,6 +99,7 @@ def derive_availability(
         and snapshot.connected
         and snapshot.control_authority
     )
+    command_link = reliable_command_link and not busy
     control_ready = (
         command_link
         and snapshot.local_position_valid
@@ -116,15 +121,12 @@ def derive_availability(
         takeoff=(
             control_ready
             and not snapshot.vehicle_abnormal
+            and not flight_sequence_active
             and not snapshot.armed
             and snapshot.active_mode is FlightMode.IDLE
         ),
-        # LAND 是安全动作：只要求可靠命令链路，不受位置/推力诊断门控。
-        land=(
-            command_link
-            and snapshot.armed
-            and snapshot.active_mode is not FlightMode.LAND
-        ),
+        # LAND 是安全动作：不受工作流、模式、位置或推力诊断门控。
+        land=reliable_command_link and snapshot.armed,
         motion=control_ready and snapshot.armed and airborne_control_mode,
         hover=control_ready and snapshot.armed and airborne_control_mode,
         waypoint_send=(

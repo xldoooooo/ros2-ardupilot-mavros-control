@@ -12,7 +12,16 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, QProcess, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -50,6 +59,8 @@ from .ipc import CameraServiceClient
 
 SERVICE_SCRIPT = VIDEO_SERVICE_ROOT / "camera_service.py"
 DESKTOP_APPLICATION_NAME = "ROS 2 ArduPilot Camera Panel"
+# 播放中超过该时长没有有效帧就遮住原生视频 surface，避免显示陈旧或透底内容。
+PREVIEW_FRAME_TIMEOUT_SECONDS = 1.5
 
 
 class SourceMode(str, Enum):
@@ -72,6 +83,19 @@ class NoWheelSpinBox(QSpinBox):
 
     def wheelEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
         event.ignore()
+
+
+class OpaqueBlackPreview(QLabel):
+    """无视频时逐像素绘制纯黑，避免样式或原生子窗口留下透明孔洞。"""
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        """始终覆盖整个脏区；预览状态文字只允许显示在黑区之外。"""
+        painter = QPainter(self)
+        painter.fillRect(event.rect(), Qt.GlobalColor.black)
 
 
 PANEL_STYLE_SHEET = """
@@ -137,10 +161,9 @@ QPushButton[role="danger"]:disabled {
     color: #98a4b1; background: #edf0f2; border-color: #dbe0e5;
 }
 QPushButton#iconButton { min-width: 34px; max-width: 34px; padding: 2px; }
-QWidget#videoSurface, QLabel#previewPlaceholder { background: #101820; }
+QWidget#videoSurface, QLabel#previewPlaceholder { background: #000000; }
 QLabel#previewPlaceholder {
-    color: #b8c5cf;
-    font-size: 12pt;
+    color: #000000;
     qproperty-alignment: AlignCenter;
 }
 QLineEdit#rtspUrlInput {
@@ -189,6 +212,7 @@ class CameraPanelWindow(QMainWindow):
         self._played_seconds = 0.0
         self._playing_since: float | None = None
         self._preview_frame_count = 0
+        self._last_preview_frame_at: float | None = None
 
         self.setWindowTitle(DESKTOP_APPLICATION_NAME)
         self.setMinimumSize(980, 680)
@@ -261,9 +285,16 @@ class CameraPanelWindow(QMainWindow):
         self.preview_stack = QStackedWidget()
         self.preview_stack.setObjectName("videoSurface")
         self.preview_stack.setMinimumSize(640, 360)
-        self.preview_placeholder = QLabel("输入 RTSP 地址后点击播放")
+        # QVideoWidget 内部包含原生 QWindow；没有有效帧时始终用普通、
+        # 不透明的黑色 QWidget 完整遮住它，提示信息放到预览区外。
+        black_palette = self.preview_stack.palette()
+        black_palette.setColor(QPalette.ColorRole.Window, QColor("#000000"))
+        self.preview_stack.setPalette(black_palette)
+        self.preview_stack.setAutoFillBackground(True)
+        self.preview_placeholder = OpaqueBlackPreview()
         self.preview_placeholder.setObjectName("previewPlaceholder")
         self.preview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_placeholder.setPalette(black_palette)
         self.video_widget = QVideoWidget()
         self.video_widget.setObjectName("videoSurface")
         self.preview_stack.addWidget(self.preview_placeholder)
@@ -918,7 +949,7 @@ class CameraPanelWindow(QMainWindow):
         url = self.rtsp_url_input.text().strip()
         error = self._validate_rtsp_url(url)
         if error:
-            self.operation_message.setText(error)
+            self._show_black_preview(error)
             return
         if (
             self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState
@@ -930,8 +961,7 @@ class CameraPanelWindow(QMainWindow):
             self._recreate_player()
         self._active_preview_url = url
         self._reset_playback_metrics()
-        self.preview_placeholder.setText("正在连接 RTSP…")
-        self.preview_stack.setCurrentWidget(self.preview_placeholder)
+        self._show_black_preview("正在连接 RTSP；收到首个有效视频帧后显示画面。")
         self.player.setSource(QUrl(url))
         self.player.play()
 
@@ -957,22 +987,44 @@ class CameraPanelWindow(QMainWindow):
             self.player.setSource(QUrl())
         self._active_preview_url = ""
         self._reset_playback_metrics()
-        self.preview_placeholder.setText(message)
-        self.preview_stack.setCurrentWidget(self.preview_placeholder)
+        self._show_black_preview(message)
         self._sync_play_button()
 
     def _player_error(self, _error: QMediaPlayer.Error, message: str) -> None:
         """预览错误只显示在面板，不改变推流、录像或飞行状态。"""
-        self.preview_placeholder.setText(f"RTSP 预览暂不可用\n{message}\n摄像头后台不受影响")
-        self.preview_stack.setCurrentWidget(self.preview_placeholder)
+        self._last_preview_frame_at = None
+        self._show_black_preview(
+            f"RTSP 预览暂不可用：{message}；摄像头后台不受影响。"
+        )
 
     def _player_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
-        """媒体缓冲完成后切换到画面，其余阶段保留提示。"""
-        if status in {QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia}:
-            self.preview_stack.setCurrentWidget(self.video_widget)
-        elif status == QMediaPlayer.MediaStatus.LoadingMedia:
-            self.preview_placeholder.setText("正在连接 RTSP…")
-            self.preview_stack.setCurrentWidget(self.preview_placeholder)
+        """媒体状态不代表已有画面；只有有效 sink 帧可以暴露原生 surface。"""
+        if status == QMediaPlayer.MediaStatus.LoadingMedia:
+            self._last_preview_frame_at = None
+            self._show_black_preview("正在连接 RTSP；等待有效视频帧。")
+        elif (
+            status == QMediaPlayer.MediaStatus.StalledMedia
+            and self.player.playbackState()
+            != QMediaPlayer.PlaybackState.PausedState
+        ):
+            self._last_preview_frame_at = None
+            self._show_black_preview("RTSP 数据已中断，预览区保持纯黑并等待恢复。")
+        elif status in {
+            QMediaPlayer.MediaStatus.NoMedia,
+            QMediaPlayer.MediaStatus.InvalidMedia,
+            QMediaPlayer.MediaStatus.EndOfMedia,
+        }:
+            self._last_preview_frame_at = None
+            self._show_black_preview("RTSP 当前没有可显示的视频画面。")
+        elif (
+            status
+            in {
+                QMediaPlayer.MediaStatus.LoadedMedia,
+                QMediaPlayer.MediaStatus.BufferedMedia,
+            }
+            and self._last_preview_frame_at is None
+        ):
+            self._show_black_preview("RTSP 已连接；等待首个有效视频帧。")
 
     def _player_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         """用单调时钟累计真正处于 Playing 的时间区间。"""
@@ -980,16 +1032,39 @@ class CameraPanelWindow(QMainWindow):
         if state == QMediaPlayer.PlaybackState.PlayingState:
             if self._playing_since is None:
                 self._playing_since = now
+            # 从暂停恢复时给解码器一个完整 watchdog 周期；暂停期间最后
+            # 一帧继续保留，不会因墙钟经过而在恢复瞬间被清空。
+            if self._last_preview_frame_at is not None:
+                self._last_preview_frame_at = now
         elif self._playing_since is not None:
             self._played_seconds += max(0.0, now - self._playing_since)
             self._playing_since = None
+        if (
+            state == QMediaPlayer.PlaybackState.StoppedState
+            and self._active_preview_url
+        ):
+            self._last_preview_frame_at = None
+            self._show_black_preview("RTSP 播放已停止。")
         self._sync_play_button()
         self._refresh_playback_metrics()
 
     def _count_video_frame(self, frame: Any) -> None:
-        """只计数播放期间视频 sink 收到的有效帧。"""
+        """首个有效帧才显示原生 surface；无效帧立即恢复纯黑。"""
         valid = bool(frame.isValid()) if hasattr(frame, "isValid") else bool(frame)
-        if valid and self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+        state = self.player.playbackState()
+        if not valid:
+            if state != QMediaPlayer.PlaybackState.PausedState:
+                self._last_preview_frame_at = None
+                self._show_black_preview("RTSP 当前没有有效视频帧。")
+            return
+
+        self._last_preview_frame_at = self._clock()
+        if (
+            self._active_preview_url
+            and state != QMediaPlayer.PlaybackState.StoppedState
+        ):
+            self.preview_stack.setCurrentWidget(self.video_widget)
+        if state == QMediaPlayer.PlaybackState.PlayingState:
             self._preview_frame_count += 1
 
     def _played_time(self) -> float:
@@ -1000,18 +1075,38 @@ class CameraPanelWindow(QMainWindow):
         return self._played_seconds + current
 
     def _refresh_playback_metrics(self) -> None:
-        """刷新播放器时长和平均帧数，忽略 camera-service 指标。"""
+        """刷新播放指标，并在播放中断帧时切回不透明黑色占位。"""
         elapsed = self._played_time()
         self.elapsed_value.setText(self._format_elapsed(elapsed))
         average = self._preview_frame_count / elapsed if elapsed > 0.0 else 0.0
         self.fps_value.setText(f"{average:.1f} fps")
+        if (
+            self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+            and self._active_preview_url
+            and self._last_preview_frame_at is not None
+            and self._clock() - self._last_preview_frame_at
+            > PREVIEW_FRAME_TIMEOUT_SECONDS
+        ):
+            self._last_preview_frame_at = None
+            self._show_black_preview("RTSP 超时未收到新画面，预览区保持纯黑。")
 
     def _reset_playback_metrics(self) -> None:
         """新地址或模式切换时重置本窗口统计。"""
         self._played_seconds = 0.0
         self._playing_since = None
         self._preview_frame_count = 0
+        self._last_preview_frame_at = None
         self._refresh_playback_metrics()
+
+    def _show_black_preview(self, message: str = "") -> None:
+        """隐藏原生视频子窗口，并在预览区外展示状态说明。"""
+        self.preview_placeholder.clear()
+        self.video_widget.hide()
+        self.preview_stack.setCurrentWidget(self.preview_placeholder)
+        self.preview_placeholder.show()
+        self.preview_stack.update()
+        if message:
+            self.operation_message.setText(message)
 
     def _sync_play_button(self) -> None:
         """同步无文本媒体图标、提示和辅助功能名称。"""

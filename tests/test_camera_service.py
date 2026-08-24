@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QColor, QPalette, QWheelEvent
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QLabel
 
@@ -41,6 +41,7 @@ from camera_app.panel import (
     NoWheelComboBox,
     NoWheelSpinBox,
     PANEL_STYLE_SHEET,
+    PREVIEW_FRAME_TIMEOUT_SECONDS,
     SourceMode,
 )
 
@@ -652,6 +653,111 @@ def test_preview_recreates_player_before_reusing_same_rtsp_url(
     assert window.player is not third_player
     assert window.player.source().toString().endswith("/changed")
 
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
+
+
+def test_unavailable_preview_is_opaque_black_until_first_valid_frame(
+    tmp_path: Path,
+) -> None:
+    """媒体已加载不等于有画面；首帧前必须隐藏原生视频 surface。"""
+    application = _application()
+    window = CameraPanelWindow(
+        client=CameraServiceClient(paths=_runtime_paths(tmp_path)),
+        auto_bootstrap=False,
+    )
+    window.show()
+    application.processEvents()
+
+    assert window.preview_stack.currentWidget() is window.preview_placeholder
+    assert window.preview_placeholder.text() == ""
+    assert window.preview_placeholder.testAttribute(
+        Qt.WidgetAttribute.WA_OpaquePaintEvent
+    )
+    assert (
+        window.preview_placeholder.palette().color(QPalette.ColorRole.Window)
+        == QColor("#000000")
+    )
+    rendered = window.preview_placeholder.grab().toImage()
+    center = rendered.pixelColor(rendered.width() // 2, rendered.height() // 2)
+    assert center == QColor(0, 0, 0, 255)
+    assert not window.video_widget.isVisible()
+
+    for status in (
+        QMediaPlayer.MediaStatus.LoadedMedia,
+        QMediaPlayer.MediaStatus.BufferedMedia,
+    ):
+        window._player_media_status_changed(status)
+        assert window.preview_stack.currentWidget() is window.preview_placeholder
+        assert window.preview_placeholder.text() == ""
+        assert not window.video_widget.isVisible()
+
+    window.close()
+    window.deleteLater()
+    application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application.processEvents()
+
+
+def test_preview_frame_watchdog_blacks_out_disconnect_but_preserves_pause(
+    tmp_path: Path,
+) -> None:
+    """播放断帧会纯黑，暂停则无限期保留最后一个有效画面。"""
+    application = _application()
+    window = CameraPanelWindow(
+        client=CameraServiceClient(paths=_runtime_paths(tmp_path)),
+        auto_bootstrap=False,
+    )
+
+    class PlaybackStub:
+        state = QMediaPlayer.PlaybackState.PlayingState
+
+        def playbackState(self):
+            return self.state
+
+    class Frame:
+        def __init__(self, valid: bool) -> None:
+            self._valid = valid
+
+        def isValid(self) -> bool:
+            return self._valid
+
+    real_player = window.player
+    stub = PlaybackStub()
+    window.player = stub  # type: ignore[assignment]
+    now = [100.0]
+    window._clock = lambda: now[0]
+    window._active_preview_url = "rtsp://127.0.0.1:8554/camera"
+    window._player_state_changed(stub.state)
+
+    window._count_video_frame(Frame(True))
+    assert window.preview_stack.currentWidget() is window.video_widget
+    assert window._preview_frame_count == 1
+
+    now[0] += PREVIEW_FRAME_TIMEOUT_SECONDS + 0.01
+    window._refresh_playback_metrics()
+    assert window.preview_stack.currentWidget() is window.preview_placeholder
+    assert window.preview_placeholder.text() == ""
+    assert not window.video_widget.isVisible()
+
+    now[0] += 0.1
+    window._count_video_frame(Frame(True))
+    assert window.preview_stack.currentWidget() is window.video_widget
+    stub.state = QMediaPlayer.PlaybackState.PausedState
+    window._player_state_changed(stub.state)
+    now[0] += 60.0
+    window._refresh_playback_metrics()
+    window._count_video_frame(Frame(False))
+    assert window.preview_stack.currentWidget() is window.video_widget
+
+    stub.state = QMediaPlayer.PlaybackState.PlayingState
+    window._player_state_changed(stub.state)
+    window._count_video_frame(Frame(False))
+    assert window.preview_stack.currentWidget() is window.preview_placeholder
+    assert window.preview_placeholder.text() == ""
+
+    window.player = real_player
     window.close()
     window.deleteLater()
     application.sendPostedEvents(None, QEvent.Type.DeferredDelete)

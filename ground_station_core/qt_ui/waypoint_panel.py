@@ -645,6 +645,15 @@ class WaypointPanel(QWidget):
                 f"已完成 {progress_value}/{snapshot.waypoint_count}"
             )
 
+    def complete_progress(self, waypoint_index: int, waypoint_count: int) -> None:
+        """用可靠成功终态补齐可能被 LAND 状态覆盖的最后一格。"""
+        if waypoint_count <= 0 or waypoint_index != waypoint_count:
+            return
+        self._progress_tracking = True
+        self.progress.setRange(0, waypoint_count)
+        self.progress.setValue(waypoint_count)
+        self.progress.setFormat(f"已完成 {waypoint_count}/{waypoint_count}")
+
     def set_result(self, message: str, running: bool) -> None:
         """展示可靠命令结果，并在运行期间明确锁定上传按钮文本。"""
         # 仅在任务首次进入运行态时初始化；后续每个机载 RUNNING 结果不得

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 from collections.abc import Callable
@@ -20,6 +21,17 @@ _TERMINATION_SIGNALS = (
     signal.SIGQUIT,
     signal.SIGTERM,
 )
+
+
+def _configure_wayland_window_decorations() -> None:
+    """在原生 Wayland 会话中选用带阴影留边的 Qt Adwaita 装饰。"""
+    if (
+        os.environ.get("XDG_SESSION_TYPE", "").casefold() == "wayland"
+        and os.environ.get("WAYLAND_DISPLAY")
+    ):
+        # 尊重操作者显式指定的 Qt Wayland 装饰插件；只修复默认 bradient
+        # 在 GNOME Wayland 下没有边框阴影的兼容差异。
+        os.environ.setdefault("QT_WAYLAND_DECORATION", "adwaita")
 
 
 def _install_termination_signal_handlers(
@@ -91,6 +103,8 @@ def main() -> None:
         )
         return
 
+    # Qt 在 QApplication 构造时选择 Wayland 客户端装饰，必须提前设置。
+    _configure_wayland_window_decorations()
     try:
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication

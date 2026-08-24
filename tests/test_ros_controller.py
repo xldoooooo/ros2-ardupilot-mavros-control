@@ -61,6 +61,28 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
     assert takeoff < motion < waypoint
 
 
+def test_waypoint_result_keeps_authoritative_terminal_progress() -> None:
+    """本地结果队列必须保留机载终态的航点计数。"""
+    controller = GroundStationRosController(source_id="pytest-waypoint-result")
+
+    controller._ingest_command_result(
+        SimpleNamespace(
+            sequence=7,
+            command="waypoints",
+            message="航点任务完成",
+            final=True,
+            waypoint_index=3,
+            waypoint_count=3,
+        ),
+        successful=True,
+    )
+
+    result = controller.results_after(0)[0]
+    assert result.ticket == 7
+    assert result.waypoint_index == 3
+    assert result.waypoint_count == 3
+
+
 def test_waypoint_request_preserves_three_independent_gui_choices() -> None:
     """避障空壳、命令生成和跟踪控制必须作为独立字段原子排队。"""
     controller = GroundStationRosController(source_id="pytest-waypoint-methods")

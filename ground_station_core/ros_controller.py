@@ -752,12 +752,21 @@ class GroundStationRosController:
         success: bool,
         message: str,
         final: bool = True,
+        waypoint_index: int = 0,
+        waypoint_count: int = 0,
     ) -> None:
         """统一保存本地传输错误与远端可靠命令结果。"""
         with self._result_condition:
             self._result_sequence += 1
             result = CommandResult(
-                self._result_sequence, ticket, command, success, message, final
+                self._result_sequence,
+                ticket,
+                command,
+                success,
+                message,
+                final,
+                waypoint_index,
+                waypoint_count,
             )
             self._results.append(result)
             self._ticket_results[ticket] = result
@@ -769,6 +778,18 @@ class GroundStationRosController:
             self._events.info("command", detail)
         else:
             self._events.debug("command", detail)
+
+    def _ingest_command_result(self, message: object, successful: bool) -> None:
+        """保留机载可靠结果中用于 GUI 终态投影的航点计数。"""
+        self._emit_result(
+            int(getattr(message, "sequence", 0)),
+            str(getattr(message, "command", "")),
+            successful,
+            str(getattr(message, "message", "")),
+            bool(getattr(message, "final", True)),
+            int(getattr(message, "waypoint_index", 0)),
+            int(getattr(message, "waypoint_count", 0)),
+        )
 
     def _spin(self, domain_id: int) -> None:
         """在独立 ROS context 中处理租约、服务 future 和状态订阅。"""
@@ -855,13 +876,7 @@ class GroundStationRosController:
                     RemoteCommandResult.STATUS_RUNNING,
                     RemoteCommandResult.STATUS_SUCCEEDED,
                 )
-                self._emit_result(
-                    int(message.sequence),
-                    message.command,
-                    successful,
-                    message.message,
-                    message.final,
-                )
+                self._ingest_command_result(message, successful)
 
             def video_status_callback(message: VideoStatus) -> None:
                 self._ingest_video_status(message)

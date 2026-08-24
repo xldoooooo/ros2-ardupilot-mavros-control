@@ -500,6 +500,38 @@ def test_availability_requires_explicit_environment_and_preserves_land() -> None
     assert "多个机载状态发布者" in endpoint_conflict.flight_reason
 
 
+def test_land_remains_available_in_every_armed_mode_and_busy_workflow() -> None:
+    """可靠持权链上的任何已武装状态都允许幂等重发 LAND。"""
+    snapshot = _operational_snapshot(armed=True)
+    for mode in FlightMode:
+        availability = derive_availability(
+            replace(snapshot, active_mode=mode),
+            ros_ready=True,
+            busy=True,
+            closing=False,
+            environment_active=True,
+            connection_mode="simulation",
+            waypoint_count=1,
+            waypoint_running=True,
+            flight_sequence_active=True,
+        )
+        assert availability.land, mode
+        assert not availability.takeoff
+
+    # 重复发送仍必须服从真实链路边界，不会绕过关闭或端点冲突。
+    closing = derive_availability(
+        snapshot,
+        ros_ready=True,
+        busy=False,
+        closing=True,
+        environment_active=True,
+        connection_mode="simulation",
+        waypoint_count=1,
+        waypoint_running=False,
+    )
+    assert not closing.land
+
+
 def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
     """无会话时航点组件全禁用；会话建立后禁用双启动入口、原点齿轮并互斥启用关闭按钮。"""
     window, _ros = _window(_operational_snapshot(armed=False))
@@ -840,6 +872,80 @@ def test_simulation_skips_land_confirmation_but_hardware_keeps_it() -> None:
         _close_window(window)
 
 
+def test_land_button_and_upstream_land_bypass_pending_and_workflow_locks() -> None:
+    """LAND 请求未终结或 UI 工作流正忙时仍可安全重发。"""
+    landing = replace(_operational_snapshot(armed=True), active_mode=FlightMode.LAND)
+    window, ros = _window(landing)
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._workflow_busy = True
+        window._pending_commands.add("land")
+        window._refresh()
+
+        assert window.operations.land_button.isEnabled()
+        window._land()
+        assert ros.calls == [("land", None)]
+        assert window.operations.land_button.isEnabled()
+
+        command = parse_command(
+            {"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001"
+        )
+        window._handle_upstream_command(command)
+        assert ros.calls == [("land", None), ("land", None)]
+    finally:
+        _close_window(window)
+
+
+def test_inspection_standby_locks_takeoff_until_sequence_really_completes() -> None:
+    """03 降落后的延时/入库阶段不得与新起飞或巡检并发。"""
+    window, ros = _window(_operational_snapshot(armed=False))
+    execute = parse_command(
+        {"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001"
+    )
+    try:
+        window._initialize_simulation()
+        window.waypoints.replace_waypoints(((1.0, 0.0, 0.5, 0.0),), "组合锁测试")
+        window._handle_upstream_command(execute)
+
+        ros.results.append(CommandResult(1, 1, "takeoff", True, "起飞完成"))
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
+        assert ros.calls[-1][0] == "waypoints"
+
+        ros.results.append(CommandResult(2, 2, "waypoints", True, "巡检完成"))
+        window._refresh()
+        assert ros.calls[-1][0] == "land"
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.ticket == 3
+
+        # 组合 LAND 中人工重发会覆盖机载 ticket，GUI 必须跟随新 ticket，
+        # 否则落地后会永久停在“组合动作正在执行”。
+        window._land()
+        assert window._upstream_sequence.ticket == 4
+        assert ("landing", 4) in window._upstream.calls
+
+        ros.results.append(CommandResult(3, 4, "land", True, "降落完成"))
+        ros.current_snapshot = _operational_snapshot(armed=False)
+        window._refresh()
+        assert window._upstream_sequence is not None
+        assert window._upstream_sequence.phase == "standby"
+        assert not window.operations.takeoff_button.isEnabled()
+
+        calls_before_retry = len(ros.calls)
+        window._handle_upstream_command(execute)
+        assert len(ros.calls) == calls_before_retry
+        assert "组合动作正在执行" in window.activity_banner.message_label.text()
+
+        window._upstream_sequence.standby_not_before = 0.0
+        window._refresh()
+        assert window._upstream_sequence is None
+        window._refresh()
+        assert window.operations.takeoff_button.isEnabled()
+    finally:
+        _close_window(window)
+
+
 def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> None:
     """03/05 按可靠终态串行起飞、航点、降落和待机阶段。"""
     window, ros = _window(_operational_snapshot(armed=False))
@@ -968,7 +1074,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         assert ("landing", 6) in upstream.calls
         assert window._upstream_sequence is not None
         assert window._upstream_sequence.kind == "emergency"
-        assert not window.operations.land_button.isEnabled()
+        assert window.operations.land_button.isEnabled()
     finally:
         _close_window(window)
 
@@ -985,7 +1091,7 @@ def test_upstream_command_06_reuses_normal_land_path() -> None:
         window._handle_upstream_command(normal_land)
         assert ros.calls[-1][0] == "land"
         assert ("landing", 1) in upstream.calls
-        assert not window.operations.land_button.isEnabled()
+        assert window.operations.land_button.isEnabled()
     finally:
         _close_window(window)
 
@@ -2275,6 +2381,80 @@ def test_waypoint_progress_counts_reached_points_not_current_target() -> None:
         window.waypoints.update_progress(complete)
         assert window.waypoints.progress.value() == 2
         assert window.waypoints.progress.format() == "已完成 2/2"
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_terminal_result_fills_progress_when_land_hides_hover_status() -> None:
+    """巡检终态紧接 LAND 时，必须用可靠结果补齐最后一格。"""
+    window, ros = _window(_operational_snapshot(armed=True))
+    try:
+        window.waypoints.replace_waypoints(
+            (
+                (1.0, 0.0, 1.0, 0.0),
+                (2.0, 0.0, 1.0, 0.0),
+            ),
+            "竞态测试",
+        )
+        window.waypoints.set_result("任务执行中", running=True)
+        window._waypoint_running = True
+        window._active_waypoint_ticket = 7
+        window._pending_commands.add("waypoints")
+
+        # GUI 最后看到的 WAYPOINT 帧仍指向末点，因此是 1/2。
+        to_last = replace(
+            ros.current_snapshot,
+            active_mode=FlightMode.WAYPOINT,
+            waypoint_index=2,
+            waypoint_count=2,
+        )
+        window.waypoints.update_progress(to_last)
+        assert window.waypoints.progress.value() == 1
+
+        # 完成后立即降落会清空 ControlStatus 的航点字段；中间
+        # HOVER 2/2 帧可能未被 GUI 采到，但可靠终态仍带 2/2。
+        ros.current_snapshot = replace(
+            to_last,
+            active_mode=FlightMode.LAND,
+            waypoint_index=0,
+            waypoint_count=0,
+        )
+        ros.results.append(
+            CommandResult(
+                1,
+                7,
+                "waypoints",
+                True,
+                "航点任务完成",
+                True,
+                waypoint_index=2,
+                waypoint_count=2,
+            )
+        )
+        window._refresh()
+
+        assert window.waypoints.progress.value() == 2
+        assert window.waypoints.progress.maximum() == 2
+        assert window.waypoints.progress.format() == "已完成 2/2"
+
+        # 已消费终态的重复/迟到结果不再属于当前 ticket，不能在操作者
+        # 清空显示后把旧任务重新补满。
+        window.waypoints.reset_progress()
+        ros.results.append(
+            CommandResult(
+                2,
+                7,
+                "waypoints",
+                True,
+                "重复的航点任务完成",
+                True,
+                waypoint_index=2,
+                waypoint_count=2,
+            )
+        )
+        window._refresh()
+        assert window.waypoints.progress.value() == 0
+        assert window.waypoints.progress.format() == "尚未执行"
     finally:
         _close_window(window)
 

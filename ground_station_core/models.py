@@ -174,7 +174,7 @@ class CommandRequest:
 
 @dataclass(frozen=True)
 class CommandResult:
-    """ROS 后台线程返回给 GUI 或命令行测试的结果。"""
+    """ROS 后台结果；航点字段原样保留机载可靠进度。"""
 
     sequence: int
     ticket: int
@@ -182,6 +182,8 @@ class CommandResult:
     success: bool
     message: str
     final: bool = True
+    waypoint_index: int = 0
+    waypoint_count: int = 0
 
 
 @dataclass(frozen=True)

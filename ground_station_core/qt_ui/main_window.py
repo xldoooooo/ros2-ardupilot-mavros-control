@@ -991,7 +991,11 @@ class GroundStationWindow(QMainWindow):
         ):
             self._reject_upstream_command(command, "尚未启动仿真或连接实机")
             return
-        if self._shutting_down or self._workflow_busy:
+        safety_land = command.action in {
+            UpstreamAction.LAND,
+            UpstreamAction.EMERGENCY_LAND,
+        }
+        if self._shutting_down or (self._workflow_busy and not safety_land):
             self._reject_upstream_command(command, "地面站工作流正忙或正在退出")
             return
 
@@ -1474,6 +1478,15 @@ class GroundStationWindow(QMainWindow):
             self._events.info("operator", "仿真模式请求发送 LAND")
         self._pending_commands.add("land")
         ticket = self._ros.request_land()
+        sequence = self._upstream_sequence
+        if refresh_after_queue and sequence is not None and sequence.phase == "land":
+            # 人工重发会让机载端的新 LAND ticket 覆盖旧 ticket；组合锁
+            # 必须同步重绑，否则解除武装后仍会永久等待已失效的终态。
+            sequence.ticket = ticket
+            try:
+                self._upstream.begin_landing(ticket)
+            except Exception as exc:
+                self._events.warn("upstream", f"降落状态重绑失败：{exc}")
         self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN)
         if refresh_after_queue:
             self._refresh()
@@ -1775,6 +1788,7 @@ class GroundStationWindow(QMainWindow):
             pending_mode=self._pending_environment_mode,
             waypoint_count=len(self.waypoints.waypoints),
             waypoint_running=self._waypoint_running,
+            flight_sequence_active=self._upstream_sequence is not None,
         )
         render_key = (
             self._availability,
@@ -1796,12 +1810,9 @@ class GroundStationWindow(QMainWindow):
             if cleanup_active:
                 self.operations.stop_simulation_button.setEnabled(False)
                 self.operations.disconnect_hardware_button.setEnabled(False)
-            for command, button in (
-                ("takeoff", self.operations.takeoff_button),
-                ("land", self.operations.land_button),
-            ):
-                if command in self._pending_commands:
-                    button.setEnabled(False)
+            # 起飞仍严格防重入；LAND 必须能在前一请求未终结时幂等重发。
+            if "takeoff" in self._pending_commands:
+                self.operations.takeoff_button.setEnabled(False)
             self._last_availability_render_key = render_key
 
         self._drive_upstream_sequence(snapshot)
@@ -1854,8 +1865,15 @@ class GroundStationWindow(QMainWindow):
             if result.command == "waypoints" and not stale_waypoint_result:
                 running = result.success and not result.final
                 if result.final:
+                    completed_current_task = (
+                        self._active_waypoint_ticket == result.ticket
+                    )
                     self._waypoint_running = False
                     self._active_waypoint_ticket = None
+                    if result.success and completed_current_task:
+                        self.waypoints.complete_progress(
+                            result.waypoint_index, result.waypoint_count
+                        )
                 self.waypoints.set_result(result.message, running=running)
 
     def _consume_video_results(self) -> None:
