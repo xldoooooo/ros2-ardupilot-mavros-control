@@ -175,6 +175,62 @@ onboard_control 和相关 RViz；只有服务 inactive 且目标进程全部退�
 ```
 后等待，直到出现成功提示。连续Ctrl+C会导致残留
 
+## FTP服务
+
+```bash
+sudo apt install vsftpd
+```
+
+配置用户名和密码
+
+```bash
+sudo useradd -d / -s /bin/bash <username>
+sudo passwd <password>
+sudo chmod -R a+rX /home/share
+```
+
+当前使用的用户名和密码
+```
+username: s12
+password: 2wsx1qaz
+```
+
+修改FTP配置文件`/etc/vsftpd.conf`
+
+
+```
+listen=YES
+listen_ipv6=NO
+
+anonymous_enable=NO
+local_enable=YES
+write_enable=NO
+
+chroot_local_user=NO
+```
+
+重启
+```bash
+sudo systemctl restart vsftpd
+```
+
+测试下载 (默认端口21可以省略)
+
+```bash
+curl -u <usr>:<pswd> ftp://<ip>:<port>/home/share/jpg/1.jpg -O
+
+curl -u s12:2wsx1qaz \
+  ftp://192.168.112.169/home/share/jpg/snapshot-20260820-000853-395277-manual-1.jpg \
+  -O
+```
+
+
+## AprilTag
+
+### 摄像头标定
+
+
+
 
 # 远程桌面
 
