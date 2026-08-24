@@ -25,7 +25,11 @@ from ground_station_core.upstream.mapping import (
 from ground_station_core.upstream.models import UpstreamStandbyPolicy
 from ground_station_core.upstream.protocol import command_topic, status_topic
 from ground_station_core.upstream.service import UpstreamCommunicationService
-from ground_station_core.upstream.status_projector import UpstreamStatusProjector
+from ground_station_core.upstream.status_projector import (
+    DEFAULT_JPG_PATH,
+    DEFAULT_VIDEO_PATH,
+    UpstreamStatusProjector,
+)
 
 
 def _task_payload(client_no: str = "UAV01001") -> dict[str, object]:
@@ -347,8 +351,33 @@ def test_status_projector_never_reports_unfinalized_recording_as_video_path() ->
 
     assert sent[-1]["uavStatus"] == "08"
     assert sent[-1]["data"] == {
-        "videoPath": "",
+        "videoPath": DEFAULT_VIDEO_PATH,
         "JPGPath": "/home/share/jpg",
+    }
+
+
+def test_status_projector_uses_default_media_paths_when_video_is_unavailable() -> None:
+    """视频服务无可用路径时，08 使用协议约定的非空占位路径。"""
+    sent: list[dict[str, object]] = []
+    projector = UpstreamStatusProjector(
+        lambda: "UAV01001",
+        lambda payload: not sent.append(dict(payload)),
+        EventLog(),
+    )
+    projector.MEDIA_RESULT_WAIT_SECONDS = 0.0
+    projector.begin_mission(31, "inspection", ())
+    projector.observe_result(
+        CommandResult(1, 31, "waypoints", True, "航点任务完成", True)
+    )
+    projector.begin_landing(32)
+    projector.observe_result(
+        CommandResult(2, 32, "land", True, "降落完成", True)
+    )
+
+    assert sent[-1]["uavStatus"] == "08"
+    assert sent[-1]["data"] == {
+        "videoPath": DEFAULT_VIDEO_PATH,
+        "JPGPath": DEFAULT_JPG_PATH,
     }
 
 

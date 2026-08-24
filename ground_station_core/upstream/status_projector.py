@@ -21,6 +21,10 @@ from ..models import (
     VideoServiceSnapshot,
 )
 
+# 甲方 08 状态要求媒体路径非空；真实路径未就绪时使用固定占位文件。
+DEFAULT_VIDEO_PATH = "/home/share/test.mp4"
+DEFAULT_JPG_PATH = "/home/share/jpg/test.jpg"
+
 
 @dataclass
 class _MissionState:
@@ -333,10 +337,10 @@ class UpstreamStatusProjector:
                 f"等待巡检图片结果超时，点位 {missing} 的 pointPic 按空路径如实上报",
             )
         self._report_points(mission)
-        video_path = ""
-        jpg_path = ""
+        video_path = DEFAULT_VIDEO_PATH
+        jpg_path = DEFAULT_JPG_PATH
         if compatible_video:
-            jpg_path = self._video.image_directory
+            jpg_path = self._video.image_directory or DEFAULT_JPG_PATH
             if video_finalized:
                 video_path = self._video.last_video_path
             else:
