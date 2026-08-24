@@ -247,9 +247,9 @@
   候选时必须安全失败，不允许猜测。
 - systemd 服务必须等待 `network-online.target` 和首次系统校时；不能用固定 `sleep` 替代
   `systemd-time-wait-sync.service`。开机过早创建 ROS/MAVROS 定时器曾被后续 NTP 墙钟跳变破坏。
-- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2；独立
-  `video-service.service` 为 enabled + active，摄像头默认 stopped。`ros2-ardupilot-onboard.service`
-  当前是本次任务前已存的 failed 状态，视频测试未启动或修改它。机载视频配置位于
+- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 只读检查确认
+  `ros2-ardupilot-onboard.service` 与独立 `video-service.service` 均为 active，MAVROS 状态为
+  connected、`armed=false`、STABILIZE；任务 24 未启动、停止或重启这些服务。机载视频配置位于
   `/etc/ros2-ardupilot/camera.conf`、`lens.conf`。
 - 当前飞机 Git HEAD 仍为历史 `6a40713`，任务 22.5 通过逐文件同步部署，因此工作树有明确的
   3.2 修改和 `video_service/` 新目录；另有 Odin 自动生成的 `image/cam_in_ex.txt` 与
