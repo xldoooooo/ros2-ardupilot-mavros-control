@@ -53,6 +53,16 @@ GNOME Wayland 会话渲染两个无后台副作用的测试窗口。测试服务
 验证过程中没有停止或重启正式地面站、摄像头后台、ROS、MAVROS 或机载服务，也没有执行任何
 实机解锁、起飞或降落操作。
 
+## 正式同步结果
+
+- 阴影修复提交 `a635abb` 已推送到远端 `main`；
+- 101 正式仓库经 Git merge-tree 预检无冲突后完成合并，原有本地提交、`TODO.md` 和
+  `ground_station_core/upstream/status_projector.py` 未提交修改均保留；
+- 101 正式仓库关键回归：`5 passed in 1.51s`；
+- 正式仓库代码在该机真实 Wayland 会话再次渲染，两面板仍得到 alpha 33 的阴影像素；
+- 同步时 101 没有正在运行的地面站或摄像头面板进程，因此没有停止或重启用户 GUI 会话；下次
+  正常启动地面站后即使用新窗口外框。
+
 ## 变更文件
 
 - `ground_station_core/qt_ui/upstream_panel.py`
