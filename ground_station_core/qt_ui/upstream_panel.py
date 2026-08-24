@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QDialog,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -28,21 +27,22 @@ from ..upstream.protocol import command_topic, json_examples, status_topic
 from ..upstream.service import UpstreamCommunicationService
 
 
-class UpstreamCommunicationPanel(QDialog):
-    """只管理上位机通讯服务；关闭窗口不会关闭连接或地面站。"""
+class UpstreamCommunicationPanel(QWidget):
+    """独立管理上位机通讯服务；关闭窗口不会关闭连接或地面站。"""
 
     def __init__(
         self,
         service: UpstreamCommunicationService,
-        parent: QWidget | None = None,
     ) -> None:
-        """从服务快照构建可独立操作的非模态配置面板。"""
-        super().__init__(parent)
+        """从服务快照构建可最小化、无主窗口置顶关系的顶层面板。"""
+        # QDialog(parent) 会成为主窗口的 transient child：窗口管理器通常强制
+        # 它位于主窗口上方，而且默认不提供有效的最小化窗口提示。此处使用
+        # 无父级的普通顶层窗口，让系统原生管理层级与最小化行为。
+        super().__init__(None, Qt.WindowType.Window)
         self._service = service
         self._last_raw_sequence = 0
         self.setWindowTitle("上位机通讯面板")
         self.setObjectName("upstreamCommunicationPanel")
-        self.setModal(False)
         self.resize(980, 720)
         self.setMinimumSize(760, 560)
 

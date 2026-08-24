@@ -1129,6 +1129,33 @@ def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> N
         _close_window(window)
 
 
+def test_upstream_panel_is_independent_and_minimizable() -> None:
+    """通讯面板不依附主窗口置顶，并接受原生最小化状态切换。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    try:
+        QTest.mouseClick(window.upstream_panel_button, Qt.MouseButton.LeftButton)
+        _application().processEvents()
+        panel = window._upstream_panel
+        assert panel is not None and panel.isVisible()
+        assert panel.parentWidget() is None
+        assert panel.windowType() == Qt.WindowType.Window
+        assert panel.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+        assert not panel.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+        assert panel.windowHandle() is not None
+        assert panel.windowHandle().transientParent() is None
+
+        panel.showMinimized()
+        _application().processEvents()
+        assert panel.isMinimized()
+
+        QTest.mouseClick(window.upstream_panel_button, Qt.MouseButton.LeftButton)
+        _application().processEvents()
+        assert panel.isVisible()
+        assert not panel.isMinimized()
+    finally:
+        _close_window(window)
+
+
 def test_speed_presets_and_manual_selectors_match_ui_scope() -> None:
     """起降参数与手动选择器均跟随对应动作的状态门控。"""
     window, ros = _window(_operational_snapshot(armed=False))

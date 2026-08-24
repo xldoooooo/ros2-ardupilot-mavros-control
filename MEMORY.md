@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-08-20，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-08-24，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -147,6 +147,9 @@
   MAVROS setpoint。仿真预览复用 domain 231，实机预览使用 domain 0，断开时清理。
 - `EventLog` 在事件产生处保存 DEBUG/INFO/WARN/ERROR、来源、时间和序号；Qt 只筛选已有等级，
   不按文本猜测。SITL/MAVROS 启动刷屏可降为 DEBUG，但显式 WARN/ERROR 不得屏蔽。
+- 上位机通讯面板是无父级的普通 `Qt.Window`，不得恢复为主窗口的 transient `QDialog`：后者会
+  被窗口管理器强制压在主窗口上方且缺少有效最小化提示。面板可独立最小化，再点主界面入口会
+  恢复；主窗口退出时必须显式销毁该独立面板。
 
 ## 当前航点参考生成与异常恢复
 
@@ -242,10 +245,10 @@
   `a070336413b6308db55a2155526be21c87f11fb249ccaca031ca95847697b27c`。真机台架媒体已从生产
   目录移至 `/home/nvidia/task22_5-bench-artifacts-20260819/`。
 
-## 当前验证基线（2026-08-20）
+## 当前验证基线（2026-08-24）
 
-- `main` 在本次修改前与 `origin/main` 同步，功能基线提交为 `d548708`。
-- 项目正式 Python 范围 `tests/`：166 passed。
+- `main` 与 `origin/main` 的提交基线均为 `24235b2`；当前工作树另有尚未提交的用户改动与任务改动。
+- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：167 passed。
 - 当前 colcon 结果：19 tests、0 errors、0 failures、0 skipped。
 - 当前 Jetson 已完成接口 3.2 ARM64 Release 构建、19 项测试和无 MAVROS 隔离 smoke；真实 FCU
   最终为 connected、`armed=false`、STABILIZE、无租约/控制器、约 100.03 Hz。真实

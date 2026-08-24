@@ -657,12 +657,23 @@ class GroundStationWindow(QMainWindow):
     def _open_upstream_panel(self) -> None:
         """打开或复用独立上位机通讯面板，关闭面板不改变连接。"""
         if self._upstream_panel is None:
-            self._upstream_panel = UpstreamCommunicationPanel(
-                self._upstream, self
-            )
-        self._upstream_panel.show()
+            # 面板必须是无 transient parent 的独立顶层窗口，否则窗口管理器会
+            # 强制其压在主窗口上方，并可能忽略标题栏最小化操作。
+            self._upstream_panel = UpstreamCommunicationPanel(self._upstream)
+        if self._upstream_panel.isMinimized():
+            self._upstream_panel.showNormal()
+        else:
+            self._upstream_panel.show()
         self._upstream_panel.raise_()
         self._upstream_panel.activateWindow()
+
+    def _dispose_upstream_panel(self) -> None:
+        """随主窗口退出销毁独立面板，避免其继续维持 Qt 事件循环。"""
+        if self._upstream_panel is None:
+            return
+        self._upstream_panel.close()
+        self._upstream_panel.deleteLater()
+        self._upstream_panel = None
 
     def _connect_signals(self) -> None:
         """连接面板意图、线程桥和主窗口业务槽。"""
@@ -2014,6 +2025,7 @@ class GroundStationWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         """任何主动退出都先二次确认，再后台清理环境并停止 ROS。"""
         if self._allow_close:
+            self._dispose_upstream_panel()
             event.accept()
             return
         if self._shutting_down:
