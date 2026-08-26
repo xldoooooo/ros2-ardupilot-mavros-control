@@ -443,6 +443,43 @@ def test_disconnected_service_never_requests_low_power_return(tmp_path) -> None:
     assert not service.observe_vehicle(_telemetry_snapshot(), "simulation")
 
 
+def test_handshake_timeout_backoff_is_bounded_and_resets_after_success(
+    tmp_path,
+) -> None:
+    """连续失败采用15/20/25/30秒，成功握手后的下一次重连恢复15秒。"""
+    observed: list[float] = []
+    service = UpstreamCommunicationService(
+        event_log=EventLog(),
+        on_command=lambda _command: None,
+        url="ws://127.0.0.1:1/ws",
+        auto_connect=True,
+        config_path=tmp_path / "upstream-backoff.json",
+    )
+    service._RECONNECT_SECONDS = 0.01
+
+    async def fail_session(
+        _url: str,
+        _client_no: str,
+        timeout_seconds: float,
+        handshake_completed: asyncio.Event,
+    ) -> None:
+        observed.append(timeout_seconds)
+        if len(observed) == 5:
+            handshake_completed.set()
+        raise TimeoutError("测试握手失败")
+
+    service._run_session = fail_session  # type: ignore[method-assign]
+    service.start()
+    deadline = time.monotonic() + 2.0
+    try:
+        while len(observed) < 6 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        service.stop(3.0)
+
+    assert observed[:6] == [15.0, 20.0, 25.0, 30.0, 30.0, 15.0]
+
+
 def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
     tmp_path,
 ) -> None:

@@ -45,7 +45,9 @@ class UpstreamCommunicationService:
     """把上位机主题协议隔离在专用 asyncio 线程中的插件式服务。"""
 
     _RECONNECT_SECONDS = 3.0
-    _HANDSHAKE_TIMEOUT_SECONDS = 5.0
+    _HANDSHAKE_TIMEOUT_INITIAL_SECONDS = 15.0
+    _HANDSHAKE_TIMEOUT_STEP_SECONDS = 5.0
+    _HANDSHAKE_TIMEOUT_MAX_SECONDS = 30.0
     _OUTBOUND_LIMIT = 256
     _DEFAULT_URL = "ws://127.0.0.1:8581/ws"
     _DEFAULT_CLIENT_NO = "UAV01001"
@@ -347,6 +349,14 @@ class UpstreamCommunicationService:
                 self._outbound = None
                 self._connected = False
 
+    @classmethod
+    def _next_handshake_timeout(cls, current_seconds: float) -> float:
+        """握手失败后递增等待时间，并限制在30秒以内。"""
+        return min(
+            cls._HANDSHAKE_TIMEOUT_MAX_SECONDS,
+            current_seconds + cls._HANDSHAKE_TIMEOUT_STEP_SECONDS,
+        )
+
     async def _supervise(self) -> None:
         """按期望状态监督会话，并支持配置变更、断开和限速重连。"""
         loop = asyncio.get_running_loop()
@@ -358,6 +368,7 @@ class UpstreamCommunicationService:
             self._loop = loop
             self._wake_event = wake_event
             self._outbound = outbound
+        handshake_timeout_seconds = self._HANDSHAKE_TIMEOUT_INITIAL_SECONDS
         while True:
             with self._state_lock:
                 stopping = self._stopping
@@ -368,14 +379,27 @@ class UpstreamCommunicationService:
             if stopping:
                 break
             if not desired:
+                handshake_timeout_seconds = self._HANDSHAKE_TIMEOUT_INITIAL_SECONDS
                 self._set_state("已断开", "未连接上位机", connected=False)
                 await wake_event.wait()
                 wake_event.clear()
                 continue
 
             self._clear_outbound()
-            self._set_state("连接中", f"正在连接 {url}", connected=False)
-            session = asyncio.create_task(self._run_session(url, client_no))
+            self._set_state(
+                "连接中",
+                f"正在连接 {url}（握手超时 {handshake_timeout_seconds:.0f} 秒）",
+                connected=False,
+            )
+            handshake_completed = asyncio.Event()
+            session = asyncio.create_task(
+                self._run_session(
+                    url,
+                    client_no,
+                    handshake_timeout_seconds,
+                    handshake_completed,
+                )
+            )
             wake = asyncio.create_task(wake_event.wait())
             done, _ = await asyncio.wait(
                 (session, wake), return_when=asyncio.FIRST_COMPLETED
@@ -385,6 +409,7 @@ class UpstreamCommunicationService:
                 session.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await session
+                handshake_timeout_seconds = self._HANDSHAKE_TIMEOUT_INITIAL_SECONDS
             else:
                 wake.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -394,6 +419,7 @@ class UpstreamCommunicationService:
                 except asyncio.CancelledError:
                     raise
                 except ModuleNotFoundError:
+                    handshake_timeout_seconds = self._HANDSHAKE_TIMEOUT_INITIAL_SECONDS
                     self._set_state(
                         "依赖缺失",
                         "缺少 websockets，请安装 requirements-gui.txt",
@@ -406,8 +432,18 @@ class UpstreamCommunicationService:
                     with self._state_lock:
                         self._desired_connected = False
                 except Exception as exc:  # noqa: BLE001 - 网络库异常需统一重连。
+                    if handshake_completed.is_set():
+                        handshake_timeout_seconds = (
+                            self._HANDSHAKE_TIMEOUT_INITIAL_SECONDS
+                        )
+                    else:
+                        handshake_timeout_seconds = self._next_handshake_timeout(
+                            handshake_timeout_seconds
+                        )
                     self._set_state("等待重连", str(exc), connected=False)
                     self._log_connection_warning(str(exc))
+                else:
+                    handshake_timeout_seconds = self._HANDSHAKE_TIMEOUT_INITIAL_SECONDS
             self._clear_outbound()
             with self._state_lock:
                 still_desired = self._desired_connected
@@ -423,7 +459,13 @@ class UpstreamCommunicationService:
 
         self._set_state("已停止", "上位机通讯线程已停止", connected=False)
 
-    async def _run_session(self, url: str, client_no: str) -> None:
+    async def _run_session(
+        self,
+        url: str,
+        client_no: str,
+        handshake_timeout_seconds: float,
+        handshake_completed: asyncio.Event,
+    ) -> None:
         """完成 SYSTEM/SUB_ACK 握手，再运行单读单写任务。"""
         # 延迟导入保证依赖缺失时原地面站仍能 100% 启动和退出。
         import websockets
@@ -436,13 +478,13 @@ class UpstreamCommunicationService:
                 close_timeout=2,
                 max_size=2 * 1024 * 1024,
             ),
-            timeout=self._HANDSHAKE_TIMEOUT_SECONDS,
+            timeout=handshake_timeout_seconds,
         )
         reader: asyncio.Task[None] | None = None
         writer: asyncio.Task[None] | None = None
         try:
             raw = await asyncio.wait_for(
-                websocket.recv(), timeout=self._HANDSHAKE_TIMEOUT_SECONDS
+                websocket.recv(), timeout=handshake_timeout_seconds
             )
             self._record_rx(raw)
             system = decode_object(raw)
@@ -451,7 +493,7 @@ class UpstreamCommunicationService:
             await self._send_json(websocket, subscribe_envelope(client_no))
             while True:
                 raw = await asyncio.wait_for(
-                    websocket.recv(), timeout=self._HANDSHAKE_TIMEOUT_SECONDS
+                    websocket.recv(), timeout=handshake_timeout_seconds
                 )
                 self._record_rx(raw)
                 message = decode_object(raw)
@@ -468,6 +510,7 @@ class UpstreamCommunicationService:
                 f"已订阅 {command_topic(client_no)}",
                 connected=True,
             )
+            handshake_completed.set()
             self._events.info("upstream", f"已连接上位机并订阅无人机 {client_no}")
             with self._state_lock:
                 self._last_connection_warning = ""

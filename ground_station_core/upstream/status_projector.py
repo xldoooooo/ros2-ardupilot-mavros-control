@@ -21,9 +21,9 @@ from ..models import (
     VideoServiceSnapshot,
 )
 
-# 甲方 08 状态要求媒体路径非空；真实路径未就绪时使用固定占位文件。
+# 甲方 08 状态要求媒体路径非空；真实路径未就绪时使用固定占位路径。
 DEFAULT_VIDEO_PATH = "/home/share/test.mp4"
-DEFAULT_JPG_PATH = "/home/share/jpg/test.jpg"
+DEFAULT_JPG_PATH = "/home/share/jpg"
 
 
 @dataclass
