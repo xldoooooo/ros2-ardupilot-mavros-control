@@ -189,7 +189,9 @@
 - 09 由真实 `VideoCaptureResult` 驱动，`pointNo` 仍来自 `taskPoints.index`，`pointPic` 使用实际
   JPG 路径；08 在巡检航点与降落可靠终态后等待图片结果和录像封装，再发送实际
   `videoPath/JPGPath`。真实路径为空时分别使用 `/home/share/test.mp4` 与
-  `/home/share/jpg/test.jpg` 占位，但不反向判定飞行失败；返航不发 08/09。
+  `/home/share/jpg` 占位，但不反向判定飞行失败；返航不发 08/09。
+- WebSocket 的连接、SYSTEM 首帧和 SUB_ACK 共用单次握手超时：首次 15 秒，连续失败后按
+  20/25/30 秒递增并在 30 秒封顶；成功订阅或用户主动更换连接后恢复为 15 秒。
 - 状态 01 表示“已解除武装、位于机库阈值内且可再次起飞”的边沿。默认阈值为
   `|X|<1.0 m`、`|Y|<1.0 m`、`|Z|<0.5 m`，巡检落地后默认再等待 60 秒；这些值可由
   `UPSTREAM_HANGAR_*` 和 `UPSTREAM_INSPECTION_STANDBY_DELAY_SECONDS` 覆盖。
@@ -282,14 +284,14 @@
   `/home/nvidia/backups/offline-clock-predeploy-20260825-0009.tar.gz`，SHA-256 为
   `7f78963ad63dbf80adb73ec7b9fb0f359ba3236c6bdaab302a90800c29c74368`。
 
-## 当前验证基线（2026-08-25）
+## 当前验证基线（2026-08-26）
 
 - 离线时间修复已通过本地 180 项 Python、19 项 ROS/C++、隔离 smoke，以及 Jetson ARM64 的
   `+30 天 → -30 天` 地面时间跳变探针；新鲜命令接受、回退 30 秒命令仍按 TTL 拒绝。真实生产服务
   最终连续两次 `armed=false`、无租约/控制器/冲突/failsafe，约 100.03 Hz、零 deadline miss；
   全程未向真实 MAVROS 发送飞行命令。真实断 WAN 冷启动仍需下次现场开机补记运维验收。
-- 上位机 08 媒体占位路径已提升为模块常量，并覆盖视频服务不可用和录像未封装场景；专项测试
-  14 项通过。开发机与 `scq@192.168.112.101` 的 `main` 均按远端主线快进同步。
+- 上位机 08 媒体占位路径已提升为模块常量，JPG 默认路径当前为 `/home/share/jpg`；握手递增超时
+  覆盖连续失败、30 秒上限和成功后复位，专项测试 15 项通过。
 
 - 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
   `main` 基线；工作树中的用户自有改动仍须保留。
