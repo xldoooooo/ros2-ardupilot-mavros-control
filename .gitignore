@@ -112,6 +112,9 @@ site/
 # Windows camera tutorial screenshots remain local and are referenced by Markdown only.
 /docs/assets/
 
+# WebSocket simulator tutorial screenshots remain local; README/PDF stay versioned.
+/dev/integration/gcs-websocket-client/assets/
+
 # Large video captures are local artifacts and must not enter Git history
 *.mp4
 
