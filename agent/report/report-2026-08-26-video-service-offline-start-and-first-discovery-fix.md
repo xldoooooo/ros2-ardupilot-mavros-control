@@ -66,4 +66,9 @@
 - 视频 unit 最终 enabled、active、`NRestarts=0`、`Result=success`；
 - 实际安装 unit 已确认不含 `systemd-time-wait-sync` 或 `time-sync.target`。
 
+视频部署完成并确认飞控 PID 未变后，飞控 unit 于 21:21:31 收到另一项 systemd 停止事务，四组件
+入口随后按既有清理逻辑退出，journal 未记录停止请求来源。本次执行命令没有调用飞控停止入口，视频
+unit 也不存在 `Requires`、`PartOf` 或 `BindsTo` 关系；最终视频服务保持 active，飞控 unit 为
+failed/inactive。最后一次停止前读取的权威状态为 `armed=false`，本次没有擅自重启飞控。
+
 全过程没有调用模式切换、解锁、起飞、降落、运动、航点、姿态、推力或飞控参数接口。

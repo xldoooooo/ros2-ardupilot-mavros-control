@@ -267,6 +267,9 @@
 - 2026-08-26 已纠正独立视频 unit 遗留的外网校时依赖并部署到当前 Jetson；实际 unit 只等待
   `network-online.target`，视频服务最终 active/enabled、零重启，飞控 unit 未被重启。地面摄像头
   面板首次启停命令会有限等待服务发现 2 秒，不再把正常的 DDS 建链延迟立即误报为端点缺失。
+- 上述视频部署完成且确认飞控 PID 未变后，飞控 unit 于 2026-08-26 21:21:31 收到来源未记录的
+  systemd 停止事务并完成四组件清理；当前飞控 unit 为 failed/inactive，视频 unit 仍 active，最后
+  一次停止前状态为 `armed=false`。代理没有重启飞控，后续任务开始时必须先重新读取真实运行状态。
 - 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 维护窗口已把
   61 个机载范围文件与本地 `465ce8a` 逐文件同步并通过 SHA-256 比对，两个安装器已把飞控与视频
   systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
