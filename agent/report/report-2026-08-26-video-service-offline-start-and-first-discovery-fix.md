@@ -48,6 +48,9 @@
 - 首次发现回归测试连续独立执行 10 次：全部通过。
 - `bash -n`：视频启动器与安装器通过。
 - `systemd-analyze verify`：新 unit 通过；仅输出飞机既有 NVIDIA unit 的 obsolete syslog 警告。
+- scq 快进同步后专项测试：2 passed；用新客户端启动后立即发送“保持关闭”请求，0.508 秒收到
+  accepted 响应，随后读取新鲜 `VideoStatus` 为 `service_available=true`、`running=false`、
+  `state=stopped`。
 - `git diff --check`：本次修改无格式问题；命令仍报告用户既有 `TODO.md:100` 尾随空格。
 - Ruff 对修改范围报告 12 条既有问题，主要是原文件导入排序、宽泛异常捕获和清理阶段静默异常；
   本次为保持最小范围未顺带重构，不影响上述 pytest 结果。
