@@ -2,7 +2,6 @@
 """独立的上位机 WebSocket 协议 V2.0 地面站模拟客户端。
 
 本文件只连接 WebSocket、接收控制主题命令并向状态主题发布模拟回复。
-它不导入地面站、ROS、MAVROS 或飞控代码，也不会连接、解锁或起飞真实飞机。
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ DEFAULT_VIDEO_PATH = "/home/share/test.mp4"
 DEFAULT_JPG_DIRECTORY = "/home/share/jpg"
 DEFAULT_POINT_PICTURE = "/home/share/jpg/test.jpg"
 
-# 与当前地面站的航点输入边界保持一致；本模块不会把航点发给真实飞控。
+# 与当前地面站的航点输入边界保持一致；
 MAX_WAYPOINT_COUNT = 256
 WAYPOINT_HORIZONTAL_LIMIT_METERS = 10_000.0
 WAYPOINT_MINIMUM_Z_METERS = 0.1
