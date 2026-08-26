@@ -267,9 +267,9 @@
 - 2026-08-26 已纠正独立视频 unit 遗留的外网校时依赖并部署到当前 Jetson；实际 unit 只等待
   `network-online.target`，视频服务最终 active/enabled、零重启，飞控 unit 未被重启。地面摄像头
   面板首次启停命令会有限等待服务发现 2 秒，不再把正常的 DDS 建链延迟立即误报为端点缺失。
-- 上述视频部署完成且确认飞控 PID 未变后，飞控 unit 于 2026-08-26 21:21:31 收到来源未记录的
-  systemd 停止事务并完成四组件清理；当前飞控 unit 为 failed/inactive，视频 unit 仍 active，最后
-  一次停止前状态为 `armed=false`。代理没有重启飞控，后续任务开始时必须先重新读取真实运行状态。
+- 上述视频部署完成且确认飞控 PID 未变后，飞控 unit 曾于 2026-08-26 21:21:31 收到来源未记录的
+  systemd 停止事务并完成四组件清理。随后经用户明确授权的两次整机重启均让 enabled 飞控 unit
+  正常自启动；第二次冷启动后的当前状态为飞控与视频 unit 均 active、零重启、`armed=false`。
 - 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 维护窗口已把
   61 个机载范围文件与本地 `465ce8a` 逐文件同步并通过 SHA-256 比对，两个安装器已把飞控与视频
   systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
@@ -346,10 +346,11 @@
 - 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
   视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz
   并报 Qt platform 错误，四组件服务仍可达到 READY；后续应作为独立运维任务处理。
-- 当前 Jetson 的 `NetworkManager-wait-online.service` 被 masked；本次实测
-  `network-online.target` 在开机约 6.39 秒完成，但 Wi-Fi 到约 10.17 秒才取得生产 IPv4。移除外网
-  校时依赖后，视频 DDS participant 可能在 Wi-Fi 地址出现前创建；按 2026-08-26 任务要求暂不增加
-  IP 就绪等待或重启策略，真实断 WAN 冷启动仍必须作为明确未完成的现场验收。
+- 当前 Jetson 的 `NetworkManager-wait-online.service` 被 masked，`network-online.target` 会比
+  生产 Wi-Fi IPv4 提前约 3～4 秒完成。2026-08-26 第一次真实冷启动已复现视频 ROS 节点过早创建后
+  本机可用、scq 不可达且 RTSP 地址误选 `192.168.55.1`；根启动脚本现会在创建 Fast DDS participant
+  前有限等待非 `linkdown` 默认路由的源 IPv4，最长 30 秒且不探测外网。第二次真实冷启动确认脚本在
+  DHCP 后约 0.03 秒放行，scq 自动恢复发现且地址为 `192.168.112.169`。
 - 避障、机库硬件确认、`cameraAngle` 云台控制和更多硬件异常类型仍未实现；不要把占位接口写成
   已完成功能，也不要未经明确允许实现 `TODO.md`。
 - 当前维护热点是少数持续膨胀的核心文件：

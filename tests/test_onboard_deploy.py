@@ -434,6 +434,10 @@ def test_video_service_has_an_independent_lifecycle() -> None:
     assert 'SYSTEM_LENS_CONFIG="/etc/ros2-ardupilot/lens.conf"' in launcher
     assert '"${VIDEO_SERVICE_ONBOARD_CONFIG:-}"' in launcher
     assert 'elif [[ -r "${system_config}" ]]' in launcher
+    assert "LAN_ROUTE_TIMEOUT_SECONDS=30" in launcher
+    assert "ip -4 route show default" in launcher
+    assert "!/linkdown/" in launcher
+    assert "wait_for_lan_route" in launcher
     assert not any(
         line.startswith(("Requires=", "PartOf=", "BindsTo="))
         for line in active_directives
