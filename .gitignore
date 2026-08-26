@@ -109,6 +109,9 @@ compile_commands.json
 docs/_build/
 site/
 
+# Windows camera tutorial screenshots remain local and are referenced by Markdown only.
+/docs/assets/
+
 # Large video captures are local artifacts and must not enter Git history
 *.mp4
 

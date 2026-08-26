@@ -398,4 +398,6 @@
 - `agent/codex/`、`agent/grok/` 是本地过程目录，正式配置和长期证据不得只放在其中。
 - 视频录屏、飞行日志、SITL/MAVProxy 产物、colcon/Python 缓存等按 `.gitignore` 管理；大视频不
   直接提交 Git，需分发时使用外部存储或经明确评估后使用 Git LFS。
+- `docs/assets/` 用于本机 Windows 摄像头教程截图，整目录由 `.gitignore` 排除；教程 Markdown 可
+  单独提交，但不得把其中 PNG 等图片推入仓库历史。
 - `TODO.md` 只记录计划；未经用户明确允许不得实现其中内容。
