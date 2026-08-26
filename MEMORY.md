@@ -264,6 +264,9 @@
 - systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、
   `time-sync.target` 或固定 `sleep`；自带路由器无外网时必须启动。离线开机后若再接入互联网，应在
   人工解锁前等待 Linux/MAVROS 时间状态稳定并重新核对 READY，但外网时间不是控制租约前置条件。
+- 2026-08-26 已纠正独立视频 unit 遗留的外网校时依赖并部署到当前 Jetson；实际 unit 只等待
+  `network-online.target`，视频服务最终 active/enabled、零重启，飞控 unit 未被重启。地面摄像头
+  面板首次启停命令会有限等待服务发现 2 秒，不再把正常的 DDS 建链延迟立即误报为端点缺失。
 - 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 维护窗口已把
   61 个机载范围文件与本地 `465ce8a` 逐文件同步并通过 SHA-256 比对，两个安装器已把飞控与视频
   systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
@@ -340,6 +343,10 @@
 - 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
   视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz
   并报 Qt platform 错误，四组件服务仍可达到 READY；后续应作为独立运维任务处理。
+- 当前 Jetson 的 `NetworkManager-wait-online.service` 被 masked；本次实测
+  `network-online.target` 在开机约 6.39 秒完成，但 Wi-Fi 到约 10.17 秒才取得生产 IPv4。移除外网
+  校时依赖后，视频 DDS participant 可能在 Wi-Fi 地址出现前创建；按 2026-08-26 任务要求暂不增加
+  IP 就绪等待或重启策略，真实断 WAN 冷启动仍必须作为明确未完成的现场验收。
 - 避障、机库硬件确认、`cameraAngle` 云台控制和更多硬件异常类型仍未实现；不要把占位接口写成
   已完成功能，也不要未经明确允许实现 `TODO.md`。
 - 当前维护热点是少数持续膨胀的核心文件：

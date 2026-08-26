@@ -28,6 +28,7 @@ class OnboardVideoClient:
     """在显式 ROS 域中订阅视频状态并异步发送纯视频命令。"""
 
     STATUS_STALE_SECONDS = 3.0
+    SERVICE_DISCOVERY_TIMEOUT_SECONDS = 2.0
 
     def __init__(self, *, domain_id: int | None = None) -> None:
         configured_domain = os.environ.get("VIDEO_SERVICE_ROS_DOMAIN_ID", "0")
@@ -201,7 +202,11 @@ class OnboardVideoClient:
                             "",
                         )
                         continue
-                    if not state_client.service_is_ready():
+                    # 新建 DDS participant 后服务发现通常晚于线程就绪；有限等待
+                    # 避免面板首次点击在 50 ms 探测窗口内被误报为端点缺失。
+                    if not state_client.wait_for_service(
+                        timeout_sec=self.SERVICE_DISCOVERY_TIMEOUT_SECONDS
+                    ):
                         self._callback(
                             command.callback,
                             {},

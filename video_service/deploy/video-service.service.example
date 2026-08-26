@@ -1,8 +1,9 @@
 # 独立视频服务示例。不要添加 Requires/PartOf=飞控服务，摄像头失败不得停止飞控。
 [Unit]
 Description=ROS 2 ArduPilot independent onboard video service
-Wants=network-online.target systemd-time-wait-sync.service
-After=network-online.target time-sync.target
+# 与手工执行 start_onboard_video.sh 一致：局域网视频不等待外网校时。
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple

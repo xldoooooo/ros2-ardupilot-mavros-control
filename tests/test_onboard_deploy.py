@@ -442,6 +442,10 @@ def test_video_service_has_an_independent_lifecycle() -> None:
     assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
     assert "Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH" in service
     assert '${ONBOARD_WORKSPACE}/start_onboard_video.sh' in service
+    assert "systemd-time-wait-sync.service" not in service
+    assert "time-sync.target" not in service
+    assert "Wants=network-online.target" in service
+    assert "After=network-online.target" in service
 
 
 def test_onboard_runtime_dependencies_and_service_template_are_portable() -> None:

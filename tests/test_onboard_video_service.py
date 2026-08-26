@@ -377,9 +377,6 @@ def test_panel_ros_client_discovers_status_and_closes_without_stop_command() -> 
         response.message = "视频期望状态已发布"
         return response
 
-    server.create_service(
-        SetVideoState, "/video_service/set_video_state", set_state
-    )
     client = OnboardVideoClient(domain_id=227)
     client.start()
 
@@ -392,6 +389,24 @@ def test_panel_ros_client_discovers_status_and_closes_without_stop_command() -> 
         return False
 
     try:
+        # 客户端线程先就绪并立即收到命令，服务端稍后出现；首次点击必须
+        # 在有限发现窗口内继续等待，不能在第一次 50 ms spin 后误报失败。
+        assert client._ready.wait(timeout=3.0)
+        state_done = threading.Event()
+        state_errors: list[str] = []
+        client.request_state(
+            True,
+            lambda _result, error: (
+                state_errors.append(error),
+                state_done.set(),
+            ),
+        )
+        time.sleep(0.15)
+        assert not state_done.is_set()
+        server.create_service(
+            SetVideoState, "/video_service/set_video_state", set_state
+        )
+
         message = VideoStatus()
         message.interface_version = "3.2"
         message.service_available = True
@@ -412,15 +427,6 @@ def test_panel_ros_client_discovers_status_and_closes_without_stop_command() -> 
             lambda: server.count_clients("/video_service/set_video_state") == 1
         )
 
-        state_done = threading.Event()
-        state_errors: list[str] = []
-        client.request_state(
-            True,
-            lambda _result, error: (
-                state_errors.append(error),
-                state_done.set(),
-            ),
-        )
         assert spin_until(state_done.is_set)
         assert state_errors == [""]
         assert state_requests == [True]
