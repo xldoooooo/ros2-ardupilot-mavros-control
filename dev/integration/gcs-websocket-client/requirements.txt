@@ -1,0 +1,2 @@
+# 独立 WebSocket 模拟客户端的唯一运行依赖。
+websockets==15.0.1

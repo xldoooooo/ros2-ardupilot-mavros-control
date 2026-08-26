@@ -200,6 +200,11 @@
 - 当前机库判定只有本地 ENU 阈值，没有独立机库硬件证据；`cameraAngle` 继续忽略。`photoNo`
   已按原值随航点传给视频服务，只用于图片命名，不得与 `pointNo` 混用，也不得校正其重复、负数
   或顺序。
+- `dev/integration/gcs-websocket-client/` 是交付上位机联调方的纯通讯模拟客户端，与生产地面站、
+  ROS、MAVROS 和实机完全隔离。它以单个 Python 文件完成 JAR 主题握手、自动重连、01 待机、
+  1 Hz `0A/0B`、命令确认和 01/02/03/05/06/07 模拟时序；03 默认按起飞 5 秒、每航点 5 秒、
+  降落 5 秒执行，并以 `/home/share/test.mp4`、`/home/share/jpg` 和
+  `/home/share/jpg/test.jpg` 作为 08/09 占位路径。返航/降落可抢占巡检且不发送巡检专用 08/09。
 
 ## 当前摄像头兼容边界
 
@@ -298,10 +303,14 @@
   全程未向真实 MAVROS 发送飞行命令。真实断 WAN 冷启动仍需下次现场开机补记运维验收。
 - 上位机 08 媒体占位路径已提升为模块常量，JPG 默认路径当前为 `/home/share/jpg`；握手递增超时
   覆盖连续失败、30 秒上限和成功后复位，专项测试 15 项通过。
+- 独立 WebSocket 模拟客户端已通过随附真实 JAR：两点巡检顺序为
+  `01→ACK02→02→ACK03→03→09×2→07→08→01`，`0A/0B` 两轮间隔均为 1.001 秒；01、05
+  抢占、06、07、低电量 0C/自动返航和两次会话自动重连均另行通过。全部为本机消息模拟，未连接
+  ROS、仿真飞控或实机。
 
 - 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
   `main` 基线；工作树中的用户自有改动仍须保留。
-- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：177 passed。
+- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：182 passed。
 - 当前 colcon 结果：19 tests、0 errors、0 failures、0 skipped。
 - 任务 24 已通过真实 JAR + Qt + ROS + MAVROS + ArduPilot SITL 全流程：最终解除武装、航点进度
   `2/2`，已武装 LAND 误禁用和组合待机起飞误启用记录均为空；Ubuntu 24.04 GNOME Wayland
