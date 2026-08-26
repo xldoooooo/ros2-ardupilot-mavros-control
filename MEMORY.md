@@ -203,7 +203,7 @@
 
 - 支持原生 H.264 或 MJPEG，录像可选 MP4/MKV/AVI，RTSP 固定 TCP。服务、面板和飞行链完全
   解耦；地面站退出不会自动停止摄像头后台。
-- 甲方 Windows 单机调参与局域网拉流验收教程位于
+- 甲方 Windows 单机调参与局域网拉流验收采用精简步骤式教程，位于
   `docs/Windows-USB摄像头调参与RTSP推流教程.md`：使用 OBS 调参与 H.264 编码、MediaMTX 提供
   RTSP/TCP、VLC 跨设备验证；示例 `rtsp://192.168.112.101:8556/camera` 中 IP 必须替换为推流
   电脑的真实局域网 IPv4，不能把示例 IP 当成任意可选地址。
