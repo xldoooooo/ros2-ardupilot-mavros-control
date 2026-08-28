@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-08-26，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-08-29，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -29,20 +29,23 @@
   `./start_ground_all.sh` 启动；`--check-environment` 只检查环境，不创建飞行会话。
 - 当前 ROS 工作区包含：
   - `src/guided_interfaces`：地面站与机载端共享的唯一高层协议；
+  - `src/correction_interfaces`：AprilTag-Odin 修正链独立接口 1.0；
   - `src/onboard_control`：机载 C++ 控制与安全状态机；
-  - `src/guided_sim`：URDF、RViz 与预览/TF 可视化，不含第二套控制器。
+  - `src/guided_sim`：URDF、RViz 与预览/TF 可视化，不含第二套控制器；
+  - `correction_service`：独立按需下视相机、Tag 估计、extnav CAS 和地面调试面板。
 - 常用构建与验证：
 
   ```bash
   source /opt/ros/jazzy/setup.bash
-  colcon build --packages-select guided_interfaces onboard_control guided_sim
+  colcon build --packages-select \
+    guided_interfaces correction_interfaces onboard_control guided_sim correction_service
   source install/setup.bash
   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q tests
   colcon test-result --verbose
   ```
 
-- 地面端或飞机只重建两包机载代码可运行 `./build_onboard_control.sh`；`--verify` 追加依赖、
-  ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
+- 地面端或飞机重建飞行包和独立修正接口/节点可运行 `./build_onboard_control.sh`；`--verify`
+  追加依赖、ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
 - `README.md` 当前存在并维护常用启动/停止说明；Ubuntu 22.04 通用部署见
   `DEPLOY_UBUNTU_2204.md`，机载最小部署见
   `src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md`。
@@ -100,6 +103,28 @@
   `/home/nvidia/backups/ros2-ardupilot-git-pre-history-rewrite-20260820.tar.gz`，SHA-256 为
   `77ff2b0b6a82dfbf922c3f3b41effbffae20cdbbeea62aa1f832dd96c9625215`。活动仓库已清理这些对象，
   但仍可从该项目外备份恢复。远端历史改写后旧提交 ID 失效，其他机器应重新 clone。
+
+### 独立 AprilTag-Odin 修正服务
+
+- `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
+  start 后才创建任务专属 raw 订阅和相机进程，result 前必须释放二者。真机优化后 idle 约
+  0.018～0.021 核，采样约 1.14 核、cgroup 峰值约 392 MB。
+- extnav 始终直接订阅 `/odin1/odometry_highfreq`。valid 时左乘 SE(2) 修正位置、姿态、世界系
+  线速度与有效协方差，z 不平移；invalid 或 correction API 缺失时 identity。实际输入 MAVROS 的
+  数据同步发布到 `/odin1/odometry_highfreq_corrected`。
+- active 修正只由 extnav 维护，通过 Odin session + revision CAS 更新；correction_service
+  失败/退出不清除最后 ACK 的修正，Odin 断流/时间戳回退/frame 改变则立即 invalid 并持续
+  identity 数据流。
+- 当前真机 Odin header 是设备时钟，相机 PTS 是主机 ROS 时钟；同 epoch 时严格按 header，epoch
+  不兼容时在任务历史内按接收时间匹配，`arrival_history` 硬门 30 ms，禁止使用识别完成时最新值。
+- 生产配置使用 2026-08-27 的 1920×1080 内参和
+  `success01-run_20260827_233838` 的 `T_imu_camera`；Tag 0 为世界原点/yaw 0/边长 0.170 m。
+  Tag 实物未精确摆正时只能验证链路，不能据候选声称世界航向准确。
+- 地面站右上角修正入口紧邻摄像头面板，子面板直接 start/stop/status/result 并显示
+  raw/corrected/MAVROS final；旧“在此处打开终端”入口已删除。
+- 当前 MAVROS 输入是 `geometry_msgs/PoseStamped`，不能携带 MAVLink estimator reset counter；
+  extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同帧多 Tag 和 onboard 自动
+  航点触发也仍是明确未实现边界。
 
 ## 当前接口与控制语义
 
@@ -240,9 +265,10 @@
 
 ## 当前机载部署事实
 
-- 机载 sparse checkout 清单包含两个 ROS 包、`video_service/`、根目录视频启停脚本、
-  `start_drone/`、`start_onboard_control.sh`、`stop_onboard_control.sh` 和 `build_onboard_control.sh`；不得
-  复制开发机的 `build/`、`install/` 到飞机。
+- 机载 sparse checkout 清单包含飞行 ROS 包、`correction_interfaces`、独立
+  `correction_service/`、`video_service/`、根目录视频启停脚本、`start_drone/`、
+  `start_onboard_control.sh`、`stop_onboard_control.sh` 和 `build_onboard_control.sh`；不得复制
+  开发机的 `build/`、`install/` 到飞机。
 - 文档当前的 `'/video_service/'` Git sparse 规则会拉整个目录；开发树约 90 MB，主要是 x86
   MediaMTX 与历史 demo。当前 Jetson 实际通过选择性 rsync 部署，目录约 440 KB，虽含 Qt 面板
   源码但不含上述大文件；机载 unit 不导入 PySide6、不创建窗口。正式 Git 部署前应决定目录级
@@ -250,19 +276,19 @@
 - `stop_onboard_video.sh` 默认停止独立 unit 并彻底清理残留视频节点、配置 RTSP 端口和真机摄像头
   占用者；`--restart` 清理后只重启 `video-service.service`。它不得调用飞控停止入口或操作飞控
   systemd unit。
-- 新飞机具有两个独立一键入口：`src/onboard_control/deploy/install_onboard_service.sh` 构建、验证并
-  部署四组件飞控 unit；`video_service/deploy/install_onboard_video_service.sh` 在系统媒体依赖已安装
-  后部署视频配置、目录与独立 unit。二者重复执行均保留 `/etc/ros2-ardupilot/` 现场参数，飞控
-  安装器遇到 active 服务会拒绝自动更新，绝不在未知飞行状态下重启。
+- 新飞机的飞控、视频和 Odin 修正是三个独立 unit。飞控和视频继续使用各自既有安装器；修正链
+  先运行带定点备份的 `install_extnav_correction.sh`，再运行
+  `install_correction_service.sh`。更新共享 overlay 的安装器遇到 active 飞控会拒绝，任何安装器
+  都不得在未知飞行状态下重启飞控。
 - `start_onboard_control.sh --check` 只做发现和配置检查，不启动组件；正式运行会统一启动 MAVROS、Odin、
   extnav 和 onboard，并在已有实例时拒绝重复启动。`stop_onboard_control.sh` 同时停止 systemd
   服务和其他终端手工启动的项目组件，并验证无残留。
 - 正式入口命名已统一：机载飞控为根目录 `start_onboard_control.sh` / `stop_onboard_control.sh`，完整
   地面站安装为 `setup_ground_station.sh`。旧的 `start_drone_all.sh`、`stop_onboard_service.sh`、
   `setup_project.sh` 已从当前树和真机工作区移除；真机 unit 与 sparse 配置均指向新名称。
-- `setup_ground_station.sh` 是地面站唯一项目安装入口；它会构建地面仿真所需的共享接口和
-  onboard_control 源码，但不会安装/启用飞机的两个 systemd unit。两个 deploy/install 脚本仅供
-  机载计算机使用。
+- `setup_ground_station.sh` 是地面站唯一项目安装入口；它会构建地面仿真、飞行和修正面板所需
+  的接口/源码，但不会安装或启用飞机的三个 systemd unit。各 deploy/install 脚本仅供机载计算机
+  使用。
 - 机载环境文件为 `/etc/ros2-ardupilot/onboard.env`。历史已确认的飞机串口是
   `/dev/ttyTHS1:460800`，但新部署优先使用人工确认的 `/dev/serial/by-id`；多个串口或 overlay
   候选时必须安全失败，不允许猜测。
@@ -294,8 +320,16 @@
   source/install/runtime 对齐。部署前备份为
   `/home/nvidia/backups/offline-clock-predeploy-20260825-0009.tar.gz`，SHA-256 为
   `7f78963ad63dbf80adb73ec7b9fb0f359ba3236c6bdaab302a90800c29c74368`。
+- 任务 27 的改动前全量备份位于
+  `/home/nvidia/scq/backups/task27-20260828-225107/`，包含本地完整仓库、飞机项目/运行时和
+  Odin/extnav/标定三份已校验归档；生产 extnav 定点备份位于飞机
+  `/home/nvidia/backups/extnav-task27-20260828-234049/`。详细哈希见任务 27 报告。
+- 当前 Jetson 已选择性部署任务 27 源码：飞控与 `odin-correction.service` 均
+  active/running、Result success、零重启；MAVROS connected、armed=false、STABILIZE；extnav
+  revision 2、correction_valid=false、identity，raw/corrected 计数相等，下视相机空闲。飞机 Git
+  HEAD 仍未改写，不得用 pull/reset 覆盖现场工作树。
 
-## 当前验证基线（2026-08-26）
+## 当前验证基线（2026-08-29）
 
 - 离线时间修复已通过本地 180 项 Python、19 项 ROS/C++、隔离 smoke，以及 Jetson ARM64 的
   `+30 天 → -30 天` 地面时间跳变探针；新鲜命令接受、回退 30 秒命令仍按 TTL 拒绝。真实生产服务
@@ -310,8 +344,13 @@
 
 - 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
   `main` 基线；工作树中的用户自有改动仍须保留。
-- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：182 passed。
-- 当前 colcon 结果：19 tests、0 errors、0 failures、0 skipped。
+- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：198 passed。
+- 当前 colcon 结果：22 tests、0 errors、0 failures、0 skipped；五包 Release 构建通过。
+- 任务 27 真机未解锁台架已通过 dry-run、apply+ACK、服务退出保留 active、显式 clear、identity
+  精确透传、失败保底、按需 raw 订阅和相机释放。apply job revision 1 的候选约为
+  `(-0.0132 m, -0.2611 m, +89.7599°)`，随后因 Tag 未摆正已 clear 到 revision 2 identity；该数值
+  不能作为世界坐标精度结论。最终按需订阅 dry-run 为 171 accepted/0 rejected，匹配误差约
+  0.84 ms、处理约 7.76 Hz。
 - 任务 24 已通过真实 JAR + Qt + ROS + MAVROS + ArduPilot SITL 全流程：最终解除武装、航点进度
   `2/2`，已武装 LAND 误禁用和组合待机起飞误启用记录均为空；Ubuntu 24.04 GNOME Wayland
   目标机确认纯黑预览中心和四角均为不透明 `#000000`；两个子面板自绘阴影在真实 Wayland 渲染
@@ -333,10 +372,9 @@
   多轮端到端验证，最终解除武装且无残留进程。
 - 本次真机补测始终没有解锁或起飞；实际起飞/落地自动启停和实际飞抵航点自动抓拍仍只完成
   隔离 ROS 边沿与自动化验证，必须由用户未来人工飞行时补验。
-- 2026-08-21 已向新飞机 `/home/nvidia/AprilTag/` 部署独立 AprilTag 平面相机外参标定工具：
-  只订阅 `/odin1/odometry_highfreq`，运行时仅打开空闲相机，不发布 ROS 消息、不调用服务、不改
-  参数或 systemd。真机 Python/ROS 环境中的合成自测通过；部署检查时 Odin 话题未发布，因此尚无
-  真实标定结果。配置内相机内参、畸变、标签尺寸/朝向均为待现场确认值，不能直接作为生产外参。
+- 2026-08-21 的独立外参标定工具仍位于飞机 `/home/nvidia/AprilTag/`；当前生产修正配置已改用
+  后续 2026-08-27 实际完成的相机内参和 `success01-run_20260827_233838` 外参结果，不再使用当时
+  的占位标定值。
 
 ## 已知风险与维护重点
 
@@ -355,6 +393,12 @@
 - 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
   视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz
   并报 Qt platform 错误，四组件服务仍可达到 READY；后续应作为独立运维任务处理。
+- AprilTag-Odin 当前只完成未解锁桌面链路验证。Tag 未按世界 yaw 0 精确测量/摆正，约 90° 候选
+  不代表真实世界航向；MAVROS PoseStamped 又无法传递 estimator reset counter。完成对齐 Tag、
+  reset 通知方案、长时间资源/调度和 EKF 创新评审前，不得把当前结果扩大为可实飞世界航点基线。
+- Python/OpenCV 活跃采样约占 1.14 个 Jetson CPU 核且只有约 7.8 Hz；idle 已通过按需订阅降到约
+  0.02 核。若需要更高频率或与其他视觉任务并行，应以实测为依据评估 C++、ROI/分辨率和 CPU
+  调度，不能只提高配置频率。
 - 当前 Jetson 的 `NetworkManager-wait-online.service` 被 masked，`network-online.target` 会比
   生产 Wi-Fi IPv4 提前约 3～4 秒完成。2026-08-26 第一次真实冷启动已复现视频 ROS 节点过早创建后
   本机可用、scq 不可达且 RTSP 地址误选 `192.168.55.1`；根启动脚本现会在创建 Fast DDS participant
@@ -399,6 +443,11 @@
   未武装真实摄像头/跨机/故障隔离台架，并补上 `EXTENDED_SYS_STATE(245)` 自动请求。实际飞行
   边沿与航点抓拍仍未执行。详见 `agent/report/report-2026-08-19-task22-5-onboard-video.md` 与
   `agent/report/report-2026-08-19-task22-5-real-aircraft-bench.md`。
+- **2026-08-28～29：独立 AprilTag-Odin 平面修正链。** 建立接口 1.0、完整 SE(3) 候选、历史
+  时间匹配、稳健质量门、extnav 原子 SE(2)/session 保底、按需相机与高频订阅、detached 地面
+  面板和带备份部署；新 Jetson 在 armed=false 下完成 apply/ACK/clear 与故障隔离，最终保持
+  revision 2 identity。详见
+  `agent/report/report-2026-08-29-27-tag-odin-fix-refined.md`。
 
 ## 版本库与记录规范
 

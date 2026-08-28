@@ -62,12 +62,14 @@ fi
 "${project_root}/.venv/bin/python3" -m pip install -r requirements-gui.txt
 
 colcon build \
-  --packages-select guided_interfaces onboard_control guided_sim \
+  --packages-select \
+    guided_interfaces onboard_control guided_sim correction_interfaces correction_service \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 runtime_source_setup "${project_root}/install/setup.bash"
 colcon test \
-  --packages-select guided_interfaces onboard_control guided_sim \
+  --packages-select \
+    guided_interfaces onboard_control guided_sim correction_interfaces correction_service \
   --event-handlers console_direct+
 colcon test-result --verbose
 

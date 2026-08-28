@@ -1,0 +1,56 @@
+# AprilTag-Odin 修正任务、同步、质量和 ROS 话题配置。
+interface_version: "1.0"
+
+topics:
+  raw_odometry: /odin1/odometry_highfreq
+  corrected_odometry: /odin1/odometry_highfreq_corrected
+  camera_image: /correction_service/image_raw
+  correction_status: /correction_service/status
+  correction_result: /correction_service/result
+  extnav_status: /extnav/correction_status
+  start_service: /correction_service/start
+  stop_service: /correction_service/stop
+  set_correction_service: /extnav/set_correction
+
+detection:
+  tag_family: tag36h11
+  processing_rate_hz: 10.0
+  image_scale: 0.5
+  corner_refinement: true
+  max_reprojection_error_px: 2.0
+  max_correction_tilt_deg: 8.0
+  # TODO(task27-multitag): 首版明确拒绝同帧多 Tag；后续在此扩展联合估计策略。
+  reject_multiple_tags: true
+
+synchronization:
+  odometry_history_seconds: 4.0
+  max_header_delta_ms: 20.0
+  # 当前 Odin header 为设备时钟、相机 PTS 为 ROS 时钟；不同 epoch 时在历史
+  # 缓冲内按本机接收时刻匹配，仍禁止使用识别完成时的最新 odometry。
+  max_arrival_delta_ms: 30.0
+  header_epoch_tolerance_seconds: 5.0
+
+quality:
+  minimum_samples: 24
+  rolling_window_samples: 60
+  minimum_span_seconds: 2.0
+  max_position_std_m: 0.025
+  max_yaw_std_deg: 0.35
+  max_position_range_m: 0.12
+  max_yaw_range_deg: 2.0
+  divergence_position_range_m: 0.60
+  divergence_yaw_range_deg: 12.0
+  mad_outlier_scale: 4.5
+
+timeouts:
+  camera_start_seconds: 12.0
+  first_tag_seconds: 20.0
+  extnav_apply_seconds: 5.0
+  # 地面站 apply=false 任务收敛后持续更新，直到显式 stop；0 表示不设总时限。
+  ground_max_runtime_seconds: 0.0
+
+logging:
+  directory: ../log
+  service_log_max_bytes: 5242880
+  service_log_backups: 4
+  sample_summary_period_seconds: 1.0

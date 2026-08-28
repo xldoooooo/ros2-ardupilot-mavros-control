@@ -10,7 +10,8 @@ usage() {
   cat <<'EOF'
 Usage: ./build_onboard_control.sh [--verify]
 
-Without arguments, rebuild guided_interfaces and onboard_control in Release mode.
+Without arguments, rebuild flight packages plus the independent correction
+interfaces/service in Release mode.
 
 Options:
   --verify  Check dependencies, rebuild, run unit tests, and run the isolated smoke test.

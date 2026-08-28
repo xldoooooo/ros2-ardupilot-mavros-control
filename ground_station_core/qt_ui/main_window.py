@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import shlex
-import shutil
 import sys
 import threading
 import time
@@ -495,12 +492,14 @@ class GroundStationWindow(QMainWindow):
         )
         self.camera_panel_button.clicked.connect(self._open_camera_panel)
         controls_layout.addWidget(self.camera_panel_button)
-        self.terminal_button = QPushButton("在此处打开终端")
-        self.terminal_button.setObjectName("terminalButton")
-        self.terminal_button.setProperty("compact", True)
-        self.terminal_button.setToolTip("在地面站当前工作目录打开系统终端")
-        self.terminal_button.clicked.connect(self._open_terminal)
-        controls_layout.addWidget(self.terminal_button)
+        self.correction_panel_button = QPushButton("Tag-Odin 修正面板")
+        self.correction_panel_button.setObjectName("correctionPanelButton")
+        self.correction_panel_button.setProperty("compact", True)
+        self.correction_panel_button.setToolTip(
+            "打开独立 AprilTag-Odin 校准、质量与数据链对照面板"
+        )
+        self.correction_panel_button.clicked.connect(self._open_correction_panel)
+        controls_layout.addWidget(self.correction_panel_button)
         self.exit_button = QPushButton("退出地面站")
         self.exit_button.setObjectName("exitButton")
         self.exit_button.setProperty("role", "danger")
@@ -581,52 +580,6 @@ class GroundStationWindow(QMainWindow):
         """显示只有确认按钮的统一提示子窗口。"""
         self._message_box(title, message, icon).exec()
 
-    def _open_terminal(self) -> None:
-        """不经 shell 地在当前工作目录启动首个可用终端模拟器。"""
-        candidates: list[tuple[str, list[str]]] = []
-        configured = os.environ.get("TERMINAL", "").strip()
-        if configured:
-            try:
-                parts = shlex.split(configured)
-            except ValueError:
-                parts = []
-            if parts:
-                candidates.append((parts[0], parts[1:]))
-        candidates.extend(
-            (program, [])
-            for program in (
-                "x-terminal-emulator",
-                "gnome-terminal",
-                "konsole",
-                "xfce4-terminal",
-                "mate-terminal",
-                "xterm",
-            )
-        )
-        working_directory = str(Path.cwd())
-        for program, arguments in candidates:
-            executable = shutil.which(program)
-            if executable is None:
-                continue
-            try:
-                result = QProcess.startDetached(
-                    executable, arguments, working_directory
-                )
-            except Exception as exc:
-                self._events.debug("ui", f"终端 {program} 启动失败：{exc}")
-                continue
-            started = result[0] if isinstance(result, tuple) else bool(result)
-            if started:
-                self._events.info(
-                    "ui", f"已在 {working_directory} 启动终端：{program}"
-                )
-                self.activity_banner.set_message("已启动当前目录终端。", LogLevel.INFO)
-                return
-        message = "未找到可用的终端模拟器，请安装 gnome-terminal、konsole 或 xterm。"
-        self._events.error("ui", message)
-        self.activity_banner.set_message(message, LogLevel.ERROR)
-        self._show_notice("无法启动终端", message, QMessageBox.Icon.Warning)
-
     def _open_camera_panel(self) -> None:
         """分离启动独立摄像头面板，不纳入ROS或仿真进程清理链。"""
         panel_script = PROJECT_ROOT / "video_service" / "camera_panel.py"
@@ -655,6 +608,35 @@ class GroundStationWindow(QMainWindow):
         message = "摄像头配置面板启动失败，请检查项目Python和PySide6环境。"
         self._events.error("camera", message)
         self._show_notice("无法打开摄像头面板", message, QMessageBox.Icon.Warning)
+
+    def _open_correction_panel(self) -> None:
+        """分离启动修正面板，不把相机任务或 extnav 修正纳入 GUI 清理链。"""
+        panel_script = PROJECT_ROOT / "correction_service" / "correction_panel.py"
+        if not panel_script.is_file():
+            message = f"未找到 Tag-Odin 修正面板：{panel_script}"
+            self._events.error("correction", message)
+            self._show_notice("无法打开修正面板", message, QMessageBox.Icon.Warning)
+            return
+        try:
+            started, process_id = QProcess.startDetached(
+                sys.executable,
+                [str(panel_script)],
+                str(panel_script.parent),
+            )
+        except Exception as exc:
+            started, process_id = False, 0
+            self._events.error("correction", f"修正面板启动异常：{exc}")
+        if started:
+            self._events.info(
+                "correction", f"已启动独立 Tag-Odin 修正面板（PID={process_id}）"
+            )
+            self.activity_banner.set_message(
+                "已打开独立 Tag-Odin 修正面板。", LogLevel.INFO
+            )
+            return
+        message = "Tag-Odin 修正面板启动失败，请检查接口构建和 PySide6 环境。"
+        self._events.error("correction", message)
+        self._show_notice("无法打开修正面板", message, QMessageBox.Icon.Warning)
 
     def _open_upstream_panel(self) -> None:
         """打开或复用独立上位机通讯面板，关闭面板不改变连接。"""

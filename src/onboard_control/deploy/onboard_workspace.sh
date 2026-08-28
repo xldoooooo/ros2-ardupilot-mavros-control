@@ -13,7 +13,9 @@ readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/start_dron
 # shellcheck disable=SC1090
 source "${RUNTIME_HELPERS}"
 readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
+readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
+readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
 readonly VIDEO_SPARSE_PATH="/video_service/"
 readonly VIDEO_START_SPARSE_PATH="/start_onboard_video.sh"
 readonly VIDEO_STOP_SPARSE_PATH="/stop_onboard_video.sh"
@@ -42,7 +44,7 @@ Commands:
   show-config  Show the resolved workspace, ROS distribution, and Git revision.
   update       Fast-forward the onboard packages and launchers sparse checkout.
   deps-check   Check ROS packages and toolchain without changing the OS.
-  build        Build guided_interfaces and onboard_control in Release mode.
+  build        Build flight packages plus independent correction interfaces/service.
   test         Run package tests and report all colcon test results.
   smoke        Run the node in a localhost-only, nonzero ROS domain without MAVROS.
   verify       Run deps-check, build, test, and the isolated smoke test.
@@ -93,8 +95,14 @@ require_command() {
 validate_workspace_layout() {
   [[ -f "${WORKSPACE_ROOT}/src/guided_interfaces/package.xml" ]] ||
     die "guided_interfaces is missing from ${WORKSPACE_ROOT}/src"
+  [[ -f "${WORKSPACE_ROOT}/src/correction_interfaces/package.xml" ]] ||
+    die "correction_interfaces is missing from ${WORKSPACE_ROOT}/src"
   [[ -f "${WORKSPACE_ROOT}/src/onboard_control/package.xml" ]] ||
     die "onboard_control is missing from ${WORKSPACE_ROOT}/src"
+  [[ -x "${WORKSPACE_ROOT}/correction_service/deploy/install_correction_service.sh" ]] ||
+    die "independent correction service installer is missing or not executable"
+  [[ -x "${WORKSPACE_ROOT}/correction_service/deploy/install_extnav_correction.sh" ]] ||
+    die "extnav correction installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/video_service/deploy/install_onboard_video_service.sh" ]] ||
     die "independent video service installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/install_onboard_service.sh" ]] ||
@@ -134,7 +142,8 @@ update_checkout() {
 
   # The checkout was initialized in non-cone mode; older Git treats --no-cone here as a path.
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
-    "${GUIDED_SPARSE_PATH}" "${ONBOARD_SPARSE_PATH}" \
+    "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
+    "${ONBOARD_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
     "${DRONE_START_SPARSE_PATH}" "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
@@ -157,9 +166,11 @@ check_dependencies() {
     launch
     launch_ros
     mavros_msgs
+    nav_msgs
     rclcpp
     rosidl_default_generators
     rosidl_default_runtime
+    sensor_msgs
     std_msgs
     tf2
     tf2_geometry_msgs
@@ -189,7 +200,8 @@ build_workspace() {
   (
     cd -- "${WORKSPACE_ROOT}"
     colcon build \
-      --packages-up-to onboard_control \
+      --packages-select \
+        guided_interfaces correction_interfaces onboard_control correction_service \
       --cmake-args -DCMAKE_BUILD_TYPE=Release
   )
 }
@@ -200,7 +212,8 @@ test_workspace() {
   (
     cd -- "${WORKSPACE_ROOT}"
     colcon test \
-      --packages-select guided_interfaces onboard_control \
+      --packages-select \
+        guided_interfaces correction_interfaces onboard_control correction_service \
       --event-handlers console_direct+
     colcon test-result --verbose
   )

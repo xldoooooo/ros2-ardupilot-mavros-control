@@ -1,0 +1,10 @@
+# 地面调试面板开始唯一校准任务；apply=false 只计算并持续到显式 stop。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+int32 expected_tag_id
+bool apply
+---
+bool accepted
+string job_id
+string message

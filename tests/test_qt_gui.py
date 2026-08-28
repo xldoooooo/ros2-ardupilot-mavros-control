@@ -24,7 +24,12 @@ from PySide6.QtCore import (  # noqa: E402
 )
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+)
 
 from ground_station_core.config import (  # noqa: E402
     HARDWARE_BATTERY_GOOD_VOLTAGE,
@@ -889,9 +894,7 @@ def test_land_button_and_upstream_land_bypass_pending_and_workflow_locks() -> No
         assert ros.calls == [("land", None)]
         assert window.operations.land_button.isEnabled()
 
-        command = parse_command(
-            {"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001"
-        )
+        command = parse_command({"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001")
         window._handle_upstream_command(command)
         assert ros.calls == [("land", None), ("land", None)]
     finally:
@@ -901,9 +904,7 @@ def test_land_button_and_upstream_land_bypass_pending_and_workflow_locks() -> No
 def test_inspection_standby_locks_takeoff_until_sequence_really_completes() -> None:
     """03 降落后的延时/入库阶段不得与新起飞或巡检并发。"""
     window, ros = _window(_operational_snapshot(armed=False))
-    execute = parse_command(
-        {"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001"
-    )
+    execute = parse_command({"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001")
     try:
         window._initialize_simulation()
         window.waypoints.replace_waypoints(((1.0, 0.0, 0.5, 0.0),), "组合锁测试")
@@ -1212,9 +1213,7 @@ def test_disconnected_upstream_disables_low_power_and_abnormal_auto_return() -> 
         abnormal_window._refresh()
 
         assert abnormal_window._upstream.snapshot().connected is False
-        assert not any(
-            call[0] in {"waypoints", "land"} for call in abnormal_ros.calls
-        )
+        assert not any(call[0] in {"waypoints", "land"} for call in abnormal_ros.calls)
         assert abnormal_window._upstream_sequence is None
     finally:
         _close_window(abnormal_window)
@@ -2660,7 +2659,7 @@ def test_opaque_render_hints_only_cover_fully_painted_surfaces() -> None:
 
 
 def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
-    """顶部保留上位机、摄像头、终端、红色退出入口和四周阴影。"""
+    """顶部保留上位机、摄像头、修正、红色退出入口和四周阴影。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         assert window.findChild(type(window.connection_label), "windowTitle") is None
@@ -2676,14 +2675,15 @@ def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
         assert window.upstream_panel_button.text() == "上位机通讯面板"
         assert window.camera_panel_button.isVisible()
         assert window.camera_panel_button.text() == "摄像头配置面板"
-        assert window.terminal_button.isVisible()
-        assert window.terminal_button.text() == "在此处打开终端"
+        assert window.correction_panel_button.isVisible()
+        assert window.correction_panel_button.text() == "Tag-Odin 修正面板"
+        assert not hasattr(window, "terminal_button")
         assert window.exit_button.isVisible()
         assert window.exit_button.text() == "退出地面站"
         assert window.exit_button.property("role") == "danger"
         assert window.camera_panel_button.x() > window.upstream_panel_button.x()
-        assert window.terminal_button.x() > window.camera_panel_button.x()
-        assert window.exit_button.x() > window.terminal_button.x()
+        assert window.correction_panel_button.x() > window.camera_panel_button.x()
+        assert window.exit_button.x() > window.correction_panel_button.x()
         assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
         assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         assert window.outer_window_frame.graphicsEffect() is not None
@@ -2798,9 +2798,7 @@ def test_all_message_boxes_use_frameless_shadow_surface() -> None:
         assert dialog.surface.graphicsEffect() is not None
         assert dialog.surface.geometry() == dialog.rect().adjusted(14, 14, -14, -14)
         title = dialog.findChild(type(window.connection_label), "dialogTitle")
-        close_button = dialog.findChild(
-            type(window.terminal_button), "dialogCloseButton"
-        )
+        close_button = dialog.findChild(QPushButton, "dialogCloseButton")
         assert title is not None
         assert close_button is not None
         assert dialog.defaultButton() is dialog.button(
@@ -2841,33 +2839,6 @@ def test_maximized_window_removes_shadow_margin_and_restores_it() -> None:
         _close_window(window)
 
 
-def test_terminal_launcher_uses_current_directory_without_shell() -> None:
-    """终端入口选择已安装程序，并把地面站当前目录作为子进程工作目录。"""
-    window, _ros = _window(_operational_snapshot(armed=False))
-    try:
-        with (
-            patch(
-                "ground_station_core.qt_ui.main_window.shutil.which",
-                side_effect=lambda name: (
-                    "/usr/bin/x-terminal-emulator"
-                    if name == "x-terminal-emulator"
-                    else None
-                ),
-            ),
-            patch(
-                "ground_station_core.qt_ui.main_window.QProcess.startDetached",
-                return_value=(True, 1234),
-            ) as start_detached,
-        ):
-            window._open_terminal()
-        start_detached.assert_called_once_with(
-            "/usr/bin/x-terminal-emulator", [], str(Path.cwd())
-        )
-        assert "已启动当前目录终端" in window.activity_banner.message_label.text()
-    finally:
-        _close_window(window)
-
-
 def test_camera_panel_launcher_is_detached_from_ground_station_cleanup() -> None:
     """摄像头面板以独立进程启动，且不进入地面站环境清理链。"""
     environment = _FakeEnvironment()
@@ -2885,6 +2856,29 @@ def test_camera_panel_launcher_is_detached_from_ground_station_cleanup() -> None
         )
         assert environment.cleanup_calls == 0
         assert "已打开独立摄像头配置面板" in (
+            window.activity_banner.message_label.text()
+        )
+    finally:
+        _close_window(window)
+
+
+def test_correction_panel_launcher_is_detached_from_ground_station_cleanup() -> None:
+    """修正面板紧邻摄像头入口，独立启动且不进入地面站清理链。"""
+    environment = _FakeEnvironment()
+    window, _ros = _window(_operational_snapshot(armed=False), environment=environment)
+    try:
+        with patch(
+            "ground_station_core.qt_ui.main_window.QProcess.startDetached",
+            return_value=(True, 9876),
+        ) as start_detached:
+            window._open_correction_panel()
+
+        panel_script = PROJECT_ROOT / "correction_service" / "correction_panel.py"
+        start_detached.assert_called_once_with(
+            sys.executable, [str(panel_script)], str(panel_script.parent)
+        )
+        assert environment.cleanup_calls == 0
+        assert "已打开独立 Tag-Odin 修正面板" in (
             window.activity_banner.message_label.text()
         )
     finally:

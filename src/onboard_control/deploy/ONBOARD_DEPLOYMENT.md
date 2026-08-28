@@ -1,6 +1,6 @@
 # 机载服务最小部署与验证
 
-本文档用于把 `guided_interfaces`、`onboard_control` 与独立 `video_service` 部署到伴随计算机。
+本文档用于把飞行包、独立 `video_service` 和独立 AprilTag-Odin 修正服务部署到伴随计算机。
 当前实机目标为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64；旧
 Ubuntu 22.04/Humble 飞机只作为兼容历史，不代表当前运行基线。
 
@@ -29,7 +29,9 @@ cd ros2-ardupilot-mavros-control
 git sparse-checkout init --no-cone
 git sparse-checkout set \
   '/src/guided_interfaces/' \
+  '/src/correction_interfaces/' \
   '/src/onboard_control/' \
+  '/correction_service/' \
   '/video_service/' \
   '/start_onboard_video.sh' \
   '/stop_onboard_video.sh' \
@@ -44,7 +46,9 @@ git checkout main
 
 ```text
 src/guided_interfaces/
+src/correction_interfaces/
 src/onboard_control/
+correction_service/
 video_service/
 start_onboard_video.sh
 stop_onboard_video.sh
@@ -91,7 +95,7 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 ./build_onboard_control.sh
 ```
 
-默认只以 Release 模式重建 `guided_interfaces` 与 `onboard_control`。如需同时执行依赖检查、
+默认以 Release 模式重建飞行包和独立修正接口/节点。修正节点构建不启动相机或飞控。若需同时执行依赖检查、
 单元测试和隔离 smoke：
 
 ```bash
@@ -134,8 +138,8 @@ setpoint_messages=0
 ./src/onboard_control/deploy/onboard_workspace.sh verify
 ```
 
-`update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护两个机载 ROS 包、
-独立 `video_service/`、
+`update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护飞行 ROS 包、
+`correction_interfaces`、独立 `correction_service/` 与 `video_service/`、
 根目录视频启停入口、`start_drone/` 分步入口、`start_onboard_control.sh` 一键入口、
 `stop_onboard_control.sh` 飞控彻底停止入口和根目录 `build_onboard_control.sh`。更新使用
 `git pull --ff-only`，
@@ -145,7 +149,8 @@ setpoint_messages=0
 `update` 只更新源码，不会替代目标机原生构建。源码与 `install/` 中
 `guided_interfaces` 或 `onboard_control` 的包版本不一致时，`start_onboard_control.sh` 会在启动
 任何飞行栈进程前安全失败，并提示先执行 `onboard_workspace.sh verify`；禁止绕过该检查继续
-运行旧接口二进制。
+运行旧飞行协议二进制。`correction_interfaces` 不加入该飞行启动硬门：正常构建仍会安装它，
+但缺失时 extnav 必须退化为 identity，而不能切断原 Odin→MAVROS 链。
 
 ## 5. ROS 网络变量
 
@@ -258,7 +263,22 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 任务 22.5 的视频节点必须另外使用
 `video_service/deploy/video-service.service.example`。不要把它加入
 `start_onboard_control.sh` 的受监督子进程，也不要在 systemd 中对飞控服务声明
-`Requires=`/`PartOf=`：摄像头、FFmpeg、MediaMTX 或磁盘失败只能重启视频 unit，
+依赖。
+
+任务 27 的修正节点同样使用独立的
+`correction_service/deploy/correction-service.service.example`。在确认未解锁并人工停止飞控
+主服务后，依次执行：
+
+```bash
+./correction_service/deploy/install_extnav_correction.sh
+./correction_service/deploy/install_correction_service.sh
+```
+
+extnav 安装器覆盖生产源前会创建带 SHA-256 的定点备份，只构建、不重启飞控；修正服务启动后
+保持 idle、相机关闭。完整接口、Tag 坐标约定和 clear 方法见
+`correction_service/README.md`。`odin-correction.service` 不得对飞控 unit 设置
+`Requires=`、`PartOf=` 或 `BindsTo=`。
+视频 unit 也不得设置 `Requires=`/`PartOf=`：摄像头、FFmpeg、MediaMTX 或磁盘失败只能重启视频 unit，
 不能清理飞行栈。飞机 aarch64 还必须把 MediaMTX v1.20.0 ARM64 安装到系统
 `/usr/local/bin/mediamtx`；Git 仓库不再携带任何架构的 MediaMTX 可执行文件。
 镜头配置应复制为 `/etc/ros2-ardupilot/lens.conf`，媒体目录 `/home/share/jpg` 需由

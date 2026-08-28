@@ -1,0 +1,8 @@
+# 地面调试面板停止当前任务；job_id 为空表示停止调用时唯一活动任务。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+string job_id
+---
+bool accepted
+string message

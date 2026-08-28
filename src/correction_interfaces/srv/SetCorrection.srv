@@ -1,0 +1,19 @@
+# correction_service 原子提交一个已收敛候选，或由维护工具显式清除修正。
+string job_id
+string odin_session_id
+uint64 expected_revision
+bool valid
+float64 correction_x_m
+float64 correction_y_m
+float64 correction_yaw_rad
+uint32 sample_count
+float64 position_std_m
+float64 yaw_std_rad
+float64 reprojection_error_px
+float64 odom_match_error_ms
+---
+bool accepted
+bool applied
+uint64 revision
+string odin_session_id
+string message

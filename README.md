@@ -40,11 +40,14 @@ ROS_LOCALHOST_ONLY=0
 5. 按[独立视频服务新飞机部署步骤](video_service/README.md#新飞机快速部署ubuntu-2404--jazzy--arm64)
    手工安装 FFmpeg 与系统 ARM64 MediaMTX，再执行
    `./video_service/deploy/install_onboard_video_service.sh` 部署独立 `video-service.service`；
-6. 保持 `armed=false`，依次完成构建测试、隔离 smoke、MAVROS 只读状态、视频 RTSP/录像/抓拍和
+6. 若该飞机已完成下视相机内外参标定，按
+   [AprilTag-Odin 修正服务](correction_service/README.md)先部署带备份的 extnav patch，再安装
+   独立 `odin-correction.service`；Tag 世界位姿未精确测量时只允许 `apply=false`；
+7. 保持 `armed=false`，依次完成构建测试、隔离 smoke、MAVROS 只读状态、视频 RTSP/录像/抓拍和
    摄像头故障隔离验收，不能用进程启动成功代替硬件验证。
 
-飞控与视频必须是两个独立 unit。视频服务不能加入 `start_onboard_control.sh`，也不能通过
-`Requires=`、`PartOf=` 或 `BindsTo=` 绑定飞控服务。
+飞控、视频与 Odin 修正必须是三个独立 unit。两个相机服务都不能加入
+`start_onboard_control.sh`，也不能通过 `Requires=`、`PartOf=` 或 `BindsTo=` 绑定飞控服务。
 
 
 ## 重新构建机载控制
@@ -62,7 +65,8 @@ ROS_LOCALHOST_ONLY=0
 ```
 
 脚本按目标机系统选择其原生 ROS 发行版。它不会启动、停止或重启机载服务，也不会发送飞行
-命令；构建完成后如需让运行中的飞机加载新产物，应另行选择安全窗口重启对应服务。
+命令；当前同时构建共享飞行接口/控制器和独立 `correction_interfaces/correction_service`。
+构建完成后如需让运行中的飞机加载新产物，应另行选择安全窗口重启对应服务。
 
 ## 开机自启与自动重启
 
@@ -234,7 +238,10 @@ curl -u s12:2wsx1qaz \
 
 ## AprilTag
 
-### 摄像头标定
+下视相机标定完成后的 Odin 世界坐标修正配置、ROS 接口、地面子面板、部署和已知限制见
+[correction_service/README.md](correction_service/README.md)。该功能只修正 `x/y/yaw`，
+默认 idle 且相机关闭；程序不解锁、不起飞。当前 Tag 若没有按 `tag_pose.csv` 精确摆正，只能
+用于 `apply=false` 桌面验证，不能据此声称获得准确世界航向。
 
 
 

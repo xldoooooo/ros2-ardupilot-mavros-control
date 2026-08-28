@@ -1,0 +1,27 @@
+# 一次校准任务的可靠终态；失败不会修改 extnav 的 active correction。
+std_msgs/Header header
+string interface_version
+string job_id
+int32 expected_tag_id
+int32 detected_tag_id
+bool apply_requested
+bool success
+bool applied
+string odin_session_id
+uint64 extnav_revision
+float64 correction_x_m
+float64 correction_y_m
+float64 correction_yaw_deg
+float64 correction_tilt_deg
+uint32 samples_accepted
+uint32 samples_rejected
+float64 position_std_m
+float64 yaw_std_deg
+float64 reprojection_error_px
+float64 odom_match_error_ms
+float64 duration_s
+float64 processing_rate_hz
+float64 processing_time_ms
+string outcome
+string message
+string log_path
