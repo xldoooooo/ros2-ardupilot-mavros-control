@@ -117,14 +117,19 @@
   identity 数据流。
 - 当前真机 Odin header 是设备时钟，相机 PTS 是主机 ROS 时钟；同 epoch 时严格按 header，epoch
   不兼容时在任务历史内按接收时间匹配，`arrival_history` 硬门 30 ms，禁止使用识别完成时最新值。
-- 生产配置使用 2026-08-27 的 1920×1080 内参和
-  `success01-run_20260827_233838` 的 `T_imu_camera`；Tag 0 为世界原点/yaw 0/边长 0.170 m。
-  Tag 实物未精确摆正时只能验证链路，不能据候选声称世界航向准确。
+- 生产配置使用 2026-08-27 的 1920×1080 内参；`T_imu_camera` 以
+  `success01-run_20260827_233838` 为基矩阵，并右乘 2026-08-31 真机定向台架确认的相机光轴
+  `Rz(180deg)`。Tag 0 为世界原点/yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称
+  世界坐标精度。
 - 地面站右上角修正入口紧邻摄像头面板，子面板直接 start/stop/status/result 并显示
   raw/corrected/MAVROS final；旧“在此处打开终端”入口已删除。
 - 当前 MAVROS 输入是 `geometry_msgs/PoseStamped`，不能携带 MAVLink estimator reset counter；
   extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同帧多 Tag 和 onboard 自动
   航点触发也仍是明确未实现边界。
+- 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
+  `/odin1/odometry_highfreq` 中的 `odom->imu`，按
+  `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
+  当前 Jetson 同路径已部署；这不是飞控输入链或 AprilTag 修正链的一部分。
 
 ## 当前接口与控制语义
 
@@ -372,9 +377,9 @@
   多轮端到端验证，最终解除武装且无残留进程。
 - 本次真机补测始终没有解锁或起飞；实际起飞/落地自动启停和实际飞抵航点自动抓拍仍只完成
   隔离 ROS 边沿与自动化验证，必须由用户未来人工飞行时补验。
-- 2026-08-21 的独立外参标定工具仍位于飞机 `/home/nvidia/AprilTag/`；当前生产修正配置已改用
-  后续 2026-08-27 实际完成的相机内参和 `success01-run_20260827_233838` 外参结果，不再使用当时
-  的占位标定值。
+- 2026-08-21 的独立外参标定工具仍位于飞机 `/home/nvidia/AprilTag/`；当前生产修正配置使用
+  后续 2026-08-27 完成的相机内参与 `success01-run_20260827_233838` 外参基矩阵，并包含
+  2026-08-31 真机确认的相机光轴 180°安装方向修正，不再使用当时的占位标定值。
 
 ## 已知风险与维护重点
 
@@ -393,9 +398,17 @@
 - 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
   视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz
   并报 Qt platform 错误，四组件服务仍可达到 READY；后续应作为独立运维任务处理。
-- AprilTag-Odin 当前只完成未解锁桌面链路验证。Tag 未按世界 yaw 0 精确测量/摆正，约 90° 候选
-  不代表真实世界航向；MAVROS PoseStamped 又无法传递 estimator reset counter。完成对齐 Tag、
-  reset 通知方案、长时间资源/调度和 EKF 创新评审前，不得把当前结果扩大为可实飞世界航点基线。
+- AprilTag-Odin 已在 Tag 0 图案上方与机头同向的未武装定向台架中，识别并修正原外参绕相机光轴
+  180°反向：同一原始帧的 identity-Odin yaw 由 -179.926°变为 -0.089°，部署后 dry-run 由
+  +179.858°变为 -1.370°。这只确认安装方向；Tag 的绝对位置/朝向仍未做测量级验收，且 MAVROS
+  PoseStamped 无 estimator reset counter。完成 Tag 测量、reset 通知、长时间资源/调度和 EKF
+  创新评审前，不得把当前结果扩大为可实飞世界航点基线。
+- AprilTag-Odin 的合成 SE(3) 审计未发现 Tag 坐标、PnP 方向或修正矩阵代数错误，但绝对精度仍未
+  验收：生产外参水平杆臂为 5.52 cm，结果表示 Odin IMU 而非相机光心；唯一接受的外参基线曾估计
+  出约 162.6 ms 时间偏移，尚无硬件 PTS、固定 td=0 的多轮独立从零标定。历史同一 Odin session
+  的跨任务候选可相差 4.86～7.14 cm/0.24～1.44°，而任务内部标准差很小，说明当前约 2 秒质量门
+  只验证短时稳定。当前 8° tilt 上限也不足以声称 5 cm 绝对精度；正式使用前必须做测量级 Tag
+  定位定向、明确 IMU/相机参考点、跨位置返回闭环和外参重复性验收。
 - Python/OpenCV 活跃采样约占 1.14 个 Jetson CPU 核且只有约 7.8 Hz；idle 已通过按需订阅降到约
   0.02 核。若需要更高频率或与其他视觉任务并行，应以实测为依据评估 C++、ROI/分辨率和 CPU
   调度，不能只提高配置频率。
@@ -448,6 +461,10 @@
   面板和带备份部署；新 Jetson 在 armed=false 下完成 apply/ACK/clear 与故障隔离，最终保持
   revision 2 identity。详见
   `agent/report/report-2026-08-29-27-tag-odin-fix-refined.md`。
+- **2026-08-31：下视相机光轴 180°外参修正。** 定向台架确认原生产外参把当前安装方向解释反了
+  180°；配置改为原矩阵右乘 `Rz(180deg)`，加入安装方向回归约束并同步飞机。部署后 314 个样本
+  收敛为 yaw -1.370°、标准差 0.0146°，全程 apply=false、revision 0 identity。详见
+  `agent/report/report-2026-08-31-task27-camera-extrinsic-180deg-fix.md`。
 
 ## 版本库与记录规范
 

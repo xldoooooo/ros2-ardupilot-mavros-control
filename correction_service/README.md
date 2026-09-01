@@ -27,7 +27,9 @@ active correction。Odin 断流超过 2 秒、时间戳回退或 frame 改变时
 - `tag_pose.csv` 的 Tag 坐标系为 `+X` 指向图案上方、`+Y` 指向图案左方、`+Z`
   离开地面向上；`yaw_deg` 绕世界 `+Z`。
 - OpenCV PnP 使用 `+X` 向右、`+Y` 向上、`+Z` 朝观察者；源码显式完成二者转换。
-- `extrinsics.yaml` 是 `T_imu_camera`，即把相机坐标中的点变换到 Odin IMU。
+- `extrinsics.yaml` 是 `T_imu_camera`，即把相机坐标中的点变换到 Odin IMU。当前
+  真机安装在 2026-08-31 定向台架中确认相对原始联合标定结果绕相机光轴反向，
+  因此配置使用 `T_imu_camera_raw * Rz(180deg)`；平移保持原标定值。
 - 先组合完整 SE(3) 链并检查非平面 tilt，再从 `T_world_odin` 提取 `x/y/yaw`。
 - extnav 应用左乘 SE(2)：`p_world = Rz(yaw) p_odin + [x,y,0]`；姿态、水平速度
   和有效协方差也按同一 yaw 旋转，`z` 不平移。
@@ -37,8 +39,9 @@ active correction。Odin 断流超过 2 秒、时间戳回退或 frame 改变时
 `config/` 中的文件均在节点创建接口前严格校验：
 
 - `intrinsics.yaml`：飞机 `/home/nvidia/camera_calib` 的 1920×1080 内参；
-- `extrinsics.yaml`：飞机
-  `/home/nvidia/vins_odin_calib/output/success01-run_20260827_233838` 的外参；
+- `extrinsics.yaml`：以飞机
+  `/home/nvidia/vins_odin_calib/output/success01-run_20260827_233838` 为基矩阵，并包含
+  2026-08-31 真机定向台架确认的相机光轴 `180deg` 修正；
 - `tag_pose.csv`：`tag_id,x,y,z,yaw_deg,size_m`，首版包含 0 号、边长 0.170 m；
 - `general_settings.yaml`：话题、10 Hz 检测、时间匹配和质量/超时门；
 - `camera.conf`：下视 Wasintek 的稳定 by-path、1920×1080@30 MJPEG 和硬件 PTS
