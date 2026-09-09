@@ -268,6 +268,13 @@
   720p30 的 RTSP、录像、JPG、镜头参数、封装和资源释放。Jetson 使用 NVIDIA FFmpeg 8.0.1；
   MediaMTX v1.20.0 ARM64 安装在 `/usr/local/bin/mediamtx`，SHA-256 为
   `2da379972ba86627632aa7e3f779c680ba04a5ee26ef2a20dc61cefcc24f73b8`。
+- 当前 Jetson 同时连接两台序列号均为 `00.00.01` 的 Wasintek，`/dev/v4l/by-id` 会发生同名覆盖，
+  不能区分设备；应使用 `video-index0` 的 `/dev/v4l/by-path` 或按 V4L2 capture 能力探测，并排除
+  `video-index1` 元数据节点。2026-09-09 当前接线中 USB 端口 `2` 为前视、扩展坞端口 `1.2` 为
+  下视，两路已并发验证 MJPEG 1920×1080@30；`/dev/videoN` 仍只代表本次枚举结果。
+- 飞机家目录 `/home/nvidia/testcam.py` 已改为 Linux `CAP_V4L2` 与物理路径枚举，可同时预览两路或
+  用 `--no-gui --snapshot-dir` 自检。当前下视画面能识别 tag36h11 ID 0，但 Tag 上方落在画面右侧，
+  相机绕光轴仍需调整 90°；从地面朝镜头看，应将相机顺时针旋转 90°后重新抓帧确认。
 - 同一曝光下 H.264/MJPEG 的光学运动模糊基本相同；MJPEG 独立帧通常更利于单帧抓拍但带宽高，
   H.264 更适合持续 720p120 推流录像。未经同一运动标靶 A/B，不作清晰度定量排名。
 
