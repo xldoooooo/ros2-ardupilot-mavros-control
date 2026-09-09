@@ -8,9 +8,12 @@ from pathlib import Path
 import numpy as np
 from correction_service.camera_process import parse_v4l2_control_value
 from correction_service.geometry import (
+    compute_planar_correction,
+    configured_tag_from_standard,
+    homogeneous,
     planar_transform,
-    planar_translation_from_correspondence,
     rotation_z,
+    world_tag_transform,
 )
 from correction_service.synchronizer import is_apply_time_source_safe
 
@@ -47,15 +50,40 @@ def test_planar_correction_rotates_translation_and_preserves_z() -> None:
     assert np.allclose(corrected[:3, 3], (8.0, -2.0, 0.7), atol=1e-12)
 
 
-def test_single_tag_planar_translation_closes_p_q_constraint() -> None:
-    """非零 yaw 的首标平移必须由 P/Q 锚定，不能照搬倾斜 SE(3) 平移。"""
-    world = np.array((0.0, 0.0))
-    odin = np.array((-0.0489902642, -0.1289013093))
-    yaw = math.radians(-15.462725)
-    translation = planar_translation_from_correspondence(world, odin, yaw)
+def test_single_tag_keeps_task27_full_se3_xy_translation() -> None:
+    """包级回归：首次非零 tilt 仍须直接投影 C_full，而非单点 P/Q 重锚。"""
+    config = load_config(PACKAGE_ROOT / "config")
+    tag = config.tags[0]
+    pitch = math.radians(7.0)
+    pitch_rotation = np.array(
+        (
+            (math.cos(pitch), 0.0, math.sin(pitch)),
+            (0.0, 1.0, 0.0),
+            (-math.sin(pitch), 0.0, math.cos(pitch)),
+        )
+    )
+    expected = homogeneous(
+        rotation_z(math.radians(-15.0)) @ pitch_rotation,
+        np.array((0.08, -0.04, 0.0)),
+    )
+    odin_from_imu = homogeneous(
+        rotation_z(math.radians(9.0)), np.array((0.4, -0.2, 0.7))
+    )
+    world_from_imu = expected @ odin_from_imu
+    world_from_camera = world_from_imu @ config.t_imu_camera
+    camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
+        tag
+    )
+    camera_from_tag_standard = camera_from_tag_configured @ np.linalg.inv(
+        configured_tag_from_standard()
+    )
 
-    predicted = rotation_z(yaw)[:2, :2] @ odin + translation
-    assert np.allclose(predicted, world, atol=1e-12)
+    correction = compute_planar_correction(
+        camera_from_tag_standard, tag, config.t_imu_camera, odin_from_imu
+    )
+
+    assert np.allclose(correction.world_from_odin, expected, atol=1e-10)
+    assert np.allclose((correction.x_m, correction.y_m), expected[:2, 3], atol=1e-10)
 
 
 def test_runtime_compatibility_helpers_accept_real_aircraft_values() -> None:

@@ -125,13 +125,12 @@
   失败/退出不清除最后 ACK 的修正。Odin 断流/时间戳回退/frame 改变会立即 invalid 并清除
   最终样本缓存；后续新鲜 raw 按 identity/local 分支继续发布，无 raw 时不重放旧世界样本。
 - 仓库 correction 接口与相关包已升级为 2.0.0：服务端权威维护 instance/window revision、
-  keyframe FIFO、成功 N、保存候选和 application 事实。首次先用完整 SE(3) 求 yaw/tilt/Q；因
-  extnav 只应用水平 yaw，平移必须以同一对应点重算为 `t=P-Rz(yaw)Q`，冻结时还须用稳健汇总的
-  P/Q/yaw 再锚定，不能照搬含 tilt 的 full SE(3) x/y 平移。2026-09-10 已修复旧版因此产生的
-  4.1～9.6 cm 首点内部残差并选择性部署 Jetson；新真机 24 帧最大闭环残差 `1.96e-17m`。
-  第二个不同 Tag 起以绝对逆方差权重从原始 `P_i/Q_i` 重算完整 orientation-preserving SE(2)，
-  不累计增量、不平均 single-Tag yaw。窗口默认 5、最大 20，长度 2 可用但明确标记离群识别能力
-  有限；FIFO 淘汰前先检查完整证据，新点失败不修改旧窗口/N/active。
+  keyframe FIFO、成功 N、保存候选和 application 事实。首次必须严格沿用 Task27：由完整
+  `C_full=H_WI*inverse(H_OI)` 直接提取 x/y/yaw，首次离群筛选仍只用 x/y/yaw；同批 Q 只保存
+  为首个 keyframe 并接受自身质量门，不能用 `t=P-RQ` 反向重锚首次候选。第二个不同 Tag 起才
+  以绝对逆方差权重从原始 `P_i/Q_i` 重算完整 orientation-preserving SE(2)，不累计增量、不平均
+  single-Tag yaw。窗口默认 5、最大 20，长度 2 可用但明确标记离群识别能力有限；FIFO 淘汰前
+  先检查完整证据，新点失败不修改旧窗口/N/active。
 - first/next 为单次收敛自动结束；dry-run 保存窗口但不调 extnav，apply 只有 ACK 或权威状态对账
   确认后才保存正式窗口。ACK 超时未决必须锁存 `application_unknown`，同一 job/candidate 才能
   幂等重试，禁止刷新 CAS 覆盖第三方 revision。clear 只清服务窗口/N，不清 extnav active；
@@ -151,13 +150,11 @@
   onboard 自动航点触发仍未实现；本版实现的是不同停留位置/不同 Tag 的顺序 keyframe。
 - 生产 `tag_pose.csv` 仍只有 Tag 0，未编造 Tag 1/2 坐标；多 Tag 目前仅通过合成真值和隔离 ROS
   验证。相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
-  重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。2026-09-10 修复锚点 Bug
-  后，同位置 apply 的 FCU/EKF 仍约为 `(0.042,0.128)m`；生产帧复算的 `H_IT.xy=(-0.066,-0.087)m`
-  与既定 `T_FI.xy=(0.06,-0.03)m` 合成后表明相机链认为 Tag 相对 FCU 仍偏约 11.7 cm。若量具确认
-  二者物理重合，则应重标当前相机外参并复测 T，不能再改公式或放宽门限。云台同型号相机不能替代
-  下视校准相机。接口、correction_service 与 extnav 2.0 已选择性部署到飞机并核对
-  source/install/runtime；真实多 Tag 配准和世界坐标精度仍未验证，绝不能从单 Tag dry-run 推断
-  可实飞。
+  重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。2026-09-10 用户实测
+  Task29 初版约偏 `(0.20,0.10)m`，错误单点重锚版进一步恶化到约 `(0.25,0.15)m`；后者的真机
+  数据不能再用于证明前者来自外参/T/人工摆放。原始偏差仍待 Task27 首次算法恢复部署后，用固定
+  治具和同步 raw/PnP/C_full/corrected/FCU 证据重新分层。云台同型号相机不能替代下视校准相机。
+  本地源码已恢复，飞机因本轮断开尚未同步；真实多 Tag 配准和世界坐标精度仍未验证。
 - 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
   `/odin1/odometry_highfreq` 中的 `odom->imu`，按
   `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
@@ -527,11 +524,13 @@
   `agent/report/report-2026-09-09-task29-multi-tag-window-fcu-center.md` 与
   `agent/report/report-2026-09-09-task29-aircraft-deployment-camera-bench.md`、
   `agent/report/report-2026-09-09-task29-relaxed-gates-apply-bench.md`。
-- **2026-09-10：首次粗标定 SE(2) 锚点修复。** 现场日志证明旧版在丢弃 full SE(3) tilt 后仍
-  沿用其平移，7 个首标候选均违反 `P=RQ+t` 4.1～9.6 cm；现改为由同批 P/Q/yaw 重求平移并在
-  冻结时再次锚定。Jetson dry-run、apply/FCU/MAVROS、identity clear 与 23 项包测试通过，全程
-  未武装；剩余约 11.7～13 cm 几何不一致已分离到物理摆放/相机外参/T 输入侧，未伪造修正。
-  详见 `agent/report/report-2026-09-10-task29-single-tag-planar-anchor-bug.md`。
+- **2026-09-10：撤销错误的首次单点重锚。** 曾错误地把 Task27 的非零 tilt 投影差解释为 Bug，
+  在 `49f5b32` 中将首次平移改为 `P-Rz(yaw)Q` 并部署，用户复测由约 `(0.20,0.10)m` 恶化到
+  `(0.25,0.15)m`。该判断忽略了 Task29 明文规定首次应 `planar_xy_yaw(C_full)`，且单点重锚会
+  把被丢弃的倾斜和高度耦合进原点平移。本地现已恢复 Task27 首次逐帧几何、x/y/yaw 筛选与冻结
+  候选；保留 Task29 有效分支删除 `+T_xy`，多 Tag P/Q 配准只从第二点起生效。飞机本轮断开，
+  尚未部署复验；原约 20/10 cm 偏差仍未归因。旧报告已标为结论作废，详见
+  `agent/report/report-2026-09-10-task29-restore-task27-first-calibration.md`。
 
 ## 版本库与记录规范
 

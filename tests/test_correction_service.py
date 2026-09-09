@@ -19,7 +19,7 @@ from correction_service.geometry import (
     configured_tag_from_standard,
     homogeneous,
     planar_transform,
-    planar_translation_from_correspondence,
+    project_fcu_reference_pose,
     rotation_z,
     world_tag_transform,
 )
@@ -132,8 +132,8 @@ def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:
     )
 
 
-def test_tilted_full_chain_reanchors_limited_se2_to_observed_tag() -> None:
-    """丢弃 full correction 的倾斜后，平移仍须把同帧 Q 映射到已知 P。"""
+def test_tilted_full_chain_preserves_task27_planar_projection() -> None:
+    """非零 tilt 时首次仍直接提取 C_full 的 x/y/yaw，不能改成单点锚定。"""
     config = load_config(CONFIG_DIR)
     tag = config.tags[0]
     yaw = math.radians(-18.0)
@@ -170,27 +170,72 @@ def test_tilted_full_chain_reanchors_limited_se2_to_observed_tag() -> None:
     )
 
     assert np.allclose(correction.world_from_odin, desired_full, atol=1e-10)
+    assert math.isclose(correction.x_m, desired_full[0, 3], abs_tol=1e-10)
+    assert math.isclose(correction.y_m, desired_full[1, 3], abs_tol=1e-10)
     assert math.isclose(correction.yaw_rad, yaw, abs_tol=1e-10)
     assert math.isclose(correction.tilt_rad, pitch, abs_tol=1e-10)
+
+    # Task27 的 planar_xy_yaw(C_full) 保留坐标系原点平移。丢弃 tilt 后，
+    # 单个三维点通常不再严格满足二维 P=RQ+t；该差值不是重算首次平移的依据。
     q_odin = correction.odin_from_tag[:2, 3]
     predicted_world = rotation_z(correction.yaw_rad)[:2, :2] @ q_odin + np.array(
         (correction.x_m, correction.y_m)
     )
-    assert np.allclose(predicted_world, (tag.x, tag.y), atol=1e-10)
+    assert np.linalg.norm(predicted_world - np.array((tag.x, tag.y))) > 0.05
 
-    # 旧实现照搬 full SE(3) 平移；非零 tilt 时它违反同一 Tag 对应约束。
-    legacy_prediction = (
-        rotation_z(correction.yaw_rad)[:2, :2] @ q_odin
-        + desired_full[:2, 3]
+
+def test_task27_first_plus_task29_fcu_center_maps_tag_check_point_to_zero() -> None:
+    """首次沿用 Task27，且有效分支只删除 +T_xy，搬回 Tag0 时 FCU xy 应为零。"""
+    config = load_config(CONFIG_DIR)
+    tag = config.tags[0]
+    lever = np.array((0.06, -0.03, 0.05), dtype=np.float64)
+    # H_FI：Odin IMU 原点相对 FCU 原点位于 +T，二者安装角为零。
+    fcu_from_imu = homogeneous(np.eye(3), lever)
+
+    # 校准时飞机实际在 Tag0 附近，但 Odin 自建系读数可为 (5,6)、yaw=9deg。
+    world_from_fcu_calibration = homogeneous(np.eye(3), np.array((0.35, -0.22, 0.70)))
+    world_from_imu_calibration = world_from_fcu_calibration @ fcu_from_imu
+    odin_from_imu_calibration = homogeneous(
+        rotation_z(math.radians(9.0)), np.array((5.0, 6.0, 0.75))
     )
-    assert np.linalg.norm(legacy_prediction - np.array((tag.x, tag.y))) > 0.05
+    expected_world_from_odin = world_from_imu_calibration @ np.linalg.inv(
+        odin_from_imu_calibration
+    )
+
+    world_from_camera = world_from_imu_calibration @ config.t_imu_camera
+    camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
+        tag
+    )
+    camera_from_tag_standard = camera_from_tag_configured @ np.linalg.inv(
+        configured_tag_from_standard()
+    )
+    correction = compute_planar_correction(
+        camera_from_tag_standard,
+        tag,
+        config.t_imu_camera,
+        odin_from_imu_calibration,
+    )
+
+    assert np.allclose(correction.world_from_odin, expected_world_from_odin, atol=1e-10)
     assert np.allclose(
         (correction.x_m, correction.y_m),
-        planar_translation_from_correspondence(
-            np.array((tag.x, tag.y)), q_odin, correction.yaw_rad
-        ),
-        atol=1e-12,
+        expected_world_from_odin[:2, 3],
+        atol=1e-10,
     )
+
+    # 用户把 FCU 中心搬到 Tag0 正上方；用同一固定世界<-Odin 修正反求此时 raw。
+    world_from_fcu_check = homogeneous(np.eye(3), np.array((0.0, 0.0, 0.70)))
+    world_from_imu_check = world_from_fcu_check @ fcu_from_imu
+    odin_from_imu_check = np.linalg.inv(expected_world_from_odin) @ world_from_imu_check
+    projected = project_fcu_reference_pose(
+        odin_from_imu_check,
+        (correction.x_m, correction.y_m, correction.yaw_rad),
+        lever,
+    )
+
+    assert np.allclose(projected.position[:2], (0.0, 0.0), atol=1e-10)
+    # Task27 之后旧 extnav 若仍多加固定 +T_xy，会在正确零点显示该固定偏移。
+    assert np.allclose(projected.position[:2] + lever[:2], lever[:2], atol=1e-10)
 
 
 def test_fixed_fcu_extrinsic_cancels_from_world_odin_calibration() -> None:
@@ -243,6 +288,57 @@ def test_detector_pose_solver_uses_metric_tag_size_and_scaled_intrinsics() -> No
             result.camera_from_tag_standard[:3, 3], translation, atol=1e-5
         )
         assert result.reprojection_error_px < 1e-4
+
+
+def test_detector_pnp_accounts_for_distortion_without_double_correction() -> None:
+    """原始畸变角点配 K/D 应等价于先去畸变角点再配 K/零畸变。"""
+    config = load_config(CONFIG_DIR)
+    detector = AprilTagDetector(config.intrinsics, config.detection)
+    size_m = config.tags[0].size_m
+    half = size_m / 2.0
+    object_points = np.array(
+        (
+            (-half, half, 0.0),
+            (half, half, 0.0),
+            (half, -half, 0.0),
+            (-half, -half, 0.0),
+        ),
+        dtype=np.float64,
+    )
+    rotation_vector = np.array((0.08, -0.05, 0.23), dtype=np.float64)
+    translation = np.array((0.25, -0.15, 0.82), dtype=np.float64)
+    distorted_points, _ = cv2.projectPoints(
+        object_points,
+        rotation_vector,
+        translation,
+        detector.camera_matrix,
+        config.intrinsics.distortion,
+    )
+    detected = detector._estimate_pose(0, distorted_points, size_m)
+    undistorted_points = cv2.undistortPoints(
+        distorted_points,
+        detector.camera_matrix,
+        config.intrinsics.distortion,
+        P=detector.camera_matrix,
+    )
+    solved, explicit_rotation, explicit_translation = cv2.solvePnP(
+        object_points,
+        undistorted_points,
+        detector.camera_matrix,
+        np.zeros_like(config.intrinsics.distortion),
+        flags=cv2.SOLVEPNP_IPPE_SQUARE,
+    )
+
+    assert detected is not None and solved
+    assert np.allclose(
+        detected.camera_from_tag_standard[:3, 3],
+        explicit_translation.reshape(3),
+        atol=1e-10,
+    )
+    detected_rotation, _ = cv2.Rodrigues(explicit_rotation)
+    assert np.allclose(
+        detected.camera_from_tag_standard[:3, :3], detected_rotation, atol=1e-10
+    )
 
 
 def test_synchronizer_never_hides_bad_same_epoch_header_with_arrival_time() -> None:

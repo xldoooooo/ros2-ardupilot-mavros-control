@@ -17,7 +17,6 @@ from correction_service.window import (
     CalibrationKeyframe,
     RegistrationResult,
     WindowCandidate,
-    residual_under_correction,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -193,10 +192,10 @@ def test_window_commit_and_clear_increment_revision_without_touching_extnav(
     assert node._extnav.correction_x_m == 7.0
 
 
-def test_first_frozen_candidate_reanchors_aggregated_p_q_yaw(
+def test_first_frozen_candidate_preserves_task27_aggregated_c_full_projection(
     correction_node, tmp_path: Path
 ) -> None:
-    """冻结首标不能把独立汇总后的旧 x/y 当成零残差 P/Q 候选。"""
+    """冻结首标必须原样使用 Task27 x/y/yaw，Q 只保存供后续配准。"""
     node = correction_node
     job = _job(node, tmp_path, _candidate(node))
     job.samples_accepted = 24
@@ -205,7 +204,7 @@ def test_first_frozen_candidate_reanchors_aggregated_p_q_yaw(
         window_samples=24,
         inlier_samples=23,
         span_seconds=2.8,
-        # 故意模拟与汇总 Q/yaw 不再严格闭环的逐帧平移中值。
+        # 故意让 Q/yaw 的单点二维锚定值不同于 Task27 的 C_full 平移。
         x_m=0.40,
         y_m=-0.30,
         yaw_rad=math.radians(-15.0),
@@ -232,12 +231,13 @@ def test_first_frozen_candidate_reanchors_aggregated_p_q_yaw(
 
     assert job.candidate is not None
     candidate = job.candidate
-    assert not math.isclose(candidate.x_m, job.snapshot.x_m)
-    assert not math.isclose(candidate.y_m, job.snapshot.y_m)
-    assert residual_under_correction(
-        candidate.keyframes[0],
-        (candidate.x_m, candidate.y_m, candidate.yaw_rad),
-    ) < 1e-12
+    assert candidate.x_m == job.snapshot.x_m
+    assert candidate.y_m == job.snapshot.y_m
+    assert candidate.yaw_rad == job.snapshot.yaw_rad
+    assert candidate.registration.x_m == job.snapshot.x_m
+    assert candidate.registration.y_m == job.snapshot.y_m
+    assert candidate.keyframes[0].odin_x_m == job.snapshot.odin_tag_x_m
+    assert candidate.keyframes[0].odin_y_m == job.snapshot.odin_tag_y_m
     assert candidate.registration.residuals_m == (0.0,)
 
 

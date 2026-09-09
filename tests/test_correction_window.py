@@ -280,6 +280,29 @@ def test_next_keyframe_uses_time_blocks_and_nonzero_uncertainty_floor() -> None:
     assert snapshot.yaw_std_rad > CONFIG.quality.max_yaw_std_rad
 
 
+def test_first_estimator_keeps_task27_inlier_selection_independent_of_q() -> None:
+    """新增 Q 只能门控首个 keyframe，不能改变 Task27 粗修正的入选帧。"""
+    estimator = CorrectionEstimator(
+        CONFIG.quality, CONFIG.keyframe, first_calibration=True
+    )
+    samples = []
+    for index in range(8):
+        sample = replace(_sample(index), yaw_rad=math.radians(0.2))
+        if index == 7:
+            sample = replace(sample, odin_tag_x_m=20.0, odin_tag_y_m=-20.0)
+        samples.append(sample)
+        snapshot = estimator.add(sample)
+
+    expected_x = float(np.median([sample.x_m for sample in samples]))
+    expected_y = float(np.median([sample.y_m for sample in samples]))
+    assert snapshot.inlier_samples == len(samples)
+    assert snapshot.x_m == expected_x
+    assert snapshot.y_m == expected_y
+    # Q 本身仍须通过 Task29 keyframe 质量门，异常时不能保存到滑窗。
+    assert not snapshot.converged
+    assert snapshot.odin_tag_position_range_m > CONFIG.quality.max_position_range_m
+
+
 def test_keyframe_rejects_mixed_time_sources_and_large_sync_motion_error() -> None:
     """同段混用时间轴或高速下匹配误差过大时不得保存生产 keyframe。"""
     mixed = CorrectionEstimator(

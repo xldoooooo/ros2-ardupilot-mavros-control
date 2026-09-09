@@ -56,12 +56,13 @@ raw、corrected、最终 FCU pose、`valid/session/revision/reference_mode` 在�
 Q_i^O = translation(T_odin_imu * T_imu_camera * T_camera_tag)
 ```
 
-首次粗解先从完整 `T_world_odin` 提取 yaw/tilt，并从同帧完整空间链得到 `Q_i`；由于最终明确
-丢弃 roll/pitch，水平平移必须重新取 `t=P_i-R(yaw)Q_i`，不能继续照搬完整 SE(3) 的 x/y
-平移。这样首次实际应用的受限 SE(2) 仍严格满足 `P_i=R(yaw)Q_i+t`。停留段分别稳健汇总
-x/y/yaw/Q 后，冻结候选还会用汇总后的 P/Q/yaw 再锚定一次，避免独立汇总引入闭环残差。
-同时保存第一个 `P_i/Q_i` keyframe。
-窗口至少有两个不同且分离的 Tag 后，求：
+首次粗解严格沿用 Task27：先计算完整 `T_world_odin`，再直接取该矩阵的 x/y 平移与 yaw；z
+平移和 roll/pitch 不应用，tilt 只作诊断/门控。不能用单个 `P_i/Q_i` 将首次平移改写成
+`P_i-R(yaw)Q_i`；非零 tilt 下这种单点重锚会把观测高度和被丢弃的倾斜分量灌入坐标系原点
+平移。首次的 x/y/yaw 离群筛选和稳健汇总也保持 Task27 语义。
+
+同一批观测另外生成第一个 `P_i/Q_i` keyframe。新增 Q 只接受自身质量门检查，不参与或改写
+首次粗修正；从第二个不同且分离的 Tag 起，才按滑窗模型求：
 
 ```text
 min Σ w_i ||P_i - (R(theta) Q_i + t)||²
@@ -71,6 +72,10 @@ w_i = 1 / sigma_i²
 平移使用同一绝对逆方差权重下的加权质心；旋转限制为 `det(R)=+1`，不拟合尺度或镜像。
 二维共线但充分分离的点仍可观 yaw，不错误套用三维满秩条件。每次都从窗口原始 `P/Q`
 重算，single-Tag yaw 只参与首次粗解，后续精解不对各 Tag yaw 做平均。
+
+检测器在原始畸变图上定位亚像素角点，并把与处理分辨率匹配的内参 `K` 和标定畸变系数 `D`
+直接传给 OpenCV `solvePnP`；这与先对角点执行 `undistortPoints`、再使用 `K` 和零畸变求解等价。
+不得先整图去畸变后又重复传入 `D`。
 
 默认窗口长度 5、最大 20、最小长度 2。长度 2 可正常求解和应用，但只能报告“离群识别
 能力有限”。窗口满时先用“旧窗口 + 新点”检查整体一致性，再模拟 FIFO；若新点异常，旧窗、
@@ -212,6 +217,8 @@ ros2 topic hz /odin1/odometry_highfreq_corrected
 Q/质量、keyframe 的 P/Q/sigma/weight/residual、淘汰前后配准、门限、实际 FCU 跳变、请求、
 ACK/状态对账和资源结果；非有限值写为 JSON `null`，不输出非法 NaN。
 
+- 2026-09-10 本地源码已撤销错误的首次单点重锚，恢复 Task27 首次算法；飞机本轮断开，尚未
+  部署此恢复版本。下一轮部署并核对 source/install/runtime 前，不能假定机载首次算法与本地一致。
 - 生产 `tag_pose.csv` 当前只有实测定义的 Tag 0；没有编造 Tag 1/2 坐标。因此真实 next
   操作需先加入经测量的不同 Tag，当前多 Tag 验收只使用测试夹具中的合成真值。
 - 2026-09-09 已在飞机确认 USB `1.2` 下视相机可见 Tag 0，并完成未武装 dry-run、一次显式

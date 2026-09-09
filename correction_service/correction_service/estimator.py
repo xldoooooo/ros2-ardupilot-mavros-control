@@ -173,9 +173,13 @@ class CorrectionEstimator:
         )
         yaw_seed = _circular_mean(yaw)
         yaw_delta = _circular_deltas(yaw, yaw_seed)
-        features = np.column_stack((x, y, yaw_delta, qx, qy))
-        if not self._first_calibration:
-            features = np.column_stack((qx, qy))
+        # 首次修正必须保持 Task27 的 x/y/yaw 离群筛选；新增 Q 只作为首个
+        # keyframe 的质量证据，不能反向改变粗修正的入选帧或候选数值。
+        features = (
+            np.column_stack((x, y, yaw_delta))
+            if self._first_calibration
+            else np.column_stack((qx, qy))
+        )
         mask = (
             _robust_mask(features, self._settings.mad_outlier_scale)
             if len(samples) >= 8
