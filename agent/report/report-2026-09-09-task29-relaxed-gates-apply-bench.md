@@ -151,7 +151,8 @@ applied_job_id=''
 
 ## 最终状态
 
-- correction_service 窗口已显式清空，window revision 2、N=0、无候选、资源已释放。
+- 实验服务实例的窗口已显式清空到 window revision 2、N=0；最终同步 README 后安装器重启了
+  correction_service，新实例为 revision 0、窗口为空、无候选且资源已释放。
 - extnav 最后在线状态为 `correction_valid=false / revision=2 / reset_counter=2`，identity passthrough。
 - 两台摄像头均无人占用；无 correction camera、FFmpeg 或 GStreamer 进程。
 - `ros2-ardupilot-onboard.service` 已恢复测试前的停止状态；既有停止脚本使 unit 显示
