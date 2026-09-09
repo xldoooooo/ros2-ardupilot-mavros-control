@@ -1,4 +1,4 @@
-"""AprilTag、相机、Odin IMU 的完整 SE(3) 组合与最终 SE(2) 提取。"""
+"""AprilTag、相机、Odin IMU 的完整 SE(3) 组合与锚点一致 SE(2) 投影。"""
 
 from __future__ import annotations
 
@@ -123,6 +123,20 @@ def world_tag_transform(tag: TagPose) -> np.ndarray:
     return homogeneous(rotation_z(tag.yaw_rad), np.array((tag.x, tag.y, tag.z)))
 
 
+def planar_translation_from_correspondence(
+    world_xy: np.ndarray, odin_xy: np.ndarray, yaw_rad: float
+) -> np.ndarray:
+    """给定 yaw 求唯一平移，使水平对应点严格满足 P=R*Q+t。"""
+    world = np.asarray(world_xy, dtype=np.float64).reshape(2)
+    odin = np.asarray(odin_xy, dtype=np.float64).reshape(2)
+    yaw = float(yaw_rad)
+    if not np.isfinite(world).all() or not np.isfinite(odin).all() or not math.isfinite(
+        yaw
+    ):
+        raise ValueError("水平对应点或 yaw 含非有限值")
+    return world - rotation_z(yaw)[:2, :2] @ odin
+
+
 def configured_tag_from_standard() -> np.ndarray:
     """把 OpenCV 的 +X右/+Y上 Tag 坐标转换为配置的 +X上/+Y左。"""
     # p_standard = R_standard_configured * p_configured
@@ -136,7 +150,7 @@ def compute_planar_correction(
     imu_from_camera: np.ndarray,
     odin_from_imu: np.ndarray,
 ) -> PlanarCorrection:
-    """按任务规定先完成 SE(3) 链，再仅提取世界<-Odin 的 x/y/yaw。"""
+    """先完成 SE(3) 链，再以同帧 Tag 中心锚定可应用的水平 SE(2)。"""
     camera_from_tag_standard = np.asarray(
         camera_from_tag_standard, dtype=np.float64
     ).reshape(4, 4)
@@ -162,9 +176,16 @@ def compute_planar_correction(
     yaw = wrap_angle(math.atan2(float(rotation[1, 0]), float(rotation[0, 0])))
     # 非平面分量只用于质量门控；extnav 明确不应用 z/roll/pitch。
     tilt = math.acos(float(np.clip(rotation[2, 2], -1.0, 1.0)))
+    # 丢弃 roll/pitch 后不能继续沿用完整 SE(3) 的 x/y 平移：否则非零 tilt
+    # 会使受限 SE(2) 连本次用于标定的 Tag 中心都映射不到其已知世界坐标。
+    translation_xy = planar_translation_from_correspondence(
+        np.array((tag.x, tag.y), dtype=np.float64),
+        odin_from_tag[:2, 3],
+        yaw,
+    )
     return PlanarCorrection(
-        x_m=float(world_from_odin[0, 3]),
-        y_m=float(world_from_odin[1, 3]),
+        x_m=float(translation_xy[0]),
+        y_m=float(translation_xy[1]),
         yaw_rad=yaw,
         tilt_rad=tilt,
         world_imu=world_from_imu,

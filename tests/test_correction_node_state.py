@@ -11,11 +11,13 @@ from typing import Any
 
 import numpy as np
 import pytest
+from correction_service.estimator import QualitySnapshot
 from correction_service.journal import JobJournal
 from correction_service.window import (
     CalibrationKeyframe,
     RegistrationResult,
     WindowCandidate,
+    residual_under_correction,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -189,6 +191,54 @@ def test_window_commit_and_clear_increment_revision_without_touching_extnav(
     assert node._successful_calibrations == 0
     assert node._extnav.correction_valid
     assert node._extnav.correction_x_m == 7.0
+
+
+def test_first_frozen_candidate_reanchors_aggregated_p_q_yaw(
+    correction_node, tmp_path: Path
+) -> None:
+    """冻结首标不能把独立汇总后的旧 x/y 当成零残差 P/Q 候选。"""
+    node = correction_node
+    job = _job(node, tmp_path, _candidate(node))
+    job.samples_accepted = 24
+    job.samples_rejected = 1
+    job.snapshot = QualitySnapshot(
+        window_samples=24,
+        inlier_samples=23,
+        span_seconds=2.8,
+        # 故意模拟与汇总 Q/yaw 不再严格闭环的逐帧平移中值。
+        x_m=0.40,
+        y_m=-0.30,
+        yaw_rad=math.radians(-15.0),
+        tilt_rad=math.radians(7.0),
+        position_std_m=0.004,
+        yaw_std_rad=math.radians(0.03),
+        reprojection_error_px=0.3,
+        odom_match_error_ms=1.0,
+        odom_time_source="arrival_history",
+        odin_tag_x_m=-0.05,
+        odin_tag_y_m=-0.13,
+        odin_tag_position_std_m=0.001,
+        effective_position_sigma_m=0.012,
+        independent_blocks=12,
+        max_sync_motion_error_m=0.001,
+        capture_start_ns=1_000_000_000,
+        capture_end_ns=3_800_000_000,
+        converged=True,
+        reason="候选修正已收敛",
+    )
+
+    with node._lock:
+        node._freeze_candidate_locked(job)
+
+    assert job.candidate is not None
+    candidate = job.candidate
+    assert not math.isclose(candidate.x_m, job.snapshot.x_m)
+    assert not math.isclose(candidate.y_m, job.snapshot.y_m)
+    assert residual_under_correction(
+        candidate.keyframes[0],
+        (candidate.x_m, candidate.y_m, candidate.yaw_rad),
+    ) < 1e-12
+    assert candidate.registration.residuals_m == (0.0,)
 
 
 def test_stale_service_instance_and_window_revision_are_rejected(

@@ -56,7 +56,11 @@ raw、corrected、最终 FCU pose、`valid/session/revision/reference_mode` 在�
 Q_i^O = translation(T_odin_imu * T_imu_camera * T_camera_tag)
 ```
 
-首次粗解仍从完整 `T_world_odin` 提取 `x/y/yaw`，同时保存第一个 `P_i/Q_i` keyframe。
+首次粗解先从完整 `T_world_odin` 提取 yaw/tilt，并从同帧完整空间链得到 `Q_i`；由于最终明确
+丢弃 roll/pitch，水平平移必须重新取 `t=P_i-R(yaw)Q_i`，不能继续照搬完整 SE(3) 的 x/y
+平移。这样首次实际应用的受限 SE(2) 仍严格满足 `P_i=R(yaw)Q_i+t`。停留段分别稳健汇总
+x/y/yaw/Q 后，冻结候选还会用汇总后的 P/Q/yaw 再锚定一次，避免独立汇总引入闭环残差。
+同时保存第一个 `P_i/Q_i` keyframe。
 窗口至少有两个不同且分离的 Tag 后，求：
 
 ```text

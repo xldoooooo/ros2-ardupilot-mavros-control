@@ -49,6 +49,7 @@ from .estimator import CorrectionEstimator, CorrectionSample, QualitySnapshot
 from .geometry import (
     compute_planar_correction,
     expected_fcu_jump,
+    planar_translation_from_correspondence,
     transform_from_pose,
     wrap_angle,
 )
@@ -1258,12 +1259,28 @@ class CorrectionServiceNode(Node):
             source_job_id=job.job_id,
         )
         if job.operation == CorrectionStatus.OPERATION_FIRST:
+            # x/y/yaw/Q 分别做稳健汇总后会有微小非线性差异；冻结时重新以同批
+            # P/Q 锚定平移，保证最终应用候选严格满足窗口的 P=R*Q+t 模型。
+            first_translation = planar_translation_from_correspondence(
+                np.array((tag.x, tag.y), dtype=np.float64),
+                np.array(
+                    (snapshot.odin_tag_x_m, snapshot.odin_tag_y_m),
+                    dtype=np.float64,
+                ),
+                snapshot.yaw_rad,
+            )
+            candidate_x = float(first_translation[0])
+            candidate_y = float(first_translation[1])
+            candidate_yaw = snapshot.yaw_rad
             registration = RegistrationResult(
                 valid=True,
-                reason="首次单 Tag 完整 SE(3) 粗修正；尚无空间基线",
-                x_m=snapshot.x_m,
-                y_m=snapshot.y_m,
-                yaw_rad=snapshot.yaw_rad,
+                reason=(
+                    "首次单 Tag 完整 SE(3) 提取 yaw，并以同批 P/Q 锚定水平平移；"
+                    "尚无空间基线"
+                ),
+                x_m=candidate_x,
+                y_m=candidate_y,
+                yaw_rad=candidate_yaw,
                 rms_m=0.0,
                 max_residual_m=0.0,
                 model_yaw_std_rad=snapshot.yaw_std_rad,
@@ -1271,11 +1288,6 @@ class CorrectionServiceNode(Node):
             )
             temporary_window = (keyframe,)
             stage = "rough_single_tag"
-            candidate_x, candidate_y, candidate_yaw = (
-                snapshot.x_m,
-                snapshot.y_m,
-                snapshot.yaw_rad,
-            )
             quality_reason = registration.reason
         else:
             prior = self._saved_candidate

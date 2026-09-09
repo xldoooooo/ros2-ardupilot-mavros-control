@@ -19,6 +19,7 @@ from correction_service.geometry import (
     configured_tag_from_standard,
     homogeneous,
     planar_transform,
+    planar_translation_from_correspondence,
     rotation_z,
     world_tag_transform,
 )
@@ -128,6 +129,67 @@ def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:
         (correction.odin_tag_x_m, correction.odin_tag_y_m),
         expected_odin_from_tag[:2, 3],
         atol=1e-10,
+    )
+
+
+def test_tilted_full_chain_reanchors_limited_se2_to_observed_tag() -> None:
+    """丢弃 full correction 的倾斜后，平移仍须把同帧 Q 映射到已知 P。"""
+    config = load_config(CONFIG_DIR)
+    tag = config.tags[0]
+    yaw = math.radians(-18.0)
+    pitch = math.radians(8.0)
+    pitch_rotation = np.array(
+        (
+            (math.cos(pitch), 0.0, math.sin(pitch)),
+            (0.0, 1.0, 0.0),
+            (-math.sin(pitch), 0.0, math.cos(pitch)),
+        ),
+        dtype=np.float64,
+    )
+    desired_full = homogeneous(
+        rotation_z(yaw) @ pitch_rotation,
+        np.array((0.08, -0.04, 0.72)),
+    )
+    odin_from_imu = homogeneous(
+        rotation_z(math.radians(11.0)), np.array((0.25, -0.31, 0.72))
+    )
+    world_from_imu = desired_full @ odin_from_imu
+    world_from_camera = world_from_imu @ config.t_imu_camera
+    camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
+        tag
+    )
+    camera_from_tag_standard = camera_from_tag_configured @ np.linalg.inv(
+        configured_tag_from_standard()
+    )
+
+    correction = compute_planar_correction(
+        camera_from_tag_standard,
+        tag,
+        config.t_imu_camera,
+        odin_from_imu,
+    )
+
+    assert np.allclose(correction.world_from_odin, desired_full, atol=1e-10)
+    assert math.isclose(correction.yaw_rad, yaw, abs_tol=1e-10)
+    assert math.isclose(correction.tilt_rad, pitch, abs_tol=1e-10)
+    q_odin = correction.odin_from_tag[:2, 3]
+    predicted_world = rotation_z(correction.yaw_rad)[:2, :2] @ q_odin + np.array(
+        (correction.x_m, correction.y_m)
+    )
+    assert np.allclose(predicted_world, (tag.x, tag.y), atol=1e-10)
+
+    # 旧实现照搬 full SE(3) 平移；非零 tilt 时它违反同一 Tag 对应约束。
+    legacy_prediction = (
+        rotation_z(correction.yaw_rad)[:2, :2] @ q_odin
+        + desired_full[:2, 3]
+    )
+    assert np.linalg.norm(legacy_prediction - np.array((tag.x, tag.y))) > 0.05
+    assert np.allclose(
+        (correction.x_m, correction.y_m),
+        planar_translation_from_correspondence(
+            np.array((tag.x, tag.y)), q_odin, correction.yaw_rad
+        ),
+        atol=1e-12,
     )
 
 

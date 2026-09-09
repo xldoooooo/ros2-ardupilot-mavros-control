@@ -7,7 +7,11 @@ from pathlib import Path
 
 import numpy as np
 from correction_service.camera_process import parse_v4l2_control_value
-from correction_service.geometry import planar_transform
+from correction_service.geometry import (
+    planar_transform,
+    planar_translation_from_correspondence,
+    rotation_z,
+)
 from correction_service.synchronizer import is_apply_time_source_safe
 
 from correction_service.config import load_config
@@ -41,6 +45,17 @@ def test_planar_correction_rotates_translation_and_preserves_z() -> None:
     corrected = planar_transform(10.0, -3.0, math.pi / 2.0) @ pose
 
     assert np.allclose(corrected[:3, 3], (8.0, -2.0, 0.7), atol=1e-12)
+
+
+def test_single_tag_planar_translation_closes_p_q_constraint() -> None:
+    """非零 yaw 的首标平移必须由 P/Q 锚定，不能照搬倾斜 SE(3) 平移。"""
+    world = np.array((0.0, 0.0))
+    odin = np.array((-0.0489902642, -0.1289013093))
+    yaw = math.radians(-15.462725)
+    translation = planar_translation_from_correspondence(world, odin, yaw)
+
+    predicted = rotation_z(yaw)[:2, :2] @ odin + translation
+    assert np.allclose(predicted, world, atol=1e-12)
 
 
 def test_runtime_compatibility_helpers_accept_real_aircraft_values() -> None:
