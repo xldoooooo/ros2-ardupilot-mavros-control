@@ -1,13 +1,36 @@
-# 一次校准任务的可靠终态；失败不会修改 extnav 的 active correction。
+# 一次滑窗采样或保存候选应用操作的可靠终态。
+uint8 OPERATION_FIRST=1
+uint8 OPERATION_NEXT=2
+uint8 OPERATION_APPLY_SAVED=3
+
+uint8 APPLICATION_NONE=0
+uint8 APPLICATION_NOT_REQUESTED=1
+uint8 APPLICATION_PENDING=2
+uint8 APPLICATION_APPLIED_ACK=3
+uint8 APPLICATION_APPLIED_STATUS=4
+uint8 APPLICATION_REJECTED=5
+uint8 APPLICATION_UNKNOWN=6
+
 std_msgs/Header header
 string interface_version
+string service_instance_id
 string job_id
+uint8 operation
 int32 expected_tag_id
 int32 detected_tag_id
 bool apply_requested
 bool success
+bool window_saved
+bool resources_released
+uint8 application_state
+string application_state_text
+bool application_confirmed_by_status
 bool applied
 string odin_session_id
+uint64 window_revision
+uint32 window_count
+uint32 window_size
+uint32 successful_calibrations
 uint64 extnav_revision
 float64 correction_x_m
 float64 correction_y_m
@@ -19,9 +42,15 @@ float64 position_std_m
 float64 yaw_std_deg
 float64 reprojection_error_px
 float64 odom_match_error_ms
+float64 registration_rms_m
+float64 registration_max_residual_m
+float64 model_yaw_std_deg
+float64 expected_position_jump_m
+float64 expected_yaw_jump_deg
 float64 duration_s
 float64 processing_rate_hz
 float64 processing_time_ms
+string candidate_stage
 string outcome
 string message
 string log_path

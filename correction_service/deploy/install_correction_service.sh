@@ -9,6 +9,7 @@ readonly SERVICE_NAME="odin-correction.service"
 readonly SERVICE_TEMPLATE="${SCRIPT_DIR}/correction-service.service.example"
 readonly ENV_TEMPLATE="${SCRIPT_DIR}/correction.env.example"
 readonly FLIGHT_SERVICE="ros2-ardupilot-onboard.service"
+readonly CORRECTION_PACKAGE_VERSION="2.0.0"
 
 die() {
   printf '[correction-install] ERROR: %s\n' "$*" >&2
@@ -30,6 +31,14 @@ source_setup() {
   # shellcheck disable=SC1090
   source "${setup_file}"
   set -u
+}
+
+verify_manifest_version() {
+  # 同时检查 source/install 清单，防止旧 overlay 静默提供 1.x 接口。
+  local manifest="$1"
+  [[ -r "${manifest}" ]] || die "package manifest is missing: ${manifest}"
+  grep -Eq "<version>[[:space:]]*${CORRECTION_PACKAGE_VERSION//./\\.}[[:space:]]*</version>" \
+    "${manifest}" || die "package manifest is not ${CORRECTION_PACKAGE_VERSION}: ${manifest}"
 }
 
 usage() {
@@ -54,6 +63,15 @@ fi
   die "service deployment templates are incomplete"
 [[ -f "${WORKSPACE_ROOT}/correction_service/config/general_settings.yaml" ]] ||
   die "correction configuration is missing"
+verify_manifest_version "${WORKSPACE_ROOT}/src/correction_interfaces/package.xml"
+verify_manifest_version "${WORKSPACE_ROOT}/correction_service/package.xml"
+grep -q 'expected_service_instance_id' \
+  "${WORKSPACE_ROOT}/src/correction_interfaces/srv/StartCorrection.srv" ||
+  die "source StartCorrection is not interface 2.0"
+[[ -f "${WORKSPACE_ROOT}/src/correction_interfaces/srv/ClearWindow.srv" ]] ||
+  die "source ClearWindow interface is missing"
+[[ -f "${WORKSPACE_ROOT}/src/correction_interfaces/srv/ApplySavedCorrection.srv" ]] ||
+  die "source ApplySavedCorrection interface is missing"
 if systemctl is-active --quiet "${FLIGHT_SERVICE}" 2>/dev/null; then
   die "${FLIGHT_SERVICE} is active; stop it only in a confirmed safe maintenance window"
 fi
@@ -91,8 +109,20 @@ PY
     --symlink-install
 )
 source_setup "${WORKSPACE_ROOT}/install/setup.bash"
+interfaces_prefix="$(ros2 pkg prefix correction_interfaces)"
+service_prefix="$(ros2 pkg prefix correction_service)"
+verify_manifest_version "${interfaces_prefix}/share/correction_interfaces/package.xml"
+verify_manifest_version "${service_prefix}/share/correction_service/package.xml"
+ros2 interface show correction_interfaces/msg/CalibrationKeyframe >/dev/null
+installed_status="$(ros2 interface show correction_interfaces/msg/CorrectionStatus)"
+grep -q 'service_instance_id' <<< "${installed_status}" ||
+  die "installed CorrectionStatus is not 2.0"
+installed_start="$(ros2 interface show correction_interfaces/srv/StartCorrection)"
+grep -q 'expected_window_revision' <<< "${installed_start}" ||
+  die "installed StartCorrection is not 2.0"
+ros2 interface show correction_interfaces/srv/ClearWindow >/dev/null
+ros2 interface show correction_interfaces/srv/ApplySavedCorrection >/dev/null
 ros2 interface show correction_interfaces/srv/SetCorrection >/dev/null
-ros2 pkg prefix correction_service >/dev/null
 
 run_root install -d -m 0755 /etc/ros2-ardupilot
 if [[ ! -e /etc/ros2-ardupilot/correction.env ]]; then

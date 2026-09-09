@@ -1,0 +1,11 @@
+# 只清空 correction_service 内存滑窗；绝不清除 extnav active correction。
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+string expected_service_instance_id
+uint64 expected_window_revision
+---
+bool accepted
+string service_instance_id
+uint64 window_revision
+string message

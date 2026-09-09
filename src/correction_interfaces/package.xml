@@ -3,8 +3,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>correction_interfaces</name>
-  <version>1.0.0</version>
-  <description>Independent interfaces for AprilTag-to-Odin planar correction.</description>
+  <version>2.0.0</version>
+  <description>Independent interfaces for multi-Tag AprilTag-to-Odin window calibration.</description>
   <maintainer email="xld@todo.todo">xld</maintainer>
   <license>Apache-2.0</license>
 

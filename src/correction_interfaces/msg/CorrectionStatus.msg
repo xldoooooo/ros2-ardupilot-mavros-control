@@ -1,4 +1,4 @@
-# correction_service 的实时任务、候选修正与质量状态。
+# correction_service 2.0 的任务、服务端滑窗、候选和应用状态。
 uint8 STATE_IDLE=0
 uint8 STATE_STARTING=1
 uint8 STATE_SAMPLING=2
@@ -8,24 +8,60 @@ uint8 STATE_SUCCEEDED=5
 uint8 STATE_FAILED=6
 uint8 STATE_STOPPING=7
 
+uint8 OPERATION_NONE=0
+uint8 OPERATION_FIRST=1
+uint8 OPERATION_NEXT=2
+uint8 OPERATION_APPLY_SAVED=3
+
+uint8 APPLICATION_NONE=0
+uint8 APPLICATION_NOT_REQUESTED=1
+uint8 APPLICATION_PENDING=2
+uint8 APPLICATION_APPLIED_ACK=3
+uint8 APPLICATION_APPLIED_STATUS=4
+uint8 APPLICATION_REJECTED=5
+uint8 APPLICATION_UNKNOWN=6
+
 std_msgs/Header header
 string interface_version
 bool service_available
+string service_instance_id
+uint64 window_revision
+string config_fingerprint
+
 bool active
 uint8 state
 string state_text
+uint8 operation
+string operation_text
 string job_id
 int32 expected_tag_id
 int32 detected_tag_id
 bool apply_requested
 string odin_session_id
 uint64 base_revision
+
+uint32 window_size
+uint32 window_count
+uint32 successful_calibrations
+uint32 next_calibration_number
+correction_interfaces/CalibrationKeyframe[] keyframes
+string window_state
+string window_message
+
 uint32 frames_received
 uint32 frames_processed
 uint32 detections_total
 uint32 samples_accepted
 uint32 samples_rejected
 float64 elapsed_s
+
+bool candidate_saved
+bool candidate_valid
+bool candidate_stale
+string candidate_stage
+uint64 candidate_window_revision
+uint64 candidate_extnav_revision
+uint64 candidate_created_ns
 float64 candidate_x_m
 float64 candidate_y_m
 float64 candidate_yaw_deg
@@ -38,7 +74,33 @@ string odom_time_source
 float64 processing_rate_hz
 float64 processing_time_ms
 bool converged
+
+int32 baseline_tag_a
+int32 baseline_tag_b
+float64 odin_baseline_m
+float64 world_baseline_m
+float64 odin_baseline_direction_deg
+float64 world_baseline_direction_deg
+float64 registration_rms_m
+float64 registration_max_residual_m
+float64 model_yaw_std_deg
+bool two_point_limited
+
+float64 delta_x_m
+float64 delta_y_m
+float64 delta_yaw_deg
+float64 expected_position_jump_m
+float64 expected_yaw_jump_deg
+bool can_apply
+string apply_reason
+
+uint8 application_state
+string application_state_text
+bool application_confirmed_by_status
+bool window_saved
+bool resources_released
 bool extnav_applied
 uint64 extnav_revision
+string log_path
 string message
 string last_error

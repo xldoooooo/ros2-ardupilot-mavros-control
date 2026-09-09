@@ -8,7 +8,7 @@ PACKAGE_NAME = "correction_service"
 
 setup(
     name=PACKAGE_NAME,
-    version="1.0.0",
+    version="2.0.0",
     packages=find_packages(exclude=("test", "tests")),
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE_NAME}"]),
@@ -20,7 +20,7 @@ setup(
     zip_safe=True,
     maintainer="xld",
     maintainer_email="xld@todo.todo",
-    description="Independent AprilTag-to-Odin planar correction service.",
+    description="Independent multi-Tag AprilTag-to-Odin window calibration service.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

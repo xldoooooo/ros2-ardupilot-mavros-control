@@ -8,12 +8,15 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/CalibrationKeyframe.msg"
   "msg/CorrectionResult.msg"
   "msg/CorrectionStatus.msg"
   "msg/ExtnavCorrectionStatus.msg"
   "srv/SetCorrection.srv"
   "srv/StartCorrection.srv"
   "srv/StopCorrection.srv"
+  "srv/ClearWindow.srv"
+  "srv/ApplySavedCorrection.srv"
   DEPENDENCIES
     builtin_interfaces
     std_msgs

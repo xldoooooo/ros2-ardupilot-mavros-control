@@ -1,5 +1,5 @@
 # AprilTag-Odin 修正任务、同步、质量和 ROS 话题配置。
-interface_version: "1.0"
+interface_version: "2.0"
 
 topics:
   raw_odometry: /odin1/odometry_highfreq
@@ -10,6 +10,8 @@ topics:
   extnav_status: /extnav/correction_status
   start_service: /correction_service/start
   stop_service: /correction_service/stop
+  clear_window_service: /correction_service/clear_window
+  apply_saved_service: /correction_service/apply_saved
   set_correction_service: /extnav/set_correction
 
 detection:
@@ -42,12 +44,49 @@ quality:
   divergence_yaw_range_deg: 12.0
   mad_outlier_scale: 4.5
 
+# 一个停留段内先按时间块估计有效独立信息，再施加不可被帧数消除的公制误差下限。
+keyframe:
+  correlation_block_seconds: 0.25
+  minimum_independent_blocks: 5
+  odin_position_noise_floor_m: 0.005
+  tag_world_sigma_m: 0.005
+  # 当前下视相机曾拆装；此项是原理验证的保守误差下限，不是重新实测结果。
+  extrinsic_sigma_m: 0.010
+  minimum_effective_sigma_m: 0.012
+  maximum_effective_sigma_m: 0.250
+  max_sync_motion_error_m: 0.030
+
+# 滑窗默认 5、最大 20；长度 2 可求解/应用，但只能标记为有限离群识别能力。
+window:
+  default_size: 5
+  maximum_size: 20
+  minimum_baseline_m: 1.0
+  maximum_baseline_ratio_error: 0.15
+  maximum_window_span_seconds: 1800.0
+  maximum_keyframe_gap_seconds: 600.0
+  candidate_max_age_seconds: 300.0
+  max_registration_rms_m: 0.080
+  max_registration_residual_m: 0.150
+  max_model_yaw_std_deg: 1.0
+  max_prior_model_residual_m: 0.500
+  max_apply_position_jump_m: 1.0
+  max_apply_yaw_jump_deg: 10.0
+  recommended_precision_keyframes: 3
+
+# 仅用于复算候选在飞控参考中心处的实际跳变；extnav 状态必须回报同一参数。
+fcu_reference:
+  lever_arm_m: [0.06, -0.03, 0.05]
+  parameter_tolerance: 0.000001
+  require_zero_installation_angles: true
+
 timeouts:
   camera_start_seconds: 12.0
   first_tag_seconds: 20.0
   extnav_apply_seconds: 5.0
-  # 地面站 apply=false 任务收敛后持续更新，直到显式 stop；0 表示不设总时限。
-  ground_max_runtime_seconds: 0.0
+  # ACK 丢失后只用新鲜 extnav 权威状态做有限对账，仍不确定则锁存 unknown。
+  extnav_reconcile_seconds: 3.0
+  # first/next 均为单次收敛自动结束；防止相机因永不收敛而无限占用。
+  ground_max_runtime_seconds: 60.0
 
 logging:
   directory: ../log

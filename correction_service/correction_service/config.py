@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import configparser
 import csv
+import hashlib
 import math
 import re
 from dataclasses import dataclass
@@ -95,12 +96,56 @@ class QualitySettings:
 
 
 @dataclass(frozen=True)
+class KeyframeSettings:
+    """单个停留段的独立时间块、误差下限和同步运动门。"""
+
+    correlation_block_seconds: float
+    minimum_independent_blocks: int
+    odin_position_noise_floor_m: float
+    tag_world_sigma_m: float
+    extrinsic_sigma_m: float
+    minimum_effective_sigma_m: float
+    maximum_effective_sigma_m: float
+    max_sync_motion_error_m: float
+
+
+@dataclass(frozen=True)
+class WindowSettings:
+    """跨 Tag FIFO、二维刚体配准、老化和应用跳变阈值。"""
+
+    default_size: int
+    maximum_size: int
+    minimum_baseline_m: float
+    maximum_baseline_ratio_error: float
+    maximum_window_span_seconds: float
+    maximum_keyframe_gap_seconds: float
+    candidate_max_age_seconds: float
+    max_registration_rms_m: float
+    max_registration_residual_m: float
+    max_model_yaw_std_rad: float
+    max_prior_model_residual_m: float
+    max_apply_position_jump_m: float
+    max_apply_yaw_jump_rad: float
+    recommended_precision_keyframes: int
+
+
+@dataclass(frozen=True)
+class FcuReferenceSettings:
+    """用于应用跳变复算的已核实 extnav 飞控参考中心参数。"""
+
+    lever_arm_m: np.ndarray
+    parameter_tolerance: float
+    require_zero_installation_angles: bool
+
+
+@dataclass(frozen=True)
 class TimeoutSettings:
     """相机、首个 Tag、extnav ACK 与地面任务生命周期限制。"""
 
     camera_start_seconds: float
     first_tag_seconds: float
     extnav_apply_seconds: float
+    extnav_reconcile_seconds: float
     ground_max_runtime_seconds: float
 
 
@@ -120,6 +165,7 @@ class ServiceConfig:
 
     config_dir: Path
     interface_version: str
+    config_fingerprint: str
     topics: dict[str, str]
     intrinsics: Intrinsics
     t_imu_camera: np.ndarray
@@ -129,6 +175,9 @@ class ServiceConfig:
     detection: DetectionSettings
     synchronization: SynchronizationSettings
     quality: QualitySettings
+    keyframe: KeyframeSettings
+    window: WindowSettings
+    fcu_reference: FcuReferenceSettings
     timeouts: TimeoutSettings
     logging: LoggingSettings
 
@@ -136,7 +185,7 @@ class ServiceConfig:
 def _mapping(value: Any, name: str) -> dict[str, Any]:
     """要求 YAML 节点为映射并保留可读错误路径。"""
     if not isinstance(value, dict):
-        raise ValueError(f"{name} 必须是映射")
+        raise TypeError(f"{name} 必须是映射")
     return value
 
 
@@ -317,6 +366,26 @@ def _load_lens(config_dir: Path) -> dict[str, int]:
     return controls
 
 
+def _configuration_fingerprint(config_dir: Path) -> str:
+    """哈希全部几何与采集配置，阻止修改后静默复用内存窗口。"""
+    digest = hashlib.sha256()
+    for name in (
+        "general_settings.yaml",
+        "intrinsics.yaml",
+        "extrinsics.yaml",
+        "tag_pose.csv",
+        "camera.conf",
+        "lens.conf",
+    ):
+        path = config_dir / name
+        try:
+            payload = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"无法读取配置指纹输入 {path}: {exc}") from exc
+        digest.update(name.encode("utf-8") + b"\0" + payload + b"\0")
+    return digest.hexdigest()
+
+
 def load_config(config_dir: str | Path) -> ServiceConfig:
     """一次性加载全部配置；任何歧义都在节点创建服务前失败。"""
     root = Path(config_dir).expanduser().resolve()
@@ -334,6 +403,8 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
         "extnav_status",
         "start_service",
         "stop_service",
+        "clear_window_service",
+        "apply_saved_service",
         "set_correction_service",
     }
     if set(topics) != required_topics or any(
@@ -344,6 +415,9 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
     detection = _mapping(general.get("detection"), "detection")
     sync = _mapping(general.get("synchronization"), "synchronization")
     quality = _mapping(general.get("quality"), "quality")
+    keyframe = _mapping(general.get("keyframe"), "keyframe")
+    window = _mapping(general.get("window"), "window")
+    fcu_reference = _mapping(general.get("fcu_reference"), "fcu_reference")
     timeouts = _mapping(general.get("timeouts"), "timeouts")
     logging = _mapping(general.get("logging"), "logging")
     tag_family = str(detection.get("tag_family", "")).strip()
@@ -354,6 +428,54 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
     rolling_samples = int(quality.get("rolling_window_samples", 0))
     if minimum_samples < 3 or rolling_samples < minimum_samples:
         raise ValueError("质量窗口必须不少于 minimum_samples >= 3")
+
+    default_window_size = int(window.get("default_size", 0))
+    maximum_window_size = int(window.get("maximum_size", 0))
+    if not 2 <= default_window_size <= maximum_window_size <= 20:
+        raise ValueError("滑窗长度必须满足 2 <= default_size <= maximum_size <= 20")
+    minimum_blocks = int(keyframe.get("minimum_independent_blocks", 0))
+    if minimum_blocks < 2 or minimum_blocks > minimum_samples:
+        raise ValueError("keyframe 独立时间块数必须位于 [2, minimum_samples]")
+    baseline_ratio_error = _positive(
+        window.get("maximum_baseline_ratio_error"),
+        "maximum_baseline_ratio_error",
+    )
+    if baseline_ratio_error >= 1.0:
+        raise ValueError("maximum_baseline_ratio_error 必须小于 1")
+    minimum_effective_sigma = _positive(
+        keyframe.get("minimum_effective_sigma_m"), "minimum_effective_sigma_m"
+    )
+    maximum_effective_sigma = _positive(
+        keyframe.get("maximum_effective_sigma_m"), "maximum_effective_sigma_m"
+    )
+    if minimum_effective_sigma > maximum_effective_sigma:
+        raise ValueError("keyframe 有效 sigma 上限不得小于下限")
+    maximum_window_span = _positive(
+        window.get("maximum_window_span_seconds"), "maximum_window_span_seconds"
+    )
+    maximum_keyframe_gap = _positive(
+        window.get("maximum_keyframe_gap_seconds"), "maximum_keyframe_gap_seconds"
+    )
+    if maximum_keyframe_gap > maximum_window_span:
+        raise ValueError("相邻 keyframe 最大间隔不得超过窗口最大跨度")
+    registration_rms = _positive(
+        window.get("max_registration_rms_m"), "max_registration_rms_m"
+    )
+    registration_residual = _positive(
+        window.get("max_registration_residual_m"),
+        "max_registration_residual_m",
+    )
+    if registration_rms > registration_residual:
+        raise ValueError("配准 RMS 门限不得大于最大单点残差门限")
+    recommended_keyframes = int(window.get("recommended_precision_keyframes", 3))
+    if not 2 <= recommended_keyframes <= maximum_window_size:
+        raise ValueError("recommended_precision_keyframes 必须位于 [2, maximum_size]")
+
+    lever_arm_values = np.asarray(
+        fcu_reference.get("lever_arm_m", []), dtype=np.float64
+    ).reshape(-1)
+    if lever_arm_values.size != 3 or not np.isfinite(lever_arm_values).all():
+        raise ValueError("fcu_reference.lever_arm_m 必须是三个有限数")
 
     intrinsics = _load_intrinsics(root)
     camera = _load_camera(root)
@@ -367,6 +489,7 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
     return ServiceConfig(
         config_dir=root,
         interface_version=str(general.get("interface_version", "")).strip(),
+        config_fingerprint=_configuration_fingerprint(root),
         topics=topics,
         intrinsics=intrinsics,
         t_imu_camera=_load_extrinsics(root),
@@ -434,6 +557,81 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
                 quality.get("mad_outlier_scale"), "mad_outlier_scale"
             ),
         ),
+        keyframe=KeyframeSettings(
+            correlation_block_seconds=_positive(
+                keyframe.get("correlation_block_seconds"),
+                "correlation_block_seconds",
+            ),
+            minimum_independent_blocks=minimum_blocks,
+            odin_position_noise_floor_m=_positive(
+                keyframe.get("odin_position_noise_floor_m"),
+                "odin_position_noise_floor_m",
+            ),
+            tag_world_sigma_m=_positive(
+                keyframe.get("tag_world_sigma_m"), "tag_world_sigma_m"
+            ),
+            extrinsic_sigma_m=_positive(
+                keyframe.get("extrinsic_sigma_m"), "extrinsic_sigma_m"
+            ),
+            minimum_effective_sigma_m=_positive(
+                minimum_effective_sigma,
+                "minimum_effective_sigma_m",
+            ),
+            maximum_effective_sigma_m=_positive(
+                maximum_effective_sigma,
+                "maximum_effective_sigma_m",
+            ),
+            max_sync_motion_error_m=_positive(
+                keyframe.get("max_sync_motion_error_m"),
+                "max_sync_motion_error_m",
+            ),
+        ),
+        window=WindowSettings(
+            default_size=default_window_size,
+            maximum_size=maximum_window_size,
+            minimum_baseline_m=_positive(
+                window.get("minimum_baseline_m"), "minimum_baseline_m"
+            ),
+            maximum_baseline_ratio_error=baseline_ratio_error,
+            maximum_window_span_seconds=maximum_window_span,
+            maximum_keyframe_gap_seconds=maximum_keyframe_gap,
+            candidate_max_age_seconds=_positive(
+                window.get("candidate_max_age_seconds"),
+                "candidate_max_age_seconds",
+            ),
+            max_registration_rms_m=registration_rms,
+            max_registration_residual_m=registration_residual,
+            max_model_yaw_std_rad=math.radians(
+                _positive(
+                    window.get("max_model_yaw_std_deg"),
+                    "max_model_yaw_std_deg",
+                )
+            ),
+            max_prior_model_residual_m=_positive(
+                window.get("max_prior_model_residual_m"),
+                "max_prior_model_residual_m",
+            ),
+            max_apply_position_jump_m=_positive(
+                window.get("max_apply_position_jump_m"),
+                "max_apply_position_jump_m",
+            ),
+            max_apply_yaw_jump_rad=math.radians(
+                _positive(
+                    window.get("max_apply_yaw_jump_deg"),
+                    "max_apply_yaw_jump_deg",
+                )
+            ),
+            recommended_precision_keyframes=recommended_keyframes,
+        ),
+        fcu_reference=FcuReferenceSettings(
+            lever_arm_m=lever_arm_values,
+            parameter_tolerance=_positive(
+                fcu_reference.get("parameter_tolerance"), "parameter_tolerance"
+            ),
+            require_zero_installation_angles=bool(
+                fcu_reference.get("require_zero_installation_angles", True)
+            ),
+        ),
         timeouts=TimeoutSettings(
             camera_start_seconds=_positive(
                 timeouts.get("camera_start_seconds"), "camera_start_seconds"
@@ -443,6 +641,10 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
             ),
             extnav_apply_seconds=_positive(
                 timeouts.get("extnav_apply_seconds"), "extnav_apply_seconds"
+            ),
+            extnav_reconcile_seconds=_positive(
+                timeouts.get("extnav_reconcile_seconds"),
+                "extnav_reconcile_seconds",
             ),
             ground_max_runtime_seconds=_positive(
                 timeouts.get("ground_max_runtime_seconds", 0.0),

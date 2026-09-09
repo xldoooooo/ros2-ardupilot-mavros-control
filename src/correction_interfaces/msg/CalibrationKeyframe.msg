@@ -1,0 +1,25 @@
+# 多 Tag 滑窗中的一个服务端权威空间 keyframe。
+int32 tag_id
+float64 world_x_m
+float64 world_y_m
+float64 odin_x_m
+float64 odin_y_m
+uint64 capture_start_ns
+uint64 capture_end_ns
+float64 span_s
+uint32 samples_accepted
+uint32 samples_rejected
+uint32 independent_blocks
+float64 position_std_m
+float64 effective_sigma_m
+float64 weight
+float64 reprojection_error_px
+float64 odom_match_error_ms
+float64 max_sync_motion_error_m
+float64 correction_tilt_deg
+float64 single_tag_yaw_deg
+float64 prior_model_residual_m
+string odom_time_source
+string odin_session_id
+string config_fingerprint
+string source_job_id

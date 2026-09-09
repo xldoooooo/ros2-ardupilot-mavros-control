@@ -3,8 +3,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>extnav_bridge</name>
-  <version>1.0.0</version>
-  <description>Odin to MAVROS bridge with atomic optional planar correction.</description>
+  <version>2.0.0</version>
+  <description>Odin-to-MAVROS bridge with correction 2.0 FCU-center semantics.</description>
   <maintainer email="2817038081@qq.com">xld</maintainer>
   <license>Apache-2.0</license>
 

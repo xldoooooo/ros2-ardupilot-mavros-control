@@ -3,6 +3,7 @@ builtin_interfaces/Time stamp
 string source_id
 uint64 sequence
 string job_id
+string expected_service_instance_id
 ---
 bool accepted
 string message

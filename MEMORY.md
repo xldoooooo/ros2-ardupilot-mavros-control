@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-08-29，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-09-09，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -29,7 +29,7 @@
   `./start_ground_all.sh` 启动；`--check-environment` 只检查环境，不创建飞行会话。
 - 当前 ROS 工作区包含：
   - `src/guided_interfaces`：地面站与机载端共享的唯一高层协议；
-  - `src/correction_interfaces`：AprilTag-Odin 修正链独立接口 1.0；
+  - `src/correction_interfaces`：AprilTag-Odin 修正链独立接口 2.0；
   - `src/onboard_control`：机载 C++ 控制与安全状态机；
   - `src/guided_sim`：URDF、RViz 与预览/TF 可视化，不含第二套控制器；
   - `correction_service`：独立按需下视相机、Tag 估计、extnav CAS 和地面调试面板。
@@ -110,25 +110,46 @@
 ### 独立 AprilTag-Odin 修正服务
 
 - `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
-  start 后才创建任务专属 raw 订阅和相机进程，result 前必须释放二者。真机优化后 idle 约
-  0.018～0.021 核，采样约 1.14 核、cgroup 峰值约 392 MB。
-- extnav 始终直接订阅 `/odin1/odometry_highfreq`。valid 时左乘 SE(2) 修正位置、姿态、世界系
-  线速度与有效协方差，z 不平移；invalid 或 correction API 缺失时 identity。实际输入 MAVROS 的
-  数据同步发布到 `/odin1/odometry_highfreq_corrected`。
+  first/next 或 apply_saved 才创建有界任务专属 raw 订阅，采样时另启相机；冻结候选后必须先释放
+  资源再保存/应用。任务 27 真机测得 idle 约 0.018～0.021 核、采样约 1.14 核、cgroup 峰值约
+  392 MB；2.0 源码仍需在目标机同条件复测，不能沿用旧值冒充本版实测。
+- extnav 始终直接订阅 `/odin1/odometry_highfreq`。valid 时对 Odin IMU 中心左乘公共 SE(2)，
+  `/odin1/odometry_highfreq_corrected` 仍表示 Odin IMU 中心；随后才按物理杆臂转换为 FCU 中心，
+  同一冻结结果发布到 `/extnav/pose_fcu` 与 `/mavros/vision_pose/pose`。MAVROS EKF final 是
+  `/mavros/local_position/pose`，不得再把 corrected 误称为最终飞控中心或 EKF 输出。
+- 当前零安装角、杆臂 `T=(0.06,-0.03,0.05)m`。有效分支水平位置为
+  `(Q*p+t-Q*R*T).xy`，已移除旧实现多出的固定 `+T_xy`；无效/API 缺失分支仍用
+  `p+T-R*T` 保持旧局部零点。z 保持旧局部数值约定，不是 Tag 世界高度。valid/revision/session/
+  center mode 与最终 pose/velocity 必须来自同一 raw 快照，失效后无新 raw 时不重复旧世界样本。
 - active 修正只由 extnav 维护，通过 Odin session + revision CAS 更新；correction_service
-  失败/退出不清除最后 ACK 的修正，Odin 断流/时间戳回退/frame 改变则立即 invalid 并持续
-  identity 数据流。
+  失败/退出不清除最后 ACK 的修正。Odin 断流/时间戳回退/frame 改变会立即 invalid 并清除
+  最终样本缓存；后续新鲜 raw 按 identity/local 分支继续发布，无 raw 时不重放旧世界样本。
+- 仓库 correction 接口与相关包已升级为 2.0.0：服务端权威维护 instance/window revision、
+  keyframe FIFO、成功 N、保存候选和 application 事实。首次以完整 SE(3) 粗解并保存第一个
+  `P/Q`；第二个不同 Tag 起以绝对逆方差权重从原始 `P_i/Q_i` 重算完整 orientation-preserving
+  SE(2)，不累计增量、不平均 single-Tag yaw。窗口默认 5、最大 20，长度 2 可用但明确标记离群
+  识别能力有限；FIFO 淘汰前先检查完整证据，新点失败不修改旧窗口/N/active。
+- first/next 为单次收敛自动结束；dry-run 保存窗口但不调 extnav，apply 只有 ACK 或权威状态对账
+  确认后才保存正式窗口。ACK 超时未决必须锁存 `application_unknown`，同一 job/candidate 才能
+  幂等重试，禁止刷新 CAS 覆盖第三方 revision。clear 只清服务窗口/N，不清 extnav active；
+  apply_saved 不开相机、不增 N，只短时取 fresh raw 复算 FCU 中心实际跳变。
 - 当前真机 Odin header 是设备时钟，相机 PTS 是主机 ROS 时钟；同 epoch 时严格按 header，epoch
   不兼容时在任务历史内按接收时间匹配，`arrival_history` 硬门 30 ms，禁止使用识别完成时最新值。
 - 生产配置使用 2026-08-27 的 1920×1080 内参；`T_imu_camera` 以
   `success01-run_20260827_233838` 为基矩阵，并右乘 2026-08-31 真机定向台架确认的相机光轴
   `Rz(180deg)`。Tag 0 为世界原点/yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称
   世界坐标精度。
-- 地面站右上角修正入口紧邻摄像头面板，子面板直接 start/stop/status/result 并显示
-  raw/corrected/MAVROS final；旧“在此处打开终端”入口已删除。
+- 地面站右上角修正入口紧邻摄像头面板，面板从服务端权威状态派生动态 N、窗口/候选/质量和
+  按钮；分别显示 raw Odin、corrected Odin、FCU 输入和 MAVROS EKF final。勾选应用仍先执行
+  dry-run，候选冻结并展示具体值/revisions/跳变/reset 风险后才二次确认 apply_saved。
 - 当前 MAVROS 输入是 `geometry_msgs/PoseStamped`，不能携带 MAVLink estimator reset counter；
-  extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同帧多 Tag 和 onboard 自动
-  航点触发也仍是明确未实现边界。
+  extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同一图像多 Tag 联合检测和
+  onboard 自动航点触发仍未实现；本版实现的是不同停留位置/不同 Tag 的顺序 keyframe。
+- 生产 `tag_pose.csv` 仍只有 Tag 0，未编造 Tag 1/2 坐标；多 Tag 目前仅通过合成真值和隔离 ROS
+  验证。相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
+  重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。云台同型号相机不能替代
+  下视校准相机。仓库 2.0 尚未部署到飞机，最后有记录的飞机运行基线仍是任务 27；部署前必须
+  核对 source/install/runtime 版本，且不得由代理自行停止/重启机载服务。
 - 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
   `/odin1/odometry_highfreq` 中的 `odom->imu`，按
   `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
@@ -475,6 +496,11 @@
   180°；配置改为原矩阵右乘 `Rz(180deg)`，加入安装方向回归约束并同步飞机。部署后 314 个样本
   收敛为 yaw -1.370°、标准差 0.0146°，全程 apply=false、revision 0 identity。详见
   `agent/report/report-2026-08-31-task27-camera-extrinsic-180deg-fix.md`。
+- **2026-09-09：多 Tag 滑窗与 FCU 中心水平原点修正。** 仓库接口升级到 2.0，加入服务端
+  P/Q keyframe FIFO、加权 SE(2)、单次事务/丢 ACK 对账、显式 apply_saved 和四段位姿面板；
+  extnav 有效分支移除多余 `+T_xy`。只完成合成真值与 localhost 隔离 ROS 验证，未部署飞机、
+  未进行多 Tag 实测，也没有产生实机精度结论。详见
+  `agent/report/report-2026-09-09-task29-multi-tag-window-fcu-center.md`。
 
 ## 版本库与记录规范
 

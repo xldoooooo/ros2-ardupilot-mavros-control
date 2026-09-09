@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .config import QualitySettings
+from .config import KeyframeSettings, QualitySettings
 from .geometry import wrap_angle
 
 
@@ -25,6 +25,9 @@ class CorrectionSample:
     odom_match_error_ms: float
     odom_time_source: str
     processing_time_ms: float
+    odin_tag_x_m: float = math.nan
+    odin_tag_y_m: float = math.nan
+    odin_speed_mps: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,15 @@ class QualitySnapshot:
     odom_time_source: str = ""
     processing_rate_hz: float = 0.0
     processing_time_ms: float = 0.0
+    odin_tag_x_m: float = math.nan
+    odin_tag_y_m: float = math.nan
+    odin_tag_position_std_m: float = math.inf
+    odin_tag_position_range_m: float = math.inf
+    effective_position_sigma_m: float = math.inf
+    independent_blocks: int = 0
+    max_sync_motion_error_m: float = math.inf
+    capture_start_ns: int = 0
+    capture_end_ns: int = 0
     converged: bool = False
     diverged: bool = False
     reason: str = "等待样本"
@@ -69,7 +81,9 @@ def _robust_mask(values: np.ndarray, scale: float) -> np.ndarray:
     center = np.median(values, axis=0)
     absolute = np.abs(values - center)
     mad = np.median(absolute, axis=0)
-    floors = np.array((0.0005, 0.0005, math.radians(0.01)))
+    floors = np.full(values.shape[1], 0.0005, dtype=np.float64)
+    if values.shape[1] >= 3:
+        floors[2] = math.radians(0.01)
     limits = scale * np.maximum(1.4826 * mad, floors)
     return np.all(absolute <= limits, axis=1)
 
@@ -77,8 +91,17 @@ def _robust_mask(values: np.ndarray, scale: float) -> np.ndarray:
 class CorrectionEstimator:
     """只维护候选窗口；它从不直接修改 extnav active correction。"""
 
-    def __init__(self, settings: QualitySettings) -> None:
+    def __init__(
+        self,
+        settings: QualitySettings,
+        keyframe_settings: KeyframeSettings | None = None,
+        *,
+        first_calibration: bool = True,
+    ) -> None:
+        """建立一个停留段估计器；后续标定不以单 Tag yaw 作为精标门。"""
         self._settings = settings
+        self._keyframe_settings = keyframe_settings
+        self._first_calibration = bool(first_calibration)
         self._samples: deque[CorrectionSample] = deque(
             maxlen=settings.rolling_window_samples
         )
@@ -104,11 +127,22 @@ class CorrectionEstimator:
             sample.reprojection_error_px,
             sample.odom_match_error_ms,
             sample.processing_time_ms,
+            sample.odin_speed_mps,
         )
-        if not all(math.isfinite(value) for value in values):
+        if not all(
+            math.isfinite(value) and value >= 0.0 for value in values[-1:]
+        ) or not all(math.isfinite(value) for value in values[:-1]):
             raise ValueError("修正样本含非有限值")
+        if self._keyframe_settings is not None and not all(
+            math.isfinite(value) for value in (sample.odin_tag_x_m, sample.odin_tag_y_m)
+        ):
+            raise ValueError("生产 keyframe 样本缺少有限 Odin Tag 中心")
         self._samples.append(sample)
         return self.snapshot()
+
+    def samples(self) -> tuple[CorrectionSample, ...]:
+        """返回审计日志使用的不可变样本副本。"""
+        return tuple(self._samples)
 
     def snapshot(self) -> QualitySnapshot:
         """使用当前窗口计算稳健中心、离散度和全部门控结果。"""
@@ -123,9 +157,25 @@ class CorrectionEstimator:
         x = np.array([item.x_m for item in samples], dtype=np.float64)
         y = np.array([item.y_m for item in samples], dtype=np.float64)
         yaw = np.array([item.yaw_rad for item in samples], dtype=np.float64)
+        qx = np.array(
+            [
+                item.odin_tag_x_m if math.isfinite(item.odin_tag_x_m) else item.x_m
+                for item in samples
+            ],
+            dtype=np.float64,
+        )
+        qy = np.array(
+            [
+                item.odin_tag_y_m if math.isfinite(item.odin_tag_y_m) else item.y_m
+                for item in samples
+            ],
+            dtype=np.float64,
+        )
         yaw_seed = _circular_mean(yaw)
         yaw_delta = _circular_deltas(yaw, yaw_seed)
-        features = np.column_stack((x, y, yaw_delta))
+        features = np.column_stack((x, y, yaw_delta, qx, qy))
+        if not self._first_calibration:
+            features = np.column_stack((qx, qy))
         mask = (
             _robust_mask(features, self._settings.mad_outlier_scale)
             if len(samples) >= 8
@@ -138,6 +188,8 @@ class CorrectionEstimator:
         sx = x[mask]
         sy = y[mask]
         syaw = yaw[mask]
+        sqx = qx[mask]
+        sqy = qy[mask]
         candidate_x = float(np.median(sx))
         candidate_y = float(np.median(sy))
         candidate_yaw = _circular_mean(syaw)
@@ -147,6 +199,11 @@ class CorrectionEstimator:
         yaw_std = float(np.sqrt(np.mean(yaw_errors * yaw_errors)))
         position_range = float(max(np.ptp(sx), np.ptp(sy)))
         yaw_range = float(np.ptp(yaw_errors))
+        candidate_qx = float(np.median(sqx))
+        candidate_qy = float(np.median(sqy))
+        q_errors = np.hypot(sqx - candidate_qx, sqy - candidate_qy)
+        q_position_std = float(np.sqrt(np.mean(q_errors * q_errors)))
+        q_position_range = float(max(np.ptp(sqx), np.ptp(sqy)))
         span = max(0.0, (selected[-1].stamp_ns - selected[0].stamp_ns) / 1e9)
         reprojection = float(np.mean([item.reprojection_error_px for item in selected]))
         match_error = float(np.mean([item.odom_match_error_ms for item in selected]))
@@ -154,21 +211,75 @@ class CorrectionEstimator:
         time_sources = {item.odom_time_source for item in selected}
         time_source = next(iter(time_sources)) if len(time_sources) == 1 else "mixed"
         rate, processing = self._processing_metrics()
+        independent_blocks, effective_sigma = self._effective_sigma(selected)
+        max_sync_motion_error = max(
+            item.odin_speed_mps * item.odom_match_error_ms / 1000.0 for item in selected
+        )
 
         raw_position_range = float(max(np.ptp(x), np.ptp(y)))
         raw_yaw_range = float(np.ptp(_circular_deltas(yaw, yaw_seed)))
-        diverged = len(samples) >= max(8, self._settings.minimum_samples // 2) and (
-            raw_position_range > self._settings.divergence_position_range_m
-            or raw_yaw_range > self._settings.divergence_yaw_range_rad
-        )
-        gates = (
+        raw_q_range = float(max(np.ptp(qx), np.ptp(qy)))
+        if self._first_calibration:
+            diverged = len(samples) >= max(8, self._settings.minimum_samples // 2) and (
+                raw_position_range > self._settings.divergence_position_range_m
+                or raw_yaw_range > self._settings.divergence_yaw_range_rad
+                or raw_q_range > self._settings.divergence_position_range_m
+            )
+        else:
+            diverged = len(samples) >= max(8, self._settings.minimum_samples // 2) and (
+                raw_q_range > self._settings.divergence_position_range_m
+            )
+        gates = [
             (len(selected) >= self._settings.minimum_samples, "样本数不足"),
             (span >= self._settings.minimum_span_seconds, "稳定采样时长不足"),
-            (position_std <= self._settings.max_position_std_m, "水平离散度过大"),
-            (yaw_std <= self._settings.max_yaw_std_rad, "偏航离散度过大"),
-            (position_range <= self._settings.max_position_range_m, "水平范围过大"),
-            (yaw_range <= self._settings.max_yaw_range_rad, "偏航范围过大"),
-        )
+            (
+                q_position_std <= self._settings.max_position_std_m,
+                "Odin Tag 中心离散度过大",
+            ),
+            (
+                q_position_range <= self._settings.max_position_range_m,
+                "Odin Tag 中心范围过大",
+            ),
+            (time_source != "mixed", "同一 keyframe 混用了时间源"),
+        ]
+        if self._keyframe_settings is not None:
+            gates.extend(
+                (
+                    (
+                        independent_blocks
+                        >= self._keyframe_settings.minimum_independent_blocks,
+                        "有效独立时间块不足",
+                    ),
+                    (
+                        effective_sigma
+                        <= self._keyframe_settings.maximum_effective_sigma_m,
+                        "keyframe 有效位置不确定度过大",
+                    ),
+                    (
+                        max_sync_motion_error
+                        <= self._keyframe_settings.max_sync_motion_error_m,
+                        "同步运动误差上界过大",
+                    ),
+                )
+            )
+        if self._first_calibration:
+            gates.extend(
+                (
+                    (
+                        position_std <= self._settings.max_position_std_m,
+                        "粗修正水平离散度过大",
+                    ),
+                    (yaw_std <= self._settings.max_yaw_std_rad, "粗修正偏航离散度过大"),
+                    (
+                        position_range <= self._settings.max_position_range_m,
+                        "粗修正水平范围过大",
+                    ),
+                    (
+                        yaw_range <= self._settings.max_yaw_range_rad,
+                        "粗修正偏航范围过大",
+                    ),
+                )
+            )
         converged = not diverged and all(passed for passed, _ in gates)
         if diverged:
             reason = "候选修正明显发散"
@@ -194,6 +305,15 @@ class CorrectionEstimator:
             odom_time_source=time_source,
             processing_rate_hz=rate,
             processing_time_ms=processing,
+            odin_tag_x_m=candidate_qx,
+            odin_tag_y_m=candidate_qy,
+            odin_tag_position_std_m=q_position_std,
+            odin_tag_position_range_m=q_position_range,
+            effective_position_sigma_m=effective_sigma,
+            independent_blocks=independent_blocks,
+            max_sync_motion_error_m=max_sync_motion_error,
+            capture_start_ns=selected[0].stamp_ns,
+            capture_end_ns=selected[-1].stamp_ns,
             converged=converged,
             diverged=diverged,
             reason=reason,
@@ -210,3 +330,45 @@ class CorrectionEstimator:
             span = (self._processing[-1][0] - self._processing[0][0]) / 1e9
             rate = (len(self._processing) - 1) / span if span > 0.0 else 0.0
         return float(rate), float(np.mean(durations))
+
+    def _effective_sigma(
+        self, selected: tuple[CorrectionSample, ...]
+    ) -> tuple[int, float]:
+        """按时间块估计随机项，并与世界测量/外参/同步误差下限合成。"""
+        settings = self._keyframe_settings
+        if settings is None:
+            return len(selected), 0.0
+        block_ns = max(1, int(settings.correlation_block_seconds * 1e9))
+        origin = selected[0].stamp_ns
+        buckets: dict[int, list[tuple[float, float]]] = {}
+        for sample in selected:
+            index = max(0, (sample.stamp_ns - origin) // block_ns)
+            buckets.setdefault(index, []).append(
+                (sample.odin_tag_x_m, sample.odin_tag_y_m)
+            )
+        centers = np.asarray(
+            [
+                np.median(np.asarray(values, dtype=np.float64), axis=0)
+                for values in buckets.values()
+            ],
+            dtype=np.float64,
+        )
+        center = np.median(centers, axis=0)
+        deviations = np.linalg.norm(centers - center, axis=1)
+        block_std = float(np.sqrt(np.mean(deviations * deviations)))
+        independent = len(centers)
+        random_sigma = max(
+            settings.odin_position_noise_floor_m,
+            block_std / math.sqrt(max(1, independent)),
+        )
+        sync_sigma = max(
+            sample.odin_speed_mps * sample.odom_match_error_ms / 1000.0
+            for sample in selected
+        )
+        combined = math.sqrt(
+            random_sigma * random_sigma
+            + settings.tag_world_sigma_m * settings.tag_world_sigma_m
+            + settings.extrinsic_sigma_m * settings.extrinsic_sigma_m
+            + sync_sigma * sync_sigma
+        )
+        return independent, max(settings.minimum_effective_sigma_m, combined)

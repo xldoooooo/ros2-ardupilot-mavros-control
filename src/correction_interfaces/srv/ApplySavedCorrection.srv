@@ -1,17 +1,10 @@
-# 以服务端 revision 为基线开始一次自动收敛并自动释放资源的采样。
-uint8 OPERATION_FIRST=1
-uint8 OPERATION_NEXT=2
-
+# 显式应用已保存候选，或使用同一 job 幂等重试 application_unknown。
 builtin_interfaces/Time stamp
 string source_id
 uint64 sequence
-uint8 operation
-int32 expected_tag_id
-uint32 window_size
 string expected_service_instance_id
 uint64 expected_window_revision
 uint64 expected_extnav_revision
-bool apply
 ---
 bool accepted
 string job_id

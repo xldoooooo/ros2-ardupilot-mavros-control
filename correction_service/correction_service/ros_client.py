@@ -1,4 +1,4 @@
-"""独立修正面板的 ROS 2 客户端；只读状态并发送 start/stop 请求。"""
+"""独立修正面板 ROS 2 客户端：权威滑窗状态与四类异步写操作。"""
 
 from __future__ import annotations
 
@@ -20,9 +20,14 @@ class _Command:
     """跨线程交给 ROS executor 的单条校准操作。"""
 
     kind: str
+    operation: int = 0
     expected_tag_id: int = 0
+    window_size: int = 5
     apply: bool = False
     job_id: str = ""
+    service_instance_id: str = ""
+    window_revision: int = 0
+    extnav_revision: int = 0
     callback: ResultCallback | None = None
 
 
@@ -78,30 +83,85 @@ class CorrectionPanelClient:
             "result": snapshots.get("result", {}),
             "raw": snapshots.get("raw", {}),
             "corrected": snapshots.get("corrected", {}),
+            "pose_fcu": snapshots.get("pose_fcu", {}),
             "final": snapshots.get("final", {}),
         }
 
     def request_start(
         self,
+        operation: int,
         expected_tag_id: int,
+        window_size: int,
         apply: bool,
+        service_instance_id: str,
+        window_revision: int,
+        extnav_revision: int,
         callback: ResultCallback | None = None,
     ) -> None:
-        """异步开始 dry-run 或需要 extnav ACK 的应用任务。"""
+        """携带服务实例与双 revision 异步开始 first/next。"""
         self._enqueue(
             _Command(
                 "start",
+                operation=int(operation),
                 expected_tag_id=int(expected_tag_id),
+                window_size=int(window_size),
                 apply=bool(apply),
+                service_instance_id=str(service_instance_id),
+                window_revision=int(window_revision),
+                extnav_revision=int(extnav_revision),
                 callback=callback,
             )
         )
 
     def request_stop(
-        self, job_id: str = "", callback: ResultCallback | None = None
+        self,
+        job_id: str = "",
+        service_instance_id: str = "",
+        callback: ResultCallback | None = None,
     ) -> None:
         """异步停止当前唯一任务；不会清除已由 extnav ACK 的修正。"""
-        self._enqueue(_Command("stop", job_id=str(job_id), callback=callback))
+        self._enqueue(
+            _Command(
+                "stop",
+                job_id=str(job_id),
+                service_instance_id=str(service_instance_id),
+                callback=callback,
+            )
+        )
+
+    def request_clear(
+        self,
+        service_instance_id: str,
+        window_revision: int,
+        callback: ResultCallback | None = None,
+    ) -> None:
+        """异步清空服务端窗口；该接口与 extnav clear 完全独立。"""
+        self._enqueue(
+            _Command(
+                "clear",
+                service_instance_id=str(service_instance_id),
+                window_revision=int(window_revision),
+                callback=callback,
+            )
+        )
+
+    def request_apply_saved(
+        self,
+        service_instance_id: str,
+        window_revision: int,
+        extnav_revision: int,
+        callback: ResultCallback | None = None,
+    ) -> None:
+        """异步应用已保存候选或幂等重试 unknown，不重新开相机。"""
+        self._enqueue(
+            _Command(
+                "apply_saved",
+                service_instance_id=str(service_instance_id),
+                window_revision=int(window_revision),
+                extnav_revision=int(extnav_revision),
+                callback=callback,
+            )
+        )
 
     def close(self) -> None:
         """只关闭面板 ROS context；不隐式停止任务或改变 active correction。"""
@@ -148,7 +208,12 @@ class CorrectionPanelClient:
                 CorrectionStatus,
                 ExtnavCorrectionStatus,
             )
-            from correction_interfaces.srv import StartCorrection, StopCorrection
+            from correction_interfaces.srv import (
+                ApplySavedCorrection,
+                ClearWindow,
+                StartCorrection,
+                StopCorrection,
+            )
 
             environment_keys = (
                 "ROS_LOCALHOST_ONLY",
@@ -211,7 +276,13 @@ class CorrectionPanelClient:
             )
             node.create_subscription(
                 PoseStamped,
-                "/mavros/vision_pose/pose",
+                "/extnav/pose_fcu",
+                lambda message: self._store("pose_fcu", self._pose(message)),
+                qos_profile_sensor_data,
+            )
+            node.create_subscription(
+                PoseStamped,
+                "/mavros/local_position/pose",
                 lambda message: self._store("final", self._pose(message)),
                 qos_profile_sensor_data,
             )
@@ -219,6 +290,12 @@ class CorrectionPanelClient:
                 StartCorrection, "/correction_service/start"
             )
             stop_client = node.create_client(StopCorrection, "/correction_service/stop")
+            clear_client = node.create_client(
+                ClearWindow, "/correction_service/clear_window"
+            )
+            apply_saved_client = node.create_client(
+                ApplySavedCorrection, "/correction_service/apply_saved"
+            )
             executor = SingleThreadedExecutor(context=context)
             executor.add_node(node)
 
@@ -229,7 +306,13 @@ class CorrectionPanelClient:
                         command = self._commands.get_nowait()
                     except queue.Empty:
                         break
-                    client = start_client if command.kind == "start" else stop_client
+                    clients = {
+                        "start": start_client,
+                        "stop": stop_client,
+                        "clear": clear_client,
+                        "apply_saved": apply_saved_client,
+                    }
+                    client = clients[command.kind]
                     if not client.wait_for_service(
                         timeout_sec=self.SERVICE_DISCOVERY_TIMEOUT_SECONDS
                     ):
@@ -241,11 +324,34 @@ class CorrectionPanelClient:
                         continue
                     if command.kind == "start":
                         request = StartCorrection.Request()
+                        request.operation = command.operation
                         request.expected_tag_id = command.expected_tag_id
+                        request.window_size = command.window_size
+                        request.expected_service_instance_id = (
+                            command.service_instance_id
+                        )
+                        request.expected_window_revision = command.window_revision
+                        request.expected_extnav_revision = command.extnav_revision
                         request.apply = command.apply
-                    else:
+                    elif command.kind == "stop":
                         request = StopCorrection.Request()
                         request.job_id = command.job_id
+                        request.expected_service_instance_id = (
+                            command.service_instance_id
+                        )
+                    elif command.kind == "clear":
+                        request = ClearWindow.Request()
+                        request.expected_service_instance_id = (
+                            command.service_instance_id
+                        )
+                        request.expected_window_revision = command.window_revision
+                    else:
+                        request = ApplySavedCorrection.Request()
+                        request.expected_service_instance_id = (
+                            command.service_instance_id
+                        )
+                        request.expected_window_revision = command.window_revision
+                        request.expected_extnav_revision = command.extnav_revision
                     request.stamp = node.get_clock().now().to_msg()
                     request.source_id = self.source_id
                     request.sequence = self._next_sequence()
@@ -258,37 +364,43 @@ class CorrectionPanelClient:
                     ) -> None:
                         try:
                             response = done.result()
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 - future 可透传服务异常
                             self._callback(callback, {}, str(exc))
                             return
                         payload = {
                             "accepted": bool(response.accepted),
                             "message": str(response.message),
                         }
-                        if kind == "start":
+                        if kind in ("start", "apply_saved"):
                             payload["job_id"] = str(response.job_id)
+                        if hasattr(response, "service_instance_id"):
+                            payload["service_instance_id"] = str(
+                                response.service_instance_id
+                            )
+                        if hasattr(response, "window_revision"):
+                            payload["window_revision"] = int(response.window_revision)
                         error = "" if response.accepted else str(response.message)
                         self._callback(callback, payload, error)
 
                     future.add_done_callback(completed)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 后台 ROS 线程需向 UI 暴露启动失败
             with self._lock:
                 self._startup_error = f"修正面板 ROS 客户端启动失败：{exc}"
         finally:
             if executor is not None and node is not None:
                 try:
                     executor.remove_node(node)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - 尽力清理，保留原启动错误
                     pass
             if node is not None:
                 try:
                     node.destroy_node()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - 尽力清理，保留原启动错误
                     pass
             if context is not None:
                 try:
                     context.shutdown()
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - 尽力清理，保留原启动错误
                     pass
 
     def _store(self, key: str, snapshot: dict[str, Any]) -> None:
@@ -302,14 +414,47 @@ class CorrectionPanelClient:
     def _correction_status(message: Any) -> dict[str, Any]:
         """投影修正服务状态为 Qt 无关字典。"""
         return {
+            "interface_version": str(message.interface_version),
             "service_available": bool(message.service_available),
+            "service_instance_id": str(message.service_instance_id),
+            "window_revision": int(message.window_revision),
+            "config_fingerprint": str(message.config_fingerprint),
             "active": bool(message.active),
             "state": str(message.state_text),
+            "operation": str(message.operation_text),
             "job_id": str(message.job_id),
             "expected_tag_id": int(message.expected_tag_id),
             "detected_tag_id": int(message.detected_tag_id),
             "apply_requested": bool(message.apply_requested),
             "session": str(message.odin_session_id),
+            "base_revision": int(message.base_revision),
+            "window_size": int(message.window_size),
+            "window_count": int(message.window_count),
+            "success_count": int(message.successful_calibrations),
+            "next_calibration": int(message.next_calibration_number),
+            "window_state": str(message.window_state),
+            "window_message": str(message.window_message),
+            "keyframes": [
+                {
+                    "tag_id": int(item.tag_id),
+                    "p_x_m": float(item.world_x_m),
+                    "p_y_m": float(item.world_y_m),
+                    "q_x_m": float(item.odin_x_m),
+                    "q_y_m": float(item.odin_y_m),
+                    "samples": int(item.samples_accepted),
+                    "rejected": int(item.samples_rejected),
+                    "blocks": int(item.independent_blocks),
+                    "span_s": float(item.span_s),
+                    "position_std_m": float(item.position_std_m),
+                    "sigma_m": float(item.effective_sigma_m),
+                    "weight": float(item.weight),
+                    "reprojection_px": float(item.reprojection_error_px),
+                    "match_ms": float(item.odom_match_error_ms),
+                    "sync_motion_m": float(item.max_sync_motion_error_m),
+                    "time_source": str(item.odom_time_source),
+                }
+                for item in message.keyframes
+            ],
             "frames_received": int(message.frames_received),
             "frames_processed": int(message.frames_processed),
             "detections": int(message.detections_total),
@@ -328,16 +473,47 @@ class CorrectionPanelClient:
             "processing_rate_hz": float(message.processing_rate_hz),
             "processing_time_ms": float(message.processing_time_ms),
             "converged": bool(message.converged),
+            "candidate_saved": bool(message.candidate_saved),
+            "candidate_valid": bool(message.candidate_valid),
+            "candidate_stale": bool(message.candidate_stale),
+            "candidate_stage": str(message.candidate_stage),
+            "candidate_window_revision": int(message.candidate_window_revision),
+            "candidate_extnav_revision": int(message.candidate_extnav_revision),
+            "baseline_tag_a": int(message.baseline_tag_a),
+            "baseline_tag_b": int(message.baseline_tag_b),
+            "odin_baseline_m": float(message.odin_baseline_m),
+            "world_baseline_m": float(message.world_baseline_m),
+            "odin_direction_deg": float(message.odin_baseline_direction_deg),
+            "world_direction_deg": float(message.world_baseline_direction_deg),
+            "registration_rms_m": float(message.registration_rms_m),
+            "registration_max_m": float(message.registration_max_residual_m),
+            "model_yaw_std_deg": float(message.model_yaw_std_deg),
+            "two_point_limited": bool(message.two_point_limited),
+            "delta_x_m": float(message.delta_x_m),
+            "delta_y_m": float(message.delta_y_m),
+            "delta_yaw_deg": float(message.delta_yaw_deg),
+            "position_jump_m": float(message.expected_position_jump_m),
+            "yaw_jump_deg": float(message.expected_yaw_jump_deg),
+            "can_apply": bool(message.can_apply),
+            "apply_reason": str(message.apply_reason),
+            "application_state": str(message.application_state_text),
+            "application_confirmed_by_status": bool(
+                message.application_confirmed_by_status
+            ),
+            "window_saved": bool(message.window_saved),
+            "resources_released": bool(message.resources_released),
             "extnav_applied": bool(message.extnav_applied),
             "revision": int(message.extnav_revision),
             "message": str(message.message),
             "last_error": str(message.last_error),
+            "log_path": str(message.log_path),
         }
 
     @staticmethod
     def _extnav_status(message: Any) -> dict[str, Any]:
         """投影 extnav 权威 correction/session 状态。"""
         return {
+            "interface_version": str(message.interface_version),
             "service_available": bool(message.service_available),
             "odin_available": bool(message.odin_available),
             "session": str(message.odin_session_id),
@@ -348,6 +524,23 @@ class CorrectionPanelClient:
             "y_m": float(message.correction_y_m),
             "yaw_deg": float(message.correction_yaw_deg),
             "job_id": str(message.applied_job_id),
+            "reference_mode": str(message.horizontal_reference_mode),
+            "lever_arm_m": (
+                float(message.lever_arm_x_m),
+                float(message.lever_arm_y_m),
+                float(message.lever_arm_z_m),
+            ),
+            "installation_rpy": (
+                float(message.installation_roll_rad),
+                float(message.installation_pitch_rad),
+                float(message.installation_yaw_rad),
+            ),
+            "final_pose_messages": int(message.final_pose_messages),
+            "final_sample_available": bool(message.final_sample_available),
+            "final_sample_valid": bool(message.final_sample_correction_valid),
+            "final_sample_revision": int(message.final_sample_revision),
+            "final_sample_session": str(message.final_sample_odin_session_id),
+            "final_sample_reference_mode": str(message.final_sample_reference_mode),
             "raw_age_s": float(message.raw_age_s),
             "raw_messages": int(message.raw_messages),
             "corrected_messages": int(message.corrected_messages),
@@ -359,14 +552,29 @@ class CorrectionPanelClient:
     def _result(message: Any) -> dict[str, Any]:
         """投影最近一次可靠任务终态。"""
         return {
+            "interface_version": str(message.interface_version),
+            "service_instance_id": str(message.service_instance_id),
             "job_id": str(message.job_id),
+            "operation": int(message.operation),
             "success": bool(message.success),
+            "window_saved": bool(message.window_saved),
+            "resources_released": bool(message.resources_released),
+            "application_state": str(message.application_state_text),
+            "confirmed_by_status": bool(message.application_confirmed_by_status),
             "applied": bool(message.applied),
             "outcome": str(message.outcome),
             "x_m": float(message.correction_x_m),
             "y_m": float(message.correction_y_m),
             "yaw_deg": float(message.correction_yaw_deg),
             "samples": int(message.samples_accepted),
+            "window_revision": int(message.window_revision),
+            "window_count": int(message.window_count),
+            "success_count": int(message.successful_calibrations),
+            "registration_rms_m": float(message.registration_rms_m),
+            "model_yaw_std_deg": float(message.model_yaw_std_deg),
+            "position_jump_m": float(message.expected_position_jump_m),
+            "yaw_jump_deg": float(message.expected_yaw_jump_deg),
+            "candidate_stage": str(message.candidate_stage),
             "duration_s": float(message.duration_s),
             "message": str(message.message),
             "log_path": str(message.log_path),
@@ -412,5 +620,5 @@ class CorrectionPanelClient:
             return
         try:
             callback(payload, error)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - UI 回调不得终止 ROS executor
             pass

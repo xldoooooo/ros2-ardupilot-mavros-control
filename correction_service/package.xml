@@ -1,10 +1,10 @@
 <?xml version="1.0"?>
-<!-- 按需采集 AprilTag、估计 Odin 平面修正并与 extnav 原子交接。 -->
+<!-- 按需采集多 Tag keyframe、重算滑窗 SE(2) 并与 extnav 原子交接。 -->
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>correction_service</name>
-  <version>1.0.0</version>
-  <description>Independent AprilTag-to-Odin planar correction service.</description>
+  <version>2.0.0</version>
+  <description>Independent multi-Tag AprilTag-to-Odin window calibration service.</description>
   <maintainer email="xld@todo.todo">xld</maintainer>
   <license>Apache-2.0</license>
 

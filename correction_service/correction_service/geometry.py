@@ -20,6 +20,18 @@ class PlanarCorrection:
     tilt_rad: float
     world_imu: np.ndarray
     world_from_odin: np.ndarray
+    odin_from_tag: np.ndarray
+    odin_tag_x_m: float
+    odin_tag_y_m: float
+
+
+@dataclass(frozen=True)
+class FcuReferencePose:
+    """同一原始样本按有效/无效分支换算出的飞控参考中心位姿。"""
+
+    position: np.ndarray
+    rotation: np.ndarray
+    horizontal_reference_mode: str
 
 
 def wrap_angle(angle: float) -> float:
@@ -139,6 +151,7 @@ def compute_planar_correction(
     camera_from_tag_configured = (
         camera_from_tag_standard @ configured_tag_from_standard()
     )
+    odin_from_tag = odin_from_imu @ imu_from_camera @ camera_from_tag_configured
     world_from_camera = world_tag_transform(tag) @ np.linalg.inv(
         camera_from_tag_configured
     )
@@ -156,9 +169,66 @@ def compute_planar_correction(
         tilt_rad=tilt,
         world_imu=world_from_imu,
         world_from_odin=world_from_odin,
+        odin_from_tag=odin_from_tag,
+        odin_tag_x_m=float(odin_from_tag[0, 3]),
+        odin_tag_y_m=float(odin_from_tag[1, 3]),
     )
 
 
 def planar_transform(x_m: float, y_m: float, yaw_rad: float) -> np.ndarray:
     """构造 extnav 实际应用的 SE(2) 嵌入 SE(3) 变换。"""
     return homogeneous(rotation_z(yaw_rad), np.array((x_m, y_m, 0.0)))
+
+
+def project_fcu_reference_pose(
+    odin_from_imu: np.ndarray,
+    correction: tuple[float, float, float] | None,
+    lever_arm_m: np.ndarray,
+) -> FcuReferencePose:
+    """复算零安装角基线下最终飞控中心，保持既有 z 局部约定。"""
+    raw = np.asarray(odin_from_imu, dtype=np.float64).reshape(4, 4)
+    lever = np.asarray(lever_arm_m, dtype=np.float64).reshape(3)
+    if not np.isfinite(raw).all() or not np.isfinite(lever).all():
+        raise ValueError("飞控中心转换输入含非有限值")
+    raw_position = raw[:3, 3]
+    raw_rotation = raw[:3, :3]
+    if correction is None:
+        position = raw_position + lever - raw_rotation @ lever
+        return FcuReferencePose(
+            position=position,
+            rotation=raw_rotation,
+            horizontal_reference_mode="local_identity_origin",
+        )
+
+    x_m, y_m, yaw_rad = (float(value) for value in correction)
+    if not all(math.isfinite(value) for value in (x_m, y_m, yaw_rad)):
+        raise ValueError("世界修正含非有限值")
+    world_rotation = rotation_z(yaw_rad)
+    corrected_rotation = world_rotation @ raw_rotation
+    corrected_position = world_rotation @ raw_position + np.array((x_m, y_m, 0.0))
+    rotated_lever = corrected_rotation @ lever
+    position = corrected_position - rotated_lever
+    # task29 只校准水平世界系；z 继续沿用修补前的局部数值约定。
+    position[2] = raw_position[2] + lever[2] - rotated_lever[2]
+    return FcuReferencePose(
+        position=position,
+        rotation=corrected_rotation,
+        horizontal_reference_mode="tag_world_xy_local_z",
+    )
+
+
+def expected_fcu_jump(
+    odin_from_imu: np.ndarray,
+    old_correction: tuple[float, float, float] | None,
+    new_correction: tuple[float, float, float],
+    lever_arm_m: np.ndarray,
+) -> tuple[float, float]:
+    """在同一新鲜 raw 样本上计算实际水平位置和姿态跳变量。"""
+    old_pose = project_fcu_reference_pose(odin_from_imu, old_correction, lever_arm_m)
+    new_pose = project_fcu_reference_pose(odin_from_imu, new_correction, lever_arm_m)
+    horizontal_jump = float(
+        np.linalg.norm(new_pose.position[:2] - old_pose.position[:2])
+    )
+    relative = new_pose.rotation @ old_pose.rotation.T
+    yaw_jump = abs(wrap_angle(math.atan2(float(relative[1, 0]), float(relative[0, 0]))))
+    return horizontal_jump, yaw_jump

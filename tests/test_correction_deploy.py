@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from xml.etree import ElementTree
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CORRECTION_ROOT = PROJECT_ROOT / "correction_service"
@@ -11,6 +12,24 @@ CORRECTION_ROOT = PROJECT_ROOT / "correction_service"
 def _text(path: Path) -> str:
     """读取仓库 UTF-8 文本。"""
     return path.read_text(encoding="utf-8")
+
+
+def test_correction_20_source_manifests_and_generators_are_synchronized() -> None:
+    """源码包版本与 2.0 新消息/服务生成清单必须一起升级。"""
+    manifests = (
+        PROJECT_ROOT / "src/correction_interfaces/package.xml",
+        CORRECTION_ROOT / "package.xml",
+        CORRECTION_ROOT / "extnav_patch/package.xml",
+    )
+    for manifest in manifests:
+        assert ElementTree.parse(manifest).getroot().findtext("version") == "2.0.0"
+    cmake = _text(PROJECT_ROOT / "src/correction_interfaces/CMakeLists.txt")
+    for interface in (
+        "msg/CalibrationKeyframe.msg",
+        "srv/ClearWindow.srv",
+        "srv/ApplySavedCorrection.srv",
+    ):
+        assert interface in cmake
 
 
 def test_extnav_installer_refuses_running_chain_and_backs_up_before_install() -> None:
@@ -23,6 +42,9 @@ def test_extnav_installer_refuses_running_chain_and_backs_up_before_install() ->
         'install -m 0644 "${PATCH_SOURCE}"'
     )
     assert "colcon build --packages-select extnav_bridge --symlink-install" in script
+    assert 'CORRECTION_PACKAGE_VERSION="2.0.0"' in script
+    assert "installed ExtnavCorrectionStatus is not interface 2.0" in script
+    assert "final_sample_revision" in script
     assert "systemctl restart" not in script
     assert "systemctl start" not in script
     assert "/mavros/cmd/arming" not in script
@@ -47,12 +69,19 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
         assert not any(line.startswith(directive) for line in active_lines)
     assert 'systemctl is-active --quiet "${FLIGHT_SERVICE}"' in installer
     assert "correction_interfaces correction_service" in installer
+    assert 'CORRECTION_PACKAGE_VERSION="2.0.0"' in installer
+    assert "installed CorrectionStatus is not 2.0" in installer
+    assert "correction_interfaces/srv/ApplySavedCorrection" in installer
+    assert "correction_interfaces/srv/ClearWindow" in installer
     assert 'systemctl enable --now "${SERVICE_NAME}"' in installer
     assert "/mavros/cmd/arming" not in installer
     node = _text(CORRECTION_ROOT / "correction_service" / "node.py")
     constructor = node[node.index("def __init__") : node.index("def _on_odometry")]
     assert "create_subscription(\n            Odometry" not in constructor
+    assert "create_subscription(\n            Image" not in constructor
     assert "def _start_odometry_capture" in node
+    assert "def _start_image_capture" in node
+    assert "self._stop_image_capture()" in node
     assert "self.destroy_subscription(subscription)" in node
 
 

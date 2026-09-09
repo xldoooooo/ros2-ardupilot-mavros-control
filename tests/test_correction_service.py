@@ -71,7 +71,10 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     """飞机内参、外参、Tag 尺寸和按需相机配置不得被默认值替代。"""
     config = load_config(CONFIG_DIR)
 
-    assert config.interface_version == "1.0"
+    assert config.interface_version == "2.0"
+    assert config.window.default_size == 5
+    assert config.window.maximum_size == 20
+    assert len(config.config_fingerprint) == 64
     assert (config.intrinsics.width, config.intrinsics.height) == (1920, 1080)
     assert math.isclose(config.intrinsics.camera_matrix[0, 0], 1143.4239585813639)
     assert math.isclose(config.t_imu_camera[0, 3], 0.04780285496559549)
@@ -117,39 +120,67 @@ def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:
     assert math.isclose(correction.y_m, -0.73, abs_tol=1e-10)
     assert math.isclose(correction.yaw_rad, math.radians(37.0), abs_tol=1e-10)
     assert correction.tilt_rad < 1e-8
+    expected_odin_from_tag = (
+        odin_from_imu @ config.t_imu_camera @ camera_from_tag_configured
+    )
+    assert np.allclose(correction.odin_from_tag, expected_odin_from_tag, atol=1e-10)
+    assert np.allclose(
+        (correction.odin_tag_x_m, correction.odin_tag_y_m),
+        expected_odin_from_tag[:2, 3],
+        atol=1e-10,
+    )
+
+
+def test_fixed_fcu_extrinsic_cancels_from_world_odin_calibration() -> None:
+    """公共右乘的固定 FCU 外参不改变 world<-Odin；中心补丁不得污染候选 C。"""
+    desired = planar_transform(-0.8, 1.6, math.radians(-42.0))
+    odin_from_imu = homogeneous(
+        rotation_z(math.radians(19.0)), np.array((2.0, -0.7, 0.4))
+    )
+    world_from_imu = desired @ odin_from_imu
+    imu_from_fcu = homogeneous(
+        rotation_z(math.radians(11.0)), np.array((-0.06, 0.03, -0.05))
+    )
+
+    recovered = (world_from_imu @ imu_from_fcu) @ np.linalg.inv(
+        odin_from_imu @ imu_from_fcu
+    )
+
+    assert np.allclose(recovered, desired, atol=1e-12)
 
 
 def test_detector_pose_solver_uses_metric_tag_size_and_scaled_intrinsics() -> None:
-    """已知投影角点经 IPPE 解算后应恢复相机前方的公制 Tag 位姿。"""
+    """不同真实边长的 Tag 都必须用各自尺寸恢复公制位姿。"""
     config = load_config(CONFIG_DIR)
     detector = AprilTagDetector(config.intrinsics, config.detection)
-    half = config.tags[0].size_m / 2.0
-    object_points = np.array(
-        (
-            (-half, half, 0.0),
-            (half, half, 0.0),
-            (half, -half, 0.0),
-            (-half, -half, 0.0),
-        ),
-        dtype=np.float64,
-    )
     rotation_vector = np.array((0.08, -0.05, 0.23), dtype=np.float64)
     translation = np.array((0.04, -0.02, 0.82), dtype=np.float64)
-    projected, _ = cv2.projectPoints(
-        object_points,
-        rotation_vector,
-        translation,
-        detector.camera_matrix,
-        config.intrinsics.distortion,
-    )
+    for tag_id, size_m in ((0, config.tags[0].size_m), (91, 0.245)):
+        half = size_m / 2.0
+        object_points = np.array(
+            (
+                (-half, half, 0.0),
+                (half, half, 0.0),
+                (half, -half, 0.0),
+                (-half, -half, 0.0),
+            ),
+            dtype=np.float64,
+        )
+        projected, _ = cv2.projectPoints(
+            object_points,
+            rotation_vector,
+            translation,
+            detector.camera_matrix,
+            config.intrinsics.distortion,
+        )
 
-    result = detector._estimate_pose(  # noqa: SLF001 - deterministic solver test.
-        0, projected.reshape(1, 4, 2), config.tags[0].size_m
-    )
+        result = detector._estimate_pose(tag_id, projected.reshape(1, 4, 2), size_m)
 
-    assert result is not None
-    assert np.allclose(result.camera_from_tag_standard[:3, 3], translation, atol=1e-5)
-    assert result.reprojection_error_px < 1e-4
+        assert result is not None
+        assert np.allclose(
+            result.camera_from_tag_standard[:3, 3], translation, atol=1e-5
+        )
+        assert result.reprojection_error_px < 1e-4
 
 
 def test_synchronizer_never_hides_bad_same_epoch_header_with_arrival_time() -> None:

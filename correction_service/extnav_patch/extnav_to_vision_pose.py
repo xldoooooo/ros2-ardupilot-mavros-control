@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Odin 到 MAVROS 的外部导航桥，并在同一节点内原子维护可选 SE(2) 修正。
 
-原始 /odin1/odometry_highfreq 始终是唯一输入。修正接口包缺失、尚未校准、
-Odin 断流/重启或 correction_service 崩溃时，本节点继续 identity 透传原始数据。
+原始 /odin1/odometry_highfreq 始终是唯一输入。修正接口包缺失、尚未校准，或
+Odin 断流/重启使 active 失效时，本节点对后续新鲜 raw 使用 identity/local 分支；
+correction_service 退出不会擅自清除 extnav 已确认的 active 修正。
 """
 
 from __future__ import annotations
@@ -37,7 +38,41 @@ except ImportError:
     CORRECTION_API_AVAILABLE = False
 
 
-CORRECTION_INTERFACE_VERSION = "1.0"
+CORRECTION_INTERFACE_VERSION = "2.0"
+
+
+class _FcuOutputSnapshot:
+    """一个 raw 回调内冻结的最终中心位姿、速度和修正元数据。"""
+
+    __slots__ = (
+        "correction_revision",
+        "correction_valid",
+        "horizontal_reference_mode",
+        "odin_session_id",
+        "position",
+        "quaternion",
+        "velocity",
+    )
+
+    def __init__(
+        self,
+        *,
+        position,
+        velocity,
+        quaternion,
+        correction_valid,
+        correction_revision,
+        odin_session_id,
+        horizontal_reference_mode,
+    ):
+        """保存不可重新解释的单样本数值；调用方不再修改其中数组。"""
+        self.position = position
+        self.velocity = velocity
+        self.quaternion = quaternion
+        self.correction_valid = correction_valid
+        self.correction_revision = correction_revision
+        self.odin_session_id = odin_session_id
+        self.horizontal_reference_mode = horizontal_reference_mode
 
 
 def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple[float, ...]:
@@ -155,6 +190,29 @@ def apply_planar_correction(
     return corrected
 
 
+def compute_fcu_reference_position(
+    raw_position: np.ndarray,
+    corrected_position: np.ndarray,
+    corrected_rotation: np.ndarray,
+    lever_arm_m: np.ndarray,
+    correction_valid: bool,
+) -> tuple[np.ndarray, str]:
+    """按 task29 分支转换飞控中心；有效分支移除旧的固定 +T_xy。"""
+    raw = np.asarray(raw_position, dtype=np.float64).reshape(3)
+    corrected = np.asarray(corrected_position, dtype=np.float64).reshape(3)
+    rotation = np.asarray(corrected_rotation, dtype=np.float64).reshape(3, 3)
+    lever = np.asarray(lever_arm_m, dtype=np.float64).reshape(3)
+    if not all(np.isfinite(value).all() for value in (raw, corrected, rotation, lever)):
+        raise ValueError("non-finite FCU reference transform")
+    rotated_lever = rotation @ lever
+    if correction_valid:
+        position = corrected - rotated_lever
+        # 世界高度未校准；同一个 raw 上保留补丁前的 z 数值。
+        position[2] = raw[2] + lever[2] - rotated_lever[2]
+        return position, "tag_world_xy_local_z"
+    return raw + lever - rotated_lever, "local_identity_origin"
+
+
 def _stamp_nanoseconds(message: Odometry) -> int:
     """取 Odin header 时间；零时间仍由 gap 判据识别 session。"""
     return int(message.header.stamp.sec) * 1_000_000_000 + int(
@@ -223,6 +281,10 @@ class OdometryBridge(Node):
         qx, qy, qz, qw = self.q_IO
         self.q_IO_conj = (-qx, -qy, -qz, qw)
         self.R_IO = quaternion_to_rotation_matrix(self.q_IO)
+        self.world_center_formula_supported = all(
+            abs(value) <= 1e-9
+            for value in (self.roll_cam, self.pitch_cam, self.yaw_cam)
+        )
 
         vision_topic = str(self.get_parameter("vision_pose_topic").value)
         pose_fcu_topic = str(self.get_parameter("pose_fcu_topic").value)
@@ -245,6 +307,7 @@ class OdometryBridge(Node):
         )
 
         self.latest_msg: Odometry | None = None
+        self.latest_output: _FcuOutputSnapshot | None = None
         self.last_raw_monotonic = 0.0
         self.last_raw_stamp_ns = 0
         self.last_frame_pair: tuple[str, str] | None = None
@@ -252,6 +315,7 @@ class OdometryBridge(Node):
         self.odin_session_id = ""
         self.raw_messages = 0
         self.corrected_messages = 0
+        self.final_pose_messages = 0
         self.correction_valid = False
         self.correction_x_m = 0.0
         self.correction_y_m = 0.0
@@ -305,6 +369,10 @@ class OdometryBridge(Node):
             "TODO(task27-reset-counter): 当前 /mavros/vision_pose/pose 是 PoseStamped，"
             "无法携带 MAVLink estimator reset_counter；本节点仅在修正状态中递增计数。"
         )
+        if not self.world_center_formula_supported:
+            self.get_logger().error(
+                "task29 世界中心有效分支仅对零安装角完成推导；将拒绝 SetCorrection"
+            )
 
     def _odom_cb(self, message: Odometry) -> None:
         """识别 Odin session、应用当前快照，并无条件发布 corrected 话题。"""
@@ -337,6 +405,9 @@ class OdometryBridge(Node):
         self.last_frame_pair = frame_pair
         self.odin_available = True
         self.raw_messages += 1
+        correction_valid = self.correction_valid
+        correction_revision = self.revision
+        correction_session = self.odin_session_id
         try:
             corrected = (
                 apply_planar_correction(
@@ -345,13 +416,28 @@ class OdometryBridge(Node):
                     self.correction_y_m,
                     self.correction_yaw_rad,
                 )
-                if self.correction_valid
+                if correction_valid
                 else copy.deepcopy(message)
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 畸形运行时消息必须触发 fail-safe identity
             self._invalidate(f"修正计算异常，退回 identity：{exc}")
             corrected = copy.deepcopy(message)
+            correction_valid = False
+            correction_revision = self.revision
+            correction_session = self.odin_session_id
+        try:
+            output = self._transform_sample(
+                message,
+                corrected,
+                correction_valid=correction_valid,
+                correction_revision=correction_revision,
+                correction_session=correction_session,
+            )
+        except Exception as exc:  # noqa: BLE001 - 转换失败必须禁止重复发布旧世界样本
+            self._invalidate(f"飞控中心转换异常，停止重复发布旧样本：{exc}")
+            output = None
         self.latest_msg = corrected
+        self.latest_output = output
         self.corrected_pub.publish(corrected)
         self.corrected_messages += 1
 
@@ -381,6 +467,7 @@ class OdometryBridge(Node):
         self.correction_y_m = 0.0
         self.correction_yaw_rad = 0.0
         self.applied_job_id = ""
+        self.latest_output = None
         self.last_event = reason
         self.last_error = reason
         self.get_logger().warning(reason)
@@ -433,6 +520,7 @@ class OdometryBridge(Node):
             self.correction_y_m = 0.0
             self.correction_yaw_rad = 0.0
             self.applied_job_id = ""
+            self.latest_output = None
             self.last_event = "收到显式清除请求，identity passthrough"
             self.last_error = ""
             response.accepted = True
@@ -444,6 +532,11 @@ class OdometryBridge(Node):
 
         if not self.odin_available or not self.odin_session_id:
             response.message = "Odin 当前不可用"
+            return response
+        if not self.world_center_formula_supported:
+            response.message = (
+                "当前 extnav 安装角非零，task29 飞控中心有效分支尚未重新推导"
+            )
             return response
         if request.odin_session_id != self.odin_session_id:
             response.message = "候选 Odin session 已失效"
@@ -477,6 +570,8 @@ class OdometryBridge(Node):
         )
         self.correction_valid = True
         self.applied_job_id = str(request.job_id)
+        # 新修正必须等待下一条 raw 在一个回调内重建 corrected/final 原子快照。
+        self.latest_output = None
         self._advance_revision()
         self.last_event = (
             f"已应用 job={self.applied_job_id} revision={self.revision} "
@@ -500,6 +595,7 @@ class OdometryBridge(Node):
             if age > self.session_gap_seconds and self.odin_available:
                 self.odin_available = False
                 self.odin_session_id = ""
+                self.latest_output = None
                 if self.correction_valid:
                     self._invalidate(f"Odin 数据超时 {age:.3f}s，旧修正立即失效")
                 else:
@@ -523,6 +619,23 @@ class OdometryBridge(Node):
         message.correction_y_m = self.correction_y_m
         message.correction_yaw_deg = math.degrees(self.correction_yaw_rad)
         message.applied_job_id = self.applied_job_id
+        message.horizontal_reference_mode = (
+            "tag_world_xy_local_z" if self.correction_valid else "local_identity_origin"
+        )
+        message.lever_arm_x_m = float(self.T[0])
+        message.lever_arm_y_m = float(self.T[1])
+        message.lever_arm_z_m = float(self.T[2])
+        message.installation_roll_rad = self.roll_cam
+        message.installation_pitch_rad = self.pitch_cam
+        message.installation_yaw_rad = self.yaw_cam
+        message.final_pose_messages = self.final_pose_messages
+        output = self.latest_output
+        message.final_sample_available = output is not None
+        if output is not None:
+            message.final_sample_correction_valid = output.correction_valid
+            message.final_sample_revision = output.correction_revision
+            message.final_sample_odin_session_id = output.odin_session_id
+            message.final_sample_reference_mode = output.horizontal_reference_mode
         message.raw_age_s = (
             max(0.0, time.monotonic() - self.last_raw_monotonic)
             if self.last_raw_monotonic > 0.0
@@ -535,30 +648,76 @@ class OdometryBridge(Node):
         self.status_pub.publish(message)
 
     def _get_data(self):
-        """从实际将发送给 MAVROS 的最新 Odometry 提取数据。"""
-        if self.latest_msg is None:
+        """读取 raw 回调中冻结的最终输出，状态切换后不复用旧世界样本。"""
+        snapshot = self.latest_output
+        if snapshot is None:
             return None
         stamp = self.get_clock().now().to_msg()
-        pose = self.latest_msg.pose.pose
-        twist = self.latest_msg.twist.twist
-        return pose.position, pose.orientation, twist.linear, twist.angular, stamp
+        return snapshot.position, snapshot.velocity, snapshot.quaternion, stamp
 
-    def _apply_transform(self, position, quaternion, linear, angular):
-        """保留既有 Odin 安装与 FCU lever-arm 变换。"""
+    def _transform_sample(
+        self,
+        raw_message: Odometry,
+        corrected_message: Odometry,
+        *,
+        correction_valid: bool,
+        correction_revision: int,
+        correction_session: str,
+    ) -> _FcuOutputSnapshot:
+        """在单个 raw 回调内原子生成 corrected 对应的最终中心结果。"""
+        raw_pose = raw_message.pose.pose
+        pose = corrected_message.pose.pose
+        twist = corrected_message.twist.twist
+        quaternion = pose.orientation
+        linear = twist.linear
+        angular = twist.angular
         q_odom = normalize_quaternion(
             (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
         )
-        p_odom = np.array((position.x, position.y, position.z))
+        p_raw = np.array(
+            (raw_pose.position.x, raw_pose.position.y, raw_pose.position.z)
+        )
+        p_corrected = np.array((pose.position.x, pose.position.y, pose.position.z))
         v_odom = np.array((linear.x, linear.y, linear.z))
         w_odom = np.array((angular.x, angular.y, angular.z))
         q_imu = multiply_quaternions(self.q_IO, q_odom)
         q_imu = normalize_quaternion(multiply_quaternions(q_imu, self.q_IO_conj))
         rotation_imu = quaternion_to_rotation_matrix(q_imu)
-        p_imu = p_odom + self.T - rotation_imu @ self.T
+        p_imu, reference_mode = compute_fcu_reference_position(
+            p_raw,
+            p_corrected,
+            rotation_imu,
+            self.T,
+            correction_valid,
+        )
         v_imu = v_odom - rotation_imu @ self.R_IO @ np.cross(
             w_odom, self.R_IO.T @ self.T
         )
-        return p_imu, v_imu, q_imu
+        return _FcuOutputSnapshot(
+            position=p_imu,
+            velocity=v_imu,
+            quaternion=q_imu,
+            correction_valid=correction_valid,
+            correction_revision=int(correction_revision),
+            odin_session_id=str(correction_session),
+            horizontal_reference_mode=reference_mode,
+        )
+
+    def _apply_transform(self, position, quaternion, linear, angular):
+        """保留供旧调用方测试的 identity/local 中心转换兼容入口。"""
+        raw = Odometry()
+        raw.pose.pose.position = copy.deepcopy(position)
+        raw.pose.pose.orientation = copy.deepcopy(quaternion)
+        raw.twist.twist.linear = copy.deepcopy(linear)
+        raw.twist.twist.angular = copy.deepcopy(angular)
+        output = self._transform_sample(
+            raw,
+            raw,
+            correction_valid=False,
+            correction_revision=self.revision,
+            correction_session=self.odin_session_id,
+        )
+        return output.position, output.velocity, output.quaternion
 
     @staticmethod
     def _make_pose(stamp, position, quaternion):
@@ -591,23 +750,19 @@ class OdometryBridge(Node):
         data = self._get_data()
         if data is None:
             return
-        position, quaternion, linear, angular, stamp = data
-        p_imu, _v_imu, q_imu = self._apply_transform(
-            position, quaternion, linear, angular
-        )
-        self.vis_pub.publish(self._make_pose(stamp, p_imu, q_imu))
+        position, _velocity, quaternion, stamp = data
+        self.vis_pub.publish(self._make_pose(stamp, position, quaternion))
+        self.final_pose_messages += 1
 
     def ctrl_timer_callback(self) -> None:
         """按 100 Hz 发布与 MAVROS 使用同一修正快照的控制位姿/速度。"""
         data = self._get_data()
         if data is None:
             return
-        position, quaternion, linear, angular, stamp = data
-        p_imu, v_imu, q_imu = self._apply_transform(
-            position, quaternion, linear, angular
-        )
-        self.pose_fcu_pub.publish(self._make_pose(stamp, p_imu, q_imu))
-        self.vel_fcu_pub.publish(self._make_twist(stamp, v_imu))
+        position, velocity, quaternion, stamp = data
+        self.pose_fcu_pub.publish(self._make_pose(stamp, position, quaternion))
+        self.vel_fcu_pub.publish(self._make_twist(stamp, velocity))
+        self.final_pose_messages += 1
 
 
 def main(args=None) -> None:
