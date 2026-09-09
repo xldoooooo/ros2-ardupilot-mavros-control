@@ -111,8 +111,8 @@
 
 - `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
   first/next 或 apply_saved 才创建有界任务专属 raw 订阅，采样时另启相机；冻结候选后必须先释放
-  资源再保存/应用。任务 27 真机测得 idle 约 0.018～0.021 核、采样约 1.14 核、cgroup 峰值约
-  392 MB；2.0 源码仍需在目标机同条件复测，不能沿用旧值冒充本版实测。
+  资源再保存/应用。2.0 已在当前 Jetson 验证 idle 只保留 extnav 状态订阅、相机设备无人占用，
+  采样相机约 30 Hz；尚未重新测量 2.0 的 CPU/RSS，任务 27 的 1.0 资源数据只能作为历史参考。
 - extnav 始终直接订阅 `/odin1/odometry_highfreq`。valid 时对 Odin IMU 中心左乘公共 SE(2)，
   `/odin1/odometry_highfreq_corrected` 仍表示 Odin IMU 中心；随后才按物理杆臂转换为 FCU 中心，
   同一冻结结果发布到 `/extnav/pose_fcu` 与 `/mavros/vision_pose/pose`。MAVROS EKF final 是
@@ -138,7 +138,8 @@
 - 生产配置使用 2026-08-27 的 1920×1080 内参；`T_imu_camera` 以
   `success01-run_20260827_233838` 为基矩阵，并右乘 2026-08-31 真机定向台架确认的相机光轴
   `Rz(180deg)`。Tag 0 为世界原点/yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称
-  世界坐标精度。
+  世界坐标精度。2026-09-09 逐路取帧确认当前真正下视 Tag0 的相机是 USB `1.2`、`/dev/video2`，
+  生产配置必须使用 `platform-3610000.usb-usb-0:1.2:1.0-video-index0`；USB `2` 是房间视角相机。
 - 地面站右上角修正入口紧邻摄像头面板，面板从服务端权威状态派生动态 N、窗口/候选/质量和
   按钮；分别显示 raw Odin、corrected Odin、FCU 输入和 MAVROS EKF final。勾选应用仍先执行
   dry-run，候选冻结并展示具体值/revisions/跳变/reset 风险后才二次确认 apply_saved。
@@ -148,8 +149,9 @@
 - 生产 `tag_pose.csv` 仍只有 Tag 0，未编造 Tag 1/2 坐标；多 Tag 目前仅通过合成真值和隔离 ROS
   验证。相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
   重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。云台同型号相机不能替代
-  下视校准相机。仓库 2.0 尚未部署到飞机，最后有记录的飞机运行基线仍是任务 27；部署前必须
-  核对 source/install/runtime 版本，且不得由代理自行停止/重启机载服务。
+  下视校准相机。接口、correction_service 与 extnav 2.0 已选择性部署到飞机并核对
+  source/install/runtime；真实多 Tag 配准、valid 修正写入和世界坐标精度仍未验证，绝不能从本次
+  单 Tag dry-run 推断可实飞。
 - 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
   `/odin1/odometry_highfreq` 中的 `odom->imu`，按
   `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
@@ -360,12 +362,14 @@
   `/home/nvidia/scq/backups/task27-20260828-225107/`，包含本地完整仓库、飞机项目/运行时和
   Odin/extnav/标定三份已校验归档；生产 extnav 定点备份位于飞机
   `/home/nvidia/backups/extnav-task27-20260828-234049/`。详细哈希见任务 27 报告。
-- 当前 Jetson 已选择性部署任务 27 源码：飞控与 `odin-correction.service` 均
-  active/running、Result success、零重启；MAVROS connected、armed=false、STABILIZE；extnav
-  revision 2、correction_valid=false、identity，raw/corrected 计数相等，下视相机空闲。飞机 Git
-  HEAD 仍未改写，不得用 pull/reset 覆盖现场工作树。
+- 当前 Jetson 已选择性部署任务 29 的 correction interfaces/service 与 extnav 2.0，飞机 Git
+  HEAD 仍保持历史 `6a40713`，不得用 pull/reset 覆盖现场工作树。部署前可验证备份位于
+  `/home/nvidia/backups/task29-predeploy-20260909-2205/`，extnav 安装器备份位于
+  `/home/nvidia/backups/extnav-task29-20260909-220308/`。2026-09-09 台架结束时飞行链已按测试前
+  状态停止，视频服务 inactive；`odin-correction.service` active/enabled 但 idle、窗口为空、
+  相机和任务 raw 订阅均已释放。
 
-## 当前验证基线（2026-08-29）
+## 当前验证基线（2026-09-09）
 
 - 离线时间修复已通过本地 180 项 Python、19 项 ROS/C++、隔离 smoke，以及 Jetson ARM64 的
   `+30 天 → -30 天` 地面时间跳变探针；新鲜命令接受、回退 30 秒命令仍按 TTL 拒绝。真实生产服务
@@ -380,8 +384,14 @@
 
 - 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
   `main` 基线；工作树中的用户自有改动仍须保留。
-- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：198 passed。
+- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：229 passed。
 - 当前 colcon 结果：22 tests、0 errors、0 failures、0 skipped；五包 Release 构建通过。
+- 任务 29 已在当前 Jetson 原生构建并完成两轮 Tag0、`apply=false` 未武装干测：首轮
+  24 accepted/2 rejected、7.43 s，第二轮因当前 tilt 紧贴 8° 门限而为
+  24 accepted/375 rejected、53.98 s；两轮候选 yaw 均约 -14.3°，预计 yaw 跳变超出 10° 门限，
+  `can_apply=false`，从未写入 extnav。第二轮终态耗时跨 3 秒心跳保持完全不变；最终窗口已 clear，
+  extnav 仍 correction_valid=false/revision 0。raw/corrected 约 400 Hz、FCU pose 约 100 Hz、
+  MAVROS vision 输入约 39 Hz；飞机端包测试 22 项零失败。
 - 任务 27 真机未解锁台架已通过 dry-run、apply+ACK、服务退出保留 active、显式 clear、identity
   精确透传、失败保底、按需 raw 订阅和相机释放。apply job revision 1 的候选约为
   `(-0.0132 m, -0.2611 m, +89.7599°)`，随后因 Tag 未摆正已 clear 到 revision 2 identity；该数值
@@ -440,6 +450,9 @@
   的跨任务候选可相差 4.86～7.14 cm/0.24～1.44°，而任务内部标准差很小，说明当前约 2 秒质量门
   只验证短时稳定。当前 8° tilt 上限也不足以声称 5 cm 绝对精度；正式使用前必须做测量级 Tag
   定位定向、明确 IMU/相机参考点、跨位置返回闭环和外参重复性验收。
+- 2026-09-09 当前安装状态的单 Tag 真机 dry-run 实测 tilt 约 7.88～7.98°，大量帧会越过 8° 门限，
+  且两次候选 yaw 约 -14.3°、均被 10° 跳变门拒绝。这可能来自相机拆装后的外参偏移、Tag 实际
+  朝向或二者共同作用；在重新固定/标定并做测量级布设前，不得放宽门限或应用该候选。
 - Python/OpenCV 活跃采样约占 1.14 个 Jetson CPU 核且只有约 7.8 Hz；idle 已通过按需订阅降到约
   0.02 核。若需要更高频率或与其他视觉任务并行，应以实测为依据评估 C++、ROI/分辨率和 CPU
   调度，不能只提高配置频率。
@@ -498,9 +511,11 @@
   `agent/report/report-2026-08-31-task27-camera-extrinsic-180deg-fix.md`。
 - **2026-09-09：多 Tag 滑窗与 FCU 中心水平原点修正。** 仓库接口升级到 2.0，加入服务端
   P/Q keyframe FIFO、加权 SE(2)、单次事务/丢 ACK 对账、显式 apply_saved 和四段位姿面板；
-  extnav 有效分支移除多余 `+T_xy`。只完成合成真值与 localhost 隔离 ROS 验证，未部署飞机、
-  未进行多 Tag 实测，也没有产生实机精度结论。详见
-  `agent/report/report-2026-09-09-task29-multi-tag-window-fcu-center.md`。
+  extnav 有效分支移除多余 `+T_xy`。随后选择性部署当前 Jetson，纠正下视相机 USB 端口，完成
+  两轮 Tag0 dry-run、事务拒绝分支、频率/资源释放和终态计时真机验证；安全门拒绝实际候选，未
+  应用修正，仍未进行真实多 Tag 或精度验收。详见
+  `agent/report/report-2026-09-09-task29-multi-tag-window-fcu-center.md` 与
+  `agent/report/report-2026-09-09-task29-aircraft-deployment-camera-bench.md`。
 
 ## 版本库与记录规范
 

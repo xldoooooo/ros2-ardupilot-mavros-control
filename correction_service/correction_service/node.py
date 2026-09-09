@@ -139,6 +139,7 @@ class _Job:
     started_ros_ns: int
     estimator: CorrectionEstimator | None
     journal: JobJournal
+    finished_monotonic: float = 0.0
     state: int = CorrectionStatus.STATE_STARTING
     message: str = "正在准备操作"
     last_error: str = ""
@@ -1855,6 +1856,7 @@ class CorrectionServiceNode(Node):
     def _finish_job(self, job: _Job, *, success: bool, message: str) -> None:
         """冻结互相独立的保存、应用、资源事实并发布可靠终态。"""
         with self._lock:
+            job.finished_monotonic = time.monotonic()
             job.active = False
             job.message = message
             job.last_error = "" if success else message
@@ -1945,7 +1947,7 @@ class CorrectionServiceNode(Node):
         message.expected_yaw_jump_deg = _candidate_degrees(
             candidate, "expected_yaw_jump_rad"
         )
-        message.duration_s = max(0.0, time.monotonic() - job.started_monotonic)
+        message.duration_s = self._job_elapsed_s(job)
         message.processing_rate_hz = snapshot.processing_rate_hz
         message.processing_time_ms = snapshot.processing_time_ms
         message.candidate_stage = candidate.stage if candidate is not None else ""
@@ -2005,7 +2007,7 @@ class CorrectionServiceNode(Node):
                 message.detections_total = job.detections_total
                 message.samples_accepted = job.samples_accepted
                 message.samples_rejected = job.samples_rejected
-                message.elapsed_s = max(0.0, time.monotonic() - job.started_monotonic)
+                message.elapsed_s = self._job_elapsed_s(job)
                 message.correction_tilt_deg = _degrees_or_zero(snapshot.tilt_rad)
                 message.position_std_m = _finite_or_zero(snapshot.position_std_m)
                 message.yaw_std_deg = _degrees_or_zero(snapshot.yaw_std_rad)
@@ -2030,6 +2032,12 @@ class CorrectionServiceNode(Node):
                 message.last_error = self._resource_fault
                 message.message = f"资源故障：{self._resource_fault}"
         self._status_pub.publish(message)
+
+    @staticmethod
+    def _job_elapsed_s(job: _Job) -> float:
+        """活动任务使用当前时间，终态任务固定在完成时刻。"""
+        end_monotonic = job.finished_monotonic or time.monotonic()
+        return max(0.0, end_monotonic - job.started_monotonic)
 
     def _fill_candidate_status(
         self, message: CorrectionStatus, candidate: WindowCandidate | None

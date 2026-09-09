@@ -539,3 +539,27 @@ def test_subscription_cleanup_failure_latches_resource_fault(
     )
     assert not accepted
     assert "资源故障" in reason
+
+
+def test_finished_job_elapsed_time_remains_frozen(
+    correction_node, tmp_path: Path, monkeypatch
+) -> None:
+    """终态 status 与 result 的耗时必须冻结，不能随心跳继续增长。"""
+    node = correction_node
+    job = _job(node, tmp_path, _candidate(node))
+    job.started_monotonic = time.monotonic() - 0.05
+    job.outcome = "dry_run_saved"
+    node._job = job
+    results: list[Any] = []
+    statuses: list[Any] = []
+    monkeypatch.setattr(node._result_pub, "publish", results.append)
+    monkeypatch.setattr(node._status_pub, "publish", statuses.append)
+
+    node._finish_job(job, success=True, message="test complete")
+    finished_elapsed = statuses[-1].elapsed_s
+    time.sleep(0.02)
+    node._publish_status()
+
+    assert job.finished_monotonic > job.started_monotonic
+    assert results[-1].duration_s == pytest.approx(finished_elapsed, abs=1e-6)
+    assert statuses[-1].elapsed_s == pytest.approx(finished_elapsed, abs=1e-6)
