@@ -97,7 +97,7 @@
 - [x] websocket连接的超时等待时间 改大或者改成可配置
 - [x] 修复从开机自启动而来的机载摄像头服务无法被地面站检测到的bug
 - [ ] 实机模式下，收到上位机的巡检任务后，地面站还需确认起飞/执行航点/降落。现在可以删掉
-- [ ] videoservice目录下保存一份摄像头内参 intrinsics.yaml
+- [x] videoservice目录下保存一份摄像头内参 intrinsics.yaml
 - [ ] videoservice直播画面去畸变
 
 

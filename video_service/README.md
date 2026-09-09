@@ -84,7 +84,9 @@ ROS 航点抓拍不使用这条事件路径，而是逐条排队、逐条发布�
 ## 机载进程与 ROS 接口 3.2
 
 机载配置是带完整注释的 [camera.conf](config/camera.conf)，镜头配置是
-[lens.conf](config/lens.conf)。默认媒体目录为 `/home/share`，JPG 目录为
+[lens.conf](config/lens.conf)，1920×1080 标定内参保存在
+[intrinsics.yaml](config/intrinsics.yaml)。该内参当前仅作为标定基线随代码保存，视频流水线尚未
+读取它或执行去畸变。默认媒体目录为 `/home/share`，JPG 目录为
 `/home/share/jpg`，默认视频模式为原生 H.264 1920×1080@60 fps；格式、分辨率和帧率
 必须是目标摄像头真实声明的组合。
 

@@ -1,0 +1,29 @@
+# Wasintek 下视相机在 1920x1080 下的 OpenCV 针孔内参。
+# 来源：飞机 /home/nvidia/camera_calib/camera_calibration.yaml（2026-08-27）。
+image_width: 1920
+image_height: 1080
+distortion_model: plumb_bob
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+    - 1143.4239585813639
+    - 0.0
+    - 960.6748716257138
+    - 0.0
+    - 1144.0407728492289
+    - 547.8450918370406
+    - 0.0
+    - 0.0
+    - 1.0
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+    - -0.21833500749870322
+    - 0.018230985899660504
+    - 0.000022424412093961576
+    - -0.00038269426930049552
+    - 0.006941325890589948
+rms_reprojection_error: 1.4490607711609362
+calibration_tag_family: tag36h11
