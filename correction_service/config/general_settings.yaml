@@ -20,7 +20,9 @@ detection:
   image_scale: 0.5
   corner_refinement: true
   max_reprojection_error_px: 2.0
-  max_correction_tilt_deg: 8.0
+  # 2026-09-09 地面原理验证：实测约 7.9~8.0deg，放宽到 10deg 避免边界抖动锁死采样；
+  # 仍只允许水平 SE(2)，此值不能作为外参或世界坐标精度合格证据。
+  max_correction_tilt_deg: 10.0
   # TODO(task27-multitag): 首版明确拒绝同帧多 Tag；后续在此扩展联合估计策略。
   reject_multiple_tags: true
 
@@ -70,7 +72,8 @@ window:
   max_model_yaw_std_deg: 1.0
   max_prior_model_residual_m: 0.500
   max_apply_position_jump_m: 1.0
-  max_apply_yaw_jump_deg: 10.0
+  # 地面未武装原理验证允许观察较大的世界系偏航修正；应用仍需显式确认和全部其他门限通过。
+  max_apply_yaw_jump_deg: 45.0
   recommended_precision_keyframes: 3
 
 # 仅用于复算候选在飞控参考中心处的实际跳变；extnav 状态必须回报同一参数。

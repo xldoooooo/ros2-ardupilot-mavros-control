@@ -386,12 +386,14 @@
   `main` 基线；工作树中的用户自有改动仍须保留。
 - 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：229 passed。
 - 当前 colcon 结果：22 tests、0 errors、0 failures、0 skipped；五包 Release 构建通过。
-- 任务 29 已在当前 Jetson 原生构建并完成两轮 Tag0、`apply=false` 未武装干测：首轮
-  24 accepted/2 rejected、7.43 s，第二轮因当前 tilt 紧贴 8° 门限而为
-  24 accepted/375 rejected、53.98 s；两轮候选 yaw 均约 -14.3°，预计 yaw 跳变超出 10° 门限，
-  `can_apply=false`，从未写入 extnav。第二轮终态耗时跨 3 秒心跳保持完全不变；最终窗口已 clear，
-  extnav 仍 correction_valid=false/revision 0。raw/corrected 约 400 Hz、FCU pose 约 100 Hz、
-  MAVROS vision 输入约 39 Hz；飞机端包测试 22 项零失败。
+- 任务 29 已在当前 Jetson 原生构建并完成多轮 Tag0 未武装台架。初始 8° tilt/10° yaw 跳变门
+  下，两轮 dry-run 分别为 24 accepted/2 rejected/7.43 s 与 24/375/53.98 s，约 -14.3° 候选被
+  安全拒绝。经用户明确要求，为地面原理验证把 tilt 门适度改为 10°、应用 yaw 跳变门改为 45°；
+  复测得到 24/0/7.48 s、tilt 8.657°、yaw -14.420°，随后显式 apply_saved 得到 ACK/revision 1。
+  FCU 输入按预估跳变约 0.0895 m/14.42°，MAVROS EKF 稳定后跟随至毫米级/约 0.003°；清回
+  identity 时 EKF yaw 曾短时过冲约 +1.99°，约 30 s 后回到 0.064°，证实 reset counter 风险。
+  最终 correction 窗口为空，extnav clear 为 correction_valid=false/revision 2；raw/corrected 约
+  400 Hz、FCU pose 约 100 Hz、MAVROS vision 输入约 39 Hz，飞机端包测试 22 项零失败。
 - 任务 27 真机未解锁台架已通过 dry-run、apply+ACK、服务退出保留 active、显式 clear、identity
   精确透传、失败保底、按需 raw 订阅和相机释放。apply job revision 1 的候选约为
   `(-0.0132 m, -0.2611 m, +89.7599°)`，随后因 Tag 未摆正已 clear 到 revision 2 identity；该数值
@@ -448,11 +450,12 @@
   验收：生产外参水平杆臂为 5.52 cm，结果表示 Odin IMU 而非相机光心；唯一接受的外参基线曾估计
   出约 162.6 ms 时间偏移，尚无硬件 PTS、固定 td=0 的多轮独立从零标定。历史同一 Odin session
   的跨任务候选可相差 4.86～7.14 cm/0.24～1.44°，而任务内部标准差很小，说明当前约 2 秒质量门
-  只验证短时稳定。当前 8° tilt 上限也不足以声称 5 cm 绝对精度；正式使用前必须做测量级 Tag
-  定位定向、明确 IMU/相机参考点、跨位置返回闭环和外参重复性验收。
-- 2026-09-09 当前安装状态的单 Tag 真机 dry-run 实测 tilt 约 7.88～7.98°，大量帧会越过 8° 门限，
-  且两次候选 yaw 约 -14.3°、均被 10° 跳变门拒绝。这可能来自相机拆装后的外参偏移、Tag 实际
-  朝向或二者共同作用；在重新固定/标定并做测量级布设前，不得放宽门限或应用该候选。
+  只验证短时稳定。地面原理验证使用的 10° tilt 上限更不能声称 5 cm 绝对精度；正式使用前必须
+  做测量级 Tag 定位定向、明确 IMU/相机参考点、跨位置返回闭环和外参重复性验收。
+- 2026-09-09 当前安装状态的单 Tag 真机 dry-run 实测 tilt 约 7.88～8.66°、候选 yaw 约 -14.3～
+  -14.4°。用户授权放宽到 10°/45°后虽成功验证 extnav 与 EKF 的修正效果，但这可能来自相机拆装
+  后的外参偏移、Tag 实际朝向或二者共同作用；不能把 EKF 跟随输入当作世界真值准确，后续也不得
+  在没有新证据时继续放宽其他质量门或将该候选用于实飞。
 - Python/OpenCV 活跃采样约占 1.14 个 Jetson CPU 核且只有约 7.8 Hz；idle 已通过按需订阅降到约
   0.02 核。若需要更高频率或与其他视觉任务并行，应以实测为依据评估 C++、ROI/分辨率和 CPU
   调度，不能只提高配置频率。
@@ -512,10 +515,12 @@
 - **2026-09-09：多 Tag 滑窗与 FCU 中心水平原点修正。** 仓库接口升级到 2.0，加入服务端
   P/Q keyframe FIFO、加权 SE(2)、单次事务/丢 ACK 对账、显式 apply_saved 和四段位姿面板；
   extnav 有效分支移除多余 `+T_xy`。随后选择性部署当前 Jetson，纠正下视相机 USB 端口，完成
-  两轮 Tag0 dry-run、事务拒绝分支、频率/资源释放和终态计时真机验证；安全门拒绝实际候选，未
-  应用修正，仍未进行真实多 Tag 或精度验收。详见
+  多轮 Tag0 dry-run、事务拒绝分支、频率/资源释放和终态计时真机验证；随后按用户明确要求适度
+  放宽地面实验门限，完成一次 apply/ACK、四段位姿与 EKF 响应观察并清回 identity。仍未进行真实
+  多 Tag 或精度验收。详见
   `agent/report/report-2026-09-09-task29-multi-tag-window-fcu-center.md` 与
-  `agent/report/report-2026-09-09-task29-aircraft-deployment-camera-bench.md`。
+  `agent/report/report-2026-09-09-task29-aircraft-deployment-camera-bench.md`、
+  `agent/report/report-2026-09-09-task29-relaxed-gates-apply-bench.md`。
 
 ## 版本库与记录规范
 
