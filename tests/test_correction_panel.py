@@ -1,4 +1,4 @@
-"""独立 Tag-Odin 2.0 面板的滑窗门控、展示、确认和生命周期测试。"""
+"""独立 Tag-Odin 2.0 面板的响应式布局、诊断展示、门控和生命周期测试。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from typing import Any
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from correction_service.ros_client import CorrectionPanelClient
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea
 
 from correction_service.correction_panel import CorrectionPanelWindow
 
@@ -86,6 +87,11 @@ class _FakeCorrectionClient:
                 "z_m": 0.1,
                 "yaw_deg": 3.2,
             },
+            "legacy_t_pose_fcu": {
+                "fresh": False,
+                "available": False,
+                "reason": "修正未生效；identity 分支没有 Task29 前后差异",
+            },
             "final": {
                 "fresh": True,
                 "age_seconds": 0.2,
@@ -156,7 +162,7 @@ def _application() -> QApplication:
 
 
 def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
-    """默认 first 必须 dry-run，并分别展示 raw/corrected/FCU/EKF final。"""
+    """默认 first 必须 dry-run，并展示四段生产链及旧 T 公式诊断行。"""
     application = _application()
     client = _FakeCorrectionClient()
     window = CorrectionPanelWindow(client=client)
@@ -172,6 +178,7 @@ def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
         assert "x=+1.0000" in window.raw_pose.text()
         assert "x=+1.0000" in window.corrected_pose.text()
         assert "x=+1.1000" in window.pose_fcu.text()
+        assert "identity 分支没有 Task29 前后差异" in window.legacy_t_pose_fcu.text()
         assert "x=+1.2000" in window.final_pose.text()
         assert (
             "sample=local_identity_origin (identity) r0"
@@ -184,6 +191,122 @@ def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
 
     assert client.closed == 1
     assert client.stop_requests == []
+
+
+def test_legacy_t_comparison_adds_only_historical_fixed_xy_offset() -> None:
+    """旧 T 对照必须由当前 FCU 同源位姿只加 T_xy，不改 z/yaw 或生产快照。"""
+    pose_fcu = {
+        "fresh": True,
+        "age_seconds": 0.02,
+        "x_m": 0.24,
+        "y_m": 0.15,
+        "z_m": 0.72,
+        "yaw_deg": -1.5,
+    }
+    extnav = {
+        "fresh": True,
+        "age_seconds": 0.10,
+        "valid": True,
+        "revision": 7,
+        "session": "odin-current",
+        "lever_arm_m": (0.06, -0.03, 0.05),
+        "final_sample_available": True,
+        "final_sample_valid": True,
+        "final_sample_revision": 7,
+        "final_sample_session": "odin-current",
+    }
+
+    comparison = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
+
+    assert comparison["available"] is True
+    assert comparison["x_m"] == 0.30
+    assert comparison["y_m"] == 0.12
+    assert comparison["z_m"] == pose_fcu["z_m"]
+    assert comparison["yaw_deg"] == pose_fcu["yaw_deg"]
+    assert comparison["delta_x_m"] == 0.06
+    assert comparison["delta_y_m"] == -0.03
+    assert comparison["age_seconds"] == 0.02
+    assert comparison["extnav_age_seconds"] == 0.10
+    assert pose_fcu["x_m"] == 0.24
+    assert extnav["lever_arm_m"] == (0.06, -0.03, 0.05)
+
+
+def test_legacy_t_comparison_rejects_identity_or_unaligned_sample() -> None:
+    """未激活修正或最终样本 revision 不一致时，不得伪造旧公式对照。"""
+    pose_fcu = {
+        "fresh": True,
+        "age_seconds": 0.02,
+        "x_m": 0.24,
+        "y_m": 0.15,
+        "z_m": 0.72,
+        "yaw_deg": -1.5,
+    }
+    extnav = {
+        "fresh": True,
+        "age_seconds": 0.10,
+        "valid": False,
+        "revision": 7,
+        "session": "odin-current",
+        "lever_arm_m": (0.06, -0.03, 0.05),
+        "final_sample_available": True,
+        "final_sample_valid": False,
+        "final_sample_revision": 7,
+        "final_sample_session": "odin-current",
+    }
+
+    identity = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
+    assert identity["available"] is False
+    assert "identity 分支" in identity["reason"]
+
+    extnav.update(valid=True, final_sample_valid=True, final_sample_revision=6)
+    mismatched = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
+    assert mismatched["available"] is False
+    assert "revision/session" in mismatched["reason"]
+
+    extnav["final_sample_revision"] = 7
+    pose_fcu["age_seconds"] = 0.2
+    older_pose = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
+    assert older_pose["available"] is False
+    assert "extnav 状态之后" in older_pose["reason"]
+
+
+def test_panel_displays_live_legacy_t_pose_as_diagnostic_only() -> None:
+    """修正有效时，GUI 应显示旧公式位姿、固定差值和对应 revision。"""
+    application = _application()
+    client = _FakeCorrectionClient()
+    client.current_status["extnav"].update(
+        valid=True,
+        revision=7,
+        reference_mode="tag_world_xy_local_z",
+        final_sample_valid=True,
+        final_sample_revision=7,
+        final_sample_reference_mode="tag_world_xy_local_z",
+    )
+    client.current_status["legacy_t_pose_fcu"] = {
+        "fresh": True,
+        "available": True,
+        "age_seconds": 0.1,
+        "x_m": 0.30,
+        "y_m": 0.12,
+        "z_m": 0.72,
+        "yaw_deg": -1.5,
+        "delta_x_m": 0.06,
+        "delta_y_m": -0.03,
+        "revision": 7,
+        "session": "odin-test",
+    }
+
+    window = CorrectionPanelWindow(client=client)
+    try:
+        window.show()
+        application.processEvents()
+        text = window.legacy_t_pose_fcu.text()
+        assert "x=+0.3000" in text
+        assert "y=+0.1200" in text
+        assert "Δxy=(+0.0600, -0.0300)" in text
+        assert "r7" in text
+    finally:
+        window.close()
 
 
 def test_panel_defers_apply_until_frozen_candidate_confirmation(monkeypatch) -> None:
@@ -355,6 +478,79 @@ def test_panel_apply_saved_confirmation_and_unknown_gate(monkeypatch) -> None:
         assert not window.clear_button.isEnabled()
         assert window.apply_saved_button.isEnabled()
         assert "未知" in window.apply_saved_button.text()
+    finally:
+        window.close()
+
+
+def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> None:
+    """窄窗口应重排全部顶部操作，并保持内容无需横向滚动即可使用。"""
+    application = _application()
+    window = CorrectionPanelWindow(client=_FakeCorrectionClient())
+    try:
+        window.show()
+        window.resize(560, 520)
+        application.processEvents()
+
+        scroll = window.findChild(QScrollArea)
+        assert scroll is not None
+        assert window._compact_layout is True
+        assert scroll.horizontalScrollBar().maximum() == 0
+        viewport = scroll.viewport().rect()
+        for button in (
+            window.first_button,
+            window.next_button,
+            window.stop_button,
+            window.clear_button,
+            window.apply_saved_button,
+        ):
+            assert viewport.contains(
+                button.mapTo(scroll.viewport(), button.rect().topLeft())
+            )
+            assert viewport.contains(
+                button.mapTo(scroll.viewport(), button.rect().bottomRight())
+            )
+
+        command_positions = {
+            widget: window._command_layout.getItemPosition(
+                window._command_layout.indexOf(widget)
+            )
+            for widget in (
+                window.tag_id_input,
+                window.window_size_input,
+                window.first_button,
+                window.next_button,
+                window.stop_button,
+                window.clear_button,
+                window.apply_saved_button,
+            )
+        }
+        assert command_positions[window.tag_id_input][:2] == (0, 1)
+        assert command_positions[window.window_size_input][:2] == (1, 1)
+        assert command_positions[window.first_button][:2] == (3, 0)
+        assert command_positions[window.next_button][:2] == (3, 1)
+        assert command_positions[window.stop_button][:2] == (4, 0)
+        assert command_positions[window.clear_button][:2] == (4, 1)
+        assert command_positions[window.apply_saved_button] == (5, 0, 1, 2)
+
+        correction_position = window._status_layout.getItemPosition(
+            window._status_layout.indexOf(window._correction_group)
+        )
+        extnav_position = window._status_layout.getItemPosition(
+            window._status_layout.indexOf(window._extnav_group)
+        )
+        assert correction_position[:2] == (0, 0)
+        assert extnav_position[:2] == (1, 0)
+
+        window.resize(1180, 860)
+        application.processEvents()
+        assert window._compact_layout is False
+        assert scroll.horizontalScrollBar().maximum() == 0
+        assert window._command_layout.getItemPosition(
+            window._command_layout.indexOf(window.stop_button)
+        ) == (2, 2, 1, 2)
+        assert window._status_layout.getItemPosition(
+            window._status_layout.indexOf(window._extnav_group)
+        )[:2] == (0, 1)
     finally:
         window.close()
 

@@ -167,14 +167,18 @@ source 与 install 的 `2.0.0` 清单，以及新消息/服务字段，避免旧
 面板使用独立 ROS context 和 `CORRECTION_ROS_DOMAIN_ID`（默认 0）。它显示服务端窗口长度、
 N/下一次序号、Tag 顺序、每个 keyframe 的 P/Q/质量、最长 O/W 基线、RMS/最大残差、模型 yaw sigma、
 候选/相对 active delta、最近实际跳变、instance/session/revisions、application 状态和日志路径。
-四段位姿分别标为 raw Odin、corrected Odin、转换后 FCU 输入和 MAVROS EKF final，并显示消息
-年龄；不同中心/参考系不能直接逐帧相减。
+四段生产位姿分别标为 raw Odin、corrected Odin、转换后 FCU 输入和 MAVROS EKF final，并显示
+消息年龄；不同中心/参考系不能直接逐帧相减。面板另由同一条 FCU 输入快照只读派生一行
+“旧 T 公式对照”：修正有效且 final sample 的 revision/session 对齐时，显示 Task29 修正前
+`p_old.xy=p_current.xy+T.xy` 的结果。该值仅用于定位当前厘米级偏差来源，不创建 ROS 发布器、
+不写 extnav，也不改变实际 FCU/MAVROS 输入；修正未生效或元数据未对齐时明确显示不可用。
 
 窗口非空时长度锁定，Tag ID/窗口数值框忽略滚轮。所有服务请求异步发送，状态过期、请求中、
 活动采样或 unknown 时按语义禁用冲突按钮。面板的“收敛后确认应用”也先发 dry-run；候选保存
 后才展示具体 `C`、粗/精阶段、window/session/revisions、最近跳变和 reset 风险并二次确认，
 随后调用 `apply_saved` 重新获取新鲜 raw 复算。关闭面板只关闭地面订阅，不 stop、不 clear、
-不重复提交。
+不重复提交。窗口小于 820 px 时，输入、五个操作按钮以及候选/extnav 状态组会改为窄屏排列；
+最小 560×520 窗口依靠纵向滚动承载内容，不需要横向放大才能访问顶部按钮。
 
 ## 构建、测试和部署
 
@@ -217,8 +221,10 @@ ros2 topic hz /odin1/odometry_highfreq_corrected
 Q/质量、keyframe 的 P/Q/sigma/weight/residual、淘汰前后配准、门限、实际 FCU 跳变、请求、
 ACK/状态对账和资源结果；非有限值写为 JSON `null`，不输出非法 NaN。
 
-- 2026-09-10 本地源码已撤销错误的首次单点重锚，恢复 Task27 首次算法；飞机本轮断开，尚未
-  部署此恢复版本。下一轮部署并核对 source/install/runtime 前，不能假定机载首次算法与本地一致。
+- 2026-09-15 用户报告：只用 Tag 0 首次校准后，把飞控中心放到 Tag 0 中心仍显示约
+  `(0.24,0.15)m`。本轮没有再改首次标定或 extnav 修正公式，只在地面面板增加同样本旧
+  `+T_xy` 公式对照；尚未取得与该复测同步的 raw/PnP/C_full/FCU 日志，不能据此认定剩余偏差
+  来自哪一层。本轮地面改动尚未部署到飞机。
 - 生产 `tag_pose.csv` 当前只有实测定义的 Tag 0；没有编造 Tag 1/2 坐标。因此真实 next
   操作需先加入经测量的不同 Tag，当前多 Tag 验收只使用测试夹具中的合成真值。
 - 2026-09-09 已在飞机确认 USB `1.2` 下视相机可见 Tag 0，并完成未武装 dry-run、一次显式

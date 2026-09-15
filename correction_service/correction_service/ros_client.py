@@ -1,4 +1,4 @@
-"""独立修正面板 ROS 2 客户端：权威滑窗状态与四类异步写操作。"""
+"""独立修正面板 ROS 2 客户端：权威状态、异步写操作与旧 T 只读对照。"""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ class CorrectionPanelClient:
         self._thread.start()
 
     def status(self) -> dict[str, Any]:
-        """返回各话题快照及独立保鲜标记，供 Qt 定时读取。"""
+        """返回各话题快照、保鲜标记和不影响生产链的旧 T 公式对照。"""
         now = time.monotonic()
         with self._lock:
             snapshots = {key: dict(value) for key, value in self._snapshots.items()}
@@ -75,16 +75,95 @@ class CorrectionPanelClient:
             age = now - received.get(key, 0.0)
             snapshot["age_seconds"] = age
             snapshot["fresh"] = age <= self.STATUS_STALE_SECONDS
+        pose_fcu = snapshots.get("pose_fcu", {})
+        extnav = snapshots.get("extnav", {})
         return {
             "domain_id": self.domain_id,
             "startup_error": startup_error,
             "correction": snapshots.get("correction", {}),
-            "extnav": snapshots.get("extnav", {}),
+            "extnav": extnav,
             "result": snapshots.get("result", {}),
             "raw": snapshots.get("raw", {}),
             "corrected": snapshots.get("corrected", {}),
-            "pose_fcu": snapshots.get("pose_fcu", {}),
+            "pose_fcu": pose_fcu,
+            "legacy_t_pose_fcu": self._legacy_t_pose_fcu(pose_fcu, extnav),
             "final": snapshots.get("final", {}),
+        }
+
+    @staticmethod
+    def _legacy_t_pose_fcu(
+        pose_fcu: dict[str, Any], extnav: dict[str, Any]
+    ) -> dict[str, Any]:
+        """由同一 FCU 输出派生 Task29 修正前多出的 ``+T_xy``，仅供诊断显示。"""
+
+        unavailable: dict[str, Any] = {"fresh": False, "available": False}
+        if not extnav.get("fresh"):
+            return {**unavailable, "reason": "extnav 状态不可用/过期"}
+        if not pose_fcu.get("fresh"):
+            return {**unavailable, "reason": "飞控输入位姿不可用/过期"}
+        if not extnav.get("valid"):
+            return {
+                **unavailable,
+                "reason": "修正未生效；identity 分支没有 Task29 前后差异",
+            }
+        if not (
+            extnav.get("final_sample_available")
+            and extnav.get("final_sample_valid")
+            and int(extnav.get("final_sample_revision", -1))
+            == int(extnav.get("revision", -2))
+            and str(extnav.get("final_sample_session", ""))
+            == str(extnav.get("session", ""))
+        ):
+            return {
+                **unavailable,
+                "reason": "等待与当前 revision/session 一致的新鲜修正样本",
+            }
+
+        try:
+            pose_age_s = float(pose_fcu.get("age_seconds", math.inf))
+            extnav_age_s = float(extnav.get("age_seconds", math.inf))
+        except (TypeError, ValueError):
+            return {**unavailable, "reason": "位姿或 extnav 接收年龄无效"}
+        if not all(math.isfinite(value) for value in (pose_age_s, extnav_age_s)):
+            return {**unavailable, "reason": "位姿或 extnav 接收年龄无效"}
+        if pose_age_s > extnav_age_s:
+            return {
+                **unavailable,
+                "reason": "等待当前 extnav 状态之后的新鲜飞控输入样本",
+            }
+
+        lever = extnav.get("lever_arm_m", ())
+        if not isinstance(lever, (tuple, list)) or len(lever) != 3:
+            return {**unavailable, "reason": "extnav 杆臂 T 不完整"}
+        values = (
+            pose_fcu.get("x_m"),
+            pose_fcu.get("y_m"),
+            pose_fcu.get("z_m"),
+            pose_fcu.get("yaw_deg"),
+            *lever,
+        )
+        try:
+            finite_values = tuple(float(value) for value in values)
+        except (TypeError, ValueError):
+            return {**unavailable, "reason": "位姿或杆臂 T 不是有限数值"}
+        if not all(math.isfinite(value) for value in finite_values):
+            return {**unavailable, "reason": "位姿或杆臂 T 不是有限数值"}
+
+        x_m, y_m, z_m, yaw_deg, lever_x_m, lever_y_m, _lever_z_m = finite_values
+        return {
+            "fresh": True,
+            "available": True,
+            "age_seconds": pose_age_s,
+            "extnav_age_seconds": extnav_age_s,
+            "x_m": x_m + lever_x_m,
+            "y_m": y_m + lever_y_m,
+            "z_m": z_m,
+            "yaw_deg": yaw_deg,
+            "delta_x_m": lever_x_m,
+            "delta_y_m": lever_y_m,
+            "revision": int(extnav["revision"]),
+            "session": str(extnav["session"]),
+            "reason": "旧有效分支 p_old=p_current+T_xy（仅诊断，未发布）",
         }
 
     def request_start(

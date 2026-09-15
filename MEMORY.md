@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-09-14，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-09-15，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -143,8 +143,11 @@
   世界坐标精度。2026-09-09 逐路取帧确认当前真正下视 Tag0 的相机是 USB `1.2`、`/dev/video2`，
   生产配置必须使用 `platform-3610000.usb-usb-0:1.2:1.0-video-index0`；USB `2` 是房间视角相机。
 - 地面站右上角修正入口紧邻摄像头面板，面板从服务端权威状态派生动态 N、窗口/候选/质量和
-  按钮；分别显示 raw Odin、corrected Odin、FCU 输入和 MAVROS EKF final。勾选应用仍先执行
-  dry-run，候选冻结并展示具体值/revisions/跳变/reset 风险后才二次确认 apply_saved。
+  按钮；分别显示 raw Odin、corrected Odin、FCU 输入和 MAVROS EKF final。另由同一条 FCU
+  输入只读派生 Task29 修正前的旧 `+T_xy` 位姿，只有 valid 且 final sample revision/session 对齐
+  时才展示，不发布或写入任何生产链。勾选应用仍先执行 dry-run，候选冻结并展示具体值/revisions/
+  跳变/reset 风险后才二次确认 apply_saved。面板以 820 px 为响应式断点，最小 560×520 时顶部
+  五个操作按钮无需水平滚动即可完整访问，长内容由换行和纵向滚动承载。
 - 当前 MAVROS 输入是 `geometry_msgs/PoseStamped`，不能携带 MAVLink estimator reset counter；
   extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同一图像多 Tag 联合检测和
   onboard 自动航点触发仍未实现；本版实现的是不同停留位置/不同 Tag 的顺序 keyframe。
@@ -152,9 +155,13 @@
   验证。相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
   重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。2026-09-10 用户实测
   Task29 初版约偏 `(0.20,0.10)m`，错误单点重锚版进一步恶化到约 `(0.25,0.15)m`；后者的真机
-  数据不能再用于证明前者来自外参/T/人工摆放。原始偏差仍待 Task27 首次算法恢复部署后，用固定
-  治具和同步 raw/PnP/C_full/corrected/FCU 证据重新分层。云台同型号相机不能替代下视校准相机。
-  本地源码已恢复，飞机因本轮断开尚未同步；真实多 Tag 配准和世界坐标精度仍未验证。
+  数据不能再用于证明前者来自外参/T/人工摆放。2026-09-15 用户报告恢复 Task27 首次算法后，
+  单次 Tag0 校准并把飞控中心放到 Tag0 中心仍约为 `(0.24,0.15)m`；尚无与该次试验同步的
+  raw/PnP/C_full/corrected/FCU 证据，根因仍未确定。本地面板已增加同样本旧 `+T_xy` 对照但尚未
+  部署；在生产 `T=(0.06,-0.03,0.05)m` 下，若当前同帧为 `(0.24,0.15)m`，旧公式必为
+  `(0.30,0.12)m`。该恒等差只能隔离固定 T 项，不能解释其余误差。云台同型号相机不能替代下视
+  校准相机；真实多 Tag 配准和世界坐标精度仍未验证。详见
+  `agent/report/report-2026-09-15-task29-legacy-t-comparison-responsive-panel.md`。
 - 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
   `/odin1/odometry_highfreq` 中的 `odom->imu`，按
   `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
