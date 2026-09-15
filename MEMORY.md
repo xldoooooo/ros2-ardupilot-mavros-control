@@ -153,15 +153,16 @@
   onboard 自动航点触发仍未实现；本版实现的是不同停留位置/不同 Tag 的顺序 keyframe。
 - 生产 `tag_pose.csv` 仍只有 Tag 0，未编造 Tag 1/2 坐标；多 Tag 目前仅通过合成真值和隔离 ROS
   验证。相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
-  重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。2026-09-10 用户实测
-  Task29 初版约偏 `(0.20,0.10)m`，错误单点重锚版进一步恶化到约 `(0.25,0.15)m`；后者的真机
-  数据不能再用于证明前者来自外参/T/人工摆放。2026-09-15 用户报告恢复 Task27 首次算法后，
-  单次 Tag0 校准并把飞控中心放到 Tag0 中心仍约为 `(0.24,0.15)m`；尚无与该次试验同步的
-  raw/PnP/C_full/corrected/FCU 证据，根因仍未确定。本地面板已增加同样本旧 `+T_xy` 对照但尚未
-  部署；在生产 `T=(0.06,-0.03,0.05)m` 下，若当前同帧为 `(0.24,0.15)m`，旧公式必为
-  `(0.30,0.12)m`。该恒等差只能隔离固定 T 项，不能解释其余误差。云台同型号相机不能替代下视
-  校准相机；真实多 Tag 配准和世界坐标精度仍未验证。详见
-  `agent/report/report-2026-09-15-task29-legacy-t-comparison-responsive-panel.md`。
+  重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。2026-09-15 已确认用户此前
+  约 `(0.24,0.15)m` 的复测仍运行错误提交 `49f5b32`，随后把恢复 Task27 的 `5d0f1e1` 关键源码和
+  旧 T 对照选择性部署到当前 Jetson。未武装 Tag0 job `97c6da443e1c` 以 24 accepted/0 rejected、
+  tilt 4.47° 收敛并应用 revision 1；修正为 `(+0.06029,+0.01183)m/-23.168°`，稳态 FCU 输入约
+  `(+0.01875,+0.06633)m`，MAVROS 与其约 1.25 mm/0.001° 一致。旧 `+T_xy` 对照严格只多
+  `(+0.06,-0.03)m`，不能解释用户当前粗估 `(-0.20,0±0.05)m` 与输出的约 22 cm/7 cm 差异。
+  同步 PnP/SE(3)/extnav 代数闭环且 K,D 已传入 PnP；若人工位置估计准确，反推 FCU→相机水平杆臂
+  与配置相差约 0.22～0.25 m，更应核对拆装后的外参/参考点。revision 1 当前保留给用户搬到 Tag0
+  正上方复测；未取得精确治具真值前仍不定责、不改首次算法、不继续放宽门限。详见
+  `agent/report/report-2026-09-15-task29-restored-first-calibration-aircraft-validation.md`。
 - 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
   `/odin1/odometry_highfreq` 中的 `odom->imu`，按
   `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
@@ -559,6 +560,12 @@
   候选；保留 Task29 有效分支删除 `+T_xy`，多 Tag P/Q 配准只从第二点起生效。飞机本轮断开，
   尚未部署复验；原约 20/10 cm 偏差仍未归因。旧报告已标为结论作废，详见
   `agent/report/report-2026-09-10-task29-restore-task27-first-calibration.md`。
+- **2026-09-15：恢复版首次标定与旧 T 对照实机闭环。** 确认飞机仍运行错误的 `49f5b32` 后，
+  选择性部署 `5d0f1e1`，在 armed=false 下完成 Tag0 24/24 样本收敛、apply_saved ACK、extnav
+  revision 1、FCU/MAVROS 稳态跟随和旧公式恒差 `(+0.06,-0.03)m` 验证。算法和数据链闭环通过，
+  但当前输出约 `(+0.019,+0.066)m` 与用户粗估 `(-0.20,0±0.05)m` 不一致；证据更指向拆装后的
+  相机外参/参考点或粗略真值，待用户把 FCU 中心精确移到 Tag0 正上方复测。详见
+  `agent/report/report-2026-09-15-task29-restored-first-calibration-aircraft-validation.md`。
 
 ## 版本库与记录规范
 
