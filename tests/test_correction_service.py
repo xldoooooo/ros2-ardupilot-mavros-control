@@ -131,9 +131,9 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert config.camera.driver_package == "wasintek_gst_camera"
     assert config.lens_controls == {
         "auto_exposure": 1,
-        "exposure_time_absolute": 25,
-        "gain": 240,
-        "brightness": 10,
+        "exposure_time_absolute": 50,
+        "gain": 200,
+        "brightness": 6,
         "contrast": 6,
         "saturation": 6,
         "hue": 0,

@@ -37,8 +37,9 @@ def test_calibrated_configuration_loads_for_expected_tag() -> None:
         "exposure_time_absolute",
         "gain",
     ]
-    assert config.lens_controls["exposure_time_absolute"] == 25
-    assert config.lens_controls["gain"] == 240
+    assert config.lens_controls["exposure_time_absolute"] == 50
+    assert config.lens_controls["gain"] == 200
+    assert config.lens_controls["brightness"] == 6
     rotation = config.t_imu_camera[:3, :3]
     # 当前原始画面下方对应机头/Odin +X，光轴对应 Odin -Z；若再次漏掉
     # 2026-08-31 的光轴 180°修正，这两项中的第一项会直接反号。

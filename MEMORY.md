@@ -142,8 +142,8 @@
   `Rz(180deg)`。Tag 0 为世界原点/yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称
   世界坐标精度。2026-09-09 逐路取帧确认当前真正下视 Tag0 的相机是 USB `1.2`、`/dev/video2`，
   生产配置必须使用 `platform-3610000.usb-usb-0:1.2:1.0-video-index0`；USB `2` 是房间视角相机。
-- correction_service 的下视相机预设保存在 `config/lens.conf`，当前手动曝光/曝光时间/增益为
-  `1/25/240`，并固定 brightness/contrast/saturation/hue/sharpness/power-line/zoom。节点必须先
+- correction_service 的下视相机预设保存在 `config/lens.conf`；当前除曝光时间按下视识别需要设为
+  50 外均与 video_service 同款，关键值为 manual exposure 1、gain 200、brightness 6。节点必须先
   收到首帧、等待流稳定 1 秒，再按文件顺序写入；手动曝光和曝光时间后各等待 0.2 秒，全部写完后
   统一读回验证并丢弃切换期残留帧。任务 JSONL 保存 requested/readback。面板中的
   `Tag解码次数` 是各帧解出的目标总数，不是 Tag ID；`0` 表示没有一帧解出标记。
@@ -170,10 +170,13 @@
   前仍不定责、不改首次算法、不继续放宽门限。详见
   `agent/report/report-2026-09-15-task29-restored-first-calibration-aircraft-validation.md`。
 - 2026-09-15 相机问题复核中，用户截图对应 job `51e9548ecb24` 的 137 个处理帧均未解出 Tag，
-  但失败帧未保存，无法证明曝光或代码是根因；随后从同一 ROS 图像链同步保存的帧均可稳定解出
-  Tag0，改进预设时序部署后的 job `25e7b882fa68` 为 24 accepted/0 rejected。因此只能确认新时序
-  生效且当前画面可识别，不能把此前的间歇失败宣称为已定位或根治。当前服务窗口含一个 dry-run
-  keyframe（1/5），extnav 仍为 identity revision 0，未应用修正。
+  但失败帧未保存，无法证明曝光或代码是根因。旧 `brightness=10/gain=240/exposure=25` 同链帧
+  均值 193.4、纯白 7.342%；改为 video_service 同款 brightness 6/gain 200 并按用户要求把曝光设为
+  50 后，当前静态场景帧均值 62.2、纯白 0.001%。三个独立开流 dry-run 分别为 25/0、24/0、24/0
+  accepted/rejected，重投影误差 0.239/0.238/0.259 px，且每次日志均确认首帧后 requested/readback
+  一致。可确认过曝已消除且当前识别稳定，但不能倒推出旧参数就是此前间歇零识别的唯一根因。
+  当前服务窗口含第三次 dry-run keyframe（1/5、window revision 5），extnav 仍为 identity revision 0，
+  未应用修正。
 - 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
   `/odin1/odometry_highfreq` 中的 `odom->imu`，按
   `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
