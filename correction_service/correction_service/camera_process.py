@@ -16,6 +16,9 @@ from .config import CameraSettings
 
 _CONTROL_VALUE = re.compile(r":\s*(-?\d+)(?:\s|$)")
 
+# Wasintek 切入手动曝光和写曝光值后需要短暂稳定，时序与 video_service 实机路径一致。
+_LENS_CONTROL_SETTLE_SECONDS = 0.2
+
 
 def parse_v4l2_control_value(output: str) -> int:
     """解析 `name: value`，允许 v4l2-ctl 在数值后附带枚举说明。"""
@@ -121,8 +124,8 @@ class CameraProcess:
                 f"下视相机节点异常退出 code={return_code}，详见 {self._log_path}"
             )
 
-    def apply_lens_controls(self) -> None:
-        """开流后逐项写入并读回标定镜头参数，任一不一致即失败。"""
+    def apply_lens_controls(self) -> dict[str, int]:
+        """开流后分步写入并最终读回全部镜头参数，任一不一致即失败。"""
         executable = shutil.which("v4l2-ctl")
         if executable is None:
             raise CameraProcessError("找不到 v4l2-ctl，无法锁定标定镜头参数")
@@ -145,6 +148,15 @@ class CameraProcess:
                     raise CameraProcessError(
                         f"镜头参数 {name} 写入失败：{changed.stderr.strip()}"
                     )
+                if name in {"auto_exposure", "exposure_time_absolute"}:
+                    time.sleep(_LENS_CONTROL_SETTLE_SECONDS)
+            except subprocess.TimeoutExpired as exc:
+                raise CameraProcessError(f"镜头参数 {name} 操作超时") from exc
+
+        # 全部写入后再逐项读回，避免只验证尚未被后续控制项影响的瞬时值。
+        actual_controls: dict[str, int] = {}
+        for name, expected in self._lens_controls.items():
+            try:
                 readback = subprocess.run(
                     [executable, "-d", self._settings.device, "--get-ctrl", name],
                     capture_output=True,
@@ -168,7 +180,9 @@ class CameraProcess:
                 raise CameraProcessError(
                     f"镜头参数 {name} 读回 {actual}，期望 {expected}"
                 )
-        self._logger.info("下视相机镜头参数已全部写入并读回确认")
+            actual_controls[name] = actual
+        self._logger.info("下视相机镜头参数已全部写入并读回确认：%s", actual_controls)
+        return actual_controls
 
     def stop(self) -> None:
         """先 SIGINT 让 ROS/GStreamer 释放设备，再有限升级信号并确认退出。"""

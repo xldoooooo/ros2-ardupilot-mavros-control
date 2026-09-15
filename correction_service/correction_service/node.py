@@ -947,12 +947,21 @@ class CorrectionServiceNode(Node):
             # 相机开流会重置 UVC 参数，必须在第一帧后再写入并读回。
             time.sleep(1.0)
             camera.ensure_running()
-            camera.apply_lens_controls()
+            lens_readback = camera.apply_lens_controls()
+            # 丢弃开流默认值和控制项切换期间的最后一帧；后续检测只使用完整预设生效后的帧。
+            self._drain_image_queue()
             with self._lock:
                 if job.failure_reason:
                     raise RuntimeError(job.failure_reason)
                 job.state = CorrectionStatus.STATE_SAMPLING
                 job.message = "正在采集当前 Tag 停留段并生成单一 keyframe"
+            job.journal.write(
+                "lens_controls_applied",
+                after_first_image=True,
+                stream_settle_seconds=1.0,
+                requested=self.config.lens_controls,
+                readback=lens_readback,
+            )
             job.journal.write(
                 "camera_ready", pid=camera.pid, camera_log=str(camera_log)
             )

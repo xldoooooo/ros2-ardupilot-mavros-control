@@ -583,7 +583,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             self.sample_value.setText(
                 f"recv/proc={correction.get('frames_received', 0)}/"
                 f"{correction.get('frames_processed', 0)}  "
-                f"tag={correction.get('detections', 0)}  "
+                f"Tag解码次数={correction.get('detections', 0)}  "
                 f"accept/reject={correction.get('samples', 0)}/"
                 f"{correction.get('rejected', 0)}"
             )

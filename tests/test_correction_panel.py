@@ -180,6 +180,7 @@ def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
         assert "x=+1.1000" in window.pose_fcu.text()
         assert "identity 分支没有 Task29 前后差异" in window.legacy_t_pose_fcu.text()
         assert "x=+1.2000" in window.final_pose.text()
+        assert "Tag解码次数=0" in window.sample_value.text()
         assert (
             "sample=local_identity_origin (identity) r0"
             in window.reference_value.text()

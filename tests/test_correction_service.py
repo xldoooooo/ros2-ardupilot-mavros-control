@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import math
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import cv2
 import numpy as np
-from correction_service.camera_process import parse_v4l2_control_value
+from correction_service.camera_process import CameraProcess, parse_v4l2_control_value
 from correction_service.detector import AprilTagDetector
 from correction_service.estimator import CorrectionEstimator, CorrectionSample
 from correction_service.geometry import (
@@ -52,6 +54,51 @@ def test_v4l2_readback_accepts_numeric_value_with_enum_label() -> None:
     assert parse_v4l2_control_value("gain: 240\n") == 240
 
 
+def test_lens_controls_apply_in_file_order_then_verify_final_values(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """下视相机须先稳定手动曝光，再在全部写入后核验最终值。"""
+    config = load_config(CONFIG_DIR)
+    calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(command))
+        if "--get-ctrl" in command:
+            name = command[-1]
+            value = config.lens_controls[name]
+            suffix = " (Manual Mode)" if name == "auto_exposure" else ""
+            return subprocess.CompletedProcess(
+                command, 0, f"{name}: {value}{suffix}\n", ""
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(
+        "correction_service.camera_process.shutil.which",
+        lambda _name: "/usr/bin/v4l2-ctl",
+    )
+    monkeypatch.setattr("correction_service.camera_process.subprocess.run", run)
+    monkeypatch.setattr("correction_service.camera_process.time.sleep", sleeps.append)
+    camera = CameraProcess(
+        config.camera,
+        config.lens_controls,
+        tmp_path / "camera.log",
+        logging.getLogger("test-correction-camera"),
+    )
+
+    readback = camera.apply_lens_controls()
+
+    set_calls = [call for call in calls if "--set-ctrl" in call]
+    get_calls = [call for call in calls if "--get-ctrl" in call]
+    expected_names = list(config.lens_controls)
+    assert [call[-1].split("=", 1)[0] for call in set_calls] == expected_names
+    assert [call[-1] for call in get_calls] == expected_names
+    assert calls.index(get_calls[0]) > calls.index(set_calls[-1])
+    assert expected_names[:3] == ["auto_exposure", "exposure_time_absolute", "gain"]
+    assert sleeps == [0.2, 0.2]
+    assert readback == config.lens_controls
+
+
 def _stamp(nanoseconds: int) -> SimpleNamespace:
     """构造只含 sec/nanosec 的测试时间。"""
     return SimpleNamespace(
@@ -83,10 +130,15 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert config.camera.image_topic == "/correction_service/image_raw"
     assert config.camera.driver_package == "wasintek_gst_camera"
     assert config.lens_controls == {
-        "brightness": 10,
         "auto_exposure": 1,
         "exposure_time_absolute": 25,
         "gain": 240,
+        "brightness": 10,
+        "contrast": 6,
+        "saturation": 6,
+        "hue": 0,
+        "sharpness": 6,
+        "power_line_frequency": 1,
         "zoom_absolute": 10,
     }
 

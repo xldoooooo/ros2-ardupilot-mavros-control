@@ -125,7 +125,8 @@ GUI 重开只读取这些权威状态，不自计数，也不要求磁盘窗口�
 - `extrinsics.yaml`：`T_imu_camera`；
 - `tag_pose.csv`：`tag_id,x,y,z,yaw_deg,size_m`；每个 Tag 可有自己的真实边长；
 - `camera.conf`：唯一校准相机的稳定设备路径、MJPEG 模式和硬件 PTS 驱动；
-- `lens.conf`：开流后写入并逐项读回的 UVC 参数；
+- `lens.conf`：预先保存的下视相机 UVC 参数；收到首帧并等待视频流稳定后，按文件顺序分步写入，
+  丢弃切换期帧并最终逐项读回；任务日志保存 requested/readback；
 - `general_settings.yaml`：接口、同步、停留段、窗口、跳变、超时和日志门限。
 
 关键默认值包括：停留段至少 24 个样本、至少 5 个独立时间块；有效位置 sigma 下限

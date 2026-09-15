@@ -354,6 +354,11 @@ def _load_lens(config_dir: Path) -> dict[str, int]:
     parser = _load_ini(config_dir / "lens.conf")
     allowed = {
         "brightness",
+        "contrast",
+        "saturation",
+        "hue",
+        "sharpness",
+        "power_line_frequency",
         "auto_exposure",
         "exposure_time_absolute",
         "gain",
