@@ -49,6 +49,30 @@ raw、corrected、最终 FCU pose、`valid/session/revision/reference_mode` 在�
 
 ## 标定模型
 
+### Tag 图案方向与相机外参
+
+`tag_pose.csv` 的 yaw 指向 **AprilRobotics 官方 PNG 的图案上方**，不是 OpenCV
+字典生成图片的上方；Tag 系为 `+X上 / +Y左 / +Z朝上`。现场 Tag0 手写“上”的一侧与
+[官方 Tag0 原图](https://github.com/AprilRobotics/apriltag-imgs/blob/master/tag36h11/tag36_11_00000.png)
+一致。OpenCV 36h11 的角点零位相对它旋转了 180°：
+
+| 官方纸张角点 | 左上 | 右上 | 右下 | 左下 |
+|---|---|---|---|---|
+| OpenCV `detectMarkers` 点号 | 2 | 3 | 0 | 1 |
+
+PnP 的标准 Tag 轴为 `+X右 / +Y上 / +Z朝观察者`，因此
+`T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`，右乘
+`T_camera_OpenCVTag`。2026-09-15 Task32 修复了这里的方向错误，并撤销了此前为补偿
+航向差而错误加在 `T_imu_camera` 上的光轴 180°旋转。两个错误曾使航向近似抵消、相机世界
+水平位置反号；不能只改其中一处，也不能给最终 x/y/yaw 单独补符号。
+
+更新时须配套部署 `geometry.py` 与 `config/extrinsics.yaml`，重启独立修正服务并重新采样，
+不可复用旧窗口或旧 active 修正。应在已确认未武装、无控制任务的维护状态处理旧 active；
+独立修正服务重启不会自动清除 extnav 的 active。无需修改飞行控制节点、Odin 或 extnav。
+本次恢复的是 2026-08-27 标定矩阵，不代表重新标定了拆装后的小角度、厘米级外参误差。
+
+### 首次与滑窗计算
+
 每个停留段先按当前 `T_imu_camera`、PnP `T_camera_tag`、Odin `T_odin_imu` 和 Tag 世界
 位姿完成三维链：
 
@@ -222,10 +246,10 @@ ros2 topic hz /odin1/odometry_highfreq_corrected
 Q/质量、keyframe 的 P/Q/sigma/weight/residual、淘汰前后配准、门限、实际 FCU 跳变、请求、
 ACK/状态对账和资源结果；非有限值写为 JSON `null`，不输出非法 NaN。
 
-- 2026-09-15 用户报告：只用 Tag 0 首次校准后，把飞控中心放到 Tag 0 中心仍显示约
-  `(0.24,0.15)m`。本轮没有再改首次标定或 extnav 修正公式，只在地面面板增加同样本旧
-  `+T_xy` 公式对照；尚未取得与该复测同步的 raw/PnP/C_full/FCU 日志，不能据此认定剩余偏差
-  来自哪一层。本轮地面改动尚未部署到飞机。
+- Task32 已用官方原始图案、现场手写方向和独立图像回归定位 Tag/相机两处180°错误。
+  同一历史实拍图的完整几何复算中，FCU 由约 `(+0.019,+0.068)m` 改为
+  `(-0.218,+0.020)m`，航向仅变约0.14°；这与用户描述的后方约20cm一致。实机静态
+  验证和未覆盖边界见 `agent/report/` 的 Task32 报告，不能用合成移回原点替代人工搬动验收。
 - 生产 `tag_pose.csv` 当前只有实测定义的 Tag 0；没有编造 Tag 1/2 坐标。因此真实 next
   操作需先加入经测量的不同 Tag，当前多 Tag 验收只使用测试夹具中的合成真值。
 - 2026-09-09 已在飞机确认 USB `1.2` 下视相机可见 Tag 0，并完成未武装 dry-run、一次显式

@@ -41,11 +41,11 @@ def test_calibrated_configuration_loads_for_expected_tag() -> None:
     assert config.lens_controls["gain"] == 200
     assert config.lens_controls["brightness"] == 6
     rotation = config.t_imu_camera[:3, :3]
-    # 当前原始画面下方对应机头/Odin +X，光轴对应 Odin -Z；若再次漏掉
-    # 2026-08-31 的光轴 180°修正，这两项中的第一项会直接反号。
-    image_down_in_imu = rotation @ np.array((0.0, 1.0, 0.0))
+    # Task32撤销把Tag约定错误归因于相机的180°补偿；原始画面上方接近
+    # Odin +X，光轴接近 Odin -Z。Tag官方图案与OpenCV角点差异由geometry处理。
+    image_up_in_imu = rotation @ np.array((0.0, -1.0, 0.0))
     optical_axis_in_imu = rotation @ np.array((0.0, 0.0, 1.0))
-    assert image_down_in_imu[0] > math.cos(math.radians(10.0))
+    assert image_up_in_imu[0] > math.cos(math.radians(10.0))
     assert optical_axis_in_imu[2] < -math.cos(math.radians(10.0))
 
 

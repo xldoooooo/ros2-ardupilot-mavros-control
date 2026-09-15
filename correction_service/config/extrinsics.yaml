@@ -1,23 +1,24 @@
 # 相机坐标到 Odin IMU 坐标的齐次变换 T_imu_camera。
-# 基矩阵来自飞机 vins_odin_calib/output/success01-run_20260827_233838；质量判定通过。
-# 2026-08-31 真机定向台架确认原矩阵相对当前安装绕相机光轴反向，因此右乘
-# Rz(180deg)。Tag 0 图案上方与机头同向时，dry-run yaw 由 179.858deg 修正到约 0deg。
+# 原矩阵来自飞机 vins_odin_calib/output/success01-run_20260827_233838。
+# Task32确认此前180°航向差来自OpenCV/官方Tag图案方向约定，而非相机倒装；
+# 撤销2026-08-31为补偿该差值而加入的Rz(180deg)，并与geometry.py的Tag基变换配套部署。
+# 相机拆装后的厘米级/小角度误差仍待重新标定；本次只修复错误的180°补偿。
 transform_name: T_imu_camera
 source_path: /home/nvidia/vins_odin_calib/output/success01-run_20260827_233838/extrinsic_parameter.csv
 matrix:
   rows: 4
   cols: 4
   data:
-    - -0.07572468395269205
-    - 0.9965466361414317
+    - 0.07572468395269205
+    - -0.9965466361414317
     - -0.03406720175568133
     - 0.04780285496559549
-    - 0.9969178615240186
-    - 0.07496181266164714
+    - -0.9969178615240186
+    - -0.07496181266164714
     - -0.023140959722069636
     - 0.027639069129542938
-    - -0.02050730637219694
-    - -0.035714543783696824
+    - 0.02050730637219694
+    - 0.035714543783696824
     - -0.9991516009833945
     - -0.07853750991857861
     - 0.0
@@ -26,8 +27,8 @@ matrix:
     - 1.0
 quality:
   passed: true
-  optical_axis_yaw_correction_deg: 180.0
-  bench_validation_date: "2026-08-31"
+  optical_axis_yaw_correction_deg: 0.0
+  coordinate_convention_audit_date: "2026-09-15"
   translation_norm_m: 0.096006
   camera_axis_to_nearest_imu_z_deg: 2.360
   terminal_translation_change_m: 0.000432

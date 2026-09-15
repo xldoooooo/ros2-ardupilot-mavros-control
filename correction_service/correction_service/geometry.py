@@ -1,4 +1,4 @@
-"""AprilTag、相机、Odin IMU 的完整 SE(3) 组合与最终 SE(2) 提取。"""
+"""官方 AprilTag 图案、相机、Odin IMU 的完整 SE(3) 组合与最终 SE(2) 提取。"""
 
 from __future__ import annotations
 
@@ -119,14 +119,18 @@ def transform_from_pose(
 
 
 def world_tag_transform(tag: TagPose) -> np.ndarray:
-    """Tag 配置坐标系：+X 指向图案上方，+Y 指向图案左方，+Z 朝上。"""
+    """Tag 配置系：+X 指向 AprilRobotics 官方图案上方，+Y 左方，+Z 朝上。"""
     return homogeneous(rotation_z(tag.yaw_rad), np.array((tag.x, tag.y, tag.z)))
 
 
 def configured_tag_from_standard() -> np.ndarray:
-    """把 OpenCV 的 +X右/+Y上 Tag 坐标转换为配置的 +X上/+Y左。"""
-    # p_standard = R_standard_configured * p_configured
-    rotation = np.array(((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
+    """返回 T_OpenCVTag_ConfiguredTag，供右乘 PnP 的 camera<-OpenCVTag。"""
+    # OpenCV 36h11 字典相对 AprilRobotics 官方 PNG 旋转180°；官方纸张
+    # TL/TR/BR/BL 对应 detectMarkers 点2/3/0/1。因此配置 +X(官方上)
+    # 对应 OpenCV -Y，配置 +Y(官方左)对应 OpenCV +X，+Z 不变。
+    # 这是 Tag 坐标约定，不能通过旋转相机外参来补偿，否则航向看似正确
+    # 而相机世界位置反号。p_standard = R_standard_configured * p_configured。
+    rotation = np.array(((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)))
     return homogeneous(rotation, np.zeros(3))
 
 
