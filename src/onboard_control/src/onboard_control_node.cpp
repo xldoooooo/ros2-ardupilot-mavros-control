@@ -298,6 +298,12 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     this, mavros_prefix_ + "/param");
   fcu_parameter_pull_client_ = create_client<mavros_msgs::srv::ParamPull>(
     mavros_prefix_ + "/param/pull");
+  // volatile 不接收旧 transient 历史；参数事件独立于可能阻塞整表同步的服务回调。
+  fcu_parameter_subscription_ = create_subscription<mavros_msgs::msg::ParamEvent>(
+    mavros_prefix_ + "/param/event", rclcpp::QoS(100).reliable().durability_volatile(),
+    [this](mavros_msgs::msg::ParamEvent::ConstSharedPtr message) {
+      on_fcu_parameter(*message);
+    });
 
   const auto control_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / control_frequency_hz_));
@@ -330,6 +336,9 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     thrust_mode_verified_ = false;
     fcu_parameter_sync_started_ = SteadyTime{};
     fcu_parameter_pull_requested_ = false;
+    fcu_guid_options_.reset();
+    fcu_hover_throttle_.reset();
+    ++fcu_parameter_revision_;
     last_thrust_mode_check_ = SteadyTime{};
     // Message intervals are runtime FCU state and must be re-applied after reconnection.
     message_rates_configured_ = false;
@@ -1588,6 +1597,84 @@ void OnboardControlNode::send_next_message_rate()
     });
 }
 
+// Both event updates and periodic cache reads use exactly the same value checks.
+void OnboardControlNode::apply_thrust_mode_parameters(
+  const std::vector<rclcpp::Parameter> & parameters)
+{
+  if (parameters.size() != 2U || parameters.front().get_type() !=
+    rclcpp::ParameterType::PARAMETER_INTEGER || parameters[1].get_type() !=
+    rclcpp::ParameterType::PARAMETER_DOUBLE)
+  {
+    // An incomplete MAVROS parameter pull is expected shortly after FCU connection.
+    // A verified in-flight controller is not invalidated by one transient read failure.
+    if (!thrust_mode_verified_) {
+      const SteadyTime now = SteadyClock::now();
+      if (fcu_parameter_sync_started_ == SteadyTime{}) {
+        fcu_parameter_sync_started_ = now;
+      }
+      if (now - fcu_parameter_sync_started_ < kFcuParameterSyncGracePeriod) {
+        set_status_message(
+          "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用",
+          StatusLogLevel::kDebug);
+      } else {
+        set_status_message(
+          "MAVROS 参数同步超时，无法读取 GUID_OPTIONS 与 MOT_THST_HOVER",
+          StatusLogLevel::kWarn);
+      }
+    }
+    return;
+  }
+  fcu_guid_options_ = parameters.front();
+  fcu_hover_throttle_ = parameters[1];
+  const bool was_verified = thrust_mode_verified_;
+  const std::int64_t options = parameters.front().as_int();
+  const double hover_throttle = parameters[1].as_double();
+  const bool hover_valid = controller_.set_hover_throttle(hover_throttle);
+  if (hover_valid) {
+    controller_parameters_.hover_throttle = hover_throttle;
+  }
+  thrust_mode_verified_ = (options & 8) != 0 && hover_valid;
+  if (thrust_mode_verified_ && !was_verified) {
+    std::ostringstream stream;
+    stream << "已确认 GUID_OPTIONS bit 3，并同步 MOT_THST_HOVER="
+           << hover_throttle;
+    set_status_message(stream.str());
+  } else if ((options & 8) == 0) {
+    set_status_message(
+      "GUID_OPTIONS bit 3 未启用：请设置 GUID_OPTIONS=8",
+      StatusLogLevel::kWarn);
+  } else if (!hover_valid) {
+    set_status_message(
+      "飞控 MOT_THST_HOVER 非法，姿态/推力控制保持禁用",
+      StatusLogLevel::kWarn);
+  }
+}
+
+void OnboardControlNode::on_fcu_parameter(const mavros_msgs::msg::ParamEvent & message)
+{
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (!fcu_connected_ ||
+    (message.param_id != "GUID_OPTIONS" && message.param_id != "MOT_THST_HOVER"))
+  {
+    return;
+  }
+  ++fcu_parameter_revision_;
+  auto & cached = message.param_id == "GUID_OPTIONS" ? fcu_guid_options_ : fcu_hover_throttle_;
+  // An explicit bad type is not a transient missing cache read: revoke verification.
+  const auto expected_type = message.param_id == "GUID_OPTIONS" ?
+    rclcpp::ParameterType::PARAMETER_INTEGER : rclcpp::ParameterType::PARAMETER_DOUBLE;
+  if (message.value.type != static_cast<std::uint8_t>(expected_type)) {
+    cached.reset();
+    thrust_mode_verified_ = false;
+    set_status_message("飞控推力参数事件类型错误: " + message.param_id, StatusLogLevel::kWarn);
+    return;
+  }
+  cached = rclcpp::Parameter(message.param_id, rclcpp::ParameterValue(message.value));
+  if (fcu_guid_options_ && fcu_hover_throttle_) {
+    apply_thrust_mode_parameters({*fcu_guid_options_, *fcu_hover_throttle_});
+  }
+}
+
 void OnboardControlNode::check_thrust_mode_parameter()
 {
   if (thrust_mode_check_inflight_ || !fcu_parameter_client_->service_is_ready()) {
@@ -1597,59 +1684,16 @@ void OnboardControlNode::check_thrust_mode_parameter()
   last_thrust_mode_check_ = SteadyClock::now();
   fcu_parameter_client_->get_parameters(
     {"GUID_OPTIONS", "MOT_THST_HOVER"},
-    [this](std::shared_future<std::vector<rclcpp::Parameter>> future) {
+    [this, revision = fcu_parameter_revision_](
+      std::shared_future<std::vector<rclcpp::Parameter>> future) {
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       thrust_mode_check_inflight_ = false;
       try {
         const auto parameters = future.get();
-        if (!fcu_connected_) {
+        if (!fcu_connected_ || revision != fcu_parameter_revision_) {
           return;
         }
-        if (parameters.size() != 2U || parameters.front().get_type() !=
-          rclcpp::ParameterType::PARAMETER_INTEGER || parameters[1].get_type() !=
-          rclcpp::ParameterType::PARAMETER_DOUBLE)
-        {
-          // An incomplete MAVROS parameter pull is expected shortly after FCU connection.
-          // A verified in-flight controller is not invalidated by one transient read failure.
-          if (!thrust_mode_verified_) {
-            const SteadyTime now = SteadyClock::now();
-            if (fcu_parameter_sync_started_ == SteadyTime{}) {
-              fcu_parameter_sync_started_ = now;
-            }
-            if (now - fcu_parameter_sync_started_ < kFcuParameterSyncGracePeriod) {
-              set_status_message(
-                "等待 MAVROS 完成飞控参数同步，姿态/推力控制暂未启用",
-                StatusLogLevel::kDebug);
-            } else {
-              set_status_message(
-                "MAVROS 参数同步超时，无法读取 GUID_OPTIONS 与 MOT_THST_HOVER",
-                StatusLogLevel::kWarn);
-            }
-          }
-          return;
-        }
-        const bool was_verified = thrust_mode_verified_;
-        const std::int64_t options = parameters.front().as_int();
-        const double hover_throttle = parameters[1].as_double();
-        const bool hover_valid = controller_.set_hover_throttle(hover_throttle);
-        if (hover_valid) {
-          controller_parameters_.hover_throttle = hover_throttle;
-        }
-        thrust_mode_verified_ = (options & 8) != 0 && hover_valid;
-        if (thrust_mode_verified_ && !was_verified) {
-          std::ostringstream stream;
-          stream << "已确认 GUID_OPTIONS bit 3，并同步 MOT_THST_HOVER="
-                 << hover_throttle;
-          set_status_message(stream.str());
-        } else if ((options & 8) == 0) {
-          set_status_message(
-            "GUID_OPTIONS bit 3 未启用：请设置 GUID_OPTIONS=8",
-            StatusLogLevel::kWarn);
-        } else if (!hover_valid) {
-          set_status_message(
-            "飞控 MOT_THST_HOVER 非法，姿态/推力控制保持禁用",
-            StatusLogLevel::kWarn);
-        }
+        apply_thrust_mode_parameters(parameters);
       } catch (const std::exception & error) {
         if (!thrust_mode_verified_) {
           set_status_message(

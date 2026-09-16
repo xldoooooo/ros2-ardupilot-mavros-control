@@ -33,6 +33,7 @@
 #include <guided_interfaces/srv/set_gps_origin.hpp>
 #include <mavros_msgs/msg/attitude_target.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
+#include <mavros_msgs/msg/param_event.hpp>
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
@@ -169,6 +170,8 @@ private:
     const CommandIdentity & command, bool publish_command_result = true);
   void send_next_message_rate();
   void check_thrust_mode_parameter();
+  void apply_thrust_mode_parameters(const std::vector<rclcpp::Parameter> & parameters);
+  void on_fcu_parameter(const mavros_msgs::msg::ParamEvent & message);
   void check_origin_confirmation_timeout(const SteadyTime & now);
 
   // Onboard task, safety and output helpers.
@@ -322,6 +325,10 @@ private:
   bool thrust_mode_verified_{false};
   bool thrust_mode_check_inflight_{false};
   bool fcu_parameter_pull_requested_{false};  // 每次飞控连接只主动拉取一次，不强制清空缓存。
+  // 只收本连接的新参数事件；版本号防止较早发起的缓存读覆盖新事件。
+  std::optional<rclcpp::Parameter> fcu_guid_options_;
+  std::optional<rclcpp::Parameter> fcu_hover_throttle_;
+  std::uint64_t fcu_parameter_revision_{0};
   SteadyTime last_thrust_mode_check_{};
   SteadyTime fcu_parameter_sync_started_{};
 
@@ -371,6 +378,7 @@ private:
   rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedPtr takeoff_client_;
   rclcpp::Client<mavros_msgs::srv::MessageInterval>::SharedPtr message_interval_client_;
   rclcpp::AsyncParametersClient::SharedPtr fcu_parameter_client_;
+  rclcpp::Subscription<mavros_msgs::msg::ParamEvent>::SharedPtr fcu_parameter_subscription_;
   rclcpp::Client<mavros_msgs::srv::ParamPull>::SharedPtr fcu_parameter_pull_client_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;

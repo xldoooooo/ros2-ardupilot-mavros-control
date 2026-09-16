@@ -13,12 +13,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path):
+@pytest.mark.parametrize("parameter_source", ("cache", "events"))
+def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path, parameter_source):
     """拉表 ACK 不代表就绪；错误/缺失参数继续拒绝，重连重新请求，退出清理。"""
     rclpy = pytest.importorskip("rclpy")
     from geometry_msgs.msg import PoseStamped, TwistStamped
     from guided_interfaces.msg import ControlStatus
-    from mavros_msgs.msg import State
+    from mavros_msgs.msg import ParamEvent, State
     from mavros_msgs.srv import ParamPull
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
@@ -44,6 +45,7 @@ def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path):
         return response
 
     node.create_service(ParamPull, "/startup_mavros/param/pull", pull)
+    event_pub = node.create_publisher(ParamEvent, "/startup_mavros/param/event", 10)
     state_pub = node.create_publisher(State, "/startup_mavros/state", 10)
     pose_pub = node.create_publisher(PoseStamped, "/startup_mavros/local_position/pose", 10)
     velocity_pub = node.create_publisher(
@@ -80,11 +82,33 @@ def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path):
         assert pulls == [False], "不得强制重拉/清空 MAVROS 参数缓存"
         assert until(lambda: statuses and statuses[-1].local_position_valid)
         assert not statuses[-1].thrust_mode_verified
-        node.declare_parameter("GUID_OPTIONS", 0)
-        node.declare_parameter("MOT_THST_HOVER", 0.22)
-        assert not until(lambda: statuses[-1].thrust_mode_verified, 3)
-        node.set_parameters([Parameter("GUID_OPTIONS", value=8)])
-        assert until(lambda: statuses[-1].thrust_mode_verified, 3)
+        def event(name, value):
+            msg = ParamEvent(param_id=name, value=Parameter(name, value=value).get_parameter_value())
+            event_pub.publish(msg)
+
+        if parameter_source == "cache":
+            node.declare_parameter("GUID_OPTIONS", 0)
+            node.declare_parameter("MOT_THST_HOVER", 0.22)
+            assert not until(lambda: statuses[-1].thrust_mode_verified, 3)
+            node.set_parameters([Parameter("GUID_OPTIONS", value=8)])
+            assert until(lambda: statuses[-1].thrust_mode_verified, 3)
+        else:
+            # 缓存始终没有这两个值；只能用本连接收到的实际事件通过门限。
+            assert until(lambda: event_pub.get_subscription_count() > 0)
+            event("GUID_OPTIONS", 8)
+            assert not until(lambda: statuses[-1].thrust_mode_verified, .3)
+            event("MOT_THST_HOVER", float("nan"))
+            assert not until(lambda: statuses[-1].thrust_mode_verified, .3)
+            event("MOT_THST_HOVER", .22)
+            assert until(lambda: statuses[-1].thrust_mode_verified, .5)
+            event("GUID_OPTIONS", 0)
+            assert until(lambda: not statuses[-1].thrust_mode_verified, .5)
+            event("GUID_OPTIONS", 8)
+            assert until(lambda: statuses[-1].thrust_mode_verified, .5)
+            event("MOT_THST_HOVER", "bad type")
+            assert until(lambda: not statuses[-1].thrust_mode_verified, .5)
+            event("MOT_THST_HOVER", .22)
+            assert until(lambda: statuses[-1].thrust_mode_verified, .5)
         assert pulls == [False], "正常运行不得反复发起整表同步"
         connected = False
         assert until(lambda: not statuses[-1].fcu_connected)
@@ -92,6 +116,11 @@ def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path):
         connected = True
         assert until(lambda: len(pulls) == 2)
         assert pulls == [False, False]
+        if parameter_source == "events":
+            event("GUID_OPTIONS", 8)
+            assert not until(lambda: statuses[-1].thrust_mode_verified, .4), "不得复用旧连接另一参数"
+            event("MOT_THST_HOVER", .22)
+            assert until(lambda: statuses[-1].thrust_mode_verified, .5)
 
         # 用启动脚本的真实过滤条件验证：字段不可跨消息拼凑，armed=true 不通过。
         expression = re.search(r"readonly readiness_filter='([^']+)'",
