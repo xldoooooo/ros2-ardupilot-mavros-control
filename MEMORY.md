@@ -403,6 +403,9 @@
 - 2026-09-16 新飞机 `.169` 与 refresh 飞机 `.186` 均已定点同步上述三个启动文件；
   refresh 机的 Odin/extnav overlay 分别在 `/home/nvidia/catkin_ws` 和
   `/home/nvidia/vrpn_mavros`，从 `start_drone/` 目录直接执行两入口已通过未解锁台架验证。
+- refresh 飞机 `.186` 也已同步根目录 `start_onboard_correction.sh` /
+  `stop_onboard_correction.sh`，实际 unit 与人工前台启动共用前者；已验证 2.0 节点默认
+  idle、相机关闭以及停止零残留，该机终态保持 unit disabled/inactive。
 - systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、
   `time-sync.target` 或固定 `sleep`；自带路由器无外网时必须启动。离线开机后若再接入互联网，应在
   人工解锁前等待 Linux/MAVROS 时间状态稳定并重新核对 READY，但外网时间不是控制租约前置条件。
