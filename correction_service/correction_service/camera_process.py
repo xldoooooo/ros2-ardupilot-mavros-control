@@ -1,4 +1,4 @@
-"""按任务生命周期启动/停止带硬件 PTS 的下视相机节点并锁定镜头参数。"""
+"""按任务生命周期启停本服务自有的 UVC 下视相机节点并锁定镜头参数。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class CameraProcessError(RuntimeError):
 
 
 class CameraProcess:
-    """只管理本对象创建的 camera_node 进程组，不触碰视频或飞控服务。"""
+    """只管理本对象创建的 UVC 节点进程组，不触碰视频或飞控服务。"""
 
     def __init__(
         self,
@@ -55,7 +55,7 @@ class CameraProcess:
         return self._process.pid if self._process is not None else None
 
     def start(self) -> None:
-        """确认设备空闲后以独立进程组启动经过标定验收的相机 ROS 节点。"""
+        """确认设备空闲后以独立进程组启动本服务维护的 UVC ROS 节点。"""
         if self._process is not None and self._process.poll() is None:
             raise CameraProcessError("下视相机进程已启动")
         device = Path(self._settings.device)
@@ -185,7 +185,7 @@ class CameraProcess:
         return actual_controls
 
     def stop(self) -> None:
-        """先 SIGINT 让 ROS/GStreamer 释放设备，再有限升级信号并确认退出。"""
+        """先 SIGINT 让 ROS/V4L2 释放设备，再有限升级信号并确认退出。"""
         process = self._process
         self._process = None
         if process is not None and process.poll() is None:
@@ -209,6 +209,6 @@ class CameraProcess:
             self._log_stream.flush()
             self._log_stream.close()
             self._log_stream = None
-        # 设备节点有时会在 GStreamer 退出后几十毫秒才解除 fuser 映射。
+        # 设备节点有时会在采集节点退出后几十毫秒才解除 fuser 映射。
         time.sleep(0.05)
         self._logger.info("下视相机节点已停止并释放设备")

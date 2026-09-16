@@ -43,7 +43,7 @@ class TagPose:
 
 @dataclass(frozen=True)
 class CameraSettings:
-    """只含采集所需的相机和外部 PTS 驱动参数。"""
+    """只含采集所需的相机和本包 UVC 驱动参数。"""
 
     device: str
     width: int
@@ -328,6 +328,8 @@ def _load_camera(config_dir: Path) -> CameraSettings:
     executable = parser.get("driver", "executable", fallback="").strip()
     if not _ROS_NAME.fullmatch(package) or not _ROS_NAME.fullmatch(executable):
         raise ValueError("相机 ROS package/executable 名称无效")
+    if (package, executable) != ("correction_service", "uvc_camera_node"):
+        raise ValueError("相机必须使用本包 correction_service/uvc_camera_node，请更新 camera.conf")
     settings = CameraSettings(
         device=parser.get("camera", "device", fallback="").strip(),
         width=parser.getint("camera", "width", fallback=0),
@@ -347,7 +349,7 @@ def _load_camera(config_dir: Path) -> CameraSettings:
     if settings.width <= 0 or settings.height <= 0 or settings.fps <= 0:
         raise ValueError("camera width/height/fps 必须为正整数")
     if settings.pixel_format != "mjpeg":
-        raise ValueError("当前 PTS 相机节点只支持已验收的 mjpeg 管线")
+        raise ValueError("当前 UVC 相机节点只支持 mjpeg")
     if not settings.image_topic.startswith("/") or not settings.frame_id:
         raise ValueError("camera image_topic/frame_id 无效")
     _positive(settings.max_capture_age_ms, "camera.max_capture_age_ms")

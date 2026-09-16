@@ -163,15 +163,20 @@
   核对实物镜头版本并重标内外参。Wasintek/UQ212 档案分别保存在
   `correction_service/config/Wasintek/` 与 `correction_service/config/UQ212/`，运行时不自动加载；
   根 `config/` 的四份同名文件是唯一活动相机配置，`camera.conf` 的 `device` 是设备路径入口。
-  当前目录结构与递归安装逻辑已同步并构建到 refresh 飞机；
-  独立修正 unit 当前 active 但仍 disabled，窗口为空、相机未占用；最近一次实测失败状态见下一条。
-- 2026-09-16 从真实地面站面板向 refresh 发起 Tag 0 首次 dry-run，job `1061820d4c57` 在
-  `12.6867 s` 后因零首帧失败，窗口和 extnav revision 0 均未改变、资源完整释放。UQ212 设备层
-  1080p MJPEG 可出图，但当前默认曝光下实测约 59 fps；GStreamer caps/PTS 仍按 120 fps，现有
-  `wasintek_gst_camera` 会在帧龄超过 200 ms 后连续丢弃，约 19.5 秒、累计 1173 个 stale 后才因
-  10 秒映射上限回退到 ROS 到达时间。该回退晚于 correction 的相机启动时限，完整标定流程当前
-  被确定性阻断；必须先修复时间戳判定/回退，再测 Tag 检测、候选和沿用外参，不能用延长超时
-  冒充解决。详见 `agent/report/report-2026-09-16-ground-refresh-uq212-calibration-flow-test.md`。
+  当前目录结构与递归安装逻辑已同步并构建到 refresh 飞机。
+- correction_service 的相机采集由本包 `uvc_camera_node.py` / `uvc_capture.py` 自行维护，直接
+  打开系统 UVC 设备，V4L2 mmap MJPEG → OpenCV mono8。活动配置与两个命名档案统一使用
+  `correction_service/uvc_camera_node`；旧外部 driver 配置会明确拒绝。启动/安装器不再加载
+  联合标定相机 overlay，启动使用 ROS + 本工作区 `local_setup.bash`，避免历史 underlay 注入。
+  外参 `source_path` 仅为历史来源元数据，运行时不读取该目录。新采集时间使用内核 monotonic
+  时间戳，不按声明 fps 推算，仍保留 200 ms 帧龄门和原标定/镜头控制流程。
+- 2026-09-16 refresh 上旧相机依赖与首帧超时已修复。地面真实 Qt 面板连续 Tag0 dry-run
+  收敛，各 24 accepted / 0 rejected，并完整释放相机；当前候选 yaw 修正约 -108.46°，超过
+  既有 45°应用跳变门，因此没有应用，extnav 仍 valid=false/revision=0。该角是两个坐标系的
+  修正角，不是飞机物理偏航的测量真值。最终独立修正服务 active/disabled，窗口清空；Odin/extnav
+  未重启，MAVROS/飞控服务本来未运行，未发送飞行指令。地面/refresh 均已部署自有 UVC 版本；
+  drone-new 与独立 USB Jetson 尚未同步，下次更新须一起部署源码、相机配置及 unit/入口。
+  详见 `agent/report/report-2026-09-16-correction-owned-uvc-capture.md`。
 - Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
   OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、
   +Y左、+Z朝上；`T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`。

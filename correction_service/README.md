@@ -149,7 +149,7 @@ GUI 重开只读取这些权威状态，不自计数，也不要求磁盘窗口�
 - `intrinsics.yaml`：1920×1080 相机内参；
 - `extrinsics.yaml`：`T_imu_camera`；
 - `tag_pose.csv`：`tag_id,x,y,z,yaw_deg,size_m`；每个 Tag 可有自己的真实边长；
-- `camera.conf`：唯一校准相机的稳定设备路径、MJPEG 模式和硬件 PTS 驱动；
+- `camera.conf`：唯一校准相机的稳定设备路径、MJPEG 模式和本包 UVC/V4L2 驱动；
 - `lens.conf`：预先保存的下视相机 UVC 参数；收到首帧并等待视频流稳定后，按文件顺序分步写入，
   丢弃切换期帧并最终逐项读回；任务日志保存 requested/readback；
 - `general_settings.yaml`：接口、同步、停留段、窗口、跳变、超时和日志门限。
@@ -236,11 +236,21 @@ N/下一次序号、Tag 顺序、每个 keyframe 的 P/Q/质量、最长 O/W 基
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select correction_interfaces correction_service --symlink-install
+colcon build --packages-select correction_interfaces correction_service
 source install/setup.bash
 ros2 run correction_service correction_node --ros-args \
   -p config_dir:="$PWD/correction_service/config"
 ```
+
+采集节点 `correction_service/uvc_camera_node` 随本包安装，直接打开 `camera.conf` 指定的系统
+UVC 设备，以 V4L2 mmap 读取 MJPEG，并用已有 OpenCV 依赖解码为原始 `mono8`；不裁剪、不旋转、
+不去畸变。采集时间直接来自内核 `CLOCK_MONOTONIC` 缓冲区时间戳，按帧龄映射至 ROS 系统时钟；
+不按声明 fps 推算时间，不以到达时间掩盖无效时间戳。超过原有 `max_capture_age_ms` 的帧仍丢弃。
+仅要求 Linux V4L2、设备访问权限及已有的 Python/OpenCV/ROS、`v4l2-ctl` 依赖，无 Jetson 专属解码
+或联合标定工作区依赖。启动脚本只加载 ROS 与本工作区 `local_setup.bash`，避免旧构建记录的外部
+underlay 被重新引入。升级时须更新活动及命名档案的 `[driver]` 为 `package = correction_service`、
+`executable = uvc_camera_node`，重建本包并重启独立修正服务；旧外部 driver 配置会明确拒绝。
+标定配置中 `source_path` 仅记录已有外参数据的历史来源，不在运行时读取那个路径。
 
 节点启动后为 idle。生产安装只能在用户确认的未解锁维护窗口进行；安装前应由用户停止可能
 冲突的机载服务。本仓库代理不得自行部署、重启、解锁或起飞实机。

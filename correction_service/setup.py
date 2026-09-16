@@ -41,6 +41,7 @@ setup(
     entry_points={
         "console_scripts": [
             "correction_node = correction_service.node:main",
+            "uvc_camera_node = correction_service.uvc_camera_node:main",
             "correction_panel = correction_service.correction_panel:main",
         ],
     },

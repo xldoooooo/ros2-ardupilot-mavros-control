@@ -54,8 +54,7 @@ if [[ -e "${ENV_FILE}" ]]; then
 fi
 
 readonly ROS_SETUP="${CORRECTION_ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
-readonly WORKSPACE_SETUP="${WORKSPACE_ROOT}/install/setup.bash"
-readonly CAMERA_SETUP="${CORRECTION_CAMERA_OVERLAY_SETUP:-${HOME}/vins_odin_calib/camera_ws/install/setup.bash}"
+readonly WORKSPACE_SETUP="${WORKSPACE_ROOT}/install/local_setup.bash"
 readonly CONFIG_DIR="${CORRECTION_CONFIG_DIR:-${WORKSPACE_ROOT}/correction_service/config}"
 
 [[ -r "${CONFIG_DIR}/general_settings.yaml" ]] || {
@@ -65,7 +64,6 @@ readonly CONFIG_DIR="${CORRECTION_CONFIG_DIR:-${WORKSPACE_ROOT}/correction_servi
 }
 source_setup "${ROS_SETUP}"
 source_setup "${WORKSPACE_SETUP}"
-source_setup "${CAMERA_SETUP}"
 
 for command_name in ros2 pgrep; do
   command -v "${command_name}" >/dev/null 2>&1 || {

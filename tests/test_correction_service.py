@@ -163,7 +163,7 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert config.camera.image_topic == "/correction_service/image_raw"
     assert config.camera.device.endswith("UQ212_UQ212-video-index0")
     assert config.camera.fps == 120
-    assert config.camera.driver_package == "wasintek_gst_camera"
+    assert config.camera.driver_package == "correction_service"
     assert config.lens_controls == {
         "auto_exposure": 3,
         "white_balance_automatic": 1,

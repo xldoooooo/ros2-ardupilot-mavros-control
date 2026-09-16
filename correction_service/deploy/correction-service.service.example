@@ -14,7 +14,6 @@ Environment=HOME=ONBOARD_HOME_PATH
 Environment=ROS_DOMAIN_ID=0
 Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 Environment=CORRECTION_CONFIG_DIR=ONBOARD_WORKSPACE_PATH/correction_service/config
-Environment=CORRECTION_CAMERA_OVERLAY_SETUP=CAMERA_OVERLAY_PATH
 EnvironmentFile=-/etc/ros2-ardupilot/correction.env
 ExecStart=ONBOARD_WORKSPACE_PATH/start_onboard_correction.sh
 Restart=on-failure

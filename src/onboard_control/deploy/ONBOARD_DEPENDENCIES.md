@@ -42,6 +42,9 @@ colcon build --packages-select odin_ros_driver \
 
 ## 可选 Jetson 相机源码依赖
 
+本节仅供独立联合标定工具的旧 GStreamer 相机驱动使用。当前 `correction_service` 自带 UVC
+采集，使用基础安装已有的 OpenCV/V4L2，不需要 `--with-camera-deps` 或下列 NVIDIA 插件。
+
 Wasintek GStreamer 相机源码使用 `gstreamer-1.0`、`gstreamer-app-1.0` 和 `gstreamer-video-1.0`
 开发接口，并在运行时使用标准解析、V4L2 和 appsink 元件。安装其公开依赖可执行：
 
@@ -125,7 +128,7 @@ unit 已在运行，安装器会保持原有安全拒绝。
 ```
 
 这两个入口仍执行各自原有的工具、依赖、源码 overlay、接口版本与配置检查，并完成构建、现场配置
-保留、unit 校验和 `daemon-reload`；它们只跳过末尾的 `enable --now`。修正服务的 install-only 仍
-要求可发现真实构建的 `wasintek_gst_camera` overlay，不会用占位包绕过。新飞机默认相机路径、镜头
+保留、unit 校验和 `daemon-reload`；它们只跳过末尾的 `enable --now`。修正服务直接构建并验证本包 `correction_service/uvc_camera_node`，
+不需要联合标定目录或相机 overlay。新飞机默认相机路径、镜头
 标定和 by-path 设备名不能沿用旧机结论；逐项核对并完成台架验证后，才可去掉 `--install-only`
 分别重跑正常安装器以启用和启动服务。

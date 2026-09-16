@@ -134,7 +134,7 @@ ROS_APT_MIRROR=https://mirrors.ustc.edu.cn/ros2/ubuntu \
 | --- | --- | --- |
 | Odin | `/home/nvidia/catkin_ws/src/odin_ros_driver` | 源码、配置、launch、厂家 ARM64 静态库；排除 `.git`、map/log/recorddata、build/install |
 | extnav | `/home/nvidia/vrpn_mavros/src/extnav_bridge` | 仅包源码；由当前项目 extnav 安装器核对/部署受控版本 |
-| Wasintek | `/home/nvidia/vins_odin_calib/camera_ws/src/wasintek_gst_camera` | 仅 CMake、package.xml、C++ 源码；不复制参考机标定 |
+| 修正相机 | 主项目 `correction_service/correction_service/uvc_camera_node.py` | 随修正服务构建，直接使用系统 UVC 设备，无外部相机工作区 |
 
 可用 `ssh drone-new 'tar ... -czf - ...' > archive.tar.gz` 直接把源码流写到开发机，
 避免在参考机生成临时文件；先检查归档内容、再解到新机对应 `src/`。
@@ -149,8 +149,6 @@ cd /home/nvidia/catkin_ws
 source install/setup.bash
 CMAKE_BUILD_PARALLEL_LEVEL=3 colcon build --symlink-install --packages-select odin_ros_driver \
   --cmake-args -DBUILD_SYSTEM=ROS2 -DCMAKE_BUILD_TYPE=Release
-cd /home/nvidia/vins_odin_calib/camera_ws
-CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --symlink-install --packages-select wasintek_gst_camera
 cd /home/nvidia/ros2-ardupilot-mavros-control
 ./correction_service/deploy/install_extnav_correction.sh
 ```

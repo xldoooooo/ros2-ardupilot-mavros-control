@@ -73,7 +73,7 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
     assert "--install-only" in help_result.stdout
 
     assert "ExecStart=ONBOARD_WORKSPACE_PATH/start_onboard_correction.sh" in unit
-    assert "CORRECTION_CAMERA_OVERLAY_SETUP" in unit
+    assert "CORRECTION_CAMERA_OVERLAY_SETUP" not in unit
     assert "SupplementaryGroups=video" in unit
     assert "KillMode=control-group" in unit
     assert "ros2-ardupilot-onboard.service" not in unit
