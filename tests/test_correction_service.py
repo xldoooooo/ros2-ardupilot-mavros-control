@@ -155,9 +155,11 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert config.window.maximum_size == 20
     assert len(config.config_fingerprint) == 64
     assert (config.intrinsics.width, config.intrinsics.height) == (1920, 1080)
-    assert math.isclose(config.intrinsics.camera_matrix[0, 0], 1120.847311153525)
-    assert config.intrinsics.calibration_rms_px is None
-    assert np.count_nonzero(config.intrinsics.distortion) == 0
+    assert math.isclose(config.intrinsics.camera_matrix[0, 0], 942.1240709375937)
+    assert math.isclose(config.intrinsics.calibration_rms_px, 0.8863085437393902)
+    assert np.allclose(config.intrinsics.distortion,
+                       [0.03626268524324754, -0.056048601794863075,
+                        0.0010844756398792788, -0.0010052529149732062, 0.00958122664915688])
     # 从模块前下边缘中心换算至 IMU 原点，防止遗漏深度/高度或弄反左右符号。
     assert np.allclose(config.t_imu_camera[:3, 3],
                        np.array((41 + 5.57, 50 - 21.03, -46 - 12 - 9.26)) / 1000)

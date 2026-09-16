@@ -16,7 +16,7 @@ from correction_service.geometry import (
     rotation_z,
 )
 
-from correction_service.config import load_config
+from correction_service.config import load_config, _load_intrinsics
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "correction_service/config"
 # AprilRobotics 官方 PNG 的 8×8 黑边及数据位，按原文件上方排列；不是由待测
@@ -89,7 +89,8 @@ def test_official_print_to_first_correction_and_return_to_center(
     if camera_profile == "Wasintek":
         # 历史图案方向回归仍使用旧相机档案，与独立冻结的历史矩阵核对。
         archive = yaml.safe_load((CONFIG_DIR / "Wasintek/extrinsics.yaml").read_text())
-        cfg = replace(cfg, t_imu_camera=np.array(archive["matrix"]["data"]).reshape(4, 4))
+        cfg = replace(cfg, t_imu_camera=np.array(archive["matrix"]["data"]).reshape(4, 4),
+                      intrinsics=_load_intrinsics(CONFIG_DIR / "Wasintek"))
     else:
         # 独立构造本次机械安装场景，不从待测矩阵生成期望真值。
         physical = homogeneous(

@@ -1,7 +1,4 @@
-# UQ212 下视相机在 1920x1080 下的临时理论针孔内参，不是标定结果。
-# 暂按所购 89deg 无畸变镜头的标称对角视场角，采用方形像素、主点位于 (960,540)：
-# fx=fy=sqrt(1920^2+1080^2)/(2*tan(89deg/2))=1120.847311153525 px；畸变置零。
-# UQ212 有多个镜头版本，正式使用前必须核对实物视场角并重新标定内外参。
+# UQ212 AprilGrid 标定结果；原始畸变图像对应的 K/D，尚待独立验证。
 image_width: 1920
 image_height: 1080
 distortion_model: plumb_bob
@@ -9,24 +6,77 @@ camera_matrix:
   rows: 3
   cols: 3
   data:
-    - 1120.847311153525
-    - 0.0
-    - 960.0
-    - 0.0
-    - 1120.847311153525
-    - 540.0
-    - 0.0
-    - 0.0
-    - 1.0
+  - 942.1240709375937
+  - 0.0
+  - 954.1999309924863
+  - 0.0
+  - 942.3489849358813
+  - 538.6404506117269
+  - 0.0
+  - 0.0
+  - 1.0
 distortion_coefficients:
   rows: 1
   cols: 5
   data:
-    - 0.0
-    - 0.0
-    - 0.0
-    - 0.0
-    - 0.0
-rms_reprojection_error: null
-calibration_status: theoretical_unverified
-assumed_diagonal_fov_deg: 89.0
+  - 0.03626268524324754
+  - -0.056048601794863075
+  - 0.0010844756398792788
+  - -0.0010052529149732062
+  - 0.00958122664915688
+rms_reprojection_error: 0.8863085437393902
+calibration_status: calibrated_pending_independent_validation
+calibration_tag_family: tag36h11
+used_views: 30
+per_view_reprojection_errors:
+- 0.12216911601470958
+- 0.16279593068046472
+- 0.19101437922065068
+- 1.165965912745214
+- 0.8796245274399307
+- 0.1527344601825797
+- 0.1845981024707357
+- 0.17023941168642595
+- 0.1876636949376708
+- 0.18966000348242418
+- 0.8673031158862624
+- 0.16923355162338743
+- 0.17273177365936615
+- 0.16437391338330543
+- 0.19725289533880144
+- 0.11947623662488661
+- 0.1670506427014694
+- 0.17760780057478134
+- 0.456661966790439
+- 0.22637553457354748
+- 4.195189838538681
+- 2.7986874180475936
+- 1.1152424274387176
+- 0.1618503182987342
+- 0.14939490681025414
+- 0.14076626098065434
+- 0.14646902372752663
+- 0.3886943300258134
+- 0.4465077068276188
+- 0.14168034191533532
+capture:
+  device: /dev/v4l/by-id/usb-YLX-WYZ-260812_UQ212_UQ212-video-index0
+  width: 1920
+  height: 1080
+  fps: 120.0
+  pixel_format: MJPG
+  lens_controls:
+    auto_exposure: 3
+    white_balance_automatic: 1
+    focus_automatic_continuous: 0
+    brightness: 0
+    contrast: 34
+    saturation: 60
+    hue: 0
+    gamma: 120
+    sharpness: 2
+    backlight_compensation: 1
+    power_line_frequency: 1
+    zoom_absolute: 0
+  opencv_version: 4.6.0
+  python_environment: /home/nvidia/ros2-ardupilot-mavros-control/.venv

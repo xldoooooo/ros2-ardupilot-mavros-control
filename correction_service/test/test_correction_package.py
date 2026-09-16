@@ -40,8 +40,10 @@ def test_aircraft_configuration_loads_for_expected_tag() -> None:
     ]
     assert config.lens_controls["auto_exposure"] == 3
     assert config.lens_controls["brightness"] == 0
-    assert config.intrinsics.calibration_rms_px is None
-    assert np.count_nonzero(config.intrinsics.distortion) == 0
+    assert math.isclose(config.intrinsics.calibration_rms_px, 0.8863085437393902)
+    assert np.allclose(config.intrinsics.distortion,
+                       [0.03626268524324754, -0.056048601794863075,
+                        0.0010844756398792788, -0.0010052529149732062, 0.00958122664915688])
     rotation = config.t_imu_camera[:3, :3]
     # Task32撤销把Tag约定错误归因于相机的180°补偿；原始画面上方接近
     # Odin +X，光轴接近 Odin -Z。Tag官方图案与OpenCV角点差异由geometry处理。
