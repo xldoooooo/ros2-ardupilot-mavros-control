@@ -16,4 +16,4 @@ if [[ ! -x "${project_root}/.venv/bin/python" ]]; then
   echo '缺少项目 .venv/bin/python，请按部署文档创建项目环境。' >&2
   exit 1
 fi
-exec "${project_root}/.venv/bin/python" "${project_root}/tools/reboot_fcu.py"
+exec "${project_root}/.venv/bin/python" "${project_root}/src/onboard_control/scripts/reboot_fcu_client.py"

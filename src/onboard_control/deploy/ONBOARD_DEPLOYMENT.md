@@ -46,8 +46,7 @@ git sparse-checkout set \
   '/start_onboard_control.sh' \
   '/stop_onboard_control.sh' \
   '/build_onboard_control.sh' \
-  '/reboot_fcu.sh' \
-  '/tools/reboot_fcu.py'
+  '/reboot_fcu.sh'
 git checkout main
 ```
 
@@ -68,7 +67,7 @@ start_onboard_control.sh
 stop_onboard_control.sh
 build_onboard_control.sh
 reboot_fcu.sh
-tools/reboot_fcu.py
+src/onboard_control/scripts/reboot_fcu_client.py
 ```
 
 不要复制开发机的 `build/` 或 `install/`。目标机必须针对自身 ROS 发行版和 aarch64 原生编译。
@@ -106,8 +105,6 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 
 ```bash
 ./build_onboard_control.sh
-reboot_fcu.sh
-tools/reboot_fcu.py
 ```
 
 默认以 Release 模式重建飞行包和独立修正接口/节点。修正节点构建不启动相机或飞控。若需同时执行依赖检查、
@@ -352,7 +349,7 @@ python3 -m venv --system-site-packages .venv
 
 变更了 `ControlStatus` 的落地和重启状态字段，必须同步构建 `guided_interfaces` 和
 `onboard_control`（版本 3.3.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
-位于 `src/onboard_control/src/fcu_reboot.cpp`，Python 脚本客户端位于 `tools/reboot_fcu.py`。
+位于 `src/onboard_control/src/fcu_reboot.cpp`，Python 脚本客户端位于 `src/onboard_control/scripts/reboot_fcu_client.py`。
 构建不会使正在运行的旧进程自动升级；部署后在确认未解锁、落地且无任务时重启机载服务。
 
 成功证据分两阶段输出到主 GUI 日志和脚本终端：
