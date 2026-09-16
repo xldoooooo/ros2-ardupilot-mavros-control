@@ -162,8 +162,10 @@
   主点和零畸变构造（`fx=fy=1120.847311px`），不是标定结果；仓库 UQ212 外参在 2026-09-17 改为用户确认机械尺寸：
   `t=(0.04657,0.02897,-0.06726)m`，光轴沿 IMU -Z，画面上方沿 +X、右方沿 -Y，
   用户确认横平竖直、无偏航角，旋转为 `[[0,-1,0],[-1,0,0],[0,0,-1]]`。镜头中心近似光心，质量状态仍未验证，Wasintek 档案未修改。
-  本次仅更新开发机/仓库，refresh 与 new 飞机均待同步、重启修正服务并重新采样；旧 active
-  不因配置更新自动清除，不得复用旧窗口。正式修正前必须
+  2026-09-17 已同步 refresh 并重建 correction_service、重启独立修正服务；源码/install
+  配置一致，运行指纹 `34f1f5313652e114afe4ea8507d3b717e8e91e6ed6eb8dcd112213abe5dae106`
+  与开发机一致，服务 idle、窗口为空。new 飞机仍待同步。refresh extnav 旧 revision=1
+  active 保留，尚未按新外参重新采样/应用，不得把旧 active 当作新外参结果。正式修正前必须
   核对实物镜头版本并重标内外参。Wasintek/UQ212 档案分别保存在
   `correction_service/config/Wasintek/` 与 `correction_service/config/UQ212/`，运行时不自动加载；
   根 `config/` 的四份同名文件是唯一活动相机配置，`camera.conf` 的 `device` 是设备路径入口。

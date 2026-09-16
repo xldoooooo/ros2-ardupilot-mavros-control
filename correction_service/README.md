@@ -76,8 +76,9 @@ UQ212 外参自 2026-09-17 按机械尺寸近似：基座位于模块前表面�
 用户确认按横平竖直、无偏航角近似，旋转矩阵为 `[[0,-1,0],[-1,0,0],[0,0,-1]]`。
 这是相对 IMU 的固定安装近似，机体倾斜时不会自动保持地垂线。镜头中心近似光心，
 实物安装误差尚未实测，`quality.passed=false`；Wasintek 档案保持原样。
-推导与验证见 `agent/report/report-2026-09-17-uq212-mechanical-extrinsics.md`；本次外参更新
-尚未同步至 refresh/new 飞机，运行中的服务不会自动加载仓库改动。
+推导与验证见 `agent/report/report-2026-09-17-uq212-mechanical-extrinsics.md`；2026-09-17 已同步
+refresh 并重建、重启修正服务，运行指纹已核对；new 飞机尚待同步。refresh 保留旧 extnav
+active，新外参结果仍需重新采样并应用。
 
 ### 首次与滑窗计算
 
