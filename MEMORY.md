@@ -441,10 +441,10 @@
   systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
   `armed=false`、STABILIZE。机载视频现场配置仍位于 `/etc/ros2-ardupilot/camera.conf`、
   `lens.conf`，安装器重装时未覆盖。
-- 当前飞机 Git HEAD 仍为历史 `6a40713`，任务 22.5 通过逐文件同步部署，因此工作树有明确的
+- 2026-08-24 时飞机 Git HEAD 为历史 `6a40713`，任务 22.5 通过逐文件同步部署，当时工作树有明确的
   3.2 修改和 `video_service/` 新目录；2026-08-24 的选择性同步也没有改写该历史 HEAD。另有 Odin
   自动生成的 `image/cam_in_ex.txt` 与 `src/odin_ros_driver/`。不得用 reset/clean 或盲目 pull
-  覆盖，后续仍应选择性同步或重新建立可安全快进的 sparse checkout。
+  覆盖；这属于历史部署状态，refresh 当前已恢复可快进同步的 sparse checkout。
 - 部署前备份为 `/home/nvidia/backups/task22_5-predeploy-20260819-2317.tar.gz`，SHA-256
   `a070336413b6308db55a2155526be21c87f11fb249ccaca031ca95847697b27c`。真机台架媒体已从生产
   目录移至 `/home/nvidia/task22_5-bench-artifacts-20260819/`。
@@ -459,8 +459,8 @@
   `/home/nvidia/scq/backups/task27-20260828-225107/`，包含本地完整仓库、飞机项目/运行时和
   Odin/extnav/标定三份已校验归档；生产 extnav 定点备份位于飞机
   `/home/nvidia/backups/extnav-task27-20260828-234049/`。详细哈希见任务 27 报告。
-- 当前 Jetson 已选择性部署任务 29 的 correction interfaces/service 与 extnav 2.0，飞机 Git
-  HEAD 仍保持历史 `6a40713`，不得用 pull/reset 覆盖现场工作树。部署前可验证备份位于
+- 2026-09-09 Jetson 选择性部署任务 29 的 correction interfaces/service 与 extnav 2.0，当时飞机 Git
+  HEAD 为历史 `6a40713`，不能用 pull/reset 覆盖当时现场工作树。部署前可验证备份位于
   `/home/nvidia/backups/task29-predeploy-20260909-2205/`，extnav 安装器备份位于
   `/home/nvidia/backups/extnav-task29-20260909-220308/`。2026-09-09 台架结束时飞行链已按测试前
   状态停止，视频服务 inactive；`odin-correction.service` active/enabled 但 idle、窗口为空、
@@ -523,8 +523,9 @@
 
 ## 已知风险与维护重点
 
-- 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界；当前主要部署
-  风险是飞机 Git HEAD 与已验证的 3.2 工作树未形成可拉取提交，更新时必须保护现有部署文件。
+- 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界。2026-09-16 已
+  确认 refresh 可快进同步 main，自有 UVC 采集修复的地面/远端/refresh 提交一致；机载已有
+  `start_drone/image/` 未跟踪产物须保留。其他飞机的 HEAD 与部署差异仍须连接后独立核对。
 - Linux 非实时调度下曾出现 deadline miss 和明显 jitter；平均 100 Hz 不等于硬实时。当前 Odin
   进程的 `LimitRTPRIO=0`、无有效 capability，IMU 线程申请 SCHED_FIFO/SCHED_RR 得到 EPERM 后
   回退 SCHED_OTHER。当前链路能 READY，但高负载下 Odin 时间抖动风险仍未量化；实机前仍需长时间
