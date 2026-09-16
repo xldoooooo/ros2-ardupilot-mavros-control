@@ -623,8 +623,8 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
     assert "--check" in script
     assert "refusing to create duplicate flight-stack processes" in script
     assert "kill -INT -- \"-${pid}\"" in script
-    assert "message_rates_configured: true" in script
-    assert "local_position_valid: true" in script
+    assert "m.message_rates_configured" in script
+    assert "m.local_position_valid" in script
     assert "runtime_verify_workspace_package_install" in script
     assert "--no-daemon" in script
     assert "--qos-reliability best_effort" in script

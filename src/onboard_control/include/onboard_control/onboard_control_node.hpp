@@ -37,6 +37,7 @@
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
 #include <mavros_msgs/srv/message_interval.hpp>
+#include <mavros_msgs/srv/param_pull.hpp>
 #include <mavros_msgs/srv/set_mode.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
@@ -218,7 +219,7 @@ private:
   double pose_timeout_seconds_{0.3};
   double state_timeout_seconds_{2.0};
   // Hardware keeps 40 s; local SITL may safely override this startup-only delay.
-  double fcu_parameter_check_initial_delay_seconds_{40.0};
+  double fcu_parameter_check_initial_delay_seconds_{2.0};
   double link_loss_land_timeout_seconds_{10.0};
   double takeoff_timeout_seconds_{45.0};
   double land_confirmation_timeout_seconds_{120.0};
@@ -320,6 +321,7 @@ private:
   SteadyTime last_automatic_message_rate_attempt_{};
   bool thrust_mode_verified_{false};
   bool thrust_mode_check_inflight_{false};
+  bool fcu_parameter_pull_requested_{false};  // 每次飞控连接只主动拉取一次，不强制清空缓存。
   SteadyTime last_thrust_mode_check_{};
   SteadyTime fcu_parameter_sync_started_{};
 
@@ -369,6 +371,7 @@ private:
   rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedPtr takeoff_client_;
   rclcpp::Client<mavros_msgs::srv::MessageInterval>::SharedPtr message_interval_client_;
   rclcpp::AsyncParametersClient::SharedPtr fcu_parameter_client_;
+  rclcpp::Client<mavros_msgs::srv::ParamPull>::SharedPtr fcu_parameter_pull_client_;
 
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr status_timer_;

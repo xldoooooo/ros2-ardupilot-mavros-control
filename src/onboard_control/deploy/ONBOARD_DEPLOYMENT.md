@@ -240,6 +240,13 @@ bash start_onboard_control.sh
 `guided_interfaces/msg/ControlStatus`；这只改善同机只读探针的确定性，不解决跨 ROS 发行版
 DDS 兼容性。
 
+四组件并行拉起，不再插入固定的串行等待。飞控连接后 onboard 异步请求一次非强制参数同步，
+跳过 MAVROS 默认的自动拉表延迟；约 2 秒后开始只读核验必要参数，未通过时每秒重试，
+通过后维持每 5 秒复核。拉表响应不能代替 `GUID_OPTIONS` 与 `MOT_THST_HOVER` 的实际值校验。
+READY 使用单个持续订阅和 GNU `timeout` 的 120 秒相对定时器，不使用受校时影响的 Bash
+`SECONDS`；同一条新状态必须满足全部条件。匹配状态或探针错误保存在该次日志目录的
+`readiness.log`。取消启动时也会清理此订阅进程；超时后四组件继续受监督运行。
+
 脚本启动时会读取 `/etc/ros2-ardupilot/onboard.env`，也可用
 `ONBOARD_ENV_FILE` 指定另一文件。已人工确认串口或 overlay 后，应在该机专用
 环境文件中配置，使 systemd 与交互终端直接执行脚本时共享同一选择。

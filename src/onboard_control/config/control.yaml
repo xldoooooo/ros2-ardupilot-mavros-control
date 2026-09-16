@@ -13,8 +13,8 @@
     # 遥测新鲜度、失联处理与命令时效安全阈值
     pose_timeout_seconds: 0.30  # 位姿或速度遥测最大允许断流时间，单位：秒。
     state_timeout_seconds: 2.0  # 飞控连接状态最大允许断流时间，单位：秒。
-    # 实机需要等待 MAVROS 拉取完整飞控参数表；仅本地仿真启动器会覆盖为 2 秒。
-    fcu_parameter_check_initial_delay_seconds: 40.0  # 首次检查飞控推力参数前的等待时间，单位：秒。
+    # 连接后主动异步拉参数；早检查、未同步时重试，不跳过推力参数值校验。
+    fcu_parameter_check_initial_delay_seconds: 2.0  # 首次只读检查延迟，单位：秒。
     link_loss_land_timeout_seconds: 10.0  # 地面站失联后悬停多久转入自动降落，单位：秒。
     takeoff_timeout_seconds: 45.0  # 起飞任务等待高度确认的最长时间，单位：秒。
     # 降落命令只有在飞控回报解除武装后才判定成功。

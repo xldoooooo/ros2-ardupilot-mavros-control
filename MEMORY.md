@@ -448,6 +448,12 @@
 - systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、
   `time-sync.target` 或固定 `sleep`；自带路由器无外网时必须启动。离线开机后若再接入互联网，应在
   人工解锁前等待 Linux/MAVROS 时间状态稳定并重新核对 READY，但外网时间不是控制租约前置条件。
+- 2026-09-17 启动器已用持续状态订阅 + GNU timeout 相对定时替换受校时影响的 Bash SECONDS，
+  删除四组件间串行 sleep；机载端连接后异步非强制拉参数，首次检查 2 秒、未通过时每秒重试，
+  保留必要参数值和未武装/位姿就绪门。new 实机两轮 READY 为 39.37/39.61 秒（原 54.14 秒），
+  未解锁、无租约；剩余主要为参数接收/补传。已定点部署 new 并核对 source/install/runtime，
+  refresh 与独立 USB Jetson 尚未同步这次启动修复；不得以 new 的历史 Git HEAD 判断补丁缺失。
+  子进程墙钟前跳回归已通过，真实离线冷启动后 NTP 校时仍待下一次现场开机复验，未主动改变实机时钟。
 - 2026-08-26 已纠正独立视频 unit 遗留的外网校时依赖并部署到当前 Jetson；实际 unit 只等待
   `network-online.target`，视频服务最终 active/enabled、零重启，飞控 unit 未被重启。地面摄像头
   面板首次启停命令会有限等待服务发现 2 秒，不再把正常的 DDS 建链延迟立即误报为端点缺失。

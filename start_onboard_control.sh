@@ -101,6 +101,7 @@ mkdir -p "${run_directory}"
 declare -a component_names=()
 declare -a component_pids=()
 cleanup_started=0
+readiness_pid=""
 
 launch_component() {
   local name="$1"
@@ -147,6 +148,12 @@ cleanup() {
   cleanup_started=1
   trap - EXIT INT TERM
 
+  # The passive readiness subscriber belongs to this launcher too.
+  if [[ -n "${readiness_pid}" ]]; then
+    kill -TERM -- "-${readiness_pid}" 2>/dev/null || true
+    wait "${readiness_pid}" 2>/dev/null || true
+  fi
+
   if ((${#component_pids[@]} > 0)); then
     echo "[startup] stopping all four components..."
   fi
@@ -177,53 +184,42 @@ trap 'exit 130' INT TERM
 
 launch_component "mavros" \
   "exec ros2 launch mavros apm.launch fcu_url:='${fcu_device}:${fcu_baud}'"
-sleep 1
 launch_component "odin" \
   "exec ros2 launch odin_ros_driver odin1_ros2.launch.py"
-sleep 1
 launch_component "extnav" \
   "exec ros2 run extnav_bridge extnav_to_vision_pose --ros-args -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq -p roll_cam:=0.0 -p pitch_cam:=0.0 -p yaw_cam:=0.0 -p odin_x:=0.06 -p odin_y:=-0.03 -p odin_z:=0.05"
-sleep 1
 launch_component "onboard" \
   "cd '${project_root}'; exec ros2 launch onboard_control control.launch.py"
 
 echo "[startup] all components launched on ROS domain ${ROS_DOMAIN_ID}"
 echo "[startup] waiting for a safe, unarmed readiness snapshot (no control commands are sent)..."
 
-ready=0
-readonly readiness_deadline=$((SECONDS + 120))
-while ((SECONDS < readiness_deadline)); do
+# Keep one DDS subscriber alive. GNU timeout uses a relative timer, so NTP wall-clock
+# steps cannot expire this wait early (unlike Bash SECONDS on this platform).
+# All readiness fields must be true in the SAME newly received, unarmed snapshot.
+readonly readiness_filter='not m.armed and m.fcu_connected and m.message_rates_configured and m.thrust_mode_verified and m.local_position_valid'
+setsid timeout --signal=TERM --kill-after=3 120 ros2 topic echo \
+  --no-daemon \
+  --spin-time 0.1 \
+  --qos-profile sensor_data \
+  --qos-reliability best_effort \
+  --qos-durability volatile \
+  --once --filter "${readiness_filter}" \
+  /onboard_control/status guided_interfaces/msg/ControlStatus \
+  > "${run_directory}/readiness.log" 2>&1 &
+readiness_pid=$!
+while kill -0 "${readiness_pid}" 2>/dev/null; do
   if ! children_alive; then
     echo "[startup] a component exited during readiness checks" >&2
     exit 1
   fi
-
-  # Bypass a stale ros2 daemon and exactly match the best-effort status publisher.
-  status_sample="$(
-    timeout 4 ros2 topic echo \
-      --no-daemon \
-      --spin-time 1 \
-      --qos-profile sensor_data \
-      --qos-reliability best_effort \
-      --qos-durability volatile \
-      --once \
-      /onboard_control/status guided_interfaces/msg/ControlStatus \
-      2>&1 || true
-  )"
-  if grep -q '^armed: true$' <<<"${status_sample}"; then
-    echo "[startup] WARNING: FCU reports armed=true; no command was sent by this script" >&2
-  fi
-  if grep -q '^armed: false$' <<<"${status_sample}" && \
-    grep -q '^fcu_connected: true$' <<<"${status_sample}" && \
-    grep -q '^message_rates_configured: true$' <<<"${status_sample}" && \
-    grep -q '^thrust_mode_verified: true$' <<<"${status_sample}" && \
-    grep -q '^local_position_valid: true$' <<<"${status_sample}"
-  then
-    ready=1
-    break
-  fi
-  sleep 1
+  sleep 0.1
 done
+ready=0
+if wait "${readiness_pid}"; then
+  ready=1
+fi
+readiness_pid=""
 
 if ((ready)); then
   echo "[startup] READY: FCU connected, unarmed, rates/parameters/local position verified"

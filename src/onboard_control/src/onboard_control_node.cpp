@@ -76,7 +76,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   pose_timeout_seconds_ = declare_parameter<double>("pose_timeout_seconds", 0.3);
   state_timeout_seconds_ = declare_parameter<double>("state_timeout_seconds", 2.0);
   fcu_parameter_check_initial_delay_seconds_ =
-    declare_parameter<double>("fcu_parameter_check_initial_delay_seconds", 40.0);
+    declare_parameter<double>("fcu_parameter_check_initial_delay_seconds", 2.0);
   link_loss_land_timeout_seconds_ =
     declare_parameter<double>("link_loss_land_timeout_seconds", 10.0);
   takeoff_timeout_seconds_ = declare_parameter<double>("takeoff_timeout_seconds", 45.0);
@@ -296,6 +296,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     mavros_prefix_ + "/set_message_interval");
   fcu_parameter_client_ = std::make_shared<rclcpp::AsyncParametersClient>(
     this, mavros_prefix_ + "/param");
+  fcu_parameter_pull_client_ = create_client<mavros_msgs::srv::ParamPull>(
+    mavros_prefix_ + "/param/pull");
 
   const auto control_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / control_frequency_hz_));
@@ -327,6 +329,7 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
   if (!fcu_connected_) {
     thrust_mode_verified_ = false;
     fcu_parameter_sync_started_ = SteadyTime{};
+    fcu_parameter_pull_requested_ = false;
     last_thrust_mode_check_ = SteadyTime{};
     // Message intervals are runtime FCU state and must be re-applied after reconnection.
     message_rates_configured_ = false;
@@ -1984,12 +1987,25 @@ void OnboardControlNode::status_tick()
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   check_origin_confirmation_timeout(now);
+  if (fcu_connected_ && !fcu_parameter_pull_requested_ &&
+    fcu_parameter_pull_client_->service_is_ready())
+  {
+    // MAVROS 默认连接后等 10 秒才拉表；非强制异步请求提前启动或复用在途同步。
+    // 这里只读参数，不阻塞控制/状态回调，也不以拉表 ACK 代替必要参数值校验。
+    auto request = std::make_shared<mavros_msgs::srv::ParamPull::Request>();
+    request->force_pull = false;
+    fcu_parameter_pull_client_->async_send_request(
+      request, [](rclcpp::Client<mavros_msgs::srv::ParamPull>::SharedFuture) {});
+    fcu_parameter_pull_requested_ = true;
+    RCLCPP_INFO(get_logger(), "已请求提前同步飞控参数，等待必要参数校验");
+  }
   if (fcu_connected_ && fcu_parameter_sync_started_ != SteadyTime{} &&
     std::chrono::duration<double>(now - fcu_parameter_sync_started_).count() >=
     fcu_parameter_check_initial_delay_seconds_ &&
     !thrust_mode_check_inflight_ &&
     (last_thrust_mode_check_ == SteadyTime{} ||
-    std::chrono::duration<double>(now - last_thrust_mode_check_).count() >= 5.0))
+    std::chrono::duration<double>(now - last_thrust_mode_check_).count() >=
+    (thrust_mode_verified_ ? 5.0 : 1.0)))
   {
     check_thrust_mode_parameter();
   }
