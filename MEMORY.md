@@ -121,6 +121,11 @@
 
 ### 独立 AprilTag-Odin 修正服务
 
+- 飞机开机自启 unit 为 `/etc/systemd/system/odin-correction.service`，与飞控和视频 unit 独立。
+  unit 与人工前台启动共用根目录 `start_onboard_correction.sh`；
+  `stop_onboard_correction.sh` 会停止 unit 并清理仅属于修正节点的残留进程。启停脚本都不管理
+  Odin、extnav、MAVROS、onboard_control 或视频；停止修正节点也不会清除 extnav
+  已应用的 active correction。
 - `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
   first/next 或 apply_saved 才创建有界任务专属 raw 订阅，采样时另启相机；冻结候选后必须先释放
   资源再保存/应用。2.0 已在当前 Jetson 验证 idle 只保留 extnav 状态订阅、相机设备无人占用，

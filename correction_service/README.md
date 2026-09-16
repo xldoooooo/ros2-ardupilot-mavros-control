@@ -225,6 +225,19 @@ ros2 run correction_service correction_node --ros-args \
 ./correction_service/deploy/install_correction_service.sh
 ```
 
+安装后的 unit 位于 `/etc/systemd/system/odin-correction.service`，开机自启状态由
+systemd 管理。unit 与人工前台启动共用根目录入口：
+
+```bash
+./start_onboard_correction.sh
+./stop_onboard_correction.sh
+```
+
+`start_onboard_correction.sh` 只在前台启动默认 idle 的修正节点，不启动 Odin、extnav、
+MAVROS、onboard_control 或视频。已有修正节点时它会拒绝重复启动。
+`stop_onboard_correction.sh` 停止 unit 并清理手工残留的修正进程，但不会清除
+extnav 内已应用的 active correction，也不停止任何其他机载服务。
+
 extnav 安装器会拒绝运行中的飞控链路，先为指定源文件和 package manifest 创建 SHA-256
 定点备份，只构建而不启动/重启服务。独立服务安装器同样拒绝活动飞控服务，构建并核验 2.0
 source/install 接口后安装 `odin-correction.service`。它虽可启动独立节点，但节点保持 idle，

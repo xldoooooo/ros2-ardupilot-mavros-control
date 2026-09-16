@@ -16,7 +16,7 @@ Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 Environment=CORRECTION_CONFIG_DIR=ONBOARD_WORKSPACE_PATH/correction_service/config
 Environment=CORRECTION_CAMERA_OVERLAY_SETUP=CAMERA_OVERLAY_PATH
 EnvironmentFile=-/etc/ros2-ardupilot/correction.env
-ExecStart=/bin/bash --noprofile --norc -c 'set -e; source /opt/ros/jazzy/setup.bash; source ONBOARD_WORKSPACE_PATH/install/setup.bash; source "${CORRECTION_CAMERA_OVERLAY_SETUP}"; exec ros2 run correction_service correction_node --ros-args -p "config_dir:=${CORRECTION_CONFIG_DIR}"'
+ExecStart=ONBOARD_WORKSPACE_PATH/start_onboard_correction.sh
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15

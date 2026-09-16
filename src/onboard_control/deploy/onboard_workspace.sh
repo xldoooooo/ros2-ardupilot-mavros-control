@@ -16,6 +16,8 @@ readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
+readonly CORRECTION_START_SPARSE_PATH="/start_onboard_correction.sh"
+readonly CORRECTION_STOP_SPARSE_PATH="/stop_onboard_correction.sh"
 readonly VIDEO_SPARSE_PATH="/video_service/"
 readonly VIDEO_START_SPARSE_PATH="/start_onboard_video.sh"
 readonly VIDEO_STOP_SPARSE_PATH="/stop_onboard_video.sh"
@@ -103,6 +105,10 @@ validate_workspace_layout() {
     die "independent correction service installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/correction_service/deploy/install_extnav_correction.sh" ]] ||
     die "extnav correction installer is missing or not executable"
+  [[ -x "${WORKSPACE_ROOT}/start_onboard_correction.sh" ]] ||
+    die "independent correction service launcher is missing or not executable"
+  [[ -x "${WORKSPACE_ROOT}/stop_onboard_correction.sh" ]] ||
+    die "independent correction service stop helper is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/video_service/deploy/install_onboard_video_service.sh" ]] ||
     die "independent video service installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/install_onboard_service.sh" ]] ||
@@ -144,6 +150,7 @@ update_checkout() {
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
     "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
     "${ONBOARD_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
+    "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
     "${DRONE_START_SPARSE_PATH}" "${ONBOARD_CONTROL_START_SPARSE_PATH}" \

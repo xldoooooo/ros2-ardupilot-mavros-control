@@ -37,6 +37,8 @@ git sparse-checkout set \
   '/src/correction_interfaces/' \
   '/src/onboard_control/' \
   '/correction_service/' \
+  '/start_onboard_correction.sh' \
+  '/stop_onboard_correction.sh' \
   '/video_service/' \
   '/start_onboard_video.sh' \
   '/stop_onboard_video.sh' \
@@ -54,6 +56,8 @@ src/guided_interfaces/
 src/correction_interfaces/
 src/onboard_control/
 correction_service/
+start_onboard_correction.sh
+stop_onboard_correction.sh
 video_service/
 start_onboard_video.sh
 stop_onboard_video.sh
@@ -145,6 +149,7 @@ setpoint_messages=0
 
 `update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护飞行 ROS 包、
 `correction_interfaces`、独立 `correction_service/` 与 `video_service/`、
+根目录修正服务启停入口、
 根目录视频启停入口、`start_drone/` 分步入口、`start_onboard_control.sh` 一键入口、
 `stop_onboard_control.sh` 飞控彻底停止入口和根目录 `build_onboard_control.sh`。更新使用
 `git pull --ff-only`，
@@ -277,10 +282,13 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 ```bash
 ./correction_service/deploy/install_extnav_correction.sh
 ./correction_service/deploy/install_correction_service.sh
+./start_onboard_correction.sh
+./stop_onboard_correction.sh
 ```
 
 extnav 安装器覆盖生产源前会创建带 SHA-256 的定点备份，只构建、不重启飞控；修正服务启动后
-保持 idle、相机关闭。完整接口、Tag 坐标约定和 clear 方法见
+保持 idle、相机关闭。后两个根目录脚本分别用于前台启动和彻底停止该独立 unit；
+停止修正节点不会清除 extnav 已应用的 active correction。完整接口、Tag 坐标约定和 clear 方法见
 `correction_service/README.md`。`odin-correction.service` 不得对飞控 unit 设置
 `Requires=`、`PartOf=` 或 `BindsTo=`。
 视频 unit 也不得设置 `Requires=`/`PartOf=`：摄像头、FFmpeg、MediaMTX 或磁盘失败只能重启视频 unit，

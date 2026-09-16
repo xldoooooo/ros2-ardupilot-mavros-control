@@ -67,6 +67,10 @@ esac
 [[ -r /opt/ros/jazzy/setup.bash ]] || die "ROS 2 Jazzy setup is missing"
 [[ -f "${SERVICE_TEMPLATE}" && -f "${ENV_TEMPLATE}" ]] ||
   die "service deployment templates are incomplete"
+[[ -x "${WORKSPACE_ROOT}/start_onboard_correction.sh" ]] ||
+  die "independent correction launcher is missing or not executable"
+[[ -x "${WORKSPACE_ROOT}/stop_onboard_correction.sh" ]] ||
+  die "independent correction stop helper is missing or not executable"
 [[ -f "${WORKSPACE_ROOT}/correction_service/config/general_settings.yaml" ]] ||
   die "correction configuration is missing"
 verify_manifest_version "${WORKSPACE_ROOT}/src/correction_interfaces/package.xml"

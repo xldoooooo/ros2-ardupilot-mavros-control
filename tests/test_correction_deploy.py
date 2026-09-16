@@ -9,6 +9,8 @@ from xml.etree import ElementTree
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CORRECTION_ROOT = PROJECT_ROOT / "correction_service"
+CORRECTION_START = PROJECT_ROOT / "start_onboard_correction.sh"
+CORRECTION_STOP = PROJECT_ROOT / "stop_onboard_correction.sh"
 
 
 def _text(path: Path) -> str:
@@ -70,7 +72,7 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
     assert help_result.returncode == 0, help_result.stderr
     assert "--install-only" in help_result.stdout
 
-    assert "ExecStart=" in unit and "correction_node" in unit
+    assert "ExecStart=ONBOARD_WORKSPACE_PATH/start_onboard_correction.sh" in unit
     assert "CORRECTION_CAMERA_OVERLAY_SETUP" in unit
     assert "SupplementaryGroups=video" in unit
     assert "KillMode=control-group" in unit
@@ -98,6 +100,48 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
     assert "self.destroy_subscription(subscription)" in node
 
 
+def test_correction_root_launchers_are_independent_and_executable() -> None:
+    """修正启停入口必须可独立运行，且不得扩大到其他机载服务。"""
+    for path in (CORRECTION_START, CORRECTION_STOP):
+        assert os.access(path, os.X_OK)
+        syntax = subprocess.run(
+            ["bash", "-n", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert syntax.returncode == 0, syntax.stderr
+        help_result = subprocess.run(
+            [str(path), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert help_result.returncode == 0, help_result.stderr
+
+    start = _text(CORRECTION_START)
+    stop = _text(CORRECTION_STOP)
+    assert "exec ros2 run correction_service correction_node" in start
+    assert "ROS_AUTOMATIC_DISCOVERY_RANGE" in start
+    assert "correction_service is already running" in start
+    assert 'systemctl stop "${SERVICE_NAME}"' in stop
+    assert "signal_targets INT" in stop
+    assert "signal_targets TERM" in stop
+    assert "signal_targets KILL" in stop
+    assert "active extnav correction is unchanged" in stop
+    combined = start + stop
+    for forbidden in (
+        "mavros_node",
+        "odin1_ros2",
+        "extnav_to_vision_pose",
+        "onboard_control_node",
+        "video-service.service",
+        "/mavros/cmd/arming",
+        "/mavros/cmd/takeoff",
+    ):
+        assert forbidden not in combined
+
+
 def test_onboard_sparse_checkout_and_build_include_correction_packages() -> None:
     """正常部署构建修正包，但飞行启动不能把可选接口变成单点故障。"""
     helper = _text(
@@ -107,6 +151,8 @@ def test_onboard_sparse_checkout_and_build_include_correction_packages() -> None
 
     assert 'CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"' in helper
     assert 'CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"' in helper
+    assert 'CORRECTION_START_SPARSE_PATH="/start_onboard_correction.sh"' in helper
+    assert 'CORRECTION_STOP_SPARSE_PATH="/stop_onboard_correction.sh"' in helper
     assert (
         "guided_interfaces correction_interfaces onboard_control correction_service"
         in helper

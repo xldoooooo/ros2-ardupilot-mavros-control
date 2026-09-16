@@ -420,6 +420,8 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/src/guided_interfaces/",
         "/src/onboard_control/",
         "/video_service/",
+        "/start_onboard_correction.sh",
+        "/stop_onboard_correction.sh",
         "/start_onboard_video.sh",
         "/stop_onboard_video.sh",
         "/start_drone/",
