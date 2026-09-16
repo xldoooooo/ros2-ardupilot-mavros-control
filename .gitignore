@@ -72,6 +72,9 @@ core.*
 *.rej
 *~
 
+# Operator-selected waypoint exports are local runtime artifacts.
+/export/
+
 # Deep Copilot local state (cover common historical spellings)
 .deep-copilot/
 .deepcopilot/

@@ -58,8 +58,12 @@ from ..upstream import (
     UpstreamCommunicationService,
 )
 from ..waypoint_io import (
+    WaypointExportError,
     WaypointImportError,
+    default_waypoint_export_path,
     load_waypoint_file,
+    save_waypoint_file,
+    waypoint_export_dialog_filter,
     waypoint_file_dialog_filter,
 )
 from .log_panel import LogPanel
@@ -681,6 +685,7 @@ class GroundStationWindow(QMainWindow):
         self.waypoints.clear_requested.connect(self._confirm_clear_waypoints)
         self.waypoints.preview_requested.connect(self._preview_waypoints)
         self.waypoints.import_file_requested.connect(self._choose_waypoint_file)
+        self.waypoints.export_file_requested.connect(self._choose_waypoint_export_file)
         self.waypoints.files_dropped.connect(self._import_dropped_waypoint_files)
         self.waypoints.waypoints_changed.connect(self._on_waypoints_changed)
         self._bridge.environment_status.connect(self._on_environment_status)
@@ -1767,6 +1772,42 @@ class GroundStationWindow(QMainWindow):
         self._events.warn("waypoint-import", f"航点导入失败：{message}")
         self.activity_banner.set_message(f"航点导入失败：{message}", LogLevel.WARN)
         self._show_notice("航点导入失败", message, QMessageBox.Icon.Warning)
+
+    def _choose_waypoint_export_file(self) -> None:
+        """让操作者选择 CSV 保存位置，并导出地面站当前列表快照。"""
+        waypoints = self.waypoints.waypoints
+        if not waypoints:
+            return
+        initial_path = PROJECT_ROOT / default_waypoint_export_path()
+        try:
+            initial_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._show_waypoint_export_error(f"无法创建默认导出目录：{exc}")
+            return
+        selected_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出航点到文件",
+            str(initial_path),
+            waypoint_export_dialog_filter(),
+        )
+        if not selected_path:
+            return
+        try:
+            destination = save_waypoint_file(selected_path, waypoints)
+        except WaypointExportError as exc:
+            self._show_waypoint_export_error(str(exc))
+            return
+        message = f"已将 {len(waypoints)} 个航点导出到 {destination}"
+        self._events.info("waypoint-export", message)
+        self.activity_banner.set_message(
+            f"已导出 {len(waypoints)} 个航点。", LogLevel.INFO
+        )
+
+    def _show_waypoint_export_error(self, message: str) -> None:
+        """统一记录并显示不影响当前列表的导出失败。"""
+        self._events.warn("waypoint-export", f"航点导出失败：{message}")
+        self.activity_banner.set_message(f"航点导出失败：{message}", LogLevel.WARN)
+        self._show_notice("航点导出失败", message, QMessageBox.Icon.Warning)
 
     # ---- 周期刷新与结果 ----
 

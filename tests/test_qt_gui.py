@@ -551,6 +551,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert not window.waypoints.x_input.isEnabled()
         assert not window.waypoints.add_button.isEnabled()
         assert not window.waypoints.import_button.isEnabled()
+        assert not window.waypoints.export_button.isEnabled()
         assert not window.waypoints.preview_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
         assert not window.waypoints.table.isEnabled()
@@ -568,6 +569,7 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         assert window.waypoints.x_input.isEnabled()
         assert window.waypoints.add_button.isEnabled()
         assert window.waypoints.import_button.isEnabled()
+        assert not window.waypoints.export_button.isEnabled()
         assert not window.waypoints.preview_button.isEnabled()
         assert not window.waypoints.send_button.isEnabled()
     finally:
@@ -2190,14 +2192,19 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         assert panel.clear_button.text() == "清空"
         assert panel.preview_button.text() == "预览"
         assert panel.import_button.text() == "从文件导入"
+        assert panel.export_button.text() == "导出到文件"
         assert panel.preview_button.property("role") == "neutral"
         assert panel.import_button.property("role") == "neutral"
+        assert panel.export_button.property("role") == "neutral"
         assert panel.clear_button.x() < panel.preview_button.x()
         assert panel.preview_button.x() < panel.import_button.x()
+        assert panel.import_button.x() < panel.export_button.x()
         assert "RViz" in panel.preview_button.toolTip()
         assert "CSV" in panel.import_button.toolTip()
+        assert "CSV" in panel.export_button.toolTip()
         assert "QPushButton#previewWaypointButton" in STYLE_SHEET
         assert "QPushButton#importWaypointButton" in STYLE_SHEET
+        assert "QPushButton#exportWaypointButton" in STYLE_SHEET
         assert panel.send_button.property("role") == "primary"
         assert not panel.parentWidget().isWindow()
         execution_card = panel.progress.parentWidget()
@@ -2253,6 +2260,7 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         window._refresh()
         assert not panel.add_button.isEnabled()
         assert not panel.import_button.isEnabled()
+        assert panel.export_button.isEnabled()
         assert panel.preview_button.isEnabled()
         assert not panel.strategy_combo.isEnabled()
         assert all(
@@ -2353,6 +2361,54 @@ def test_waypoint_file_button_and_table_drop_replace_only_after_confirmation(
         assert math.isclose(panel.waypoints[0][3], math.pi / 4.0)
         assert any(
             event.source == "waypoint-import" and event.level is LogLevel.INFO
+            for event in window.event_log.snapshot()
+        )
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_export_button_saves_only_current_gui_list_as_csv(
+    tmp_path: Path,
+) -> None:
+    """非空列表启用导出，保存器默认项目 export 目录且不访问机载任务。"""
+    window, ros = _window(_operational_snapshot(armed=True))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        panel = window.waypoints
+        assert not panel.export_button.isEnabled()
+
+        panel.x_input.setValue(1.25)
+        panel.y_input.setValue(-2.5)
+        panel.z_input.setValue(3.0)
+        panel.yaw_input.setValue(90.0)
+        panel.add_button.click()
+        assert panel.export_button.isEnabled()
+
+        destination_without_suffix = tmp_path / "chosen-waypoints"
+        with patch(
+            "ground_station_core.qt_ui.main_window.QFileDialog.getSaveFileName",
+            return_value=(str(destination_without_suffix), "CSV 文件 (*.csv)"),
+        ) as chooser:
+            panel.export_button.click()
+
+        chooser.assert_called_once()
+        chooser_arguments = chooser.call_args.args
+        default_path = Path(chooser_arguments[2])
+        assert default_path.parent == PROJECT_ROOT / "export"
+        assert default_path.name.startswith("waypoints-export-")
+        assert default_path.suffix == ".csv"
+        assert chooser_arguments[3] == "CSV 文件 (*.csv)"
+        assert (tmp_path / "chosen-waypoints.csv").read_text(
+            encoding="utf-8"
+        ).splitlines() == [
+            "index,x,y,z,yaw",
+            "1,1.25,-2.5,3,90",
+        ]
+        assert not any(call[0] == "waypoints" for call in ros.calls)
+        assert any(
+            event.source == "waypoint-export" and event.level is LogLevel.INFO
             for event in window.event_log.snapshot()
         )
     finally:

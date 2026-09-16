@@ -1,12 +1,13 @@
-"""从受支持的文件格式读取本地 ENU 航点，供 GUI 原子替换列表。"""
+"""读写地面站本地 ENU 航点文件，保持导入与导出的 CSV 语义一致。"""
 
 from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 import math
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from .config import (
     MAX_WAYPOINT_COUNT,
@@ -25,6 +26,10 @@ _CSV_HEADER = ("index", "x", "y", "z", "yaw")
 
 class WaypointImportError(ValueError):
     """表示文件格式、内容或安全边界不符合航点导入要求。"""
+
+
+class WaypointExportError(ValueError):
+    """表示导出路径、航点内容或文件写入不符合导出要求。"""
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,81 @@ def waypoint_file_dialog_filter() -> str:
         for file_format in _WAYPOINT_FILE_FORMATS
     )
     return f"支持的航点文件 ({patterns});;{format_filters}"
+
+
+def waypoint_export_dialog_filter() -> str:
+    """返回只允许 CSV 的 Qt 保存文件选择器过滤器。"""
+    return "CSV 文件 (*.csv)"
+
+
+def default_waypoint_export_path(moment: datetime | None = None) -> Path:
+    """按本地时间生成项目 export 子目录中的默认 CSV 文件名。"""
+    timestamp = (moment or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return Path("export") / f"waypoints-export-{timestamp}.csv"
+
+
+def _format_csv_number(value: float) -> str:
+    """以足够回读精度输出有限浮点数，同时避免无意义的尾随零。"""
+    return format(value, ".15g")
+
+
+def save_waypoint_file(
+    path: str | Path, waypoints: Iterable[Waypoint]
+) -> Path:
+    """把地面站当前列表保存为可由 :func:`load_waypoint_file` 回读的 CSV。"""
+    destination = Path(path).expanduser()
+    if not destination.suffix:
+        destination = destination.with_suffix(".csv")
+    elif destination.suffix.lower() != ".csv":
+        raise WaypointExportError("航点只能导出为 .csv 文件")
+
+    normalized: list[Waypoint] = []
+    for index, waypoint in enumerate(waypoints, start=1):
+        try:
+            values = tuple(float(value) for value in waypoint)
+        except (TypeError, ValueError) as exc:
+            raise WaypointExportError(f"航点 #{index} 包含无效数值") from exc
+        if len(values) != 4 or not all(math.isfinite(value) for value in values):
+            raise WaypointExportError(f"航点 #{index} 必须包含四个有限数值")
+        x, y, z, yaw = values
+        yaw_degrees = math.degrees(yaw)
+        if not (
+            -WAYPOINT_HORIZONTAL_LIMIT_METERS
+            <= x
+            <= WAYPOINT_HORIZONTAL_LIMIT_METERS
+            and -WAYPOINT_HORIZONTAL_LIMIT_METERS
+            <= y
+            <= WAYPOINT_HORIZONTAL_LIMIT_METERS
+            and WAYPOINT_Z_MIN_METERS <= z <= WAYPOINT_Z_MAX_METERS
+            and -WAYPOINT_YAW_LIMIT_DEGREES
+            <= yaw_degrees
+            <= WAYPOINT_YAW_LIMIT_DEGREES
+        ):
+            raise WaypointExportError(f"航点 #{index} 超出地面站允许范围")
+        normalized.append((x, y, z, yaw))
+
+    if not normalized:
+        raise WaypointExportError("航点列表为空，无法导出")
+    if len(normalized) > MAX_WAYPOINT_COUNT:
+        raise WaypointExportError(f"最多导出 {MAX_WAYPOINT_COUNT} 个航点")
+
+    try:
+        with destination.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream, lineterminator="\n")
+            writer.writerow(_CSV_HEADER)
+            for index, (x, y, z, yaw) in enumerate(normalized, start=1):
+                writer.writerow(
+                    (
+                        index,
+                        _format_csv_number(x),
+                        _format_csv_number(y),
+                        _format_csv_number(z),
+                        _format_csv_number(math.degrees(yaw)),
+                    )
+                )
+    except OSError as exc:
+        raise WaypointExportError(f"无法写入文件：{exc}") from exc
+    return destination
 
 
 def load_waypoint_file(path: str | Path) -> WaypointCollection:

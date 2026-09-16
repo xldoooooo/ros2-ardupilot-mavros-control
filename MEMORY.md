@@ -73,6 +73,9 @@
 - `ground_station_core/process_manager.py` 只管理本项目明确启动的本地进程组。退出、仿真终止和
   异常退出兜底必须清理 SITL、仿真 MAVROS、仿真 onboard 与 RViz，不得停止 ROS daemon 或
   其他 ROS 工作负载。
+- 航点编辑器支持按统一 `index,x,y,z,yaw` CSV 格式导入和导出；Yaw 在文件中使用角度、GUI
+  内部继续使用弧度。导出只读取当前 GUI 列表，不依赖环境会话或机载任务，默认保存到项目
+  `export/waypoints-export-YYYYMMDD-HHMMSS.csv`，空列表时入口禁用。
 - `ground_station_core/upstream/` 是独立 WebSocket/JAR 上位机协议边界；通讯故障不得破坏已有
   ROS、仿真或实机会话。
 

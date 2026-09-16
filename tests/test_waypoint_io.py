@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from ground_station_core.config import MAX_WAYPOINT_COUNT, PROJECT_ROOT
 from ground_station_core.waypoint_io import (
+    WaypointExportError,
     WaypointImportError,
+    default_waypoint_export_path,
     load_waypoint_file,
+    save_waypoint_file,
+    waypoint_export_dialog_filter,
     waypoint_file_dialog_filter,
 )
 
@@ -88,3 +93,40 @@ def test_file_format_dispatcher_exposes_csv_and_reserves_other_formats(
 
     with pytest.raises(WaypointImportError, match="当前支持：.csv"):
         load_waypoint_file(tmp_path / "future.xlsx")
+
+
+def test_csv_export_uses_import_schema_and_round_trips_current_list(
+    tmp_path: Path,
+) -> None:
+    """导出沿用五列表头、顺序和角度单位，未写扩展名时自动补 CSV。"""
+    waypoints = (
+        (1.25, -2.5, 3.75, math.pi / 2.0),
+        (-4.0, 5.5, 6.0, -math.pi),
+    )
+
+    destination = save_waypoint_file(tmp_path / "current-waypoints", waypoints)
+
+    assert destination == tmp_path / "current-waypoints.csv"
+    assert destination.read_text(encoding="utf-8").splitlines() == [
+        "index,x,y,z,yaw",
+        "1,1.25,-2.5,3.75,90",
+        "2,-4,5.5,6,-180",
+    ]
+    loaded = load_waypoint_file(destination)
+    assert len(loaded) == len(waypoints)
+    for exported, original in zip(loaded, waypoints, strict=True):
+        assert exported == pytest.approx(original)
+
+
+def test_export_path_filter_and_invalid_exports_are_rejected(tmp_path: Path) -> None:
+    """默认名包含本地时间，保存过滤器与写入层都只接受 CSV。"""
+    moment = datetime(2026, 9, 16, 8, 7, 6)
+    assert default_waypoint_export_path(moment) == Path(
+        "export/waypoints-export-20260916-080706.csv"
+    )
+    assert waypoint_export_dialog_filter() == "CSV 文件 (*.csv)"
+
+    with pytest.raises(WaypointExportError, match="只能导出为 .csv"):
+        save_waypoint_file(tmp_path / "waypoints.txt", ((0.0, 0.0, 1.0, 0.0),))
+    with pytest.raises(WaypointExportError, match="列表为空"):
+        save_waypoint_file(tmp_path / "empty.csv", ())
