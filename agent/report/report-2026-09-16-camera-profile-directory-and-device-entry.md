@@ -66,4 +66,13 @@ UQ212 视频档案使用已核实的 MJPEG 1920×1080@120 fps、稳定 by-id、�
 - `colcon test --packages-select correction_service`：5 passed；
 - `colcon test-result --verbose`：24 tests，0 errors，0 failures，0 skipped。
 
+## refresh 飞机同步
+
+- `main` 功能提交 `49f2d6b` 已同步到 refresh 飞机并完成 correction 包重建安装；
+- 更新前只读确认旧实例为 `idle`、窗口为空、资源已释放，随后仅停止并恢复独立修正服务；
+- 安装树已确认同时包含根活动配置和 Wasintek/UQ212 两套命名档案；
+- 新实例仍为 `idle`、窗口为空、`last_error` 为空，相机设备无人占用；
+- correction unit 保持 active/disabled，没有改成开机自启；onboard 与 video unit 保持 inactive；
+- 飞机原有未跟踪文件 `start_drone/image/cam_in_ex.txt` 未改动。
+
 本次没有解锁或起飞飞机，没有发送飞行命令。

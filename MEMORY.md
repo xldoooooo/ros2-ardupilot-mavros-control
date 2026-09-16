@@ -163,7 +163,7 @@
   核对实物镜头版本并重标内外参。Wasintek/UQ212 档案分别保存在
   `correction_service/config/Wasintek/` 与 `correction_service/config/UQ212/`，运行时不自动加载；
   根 `config/` 的四份同名文件是唯一活动相机配置，`camera.conf` 的 `device` 是设备路径入口。
-  提交 `f0b706f` 已同步并构建到 refresh 飞机；
+  当前目录结构与递归安装逻辑已同步并构建到 refresh 飞机；
   独立修正 unit 当前 active 但仍 disabled，节点为 idle、窗口为空、相机未占用。
 - Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
   OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、
