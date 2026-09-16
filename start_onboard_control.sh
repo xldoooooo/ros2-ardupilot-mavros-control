@@ -83,8 +83,8 @@ fi
 echo "[startup] auto-discovered ROS=${ROS_DISTRO:-unknown}"
 echo "[startup] workspace=${project_root}"
 echo "[startup] FCU=${fcu_device}:${fcu_baud}"
-echo "[startup] odin=$(ros2 pkg prefix odin_ros_driver)"
-echo "[startup] extnav=$(ros2 pkg prefix extnav_bridge)"
+echo "[startup] odin=$(runtime_package_prefix odin_ros_driver)"
+echo "[startup] extnav=$(runtime_package_prefix extnav_bridge)"
 
 if [[ "${1:-}" == "--check" ]]; then
   echo "[startup] discovery check passed; no component was started"

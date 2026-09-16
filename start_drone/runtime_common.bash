@@ -145,6 +145,23 @@ runtime_detect_python() {
   runtime_die "no executable Python 3 found; create ${runtime_project_root}/.venv"
 }
 
+# Read the ament package index in overlay order without starting the Python ROS CLI.
+# Resolve on every call: sourcing another setup may change AMENT_PREFIX_PATH.
+runtime_package_prefix() {
+  local package_name="$1"
+  local prefix
+  local -a prefixes=()
+  IFS=: read -r -a prefixes <<<"${AMENT_PREFIX_PATH:-}"
+  for prefix in "${prefixes[@]}"; do
+    [[ -n "${prefix}" ]] || continue
+    if [[ -f "${prefix}/share/ament_index/resource_index/packages/${package_name}" ]]; then
+      printf '%s\n' "${prefix}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Locate the install prefix that owns a ROS package without sourcing unrelated overlays.
 runtime_find_package_setup() {
   local package_name="$1"
@@ -154,7 +171,7 @@ runtime_find_package_setup() {
   local -a matches=()
   local -a roots=()
 
-  if ros2 pkg prefix "${package_name}" >/dev/null 2>&1; then
+  if runtime_package_prefix "${package_name}" >/dev/null; then
     return 0
   fi
   if [[ -n "${requested_setup}" ]]; then
@@ -207,14 +224,14 @@ runtime_ensure_package() {
   local requested_setup="${2:-}"
   local setup_file
 
-  if ros2 pkg prefix "${package_name}" >/dev/null 2>&1; then
+  if runtime_package_prefix "${package_name}" >/dev/null; then
     return 0
   fi
   setup_file="$(
     runtime_find_package_setup "${package_name}" "${requested_setup}"
   )" || return 1
   [[ -n "${setup_file}" ]] && runtime_source_setup "${setup_file}"
-  ros2 pkg prefix "${package_name}" >/dev/null 2>&1 || {
+  runtime_package_prefix "${package_name}" >/dev/null || {
     runtime_die "${package_name} is still unavailable after sourcing ${setup_file}"
     return 1
   }

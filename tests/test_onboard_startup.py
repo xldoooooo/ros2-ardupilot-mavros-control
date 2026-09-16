@@ -227,6 +227,7 @@ runtime_detect_ros_setup() { echo "$ONBOARD_WORKSPACE/install/setup.bash"; }
 runtime_detect_fcu_device() { echo /dev/null; }
 runtime_verify_workspace_package_install() { :; }
 runtime_ensure_package() { :; }
+runtime_package_prefix() { echo /fake/overlay; }
 ''')
     launcher = workspace / "start_onboard_control.sh"
     shutil.copy2(ROOT / launcher.name, launcher)

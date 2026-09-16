@@ -408,6 +408,27 @@ def test_runtime_discovery_rejects_ambiguous_serial_devices(tmp_path) -> None:
     assert "refusing to guess" in result.stderr
 
 
+def test_runtime_package_prefix_tracks_overlay_changes_without_ros_cli(tmp_path) -> None:
+    """重复包优先采用当前 overlay；切换环境后不使用旧缓存，缺包返回失败。"""
+    prefixes = [tmp_path / "overlay", tmp_path / "underlay"]
+    for prefix in prefixes:
+        marker = prefix / "share/ament_index/resource_index/packages/fixture_package"
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+    environment = dict(os.environ, AMENT_PREFIX_PATH=":".join(map(str, prefixes)))
+    result = run_bash(
+        f"source {RUNTIME_HELPERS!s}; "
+        "ros2() { return 99; }; "
+        "runtime_package_prefix fixture_package; "
+        f"export AMENT_PREFIX_PATH={prefixes[1]}; "
+        "runtime_package_prefix fixture_package; "
+        "! runtime_package_prefix fixture_missing",
+        environment,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == list(map(str, prefixes))
+
+
 def test_runtime_discovery_finds_the_overlay_that_owns_a_package(tmp_path) -> None:
     """Odin/extnav 应由 ament 索引反查 overlay，不依赖用户名或工作区名称。"""
     prefix = tmp_path / "renamed-workspace" / "install"
