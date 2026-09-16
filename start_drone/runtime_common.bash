@@ -20,6 +20,25 @@ runtime_source_setup() {
   set -u
 }
 
+# Load an optional per-host EnvironmentFile and export its assignments to children.
+runtime_source_environment_file() {
+  local environment_file="$1"
+  local restore_allexport=false
+
+  [[ -e "${environment_file}" ]] || return 0
+  if [[ ! -r "${environment_file}" ]]; then
+    runtime_die "environment file is not readable: ${environment_file}"
+    return 1
+  fi
+  [[ "$-" == *a* ]] && restore_allexport=true
+  set -a
+  set +u
+  # shellcheck disable=SC1090
+  source "${environment_file}"
+  set -u
+  ${restore_allexport} || set +a
+}
+
 # Read one ROS package version from its manifest without loading the overlay.
 runtime_package_manifest_version() {
   local manifest="$1"

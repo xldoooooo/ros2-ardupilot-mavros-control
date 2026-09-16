@@ -334,6 +334,31 @@ def test_runtime_rejects_stale_onboard_install_versions(tmp_path) -> None:
     assert current.returncode == 0, current.stderr
 
 
+def test_runtime_environment_file_exports_aircraft_overrides(tmp_path) -> None:
+    """分步启动器读取的现场变量必须能被后续 ROS 子进程继承。"""
+    environment_file = tmp_path / "onboard.env"
+    environment_file.write_text(
+        "ODIN_OVERLAY_SETUP=/fixture/odin/setup.bash\n"
+        "EXTNAV_OVERLAY_SETUP=/fixture/extnav/setup.bash\n"
+        "ROS_DOMAIN_ID=42\n",
+        encoding="utf-8",
+    )
+    command = textwrap.dedent(
+        f"""
+        set -u
+        source {RUNTIME_HELPERS!s}
+        runtime_source_environment_file {environment_file!s}
+        bash -c 'printf "%s|%s|%s\\n" "$ODIN_OVERLAY_SETUP" "$EXTNAV_OVERLAY_SETUP" "$ROS_DOMAIN_ID"'
+        """
+    )
+    result = run_bash(command)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "/fixture/odin/setup.bash|/fixture/extnav/setup.bash|42"
+    )
+
+
 def test_ubuntu_2204_prefers_humble_when_both_distros_are_installed(
     tmp_path,
 ) -> None:
@@ -663,6 +688,14 @@ def test_synced_split_launchers_and_local_ground_launcher_are_well_scoped() -> N
         "start_odin.sh",
         "start_extnav.sh",
     }
+
+    for launcher_name in ("start_odin.sh", "start_extnav.sh"):
+        launcher = DRONE_START_DIRECTORY / launcher_name
+        assert os.access(launcher, os.X_OK)
+        text = launcher.read_text(encoding="utf-8")
+        assert "runtime_source_environment_file" in text
+        assert "ROS_AUTOMATIC_DISCOVERY_RANGE" in text
+
     for obsolete_name in (
         "start_all.sh",
         "start_drone.sh",

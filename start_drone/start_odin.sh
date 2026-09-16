@@ -7,12 +7,21 @@ readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${script_dir}/runtime_common.bash"
 
+readonly onboard_environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
+runtime_source_environment_file "${onboard_environment_file}"
+
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
 runtime_source_setup "${ros_setup}"
 runtime_ensure_package odin_ros_driver "${ODIN_OVERLAY_SETUP:-}"
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
-[[ "${ROS_DISTRO:-}" == "humble" ]] && export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
+if [[ "${ROS_DISTRO:-}" == "humble" ]]; then
+  export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
+  unset ROS_AUTOMATIC_DISCOVERY_RANGE ROS_STATIC_PEERS
+else
+  unset ROS_LOCALHOST_ONLY
+  export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
+fi
 
 exec ros2 launch odin_ros_driver odin1_ros2.launch.py

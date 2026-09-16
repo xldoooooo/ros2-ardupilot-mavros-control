@@ -261,7 +261,10 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 真机桌面终端启动。该无显示告警不影响其余三条数据链是否达到 `READY`，但仍应单独记录和处理。
 
 分步入口现集中在 `start_drone/`，包含 `start_link.sh`、`start_mavros.sh`、
-`start_odin.sh` 和 `start_extnav.sh`；集成脚本不修改它们。部署前备份与本次实机测试结论
+`start_odin.sh` 和 `start_extnav.sh`。两个硬件脚本会自动读取
+`/etc/ros2-ardupilot/onboard.env`，因此可在两个终端中分别直接一键启动 Odin 和 extnav；
+两者都不启动 MAVROS、onboard_control、修正或视频服务。
+部署前备份与本次实机测试结论
 记录在对应日期的任务报告中。
 
 ## 8. systemd 示例
