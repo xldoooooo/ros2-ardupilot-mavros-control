@@ -164,7 +164,14 @@
   `correction_service/config/Wasintek/` 与 `correction_service/config/UQ212/`，运行时不自动加载；
   根 `config/` 的四份同名文件是唯一活动相机配置，`camera.conf` 的 `device` 是设备路径入口。
   当前目录结构与递归安装逻辑已同步并构建到 refresh 飞机；
-  独立修正 unit 当前 active 但仍 disabled，节点为 idle、窗口为空、相机未占用。
+  独立修正 unit 当前 active 但仍 disabled，窗口为空、相机未占用；最近一次实测失败状态见下一条。
+- 2026-09-16 从真实地面站面板向 refresh 发起 Tag 0 首次 dry-run，job `1061820d4c57` 在
+  `12.6867 s` 后因零首帧失败，窗口和 extnav revision 0 均未改变、资源完整释放。UQ212 设备层
+  1080p MJPEG 可出图，但当前默认曝光下实测约 59 fps；GStreamer caps/PTS 仍按 120 fps，现有
+  `wasintek_gst_camera` 会在帧龄超过 200 ms 后连续丢弃，约 19.5 秒、累计 1173 个 stale 后才因
+  10 秒映射上限回退到 ROS 到达时间。该回退晚于 correction 的相机启动时限，完整标定流程当前
+  被确定性阻断；必须先修复时间戳判定/回退，再测 Tag 检测、候选和沿用外参，不能用延长超时
+  冒充解决。详见 `agent/report/report-2026-09-16-ground-refresh-uq212-calibration-flow-test.md`。
 - Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
   OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、
   +Y左、+Z朝上；`T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`。
