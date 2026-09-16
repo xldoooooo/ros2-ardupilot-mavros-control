@@ -160,7 +160,8 @@
   主点和零畸变构造（`fx=fy=1120.847311px`），不是标定结果；外参暂时沿用 Wasintek 的
   `success01-run_20260827_233838` 原始 `T_imu_camera`，质量状态明确为未验证。正式修正前必须
   核对实物镜头版本并重标内外参。旧 Wasintek 的相机、内参、外参和镜头配置保存在
-  `correction_service/Wasintek/`，运行时不自动加载。
+  `correction_service/Wasintek/`，运行时不自动加载。提交 `f0b706f` 已同步并构建到 refresh 飞机；
+  独立修正 unit 当前 active 但仍 disabled，节点为 idle、窗口为空、相机未占用。
 - Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
   OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、
   +Y左、+Z朝上；`T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`。

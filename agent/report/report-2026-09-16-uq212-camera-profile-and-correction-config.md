@@ -83,6 +83,20 @@ UQ212 不提供 Wasintek 的 `gain` 控制，因此活动配置不再写入 `gai
 - 未进行 UQ212 AprilTag 识别收敛、修正应用、移动检查点或飞行验证；
 - 上述临时配置不得作为世界坐标精度或可实飞结论。
 
+## refresh 飞机同步
+
+- `main` 提交 `f0b706f` 已推送 GitHub；
+- 飞机仓库原先停在 `b7d7560`，7 个已修改文件和 2 个未跟踪启动脚本经逐文件 SHA-256 核对，
+  均与远端历史提交 `4eef06a` 完全一致；据此只校正 Git HEAD/index 后无损快进到 `f0b706f`；
+- 飞机原有未跟踪文件 `start_drone/image/cam_in_ex.txt` 全程保留；
+- 使用 `install_correction_service.sh --install-only` 构建并安装修正接口/服务，未自动启用或启动 unit；
+- 发现此前人工启动的旧修正节点仍加载旧 Wasintek 路径。只读状态确认其 `active=false`、窗口为空、
+  `resources_released=true` 后，使用项目停止脚本结束该旧节点，再对独立 unit 执行一次 `start`；
+- 新实例配置指纹为 `5c3f19a...342c338c`，状态为 `idle`、窗口为空、`last_error` 为空，UQ212
+  设备无人占用；unit 当前 active 但仍 disabled；
+- 飞机安装态配置解析确认：UQ212 by-id、1920×1080@120、`fx=fy=1120.847311153525`、
+  `rms=None`、零畸变和 12 项默认镜头控制均与仓库一致。
+
 本次没有解锁或起飞飞机，没有发送飞行命令，也没有停止或重启 MAVROS、Odin、extnav、
 onboard_control 或 video_service。
 
