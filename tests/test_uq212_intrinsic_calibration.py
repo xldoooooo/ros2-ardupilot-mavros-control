@@ -4,6 +4,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from correction_service.config import _load_intrinsics, load_config
 
@@ -80,3 +81,54 @@ def test_standalone_camera_defaults_match_production():
     assert (calib.FRAME_WIDTH, calib.FRAME_HEIGHT, calib.CAMERA_FPS) == (
         config.camera.width, config.camera.height, config.camera.fps)
     assert calib.LENS_CONTROLS == config.lens_controls
+
+
+@pytest.mark.parametrize("points", [
+    [[-.5, 10], [30, 10], [30, 40], [-.5, 40]],  # 原实现 x=-1，负切片导致空 ROI。
+    [[-50, 10], [-20, 10], [-20, 40], [-50, 40]],
+    [[90, 10], [101, 10], [101, 40], [90, 40]],
+    [[10, 90], [30, 90], [30, 101], [10, 101]],
+    [[float('nan'), 10], [30, 10], [30, 40], [10, 40]],
+    [],
+])
+def test_invalid_corners_rejected_without_laplacian_crash(points):
+    """板边移出图像、负细化坐标和空检测应拒绝本帧，不能崩溃。"""
+    gray = np.zeros((100, 100), dtype=np.uint8)
+    image = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
+    result = calib.sample_quality(gray, calib.marker_object_corners(0), image, 1, [], (100,100))
+    assert result[0] is False and result[1] is None
+
+
+def test_degenerate_board_geometry_rejected(monkeypatch):
+    """求不出单应矩阵时拒绝本帧；恢复有效画面后仍能正常评估。"""
+    gray = np.zeros((100, 100), dtype=np.uint8)
+    image = np.array([[10,10], [40,10], [40,40], [10,40]], dtype=np.float32).reshape(-1,1,2)
+    with monkeypatch.context() as patch:
+        patch.setattr(cv2, 'findHomography', lambda *args: (None, None))
+        result = calib.sample_quality(gray, calib.marker_object_corners(0), image, 1, [], (100,100))
+        assert result[0] is False and result[1] is None
+    result = calib.sample_quality(gray, calib.marker_object_corners(0), image, 1, [], (100,100))
+    assert result[1] is not None
+
+
+def test_interactive_rejects_invalid_force_capture_and_recovers(monkeypatch):
+    """无效帧按空格不采纳，下一有效帧仍可采样，旧采样列表不被清空。"""
+    class Camera:
+        def read(self):
+            return True, np.zeros((100,100,3), dtype=np.uint8)
+    valid = np.array([[40,40],[10,40],[10,10],[40,10]], dtype=np.float32).reshape(1,4,2)
+    invalid = valid.copy()
+    invalid[0,1:3,0] = -.5
+    frames = iter([valid, invalid, valid, valid])
+    def detect(_):
+        corners = next(frames)
+        return calib.marker_object_corners(0), corners.reshape(-1,1,2), [corners], np.array([[0]])
+    keys = iter([ord(' '), ord(' '), ord(' '), ord('q')])
+    saved = []
+    monkeypatch.setattr(calib, 'AUTO_CAPTURE', False)
+    monkeypatch.setattr(calib, 'detect_board', detect)
+    monkeypatch.setattr(calib, 'save_sample', lambda frame, index: saved.append(index))
+    monkeypatch.setattr(cv2, 'imshow', lambda *args: None)
+    monkeypatch.setattr(cv2, 'waitKey', lambda _: next(keys))
+    calib.run_interactive(Camera(), False, (100,100), None)
+    assert saved == [0,1]

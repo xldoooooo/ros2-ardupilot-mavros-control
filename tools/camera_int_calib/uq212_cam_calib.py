@@ -165,11 +165,15 @@ def board_descriptor(object_points, image_points, image_size):
     area_ratio = cv2.contourArea(cv2.convexHull(flat)) / float(width * height)
 
     homography, _ = cv2.findHomography(object_points[:, :2], flat)
+    if homography is None or not np.isfinite(homography).all():
+        raise ValueError("invalid board geometry")
     board_corners = np.array(
         [[0.0, 0.0], [BOARD_WIDTH, 0.0], [0.0, BOARD_HEIGHT], [BOARD_WIDTH, BOARD_HEIGHT]],
         dtype=np.float32,
     ).reshape(-1, 1, 2)
     projected = cv2.perspectiveTransform(board_corners, homography).reshape(4, 2)
+    if not np.isfinite(projected).all():
+        raise ValueError("invalid board projection")
     p00, p01, p10, p11 = projected
     top = np.linalg.norm(p01 - p00)
     bottom = np.linalg.norm(p11 - p10)
@@ -211,10 +215,23 @@ def descriptor_distance(a, b):
 
 def sample_quality(gray, object_points, image_points, tag_count, descriptors, image_size):
     """沿用旧板清晰度、可见面积、Tag 数和姿态去重门限。"""
-    x, y, w, h = cv2.boundingRect(image_points.reshape(-1, 2))
-    board_roi = gray[y : y + h, x : x + w]
+    # 亚像素细化可能在边缘返回负坐标；NumPy 负切片从末尾计数，不能直接作为 ROI。
+    flat = np.asarray(image_points).reshape(-1, 2)
+    if gray.size == 0 or len(flat) < 4 or not np.isfinite(flat).all():
+        return False, None, 0.0, 0.0, "invalid board corners"
+    height, width = gray.shape[:2]
+    if (np.any(flat < 0) or np.any(flat[:, 0] >= width)
+            or np.any(flat[:, 1] >= height)):
+        return False, None, 0.0, 0.0, "board corners outside image"
+    x, y, w, h = cv2.boundingRect(flat)
+    board_roi = gray[max(0, y):min(height, y+h), max(0, x):min(width, x+w)]
+    if board_roi.size == 0:
+        return False, None, 0.0, 0.0, "empty board region"
+    try:
+        descriptor, area_ratio = board_descriptor(object_points, image_points, image_size)
+    except (cv2.error, ValueError):
+        return False, None, 0.0, 0.0, "invalid board geometry"
     sharpness = float(cv2.Laplacian(board_roi, cv2.CV_64F).var())
-    descriptor, area_ratio = board_descriptor(object_points, image_points, image_size)
 
     if tag_count < MIN_TAGS_PER_VIEW:
         return False, descriptor, sharpness, area_ratio, "need more tags"
@@ -777,6 +794,12 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
                     descriptors,
                     image_size,
                 )
+                if current_descriptor is None:
+                    # 几何无效帧不绘制、不计入稳定性，空格也不得强行采纳。
+                    current_image_points = None
+                    current_marker_ids = None
+                    previous_marker_map = {}
+                    stable_detections = 0
                 if good and stable_detections < STABLE_DETECTIONS_REQUIRED:
                     good = False
                     quality_message = f"hold still {stable_detections}/{STABLE_DETECTIONS_REQUIRED}"
@@ -843,7 +866,7 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
         if key == ord("a") and not preview_mode:
             auto_capture = not auto_capture
         elif key == ord(" ") and not preview_mode and not undistort and current_image_points is not None:
-            descriptor, _ = board_descriptor(current_object_points, current_image_points, image_size)
+            descriptor = current_descriptor
             save_sample(frame, len(image_points))
             object_points.append(current_object_points.copy())
             image_points.append(current_image_points.copy())
