@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+import yaml
 from correction_service.detector import AprilTagDetector
 from correction_service.geometry import (
     compute_planar_correction,
@@ -66,6 +67,7 @@ def _physical_camera_in_imu() -> np.ndarray:
     )
 
 
+@pytest.mark.parametrize("camera_profile", ("Wasintek", "UQ212"))
 @pytest.mark.parametrize(
     "fcu_xy,yaw_deg,tag_yaw_deg",
     [
@@ -76,12 +78,24 @@ def _physical_camera_in_imu() -> np.ndarray:
     ],
 )
 def test_official_print_to_first_correction_and_return_to_center(
+    camera_profile: str,
     fcu_xy: tuple[float, float],
     yaw_deg: float,
     tag_yaw_deg: float,
 ) -> None:
     """真实图案→检测→PnP→首次修正→移回原点，水平位置与航向都必须正确。"""
     cfg = load_config(CONFIG_DIR)
+    physical = _physical_camera_in_imu()
+    if camera_profile == "Wasintek":
+        # 历史图案方向回归仍使用旧相机档案，与独立冻结的历史矩阵核对。
+        archive = yaml.safe_load((CONFIG_DIR / "Wasintek/extrinsics.yaml").read_text())
+        cfg = replace(cfg, t_imu_camera=np.array(archive["matrix"]["data"]).reshape(4, 4))
+    else:
+        # 独立构造本次机械安装场景，不从待测矩阵生成期望真值。
+        physical = homogeneous(
+            np.array(((0, -1, 0), (-1, 0, 0), (0, 0, -1))),
+            np.array((41 + 5.57, 50 - 21.03, -(46 + 12 + 9.26))) / 1000,
+        )
     tag = replace(cfg.tags[0], yaw_rad=math.radians(tag_yaw_deg))
     # 这里使用无畸变合成镜头，以单独检查角点方向；畸变另有公制回归覆盖。
     intrinsics = replace(cfg.intrinsics, distortion=np.zeros(5))
@@ -89,7 +103,7 @@ def test_official_print_to_first_correction_and_return_to_center(
     fi = homogeneous(np.eye(3), np.array((0.06, -0.03, 0.05)))
     wf = homogeneous(rotation_z(math.radians(yaw_deg)), np.array((*fcu_xy, 0.70)))
     wi = wf @ fi
-    wc = wi @ _physical_camera_in_imu()
+    wc = wi @ physical
     wt = homogeneous(rotation_z(tag.yaw_rad), np.zeros(3))
     ct = np.linalg.inv(wc) @ wt
     half = tag.size_m / 2

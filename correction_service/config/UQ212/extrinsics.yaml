@@ -1,32 +1,44 @@
-# UQ212 临时沿用 Wasintek 外参的档案；不是 UQ212 实测标定结果。
+# UQ212 相机光学系到 Odin IMU：p_imu = R * p_camera + t，平移单位 m。
+# 用户确认：t_mm=(41+5.57, 100/2-21.03, -(46+12+9.26))。
+# 理想横平竖直安装：画面上方沿 IMU +X、右方沿 -Y、光轴沿 -Z，无偏航角。
+# 机械近似不是标定结果；镜头中心近似光心，实物安装误差尚待验证。
 transform_name: T_imu_camera
-source_path: /home/nvidia/vins_odin_calib/output/success01-run_20260827_233838/extrinsic_parameter.csv
+source_path: agent/report/report-2026-09-17-uq212-mechanical-extrinsics.md
 matrix:
   rows: 4
   cols: 4
   data:
-    - 0.07572468395269205
-    - -0.9965466361414317
-    - -0.03406720175568133
-    - 0.04780285496559549
-    - -0.9969178615240186
-    - -0.07496181266164714
-    - -0.023140959722069636
-    - 0.027639069129542938
-    - 0.02050730637219694
-    - 0.035714543783696824
-    - -0.9991516009833945
-    - -0.07853750991857861
-    - 0.0
-    - 0.0
-    - 0.0
-    - 1.0
+  - 0.0
+  - -1.0
+  - 0.0
+  - 0.04657
+  - -1.0
+  - 0.0
+  - 0.0
+  - 0.02897
+  - 0.0
+  - 0.0
+  - -1.0
+  - -0.06726
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
 quality:
   passed: false
-  status: inherited_from_previous_camera_unverified
-  optical_axis_yaw_correction_deg: 0.0
-  coordinate_convention_audit_date: "2026-09-15"
-  translation_norm_m: 0.096006
-  camera_axis_to_nearest_imu_z_deg: 2.360
-  terminal_translation_change_m: 0.000432
-  terminal_rotation_change_deg: 0.010
+  status: mechanical_estimate_axis_aligned_unverified
+  translation_norm_m: 0.08678671211654466
+  camera_axis_to_nearest_imu_z_deg: 0.0
+  image_up_yaw_in_imu_deg: 0.0
+provenance:
+  date: '2026-09-17'
+  dimensions_source: user_confirmed_mount_dimensions_and_odin1_official_drawings
+  odin_reference_url: https://manifoldtechltd.github.io/wiki/odin_series/odin1/5.%20Data%20output_.html
+  mount_forward_of_front_face_mm: 41.0
+  mount_below_module_bottom_mm: 46.0
+  lens_below_mount_mm: 12.0
+  imu_behind_front_face_mm: 5.57
+  imu_above_module_bottom_mm: 9.26
+  module_width_mm: 100.0
+  imu_from_front_view_left_edge_mm: 21.03
+  orientation_source: user_confirmed_axis_aligned_downward_zero_yaw

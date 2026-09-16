@@ -158,7 +158,11 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert math.isclose(config.intrinsics.camera_matrix[0, 0], 1120.847311153525)
     assert config.intrinsics.calibration_rms_px is None
     assert np.count_nonzero(config.intrinsics.distortion) == 0
-    assert math.isclose(config.t_imu_camera[0, 3], 0.04780285496559549)
+    # 从模块前下边缘中心换算至 IMU 原点，防止遗漏深度/高度或弄反左右符号。
+    assert np.allclose(config.t_imu_camera[:3, 3],
+                       np.array((41 + 5.57, 50 - 21.03, -46 - 12 - 9.26)) / 1000)
+    assert np.array_equal(config.t_imu_camera[:3, 2], (0, 0, -1))
+    assert np.array_equal(config.t_imu_camera[:3, :3] @ (0, -1, 0), (1, 0, 0))
     assert config.tags[0].size_m == 0.170
     assert config.camera.image_topic == "/correction_service/image_raw"
     assert config.camera.device.endswith("UQ212_UQ212-video-index0")
