@@ -531,9 +531,11 @@
   多轮端到端验证，最终解除武装且无残留进程。
 - 本次真机补测始终没有解锁或起飞；实际起飞/落地自动启停和实际飞抵航点自动抓拍仍只完成
   隔离 ROS 边沿与自动化验证，必须由用户未来人工飞行时补验。
-- UQ212 同板内参标定入口已部署 refresh：`/home/nvidia/camera_int_calib/run_uq212_calib.sh`，
-  与新 `uq212_cam_calib.py` 均软链接到仓库 `tools/camera_int_calib/`；使用主项目 `.venv`，
-  兼容机载 OpenCV 4.6，原生 MJPEG 1920×1080@120，共用活动镜头参数和 UVC 采集。
+- UQ212 同板内参标定入口已部署 refresh：`/home/nvidia/camera_int_calib/uq212_cam_calib.py`，
+  按用户要求是普通单文件，无 sh/软链接；运行 `python3 uq212_cam_calib.py` 自动切换主项目
+  `.venv`。仓库源位于 `tools/camera_int_calib/`，同步后须复制此 py 到独立目录。内置 UVC
+  采集和镜头控制，不导入项目源码；兼容 OpenCV 4.6，原生 MJPEG 1920×1080@120。
+  镜头常量与当前生产相同且有一致性测试；以后生产镜头设置变化时需同步更新。
   沿用旧板 6×6/tag36h11/ID0~35/55mm 黑框/16.5mm 净距/markerBorderBits=2 和原角点次序。
   输出到 `camera_int_calib/uq212_runs/<时间戳>/`，包含原始图、角点和两种内参 YAML，
   不自动应用生产配置。旧 `wainstek_cam_calib.py` 和旧标定结果未改；真实采集30帧、

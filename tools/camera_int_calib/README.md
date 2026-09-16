@@ -6,10 +6,11 @@
 
 ## 与旧程序的区别
 
-- 从活动 `correction_service/config/camera.conf` 读取 UQ212 稳定 by-id 路径，不使用 video0。
-- 使用项目原生 UVC mmap 采集：MJPEG 1920×1080@120。逐次排空旧帧，只处理最新帧；
+- 文件头内置 UQ212 稳定 by-id 路径，不使用 video0。
+- 文件内置已验证的原生 UVC mmap 采集：MJPEG 1920×1080@120。逐次排空旧帧，只处理最新帧；
   120 是设备模式，不代表 AprilGrid 检测达到 120 Hz。检测和求解均使用原始全分辨率。
-- 开流后按活动 `lens.conf` 设置并读回镜头参数；与生产链的对焦、变焦等状态一致。
+- 开流后按文件头 `LENS_CONTROLS` 设置并读回镜头参数；数值与当前生产链一致。
+  若将来修改生产镜头设置，应同时更新本文件常量再标定。
   不引入旧相机不支持的控制，也不将采集请求改成设备未声明的 30 fps。
 - 兼容项目环境 OpenCV 4.6 的旧 ArUco API 和新版本 API；不需升级系统 OpenCV。
 - 标定完整估计 fx、fy、cx、cy、k1、k2、p1、p2、k3，不固定为零畸变，也不使用理论 89°内参作真值。
@@ -24,8 +25,8 @@ refresh 已添加工具和测试路径。其他使用相同非 cone 稀疏布局
 git sparse-checkout add /tools/camera_int_calib/ /tests/test_uq212_intrinsic_calibration.py
 ```
 
-无需 colcon 构建；该工具通过源码导入已有采集模块。若希望沿用独立标定目录入口，
-为新脚本和启动器建立软链接，保留原 `wainstek_cam_calib.py` 和 `camera_calibration.yaml`。
+无需 colcon 构建，也不导入项目其他源码。将 `uq212_cam_calib.py` 复制到
+`/home/nvidia/camera_int_calib/` 作为普通文件，不建立软链接；保留旧相机脚本和结果。
 
 ## 同一块标定板
 
@@ -40,17 +41,17 @@ OpenCV `markerBorderBits=2`。ID 从左下角 0 起向右、向上递增，保�
 
 ```bash
 cd /home/nvidia/camera_int_calib
-./run_uq212_calib.sh
+python3 uq212_cam_calib.py
 ```
 
-机载这两个新增入口是仓库文件的软链接：
-`uq212_cam_calib.py`、`run_uq212_calib.sh`。启动器使用主项目 `.venv/bin/python`。
-也可以在主项目运行 `./tools/camera_int_calib/run_uq212_calib.sh`。
+机载入口是单个普通 Python 文件，没有 shell 启动器和软链接。直接运行时，文件开头自动
+切换到主项目 `.venv/bin/python`；也可直接指定该解释器。仓库内同一源码位于
+`tools/camera_int_calib/uq212_cam_calib.py`。
 
 无需图形界面的采集检查（实际开流、恢复镜头参数、读 30 帧后释放设备，不做标定）：
 
 ```bash
-/home/nvidia/camera_int_calib/run_uq212_calib.sh --check-camera
+python3 /home/nvidia/camera_int_calib/uq212_cam_calib.py --check-camera
 ```
 
 现有依赖：项目 `.venv` 的 OpenCV（含 aruco 和 GUI）、NumPy、PyYAML，系统 `v4l2-ctl` 和
@@ -85,7 +86,7 @@ cd /home/nvidia/camera_int_calib
 两种 YAML 都可预览，例如：
 
 ```bash
-/home/nvidia/camera_int_calib/run_uq212_calib.sh \
+python3 /home/nvidia/camera_int_calib/uq212_cam_calib.py \
   --preview-yaml /home/nvidia/camera_int_calib/uq212_runs/<时间戳>/intrinsics.yaml
 ```
 

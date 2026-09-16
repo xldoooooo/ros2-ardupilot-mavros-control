@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from correction_service.config import _load_intrinsics
+from correction_service.config import _load_intrinsics, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
@@ -71,3 +71,12 @@ def test_calibration_recovers_distortion_and_exports_compatible_yaml(tmp_path, m
     first = calib.OUTPUT_YAML
     calib.new_run()
     assert calib.OUTPUT_YAML != first and first.parent.is_dir()
+
+
+def test_standalone_camera_defaults_match_production():
+    """单文件内置模式/镜头值必须与生产一致，避免日后仅一侧改动失配。"""
+    config = load_config(ROOT / "correction_service/config")
+    assert calib.CAMERA_DEVICE == config.camera.device
+    assert (calib.FRAME_WIDTH, calib.FRAME_HEIGHT, calib.CAMERA_FPS) == (
+        config.camera.width, config.camera.height, config.camera.fps)
+    assert calib.LENS_CONTROLS == config.lens_controls

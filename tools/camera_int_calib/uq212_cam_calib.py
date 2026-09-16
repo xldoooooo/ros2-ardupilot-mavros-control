@@ -2,36 +2,52 @@
 """UQ212 内参标定，改编自 refresh 的 wainstek_cam_calib.py（2026-08-27）。
 
 沿用同一块 6x6 AprilGrid 与原始角点次序；固定原生 MJPEG 1920x1080@120，
-复用项目 UVC 采集和镜头控制。使用项目 .venv，详见同目录 README.md。
+内置 UVC 采集和镜头控制；直接 python3 本文件，自动使用项目 .venv。
 A 自动采样；空格强制采样；C 标定；R 新建采样批次；U 去畸变预览；S 保存；Q 退出。
 所有输出保存在独立时间戳目录，不自动应用到生产配置。
 """
 
 import argparse
 import math
-import logging
 import subprocess
 import sys
+import os
+import re
+import ctypes as ct
+import fcntl
+import mmap
+import select
 from datetime import datetime
 from pathlib import Path
 import time
 
-import yaml
+# 直接 python3 运行时切换到项目环境；不能通过比较 python 可执行文件判断 venv，
+# 因为 .venv/bin/python 常是系统解释器的软链接。导入测试模块时不切换解释器。
+if __name__ == "__main__":
+    candidates = [Path(__file__).resolve().parents[2] / ".venv",
+                  Path.home() / "ros2-ardupilot-mavros-control/.venv"]
+    environment = next((p for p in candidates if (p / "bin/python").is_file()), None)
+    if environment is None:
+        raise SystemExit("找不到项目 .venv，请检查 ros2-ardupilot-mavros-control/.venv")
+    if Path(sys.prefix).resolve() != environment.resolve():
+        os.execv(str(environment / "bin/python"),
+                 [str(environment / "bin/python"), str(Path(__file__).resolve()), *sys.argv[1:]])
 
+import yaml
 import cv2
 import numpy as np
-
-
-# 脚本可通过机载 camera_int_calib 目录的软链接运行；resolve 保持仓库根路径正确。
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT / "correction_service"))
-from correction_service.config import load_config
-from correction_service.camera_process import CameraProcess
-from correction_service.uvc_capture import UvcCapture
 
 # ============================== 用户配置 ==============================
 
 # 请求相机输出的分辨率；相机必须原生支持该模式。
+CAMERA_DEVICE = "/dev/v4l/by-id/usb-YLX-WYZ-260812_UQ212_UQ212-video-index0"
+# 固定于本次标定/生产一致的镜头状态；顺序保证自动模式先设置。
+LENS_CONTROLS = {
+    "auto_exposure": 3, "white_balance_automatic": 1,
+    "focus_automatic_continuous": 0, "brightness": 0, "contrast": 34,
+    "saturation": 60, "hue": 0, "gamma": 120, "sharpness": 2,
+    "backlight_compensation": 1, "power_line_frequency": 1, "zoom_absolute": 0,
+}
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 CAMERA_FPS = 120
@@ -426,27 +442,191 @@ def save_sample(frame, index):
         raise OSError(f"cannot write {path}")
 
 
-class Uq212Camera:
-    """单设备原生 UVC 采集，与生产链共用镜头设置，不依赖 ROS 节点。"""
+# 以下 UVC ABI/采集来自项目已验证实现；内联使本文件无需导入其他项目源码。
+# Linux videodev2.h 单平面采集 ABI；使用原生对齐，兼容 amd64/aarch64。
+CAPTURE = 1
+MMAP = 1
+MJPEG = int.from_bytes(b"MJPG", "little")
+TIMESTAMP_MASK = 0xE000
+TIMESTAMP_MONOTONIC = 0x2000
+BUFFER_ERROR = 0x0040
 
-    def __init__(self, config):
+
+class FormatData(ct.Union):
+    """v4l2_format 的 200 字节 union，指针成员决定原生对齐。"""
+
+    _fields_ = [("raw", ct.c_uint8 * 200), ("pix", ct.c_uint32 * 12),
+                ("alignment", ct.c_void_p)]
+
+
+class Format(ct.Structure):
+    """v4l2_format。"""
+
+    _fields_ = [("type", ct.c_uint32), ("fmt", FormatData)]
+
+
+class StreamParm(ct.Structure):
+    """v4l2_streamparm，capture.timeperframe 位于 parm[2:4]。"""
+
+    _fields_ = [("type", ct.c_uint32), ("parm", ct.c_uint32 * 50)]
+
+
+class RequestBuffers(ct.Structure):
+    """v4l2_requestbuffers，末四字节为 flags/reserved。"""
+
+    _fields_ = [(name, ct.c_uint32) for name in
+                ("count", "type", "memory", "capabilities", "flags_reserved")]
+
+
+class Timeval(ct.Structure):
+    """内核 timeval，不能用 ROS 接收时间冒充采集时间。"""
+
+    _fields_ = [("seconds", ct.c_long), ("microseconds", ct.c_long)]
+
+
+class BufferMemory(ct.Union):
+    """v4l2_buffer.m，mmap 使用 offset。"""
+
+    _fields_ = [("offset", ct.c_uint32), ("userptr", ct.c_ulong),
+                ("planes", ct.c_void_p), ("fd", ct.c_int32)]
+
+
+class Buffer(ct.Structure):
+    """v4l2_buffer，保留 timecode 所需的四字节对齐。"""
+
+    _fields_ = [(name, ct.c_uint32) for name in
+                ("index", "type", "bytesused", "flags", "field")] + [
+        ("timestamp", Timeval), ("timecode", ct.c_uint32 * 4),
+        ("sequence", ct.c_uint32), ("memory", ct.c_uint32),
+        ("m", BufferMemory), ("length", ct.c_uint32),
+        ("reserved2", ct.c_uint32), ("request_fd", ct.c_int32),
+    ]
+
+
+def ioctl_request(number: int, argument: object, direction: int = 3) -> int:
+    """Linux _IOWR('V', number, type)；STREAMON/OFF 使用 _IOW。"""
+    return (direction << 30) | (ct.sizeof(argument) << 16) | (ord("V") << 8) | number
+
+
+def _ioctl(fd: int, number: int, argument: object, direction: int = 3) -> None:
+    """传递可写 ABI 缓冲区，保留 errno 给调用方处理 EAGAIN/设备错误。"""
+    fcntl.ioctl(fd, ioctl_request(number, argument, direction), argument)
+
+
+class UvcCapture:
+    """拥有单个设备 fd/mmap；初始化失败和正常退出均释放全部采集资源。"""
+
+    def __init__(self, device: str, width: int, height: int, fps: int) -> None:
+        self.fd = -1
+        self.buffers: list[mmap.mmap] = []
+        self.streaming = False
+        try:
+            self.fd = os.open(device, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+            fmt = Format(type=CAPTURE)
+            fmt.fmt.pix[:4] = (width, height, MJPEG, 0)
+            _ioctl(self.fd, 5, fmt)  # VIDIOC_S_FMT
+            if tuple(fmt.fmt.pix[:3]) != (width, height, MJPEG):
+                raise RuntimeError("UVC device changed the requested MJPEG size/format")
+            parm = StreamParm(type=CAPTURE)
+            parm.parm[2:4] = (1, fps)
+            _ioctl(self.fd, 22, parm)  # VIDIOC_S_PARM
+            self.negotiated_fps = (int(parm.parm[3]), int(parm.parm[2]))
+            request = RequestBuffers(count=4, type=CAPTURE, memory=MMAP)
+            _ioctl(self.fd, 8, request)  # VIDIOC_REQBUFS
+            if request.count < 2:
+                raise RuntimeError("UVC device did not allocate enough mmap buffers")
+            for index in range(request.count):
+                buffer = Buffer(index=index, type=CAPTURE, memory=MMAP)
+                _ioctl(self.fd, 9, buffer)  # VIDIOC_QUERYBUF
+                self.buffers.append(mmap.mmap(
+                    self.fd, buffer.length, flags=mmap.MAP_SHARED,
+                    prot=mmap.PROT_READ | mmap.PROT_WRITE, offset=buffer.m.offset,
+                ))
+                _ioctl(self.fd, 15, buffer)  # VIDIOC_QBUF
+            _ioctl(self.fd, 18, ct.c_int(CAPTURE), 1)  # VIDIOC_STREAMON
+            self.streaming = True
+        except BaseException:
+            self.close()
+            raise
+
+    def read_latest(self, timeout: float = 0.2) -> tuple[bytes, Buffer] | None:
+        """有限排空当前队列，只解码最新完整帧；复制后立即归还内核缓冲区。"""
+        if not select.select([self.fd], [], [], timeout)[0]:
+            return None
+        latest = None
+        for _ in self.buffers:
+            buffer = Buffer(type=CAPTURE, memory=MMAP)
+            try:
+                _ioctl(self.fd, 17, buffer)  # VIDIOC_DQBUF
+            except BlockingIOError:
+                break
+            try:
+                if buffer.index >= len(self.buffers):
+                    raise RuntimeError("UVC driver returned an invalid buffer index")
+                storage = self.buffers[buffer.index]
+                if buffer.bytesused > len(storage):
+                    raise RuntimeError("UVC payload exceeds mmap buffer")
+                if buffer.bytesused and not buffer.flags & BUFFER_ERROR:
+                    # QBUF may overwrite metadata, so keep an independent copy.
+                    latest = (storage[:buffer.bytesused], Buffer.from_buffer_copy(buffer))
+            finally:
+                _ioctl(self.fd, 15, buffer)
+        return latest
+
+    def close(self) -> None:
+        """关闭 fd 也会释放内核队列；STREAMOFF 失败时仍须完成其余清理。"""
+        try:
+            if self.streaming:
+                _ioctl(self.fd, 19, ct.c_int(CAPTURE), 1)
+        finally:
+            self.streaming = False
+            for storage in self.buffers:
+                storage.close()
+            self.buffers.clear()
+            if self.fd >= 0:
+                os.close(self.fd)
+                self.fd = -1
+
+
+def apply_lens_controls():
+    """开流后按顺序设置并读回全部控制项；任何不匹配都不继续标定。"""
+    for name, value in LENS_CONTROLS.items():
+        subprocess.run(["v4l2-ctl", "-d", CAMERA_DEVICE, "--set-ctrl", f"{name}={value}"],
+                       check=True, capture_output=True, text=True, timeout=3)
+        if name == "auto_exposure":
+            time.sleep(0.2)
+    actual = {}
+    for name, expected in LENS_CONTROLS.items():
+        result = subprocess.run(["v4l2-ctl", "-d", CAMERA_DEVICE, "--get-ctrl", name],
+                                check=True, capture_output=True, text=True, timeout=3)
+        match = re.search(r":\s*(-?\d+)", result.stdout)
+        if match is None or int(match.group(1)) != expected:
+            raise RuntimeError(f"镜头参数读回不一致: {name}: {result.stdout.strip()}")
+        actual[name] = int(match.group(1))
+    return actual
+
+
+class Uq212Camera:
+    """单设备原生 UVC 采集，内置与生产一致的镜头设置，不依赖 ROS。"""
+
+    def __init__(self):
         self.capture = None
-        busy = subprocess.run(["fuser", config.camera.device], capture_output=True)
+        busy = subprocess.run(["fuser", CAMERA_DEVICE], capture_output=True)
         if busy.returncode == 0:
             raise RuntimeError("camera is busy; stop correction sampling before calibration")
         if busy.returncode != 1:
             raise RuntimeError("cannot determine whether camera is busy")
         try:
-            self.capture = UvcCapture(config.camera.device, FRAME_WIDTH, FRAME_HEIGHT, CAMERA_FPS)
+            self.capture = UvcCapture(CAMERA_DEVICE, FRAME_WIDTH, FRAME_HEIGHT, CAMERA_FPS)
             num, den = self.capture.negotiated_fps
             if den <= 0 or abs(num / den - CAMERA_FPS) > 0.1:
                 raise RuntimeError(f"camera negotiated unexpected FPS: {num}/{den}")
             self.read()  # 开流后再恢复并读回镜头参数，匹配生产时序。
-            controls = CameraProcess(config.camera, config.lens_controls, Path("/dev/null"),
-                                     logging.getLogger("uq212_calib")).apply_lens_controls()
-            CAPTURE_METADATA.update(device=config.camera.device, width=FRAME_WIDTH,
+            controls = apply_lens_controls()
+            CAPTURE_METADATA.update(device=CAMERA_DEVICE, width=FRAME_WIDTH,
                                     height=FRAME_HEIGHT, fps=num/den, pixel_format="MJPG",
-                                    lens_controls=controls, opencv_version=cv2.__version__)
+                                    lens_controls=controls, opencv_version=cv2.__version__,
+                                    python_environment=sys.prefix)
             # 自动曝光稳定前的帧不进入标定样本。
             settle_until = time.monotonic() + 1.0
             while time.monotonic() < settle_until:
@@ -487,18 +667,13 @@ def main():
     parser.add_argument("--check-camera", action="store_true", help="read 30 frames and lens controls without GUI/calibration")
     args = parser.parse_args()
     OUTPUT_ROOT = args.output_dir.expanduser().resolve()
-    config = load_config(PROJECT_ROOT / "correction_service/config")
-    if (config.camera.width, config.camera.height, config.camera.fps) != (FRAME_WIDTH, FRAME_HEIGHT, CAMERA_FPS):
-        parser.error("production camera mode differs from UQ212 1920x1080@120")
-    if "UQ212" not in config.camera.device:
-        parser.error("active camera is not UQ212")
     preview_mode = args.preview_yaml is not None
     requested_size, loaded_calibration = ((FRAME_WIDTH, FRAME_HEIGHT), None)
     if preview_mode:
         requested_size, loaded_calibration = load_calibration(args.preview_yaml)
         if requested_size != (FRAME_WIDTH, FRAME_HEIGHT):
             parser.error("preview YAML must be 1920x1080; refusing silent rescaling")
-    cap = Uq212Camera(config)
+    cap = Uq212Camera()
     try:
         if args.check_camera:
             for _ in range(30):
