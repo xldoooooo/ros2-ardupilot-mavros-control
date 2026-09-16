@@ -173,6 +173,7 @@ check_dependencies() {
     launch
     launch_ros
     mavros_msgs
+    libmavconn
     nav_msgs
     rclcpp
     rosidl_default_generators

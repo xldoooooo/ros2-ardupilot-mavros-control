@@ -14,6 +14,7 @@ find_package(geographic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(guided_interfaces REQUIRED)
 find_package(mavros_msgs REQUIRED)
+find_package(libmavconn REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -40,6 +41,7 @@ ament_target_dependencies(onboard_control_node
   geometry_msgs
   guided_interfaces
   mavros_msgs
+  libmavconn
   rclcpp
   sensor_msgs
   tf2

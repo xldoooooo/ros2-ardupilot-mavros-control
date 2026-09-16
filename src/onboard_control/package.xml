@@ -15,6 +15,7 @@
   <depend>geometry_msgs</depend>
   <depend>guided_interfaces</depend>
   <depend>mavros_msgs</depend>
+  <depend>libmavconn</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>tf2</depend>

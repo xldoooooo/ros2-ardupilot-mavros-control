@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include <mavros_msgs/mavlink_convert.hpp>
+
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/utils.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -77,6 +79,16 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   state_timeout_seconds_ = declare_parameter<double>("state_timeout_seconds", 2.0);
   fcu_parameter_check_initial_delay_seconds_ =
     declare_parameter<double>("fcu_parameter_check_initial_delay_seconds", 2.0);
+  priority_parameter_reads_ = declare_parameter<bool>("priority_parameter_reads", true);
+  parameter_request_topic_ = declare_parameter<std::string>(
+    "parameter_request_topic", "/uas1/mavlink_sink");
+  parameter_target_system_ = declare_parameter<int>("parameter_target_system", 1);
+  parameter_target_component_ = declare_parameter<int>("parameter_target_component", 1);
+  if (parameter_target_system_ < 1 || parameter_target_system_ > 255 ||
+    parameter_target_component_ < 1 || parameter_target_component_ > 255)
+  {
+    throw std::invalid_argument("parameter request target IDs must be in [1, 255]");
+  }
   link_loss_land_timeout_seconds_ =
     declare_parameter<double>("link_loss_land_timeout_seconds", 10.0);
   takeoff_timeout_seconds_ = declare_parameter<double>("takeoff_timeout_seconds", 45.0);
@@ -305,6 +317,11 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
       on_fcu_parameter(*message);
     });
 
+  if (priority_parameter_reads_) {
+    parameter_request_publisher_ = create_publisher<mavros_msgs::msg::Mavlink>(
+      parameter_request_topic_, rclcpp::QoS(10).best_effort().durability_volatile());
+  }
+
   const auto control_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / control_frequency_hz_));
   const auto status_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -336,6 +353,8 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     thrust_mode_verified_ = false;
     fcu_parameter_sync_started_ = SteadyTime{};
     fcu_parameter_pull_requested_ = false;
+    priority_parameter_rounds_ = 0;
+    last_priority_parameter_request_ = SteadyTime{};
     fcu_guid_options_.reset();
     fcu_hover_throttle_.reset();
     ++fcu_parameter_revision_;
@@ -1675,6 +1694,53 @@ void OnboardControlNode::on_fcu_parameter(const mavros_msgs::msg::ParamEvent & m
   }
 }
 
+// Only startup read requests use the existing MAVROS router; no second serial owner.
+// Four rounds within 10 s of connection bound link load; full pull/cache remain fallback.
+void OnboardControlNode::request_priority_parameters(const SteadyTime now)
+{
+  if (!parameter_request_publisher_ || !fcu_connected_ || armed_ || controller_engaged_ ||
+    std::chrono::duration<double>(now - last_state_time_).count() > state_timeout_seconds_ ||
+    fcu_parameter_sync_started_ == SteadyTime{} ||
+    now - fcu_parameter_sync_started_ > std::chrono::seconds(10) ||
+    priority_parameter_rounds_ >= 4 || (fcu_guid_options_ && fcu_hover_throttle_) ||
+    (last_priority_parameter_request_ != SteadyTime{} &&
+    now - last_priority_parameter_request_ < std::chrono::seconds(1)) ||
+    parameter_request_publisher_->get_subscription_count() == 0)
+  {
+    return;
+  }
+  ++priority_parameter_rounds_;
+  last_priority_parameter_request_ = now;
+  for (const auto * name : {"GUID_OPTIONS", "MOT_THST_HOVER"}) {
+    if ((std::string(name) == "GUID_OPTIONS" && fcu_guid_options_) ||
+      (std::string(name) == "MOT_THST_HOVER" && fcu_hover_throttle_))
+    {
+      continue;
+    }
+    mavlink::common::msg::PARAM_REQUEST_READ request{};
+    request.target_system = static_cast<std::uint8_t>(parameter_target_system_);
+    request.target_component = static_cast<std::uint8_t>(parameter_target_component_);
+    request.param_index = -1;  // Name lookup, not an index in the full parameter table.
+    mavlink::set_string(request.param_id, name);
+    mavlink::mavlink_message_t frame{};
+    mavlink::MsgMap map(frame);
+    request.serialize(map);
+    // Independent source 255/190 and sequence; never share MAVROS 1/191's sequence.
+    // Unsigned reads use the normal full-table fallback if a signed link rejects them.
+    mavlink::mavlink_status_t encoding_status{};
+    encoding_status.current_tx_seq = priority_parameter_sequence_;
+    mavlink::mavlink_finalize_message_buffer(
+      &frame, 255, 190, &encoding_status, request.MIN_LENGTH, request.LENGTH, request.CRC_EXTRA);
+    priority_parameter_sequence_ = encoding_status.current_tx_seq;
+    mavros_msgs::msg::Mavlink message;
+    if (mavros_msgs::mavlink::convert(frame, message)) {
+      parameter_request_publisher_->publish(message);
+    }
+  }
+  RCLCPP_INFO(get_logger(), "已优先请求必要飞控参数，第 %u/4 轮（保留整表同步回退）",
+    priority_parameter_rounds_);
+}
+
 void OnboardControlNode::check_thrust_mode_parameter()
 {
   if (thrust_mode_check_inflight_ || !fcu_parameter_client_->service_is_ready()) {
@@ -2031,6 +2097,7 @@ void OnboardControlNode::status_tick()
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   check_origin_confirmation_timeout(now);
+  request_priority_parameters(now);
   if (fcu_connected_ && !fcu_parameter_pull_requested_ &&
     fcu_parameter_pull_client_->service_is_ready())
   {

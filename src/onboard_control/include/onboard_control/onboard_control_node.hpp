@@ -34,6 +34,7 @@
 #include <mavros_msgs/msg/attitude_target.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
 #include <mavros_msgs/msg/param_event.hpp>
+#include <mavros_msgs/msg/mavlink.hpp>
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
@@ -171,6 +172,7 @@ private:
   void send_next_message_rate();
   void check_thrust_mode_parameter();
   void apply_thrust_mode_parameters(const std::vector<rclcpp::Parameter> & parameters);
+  void request_priority_parameters(SteadyTime now);
   void on_fcu_parameter(const mavros_msgs::msg::ParamEvent & message);
   void check_origin_confirmation_timeout(const SteadyTime & now);
 
@@ -221,7 +223,7 @@ private:
   double status_frequency_hz_{10.0};
   double pose_timeout_seconds_{0.3};
   double state_timeout_seconds_{2.0};
-  // Hardware keeps 40 s; local SITL may safely override this startup-only delay.
+  // Cache fallback delay; live parameter events may verify sooner.
   double fcu_parameter_check_initial_delay_seconds_{2.0};
   double link_loss_land_timeout_seconds_{10.0};
   double takeoff_timeout_seconds_{45.0};
@@ -324,6 +326,14 @@ private:
   SteadyTime last_automatic_message_rate_attempt_{};
   bool thrust_mode_verified_{false};
   bool thrust_mode_check_inflight_{false};
+  bool priority_parameter_reads_{true};
+  std::string parameter_request_topic_{"/uas1/mavlink_sink"};
+  int parameter_target_system_{1};
+  int parameter_target_component_{1};
+  unsigned int priority_parameter_rounds_{0};
+  std::uint8_t priority_parameter_sequence_{0};
+  SteadyTime last_priority_parameter_request_{};
+  rclcpp::Publisher<mavros_msgs::msg::Mavlink>::SharedPtr parameter_request_publisher_;
   bool fcu_parameter_pull_requested_{false};  // 每次飞控连接只主动拉取一次，不强制清空缓存。
   // 只收本连接的新参数事件；版本号防止较早发起的缓存读覆盖新事件。
   std::optional<rclcpp::Parameter> fcu_guid_options_;
