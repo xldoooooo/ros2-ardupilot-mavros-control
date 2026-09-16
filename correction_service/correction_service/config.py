@@ -25,7 +25,8 @@ class Intrinsics:
     height: int
     camera_matrix: np.ndarray
     distortion: np.ndarray
-    calibration_rms_px: float
+    # 理论内参没有重投影误差；只有真实标定结果才提供该值。
+    calibration_rms_px: float | None
 
 
 @dataclass(frozen=True)
@@ -253,8 +254,12 @@ def _load_intrinsics(config_dir: Path) -> Intrinsics:
         height=height,
         camera_matrix=matrix,
         distortion=distortion,
-        calibration_rms_px=_positive(
-            data.get("rms_reprojection_error"), "rms_reprojection_error"
+        calibration_rms_px=(
+            None
+            if data.get("rms_reprojection_error") is None
+            else _positive(
+                data.get("rms_reprojection_error"), "rms_reprojection_error"
+            )
         ),
     )
 
@@ -363,6 +368,10 @@ def _load_lens(config_dir: Path) -> dict[str, int]:
         "exposure_time_absolute",
         "gain",
         "zoom_absolute",
+        "white_balance_automatic",
+        "gamma",
+        "backlight_compensation",
+        "focus_automatic_continuous",
     }
     controls = {key: int(value) for key, value in parser.items("controls")}
     unknown = set(controls) - allowed

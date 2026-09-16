@@ -22,24 +22,26 @@ from correction_service.config import load_config
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_calibrated_configuration_loads_for_expected_tag() -> None:
-    """真机配置须可解析，并锁定当前下视相机相对 Odin IMU 的安装方向。"""
+def test_aircraft_configuration_loads_for_expected_tag() -> None:
+    """真机临时配置须可解析，并保留上一颗相机的安装方向假设。"""
     config = load_config(PACKAGE_ROOT / "config")
 
     assert config.detection.tag_family == "tag36h11"
     assert config.camera.width == 1920
     assert config.camera.height == 1080
+    assert config.camera.fps == 120
     assert config.tags[0].size_m == 0.170
     assert config.detection.max_correction_tilt_deg == 10.0
     assert math.degrees(config.window.max_apply_yaw_jump_rad) == 45.0
     assert list(config.lens_controls)[:3] == [
         "auto_exposure",
-        "exposure_time_absolute",
-        "gain",
+        "white_balance_automatic",
+        "focus_automatic_continuous",
     ]
-    assert config.lens_controls["exposure_time_absolute"] == 50
-    assert config.lens_controls["gain"] == 200
-    assert config.lens_controls["brightness"] == 6
+    assert config.lens_controls["auto_exposure"] == 3
+    assert config.lens_controls["brightness"] == 0
+    assert config.intrinsics.calibration_rms_px is None
+    assert np.count_nonzero(config.intrinsics.distortion) == 0
     rotation = config.t_imu_camera[:3, :3]
     # Task32撤销把Tag约定错误归因于相机的180°补偿；原始画面上方接近
     # Odin +X，光轴接近 Odin -Z。Tag官方图案与OpenCV角点差异由geometry处理。

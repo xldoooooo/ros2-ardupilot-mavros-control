@@ -1,8 +1,4 @@
-# UQ212 临时沿用上一颗 Wasintek 相机到 Odin IMU 的齐次变换 T_imu_camera。
-# 原矩阵来自飞机 vins_odin_calib/output/success01-run_20260827_233838，并非 UQ212 标定结果。
-# Task32确认此前180°航向差来自OpenCV/官方Tag图案方向约定，而非相机倒装；
-# 撤销2026-08-31为补偿该差值而加入的Rz(180deg)，并与geometry.py的Tag基变换配套部署。
-# 相机拆装后的厘米级/小角度误差仍待重新标定；本次只修复错误的180°补偿。
+# Wasintek 下视相机到 Odin IMU 的外参备份；复制自 Task32 验收后的活动配置。
 transform_name: T_imu_camera
 source_path: /home/nvidia/vins_odin_calib/output/success01-run_20260827_233838/extrinsic_parameter.csv
 matrix:
@@ -26,8 +22,7 @@ matrix:
     - 0.0
     - 1.0
 quality:
-  passed: false
-  status: inherited_from_previous_camera_unverified
+  passed: true
   optical_axis_yaw_correction_deg: 0.0
   coordinate_convention_audit_date: "2026-09-15"
   translation_norm_m: 0.096006

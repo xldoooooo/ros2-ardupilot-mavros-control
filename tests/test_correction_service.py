@@ -57,7 +57,7 @@ def test_v4l2_readback_accepts_numeric_value_with_enum_label() -> None:
 def test_lens_controls_apply_in_file_order_then_verify_final_values(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """下视相机须先稳定手动曝光，再在全部写入后核验最终值。"""
+    """下视相机须先稳定曝光模式，再在全部写入后核验最终值。"""
     config = load_config(CONFIG_DIR)
     calls: list[list[str]] = []
     sleeps: list[float] = []
@@ -94,8 +94,12 @@ def test_lens_controls_apply_in_file_order_then_verify_final_values(
     assert [call[-1].split("=", 1)[0] for call in set_calls] == expected_names
     assert [call[-1] for call in get_calls] == expected_names
     assert calls.index(get_calls[0]) > calls.index(set_calls[-1])
-    assert expected_names[:3] == ["auto_exposure", "exposure_time_absolute", "gain"]
-    assert sleeps == [0.2, 0.2]
+    assert expected_names[:3] == [
+        "auto_exposure",
+        "white_balance_automatic",
+        "focus_automatic_continuous",
+    ]
+    assert sleeps == [0.2]
     assert readback == config.lens_controls
 
 
@@ -124,22 +128,28 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert config.window.maximum_size == 20
     assert len(config.config_fingerprint) == 64
     assert (config.intrinsics.width, config.intrinsics.height) == (1920, 1080)
-    assert math.isclose(config.intrinsics.camera_matrix[0, 0], 1143.4239585813639)
+    assert math.isclose(config.intrinsics.camera_matrix[0, 0], 1120.847311153525)
+    assert config.intrinsics.calibration_rms_px is None
+    assert np.count_nonzero(config.intrinsics.distortion) == 0
     assert math.isclose(config.t_imu_camera[0, 3], 0.04780285496559549)
     assert config.tags[0].size_m == 0.170
     assert config.camera.image_topic == "/correction_service/image_raw"
+    assert config.camera.device.endswith("UQ212_UQ212-video-index0")
+    assert config.camera.fps == 120
     assert config.camera.driver_package == "wasintek_gst_camera"
     assert config.lens_controls == {
-        "auto_exposure": 1,
-        "exposure_time_absolute": 50,
-        "gain": 200,
-        "brightness": 6,
-        "contrast": 6,
-        "saturation": 6,
+        "auto_exposure": 3,
+        "white_balance_automatic": 1,
+        "focus_automatic_continuous": 0,
+        "brightness": 0,
+        "contrast": 34,
+        "saturation": 60,
         "hue": 0,
-        "sharpness": 6,
+        "gamma": 120,
+        "sharpness": 2,
+        "backlight_compensation": 1,
         "power_line_frequency": 1,
-        "zoom_absolute": 10,
+        "zoom_absolute": 0,
     }
 
 

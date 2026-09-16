@@ -16,7 +16,7 @@ from .config import CameraSettings
 
 _CONTROL_VALUE = re.compile(r":\s*(-?\d+)(?:\s|$)")
 
-# Wasintek 切入手动曝光和写曝光值后需要短暂稳定，时序与 video_service 实机路径一致。
+# 自动曝光模式切换和写曝光值后需要短暂稳定，时序与 video_service 实机路径一致。
 _LENS_CONTROL_SETTLE_SECONDS = 0.2
 
 

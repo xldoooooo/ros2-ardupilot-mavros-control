@@ -1,5 +1,7 @@
-# Wasintek 下视相机在 1920x1080 下的 OpenCV 针孔内参。
-# 来源：飞机 /home/nvidia/camera_calib/camera_calibration.yaml（2026-08-27）。
+# UQ212 下视相机在 1920x1080 下的临时理论针孔内参，不是标定结果。
+# 暂按所购 89deg 无畸变镜头的标称对角视场角，采用方形像素、主点位于 (960,540)：
+# fx=fy=sqrt(1920^2+1080^2)/(2*tan(89deg/2))=1120.847311153525 px；畸变置零。
+# UQ212 有多个镜头版本，正式使用前必须核对实物视场角并重新标定内外参。
 image_width: 1920
 image_height: 1080
 distortion_model: plumb_bob
@@ -7,12 +9,12 @@ camera_matrix:
   rows: 3
   cols: 3
   data:
-    - 1143.4239585813639
+    - 1120.847311153525
     - 0.0
-    - 960.6748716257138
+    - 960.0
     - 0.0
-    - 1144.0407728492289
-    - 547.8450918370406
+    - 1120.847311153525
+    - 540.0
     - 0.0
     - 0.0
     - 1.0
@@ -20,10 +22,11 @@ distortion_coefficients:
   rows: 1
   cols: 5
   data:
-    - -0.21833500749870322
-    - 0.018230985899660504
-    - 0.000022424412093961576
-    - -0.00038269426930049552
-    - 0.006941325890589948
-rms_reprojection_error: 1.4490607711609362
-calibration_tag_family: tag36h11
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+rms_reprojection_error: null
+calibration_status: theoretical_unverified
+assumed_diagonal_fov_deg: 89.0

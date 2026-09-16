@@ -108,9 +108,9 @@
 - 当前地面站已安装并实测 amd64 MediaMTX v1.20.0；`setup_ground_station.sh` 会检查 FFmpeg、
   ffprobe、v4l2-ctl、固定 MediaMTX 路径及二进制能否在本机执行。删除仓库二进制后若旧面板后台
   仍存活，必须先对 `camera_service.py` 执行 `shutdown`，否则它仍会使用进程内存中的旧路径。
-- `video_service/config/intrinsics.yaml` 保存 Wasintek 1920×1080 标定内参，与修正服务副本一致；
-  当前直播仍走原生压缩码流转封装，没有启用去畸变。真机离线基准表明 CPU 校正与重编码开销显著，
-  在选定并验证 Jetson 硬件流水线前不得默认开启。
+- `video_service/config/intrinsics.yaml` 仍保存 Wasintek 1920×1080 标定内参；旧相机的完整视频参数
+  副本另存于 `video_service/Wasintek/`。当前直播仍走原生压缩码流转封装，没有启用去畸变。真机
+  离线基准表明 CPU 校正与重编码开销显著，在选定并验证 Jetson 硬件流水线前不得默认开启。
 - 2026-08-20 经用户明确授权重写 `main`：历史 127 MiB MP4、53 MiB MediaMTX 和 25 MiB
   rtsp-simple-server 三个 blob 已从活动对象库彻底消失；`agent/task/assets` 图片/视频只保留本地，
   不再跟踪。`.git` 从约 290 MiB 降至约 41 MiB。
@@ -154,18 +154,23 @@
   apply_saved 不开相机、不增 N，只短时取 fresh raw 复算 FCU 中心实际跳变。
 - 当前真机 Odin header 是设备时钟，相机 PTS 是主机 ROS 时钟；同 epoch 时严格按 header，epoch
   不兼容时在任务历史内按接收时间匹配，`arrival_history` 硬门 30 ms，禁止使用识别完成时最新值。
-- 生产配置使用 2026-08-27 的 1920×1080 内参与 `success01-run_20260827_233838` 原始
-  `T_imu_camera`。Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
+- refresh 飞机下视相机已更换为 UQ212 `1bcf:28c4`，稳定设备路径为
+  `/dev/v4l/by-id/usb-YLX-WYZ-260812_UQ212_UQ212-video-index0`。活动配置使用设备原生声明的
+  MJPEG 1920×1080@120 fps，不再请求未声明的 30 fps。内参暂按 89°对角视场、方形像素、中心
+  主点和零畸变构造（`fx=fy=1120.847311px`），不是标定结果；外参暂时沿用 Wasintek 的
+  `success01-run_20260827_233838` 原始 `T_imu_camera`，质量状态明确为未验证。正式修正前必须
+  核对实物镜头版本并重标内外参。旧 Wasintek 的相机、内参、外参和镜头配置保存在
+  `correction_service/Wasintek/`，运行时不自动加载。
+- Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
   OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、
   +Y左、+Z朝上；`T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`。
   `geometry.py` 与恢复的外参须配套部署；旧窗口与旧 active 不得沿用。Tag 0 为世界原点/
-  yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称
-  世界坐标精度。2026-09-09 逐路取帧确认当前真正下视 Tag0 的相机是 USB `1.2`、`/dev/video2`，
-  生产配置必须使用 `platform-3610000.usb-usb-0:1.2:1.0-video-index0`；USB `2` 是房间视角相机。
-- correction_service 的下视相机预设保存在 `config/lens.conf`；当前除曝光时间按下视识别需要设为
-  50 外均与 video_service 同款，关键值为 manual exposure 1、gain 200、brightness 6。节点必须先
-  收到首帧、等待流稳定 1 秒，再按文件顺序写入；手动曝光和曝光时间后各等待 0.2 秒，全部写完后
-  统一读回验证并丢弃切换期残留帧。任务 JSONL 保存 requested/readback。面板中的
+  yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称世界坐标精度。
+- `correction_service/config/lens.conf` 显式保存 UQ212 驱动报告的默认值，包括 auto exposure 3、
+  brightness 0、contrast 34、saturation 60、gamma 120、sharpness 2 和 zoom 0；UQ212 不提供旧
+  Wasintek 的 gain 控制。节点必须先收到首帧、等待流稳定 1 秒，再按文件顺序写入；曝光模式切换后
+  等待 0.2 秒，全部写完后统一读回验证并丢弃切换期残留帧。任务 JSONL 保存
+  requested/readback。面板中的
   `Tag解码次数` 是各帧解出的目标总数，不是 Tag ID；`0` 表示没有一帧解出标记。
 - 地面站右上角修正入口紧邻摄像头面板，面板从服务端权威状态派生动态 N、窗口/候选/质量和
   按钮；分别显示 raw Odin、corrected Odin、FCU 输入和 MAVROS EKF final。另由同一条 FCU
