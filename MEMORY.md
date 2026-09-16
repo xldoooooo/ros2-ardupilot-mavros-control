@@ -464,7 +464,10 @@
   插件裁剪只形成 mavros-plugin-trimming-plan 报告，未实施；Odin 辅助节点也仅估算、未裁剪。
   用户不用时会停服务以避免 Odin 发热；本轮验证结束四组件已停止，不应无故长期保持运行。
   已定点部署 new 并核对 source/install/runtime，
-  refresh 与独立 USB Jetson 尚未同步上述启动/查询修复；不得以 new 的历史 Git HEAD 判断补丁缺失。
+  refresh 已于 2026-09-17 从 9e59afb 快进同步到 66a3a09 并重建，19 项 C++ 测试通过。
+  refresh 当前无飞控、有 Odin：短时采到 3205 条里程计、156 条未连接/未武装状态，优先读取为 0，
+  未误报 READY；串口仍 /dev/ttyTHS2，专用配置保持不变，测试后 disabled/inactive、无残留。
+  独立 USB Jetson 尚未同步上述启动/查询修复；不得以 new 的历史 Git HEAD 判断补丁缺失。
   子进程墙钟前跳回归已通过，真实离线冷启动后 NTP 校时仍待下一次现场开机复验，未主动改变实机时钟。
 - 2026-08-26 已纠正独立视频 unit 遗留的外网校时依赖并部署到当前 Jetson；实际 unit 只等待
   `network-online.target`，视频服务最终 active/enabled、零重启，飞控 unit 未被重启。地面摄像头
