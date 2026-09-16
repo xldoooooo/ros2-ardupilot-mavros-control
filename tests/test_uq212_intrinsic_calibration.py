@@ -123,7 +123,7 @@ def test_interactive_rejects_invalid_force_capture_and_recovers(monkeypatch):
     def detect(_):
         corners = next(frames)
         return calib.marker_object_corners(0), corners.reshape(-1,1,2), [corners], np.array([[0]])
-    keys = iter([ord(' '), ord(' '), ord(' '), ord('q')])
+    keys = iter([0, ord(' '), 0, ord(' '), 0, ord(' '), ord('q')])
     saved = []
     monkeypatch.setattr(calib, 'AUTO_CAPTURE', False)
     monkeypatch.setattr(calib, 'detect_board', detect)

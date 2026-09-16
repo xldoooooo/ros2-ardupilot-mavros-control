@@ -57,7 +57,8 @@ TARGET_SAMPLES = 30
 MIN_SAMPLES_TO_CALIBRATE = 15
 AUTO_CAPTURE = True
 
-# 固定五参数模型（k1,k2,p1,p2,k3），全部参与估计，不强制畸变为零。
+# 与原程序一致：默认五参数，可显式开启 rational 模型。
+USE_RATIONAL_MODEL = False
 
 # 自动样本质量阈值。高分辨率清晰图通常可把 MIN_SHARPNESS 提高到 120～250。
 MIN_SHARPNESS = 80.0
@@ -69,7 +70,7 @@ MIN_DIVERSITY_DISTANCE = 0.85
 STABLE_DETECTIONS_REQUIRED = 2
 MAX_CORNER_MOTION_PX = 1.8
 
-DETECT_EVERY_N_FRAMES = 1  # 每个显示帧均检测，手动采样不得使用上帧角点。
+DETECT_EVERY_N_FRAMES = 2  # 保持旧程序检测间隔。
 DISPLAY_SCALE = 0.72
 OUTPUT_ROOT = Path.home() / "camera_int_calib" / "uq212_runs"
 OUTPUT_YAML = None  # 仅开始新一批采样后分配，避免覆盖旧相机结果。
@@ -252,7 +253,7 @@ def sample_quality(gray, object_points, image_points, tag_count, descriptors, im
 
 def calibrate(object_points, image_points, image_size):
     """使用当前全部视图执行一次标定，不筛选、不删帧。"""
-    flags = 0  # 五参数模型；不固定焦距、主点或任意畸变系数。
+    flags = cv2.CALIB_RATIONAL_MODEL if USE_RATIONAL_MODEL else 0
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 150, 1e-12)
     result = cv2.calibrateCameraExtended(
         object_points,
@@ -289,7 +290,7 @@ def save_calibration(path, image_size, calibration):
     fs.write("image_width", image_size[0])
     fs.write("image_height", image_size[1])
     fs.write("camera_name", "UQ212")
-    fs.write("distortion_model", "plumb_bob")
+    fs.write("distortion_model", "rational_polynomial" if USE_RATIONAL_MODEL else "plumb_bob")
     fs.write("camera_matrix", calibration["camera_matrix"])
     fs.write("distortion_coefficients", calibration["dist_coeffs"])
     fs.write("rms_reprojection_error", calibration["rms"])
@@ -310,7 +311,7 @@ def save_calibration(path, image_size, calibration):
     d = np.asarray(calibration["dist_coeffs"]).reshape(-1)
     data = {
         "image_width": image_size[0], "image_height": image_size[1],
-        "distortion_model": "plumb_bob",
+        "distortion_model": "rational_polynomial" if USE_RATIONAL_MODEL else "plumb_bob",
         "camera_matrix": {"rows": 3, "cols": 3, "data": k.reshape(-1).tolist()},
         "distortion_coefficients": {"rows": 1, "cols": len(d), "data": d.tolist()},
         "rms_reprojection_error": calibration["rms"],
@@ -320,8 +321,6 @@ def save_calibration(path, image_size, calibration):
         "per_view_reprojection_errors": calibration["per_view_errors"].tolist(),
         "capture": CAPTURE_METADATA,
     }
-    if len(d) != 5:
-        raise ValueError("UQ212 production export requires five-coefficient plumb_bob model")
     with (path.parent / "intrinsics.yaml").open("w") as stream:
         stream.write("# UQ212 AprilGrid 标定结果；原始畸变图像对应的 K/D，尚待独立验证。\n")
         yaml.safe_dump(data, stream, sort_keys=False, allow_unicode=True)
@@ -721,6 +720,7 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
     current_marker_ids = None
     current_tag_count = 0
     current_descriptor = None
+    detection_frame = None  # 与最后一次角点检测配对的原始图，不改变隔帧手动采样行为。
     current_sharpness = 0.0
     current_area = 0.0
     previous_marker_map = {}
@@ -756,6 +756,7 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
             )
 
         if frame_number % DETECT_EVERY_N_FRAMES == 0 and not undistort and not preview_mode:
+            detection_frame = frame.copy()
             detection = detect_board(gray)
             if detection is None:
                 current_object_points = None
@@ -805,7 +806,7 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
                     quality_message = f"hold still {stable_detections}/{STABLE_DETECTIONS_REQUIRED}"
                 now = time.monotonic()
                 if auto_capture and good and now - last_capture_time >= MIN_CAPTURE_INTERVAL:
-                    save_sample(frame, len(image_points))
+                    save_sample(detection_frame, len(image_points))
                     object_points.append(current_object_points.copy())
                     image_points.append(current_image_points.copy())
                     descriptors.append(current_descriptor.copy())
@@ -867,7 +868,7 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
             auto_capture = not auto_capture
         elif key == ord(" ") and not preview_mode and not undistort and current_image_points is not None:
             descriptor = current_descriptor
-            save_sample(frame, len(image_points))
+            save_sample(detection_frame, len(image_points))
             object_points.append(current_object_points.copy())
             image_points.append(current_image_points.copy())
             descriptors.append(descriptor)
