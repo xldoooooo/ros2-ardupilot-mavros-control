@@ -49,6 +49,7 @@ class CameraSettings:
     width: int
     height: int
     fps: int
+    publish_fps: float
     pixel_format: str
     frame_id: str
     image_topic: str
@@ -335,6 +336,7 @@ def _load_camera(config_dir: Path) -> CameraSettings:
         width=parser.getint("camera", "width", fallback=0),
         height=parser.getint("camera", "height", fallback=0),
         fps=parser.getint("camera", "fps", fallback=0),
+        publish_fps=parser.getfloat("camera", "publish_fps", fallback=30.0),
         pixel_format=parser.get("camera", "pixel_format", fallback="").strip().lower(),
         frame_id=parser.get("camera", "frame_id", fallback="").strip(),
         image_topic=parser.get("camera", "image_topic", fallback="").strip(),
@@ -353,6 +355,8 @@ def _load_camera(config_dir: Path) -> CameraSettings:
     if not settings.image_topic.startswith("/") or not settings.frame_id:
         raise ValueError("camera image_topic/frame_id 无效")
     _positive(settings.max_capture_age_ms, "camera.max_capture_age_ms")
+    if _finite(settings.publish_fps, "camera.publish_fps") < 0:
+        raise ValueError("camera.publish_fps 必须非负；0 表示不限制解码/发布频率")
     return settings
 
 

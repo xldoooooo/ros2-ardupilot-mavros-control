@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes as ct
 import fcntl
+import math
 import mmap
 import os
 import select
@@ -87,6 +88,29 @@ def capture_stamp_ns(buffer: Buffer, monotonic_ns: int, ros_ns: int) -> tuple[in
     if stamp <= 0 or age < 0:
         raise RuntimeError("UVC driver returned an invalid/future capture timestamp")
     return ros_ns - age, age
+
+
+class CaptureRateLimiter:
+    """按采集单调时钟筛帧；持续排空设备，不休眠、不积压、不改图像时间戳。"""
+
+    def __init__(self, fps: float) -> None:
+        if not math.isfinite(fps) or fps < 0:
+            raise ValueError("publish_fps must be finite and nonnegative (0 = unlimited)")
+        self.period_ns = max(1, round(1_000_000_000 / fps)) if fps else 0
+        self.next_stamp_ns: int | None = None
+
+    def accept(self, capture_ns: int) -> bool:
+        """固定采集时间节拍消除逐帧取整降频；断流后跳过空档，不补发历史帧。"""
+        if not self.period_ns:
+            return True
+        if self.next_stamp_ns is None:
+            self.next_stamp_ns = capture_ns + self.period_ns
+            return True
+        if capture_ns < self.next_stamp_ns:
+            return False
+        elapsed_periods = (capture_ns - self.next_stamp_ns) // self.period_ns + 1
+        self.next_stamp_ns += elapsed_periods * self.period_ns
+        return True
 
 
 class UvcCapture:

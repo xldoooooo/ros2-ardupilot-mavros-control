@@ -14,7 +14,7 @@ from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from sensor_msgs.msg import Image
 
-from .uvc_capture import UvcCapture, capture_stamp_ns
+from .uvc_capture import CaptureRateLimiter, UvcCapture, capture_stamp_ns
 
 
 def main(args: list[str] | None = None) -> None:
@@ -29,12 +29,14 @@ def main(args: list[str] | None = None) -> None:
         defaults = {
             "video_device": "/dev/video0", "image_width": 1920,
             "image_height": 1080, "framerate": 30,
+            "publish_fps": 30.0,
             "frame_id": "correction_camera_optical_frame",
             "image_topic": "/correction_service/image_raw",
             "max_capture_age_ms": 200.0,
         }
         values = {key: node.declare_parameter(key, value).value for key, value in defaults.items()}
         width, height = values["image_width"], values["image_height"]
+        limiter = CaptureRateLimiter(float(values["publish_fps"]))
         max_age = float(values["max_capture_age_ms"]) * 1_000_000
         if min(width, height, values["framerate"], max_age) <= 0:
             raise ValueError("invalid UVC dimensions, fps or capture-age limit")
@@ -48,9 +50,10 @@ def main(args: list[str] | None = None) -> None:
         node.get_logger().info(
             f"UVC mmap started: {values['video_device']} {width}x{height} MJPEG "
             f"requested_fps={values['framerate']} negotiated_fps={capture.negotiated_fps} "
+            f"publish_fps={values['publish_fps']} "
             "timestamp=V4L2_CLOCK_MONOTONIC decoder=OpenCV"
         )
-        count = stale = nonmonotonic = 0
+        count = stale = nonmonotonic = rate_limited = 0
         age_sum = age_max = 0.0
         last_stamp = 0
         report_time = last_frame = time.monotonic()
@@ -69,6 +72,9 @@ def main(args: list[str] | None = None) -> None:
                 stale += 1
             elif stamp <= last_stamp:
                 nonmonotonic += 1
+            elif not limiter.accept(mono_now - age):
+                # MJPEG 已从设备取走并归还缓冲区；多余帧在昂贵的解码/ROS 复制前丢弃。
+                rate_limited += 1
             else:
                 frame = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
                 if frame is None or frame.shape != (height, width):
@@ -94,7 +100,7 @@ def main(args: list[str] | None = None) -> None:
                     f"CAMERA_HEALTH rate={count / (current - report_time):.2f}Hz "
                     f"capture_age_mean={age_sum / max(count, 1):.2f}ms "
                     f"capture_age_max={age_max:.2f}ms stale_dropped={stale} "
-                    f"nonmonotonic_dropped={nonmonotonic}"
+                    f"nonmonotonic_dropped={nonmonotonic} rate_limited={rate_limited}"
                 )
                 count, age_sum, age_max, report_time = 0, 0.0, 0.0, current
     except KeyboardInterrupt:

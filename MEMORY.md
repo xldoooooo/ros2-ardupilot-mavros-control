@@ -130,7 +130,8 @@
 - `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
   first/next 或 apply_saved 才创建有界任务专属 raw 订阅，采样时另启相机；冻结候选后必须先释放
   资源再保存/应用。2.0 已在当前 Jetson 验证 idle 只保留 extnav 状态订阅、相机设备无人占用，
-  采样相机约 30 Hz；尚未重新测量 2.0 的 CPU/RSS，任务 27 的 1.0 资源数据只能作为历史参考。
+  当前解码/发布上限为 30 Hz；采集进程 CPU 已单独测量（见下文），尚无整条 2.0 链路的
+  CPU/RSS 总量基准，任务 27 的 1.0 资源数据只能作为历史参考。
 - extnav 始终直接订阅 `/odin1/odometry_highfreq`。valid 时对 Odin IMU 中心左乘公共 SE(2)，
   `/odin1/odometry_highfreq_corrected` 仍表示 Odin IMU 中心；随后才按物理杆臂转换为 FCU 中心，
   同一冻结结果发布到 `/extnav/pose_fcu` 与 `/mavros/vision_pose/pose`。MAVROS EKF final 是
@@ -170,6 +171,14 @@
   联合标定相机 overlay，启动使用 ROS + 本工作区 `local_setup.bash`，避免历史 underlay 注入。
   外参 `source_path` 仅为历史来源元数据，运行时不读取该目录。新采集时间使用内核 monotonic
   时间戳，不按声明 fps 推算，仍保留 200 ms 帧龄门和原标定/镜头控制流程。
+  `camera.publish_fps` 独立限制解码/发布平均频率：默认 30.0、0 不限；`camera.fps=120` 仍是
+  UQ212 原生采集请求。限频在解码前按采集单调时间执行，持续归还设备缓冲区，无休眠积压；
+  修改配置后重启独立 correction 生效。地面/refresh 已部署，drone-new/USB Jetson 待同步。
+  2026-09-17 refresh 带本地 DDS 消费者的交错对比中，采集进程 CPU 从单核 72.68% 降至
+  43.06%（约 -40.8%），发布约 29.95～29.97 Hz；这是采集进程指标，不是整个修正链的降幅。
+  两轮 Tag0 dry-run 均 24 accepted / 0 rejected，主动停止亦释放设备。用户在部署前已手动
+  应用的新 Odin session 修正 valid=true/revision=1 全程保留；本次测试没有 apply/clear extnav。
+  详见 `agent/report/report-2026-09-17-correction-configurable-publish-fps.md`。
 - 2026-09-16 refresh 上旧相机依赖与首帧超时已修复。地面真实 Qt 面板连续 Tag0 dry-run
   收敛，各 24 accepted / 0 rejected，并完整释放相机；当前候选 yaw 修正约 -108.46°，超过
   既有 45°应用跳变门，因此没有应用，extnav 仍 valid=false/revision=0。该角是两个坐标系的

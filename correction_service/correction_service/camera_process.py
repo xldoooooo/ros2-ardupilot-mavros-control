@@ -91,6 +91,8 @@ class CameraProcess:
             "-p",
             f"framerate:={self._settings.fps}",
             "-p",
+            f"publish_fps:={self._settings.publish_fps}",
+            "-p",
             f"frame_id:={self._settings.frame_id}",
             "-p",
             f"image_topic:={self._settings.image_topic}",
