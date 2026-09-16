@@ -1,4 +1,4 @@
-# Wasintek 下视相机到 Odin IMU 的外参备份；复制自 Task32 验收后的活动配置。
+# Wasintek 下视相机到 Odin IMU 的外参档案；复制自 Task32 验收后的活动配置。
 transform_name: T_imu_camera
 source_path: /home/nvidia/vins_odin_calib/output/success01-run_20260827_233838/extrinsic_parameter.csv
 matrix:

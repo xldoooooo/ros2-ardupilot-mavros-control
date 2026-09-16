@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import importlib.util
 import json
 import logging
@@ -13,6 +14,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import yaml
 from correction_service.camera_process import CameraProcess, parse_v4l2_control_value
 from correction_service.detector import AprilTagDetector
 from correction_service.estimator import CorrectionEstimator, CorrectionSample
@@ -35,6 +37,31 @@ from correction_service.config import load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = PROJECT_ROOT / "correction_service" / "config"
+
+
+def _read_ini(path: Path) -> dict[str, dict[str, str]]:
+    """忽略注释读取配置档案，便于核对活动副本而不要求字节相同。"""
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(path, encoding="utf-8")
+    return {section: dict(parser[section]) for section in parser.sections()}
+
+
+def test_uq212_profile_matches_active_camera_configuration() -> None:
+    """命名 UQ212 档案必须完整，并与根目录当前活动配置参数一致。"""
+    profile = CONFIG_DIR / "UQ212"
+    assert _read_ini(profile / "camera.conf") == _read_ini(CONFIG_DIR / "camera.conf")
+    assert _read_ini(profile / "lens.conf") == _read_ini(CONFIG_DIR / "lens.conf")
+    for name in ("intrinsics.yaml", "extrinsics.yaml"):
+        assert yaml.safe_load((profile / name).read_text(encoding="utf-8")) == yaml.safe_load(
+            (CONFIG_DIR / name).read_text(encoding="utf-8")
+        )
+
+
+def test_named_correction_camera_profiles_are_complete() -> None:
+    """每个相机档案都必须包含换机时需要一起核验的四份配置。"""
+    required = {"camera.conf", "intrinsics.yaml", "extrinsics.yaml", "lens.conf"}
+    for profile_name in ("Wasintek", "UQ212"):
+        assert {path.name for path in (CONFIG_DIR / profile_name).iterdir()} == required
 
 
 def test_job_journal_emits_strict_json_for_unavailable_metrics(tmp_path: Path) -> None:

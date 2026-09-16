@@ -108,8 +108,9 @@
 - 当前地面站已安装并实测 amd64 MediaMTX v1.20.0；`setup_ground_station.sh` 会检查 FFmpeg、
   ffprobe、v4l2-ctl、固定 MediaMTX 路径及二进制能否在本机执行。删除仓库二进制后若旧面板后台
   仍存活，必须先对 `camera_service.py` 执行 `shutdown`，否则它仍会使用进程内存中的旧路径。
-- `video_service/config/intrinsics.yaml` 仍保存 Wasintek 1920×1080 标定内参；旧相机的完整视频参数
-  副本另存于 `video_service/Wasintek/`。当前直播仍走原生压缩码流转封装，没有启用去畸变。真机
+- `video_service/config/intrinsics.yaml` 仍保存 Wasintek 1920×1080 标定内参；Wasintek 与 UQ212
+  档案分别位于 `video_service/config/Wasintek/`、`video_service/config/UQ212/`。当前直播仍走
+  原生压缩码流转封装，没有启用去畸变。真机
   离线基准表明 CPU 校正与重编码开销显著，在选定并验证 Jetson 硬件流水线前不得默认开启。
 - 2026-08-20 经用户明确授权重写 `main`：历史 127 MiB MP4、53 MiB MediaMTX 和 25 MiB
   rtsp-simple-server 三个 blob 已从活动对象库彻底消失；`agent/task/assets` 图片/视频只保留本地，
@@ -159,8 +160,10 @@
   MJPEG 1920×1080@120 fps，不再请求未声明的 30 fps。内参暂按 89°对角视场、方形像素、中心
   主点和零畸变构造（`fx=fy=1120.847311px`），不是标定结果；外参暂时沿用 Wasintek 的
   `success01-run_20260827_233838` 原始 `T_imu_camera`，质量状态明确为未验证。正式修正前必须
-  核对实物镜头版本并重标内外参。旧 Wasintek 的相机、内参、外参和镜头配置保存在
-  `correction_service/Wasintek/`，运行时不自动加载。提交 `f0b706f` 已同步并构建到 refresh 飞机；
+  核对实物镜头版本并重标内外参。Wasintek/UQ212 档案分别保存在
+  `correction_service/config/Wasintek/` 与 `correction_service/config/UQ212/`，运行时不自动加载；
+  根 `config/` 的四份同名文件是唯一活动相机配置，`camera.conf` 的 `device` 是设备路径入口。
+  提交 `f0b706f` 已同步并构建到 refresh 飞机；
   独立修正 unit 当前 active 但仍 disabled，节点为 idle、窗口为空、相机未占用。
 - Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
   OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、

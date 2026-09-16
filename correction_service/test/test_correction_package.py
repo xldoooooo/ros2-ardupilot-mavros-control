@@ -51,6 +51,15 @@ def test_aircraft_configuration_loads_for_expected_tag() -> None:
     assert optical_axis_in_imu[2] < -math.cos(math.radians(10.0))
 
 
+def test_installed_camera_profile_archives_are_complete() -> None:
+    """ament 安装包必须递归携带 Wasintek/UQ212 档案，不能只保留活动根配置。"""
+    required = {"camera.conf", "intrinsics.yaml", "extrinsics.yaml", "lens.conf"}
+    for profile_name in ("Wasintek", "UQ212"):
+        profile = PACKAGE_ROOT / "config" / profile_name
+        assert profile.is_dir()
+        assert {path.name for path in profile.iterdir()} == required
+
+
 def test_planar_correction_rotates_translation_and_preserves_z() -> None:
     """extnav 所需 SE(2) 应左乘位姿，而不是分别给 x/y/yaw 加常数。"""
     pose = np.eye(4, dtype=float)

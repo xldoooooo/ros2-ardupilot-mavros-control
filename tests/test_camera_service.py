@@ -45,6 +45,8 @@ from camera_app.panel import (
     SourceMode,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _runtime_paths(root: Path) -> RuntimePaths:
     """为单个测试创建完全隔离的配置、Socket 和日志路径。"""
@@ -78,6 +80,26 @@ def _camera_config(root: Path, **changes: object) -> CameraConfig:
         image_directory=str(root / "images"),
     )
     return replace(base, **changes)
+
+
+def test_named_video_camera_profiles_are_complete_and_uq212_loads() -> None:
+    """视频配置档案应按相机命名，且 UQ212 参数可被现有加载器直接读取。"""
+    config_root = PROJECT_ROOT / "video_service" / "config"
+    required = {"camera.conf", "intrinsics.yaml", "lens.conf"}
+    for profile_name in ("Wasintek", "UQ212"):
+        assert {path.name for path in (config_root / profile_name).iterdir()} == required
+
+    uq212 = load_onboard_settings(config_root / "UQ212" / "camera.conf")
+    assert uq212.camera.device.endswith("UQ212_UQ212-video-index0")
+    assert (uq212.camera.codec, uq212.camera.width, uq212.camera.height) == (
+        "mjpeg",
+        1920,
+        1080,
+    )
+    assert uq212.camera.fps == 120
+    controls = dict(load_lens_controls(config_root / "UQ212" / "lens.conf"))
+    assert controls["auto_exposure"] == "3"
+    assert controls["brightness"] == "0"
 
 
 def _application() -> QApplication:

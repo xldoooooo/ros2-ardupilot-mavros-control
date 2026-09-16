@@ -1,0 +1,30 @@
+# UQ212 的临时理论内参档案，不是实测标定结果。
+# 暂按 89deg 对角视场、方形像素、中心主点和零畸变构造。
+image_width: 1920
+image_height: 1080
+distortion_model: plumb_bob
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+    - 1120.847311153525
+    - 0.0
+    - 960.0
+    - 0.0
+    - 1120.847311153525
+    - 540.0
+    - 0.0
+    - 0.0
+    - 1.0
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+rms_reprojection_error: null
+calibration_status: theoretical_unverified
+assumed_diagonal_fov_deg: 89.0
