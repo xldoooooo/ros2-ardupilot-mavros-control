@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -55,7 +57,18 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
 ):
     """修正服务必须是独立故障域，并只启动默认 idle 的 correction_node。"""
     unit = _text(CORRECTION_ROOT / "deploy" / "correction-service.service.example")
-    installer = _text(CORRECTION_ROOT / "deploy" / "install_correction_service.sh")
+    installer_path = CORRECTION_ROOT / "deploy" / "install_correction_service.sh"
+    installer = _text(installer_path)
+
+    assert os.access(installer_path, os.X_OK)
+    help_result = subprocess.run(
+        [str(installer_path), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--install-only" in help_result.stdout
 
     assert "ExecStart=" in unit and "correction_node" in unit
     assert "CORRECTION_CAMERA_OVERLAY_SETUP" in unit

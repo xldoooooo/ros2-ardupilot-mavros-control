@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-09-15，仓库线协议为 3.2。
+本文件。当前基线日期为 2026-09-16，仓库线协议为 3.2。
 
 ## 绝对安全边界
 
@@ -21,6 +21,15 @@
 ## 当前环境、入口与验证命令
 
 - 开发机：Ubuntu 24.04、ROS 2 Jazzy，已安装 MAVROS 与 ArduPilot SITL。
+- 独立新 USB Jetson（不是现役飞机）：序列号 `1424324322770`，地址 `192.168.55.1`，
+  SSH HostKeyAlias `jetson-usb-1424324322770`，Ubuntu 24.04/Jazzy/ARM64。
+  基础环境、Odin/extnav/相机驱动已原生构建；当前未接任何外设，三项机载服务保持 disabled/inactive。
+  Intel 8265 在 Tegra `6.8.12-1021-tegra` 需匹配 DKMS 模块和未压缩固件，重启扫描已通过。
+  厂商 OpenCV 4.8 必须配独立 cv_bridge 4.1.0 overlay，避免 Odin 同进程混用 OpenCV 4.6/4.8。
+  NoMachine 尚缺 `9.8.2-1` ARM64 历史安装包。完整复现入口为
+  `src/onboard_control/deploy/JETSON_NEW_MACHINE_CHECKLIST.md`。
+- 全新机先用 `setup_onboard_dependencies.sh` 补齐依赖；无外设时三项安装器使用 `--install-only`。
+  主项目采用非 symlink 安装，独立 Odin/extnav 工作区可用 symlink，不能在同一包上混用。
 - 当前真机伴随计算机已更换为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64；SSH 为
   `nvidia@192.168.112.169`，工作区为
   `/home/nvidia/ros2-ardupilot-mavros-control`。旧 `xld@192.168.112.186` 的

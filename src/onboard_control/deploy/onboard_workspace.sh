@@ -202,7 +202,9 @@ build_workspace() {
     colcon build \
       --packages-select \
         guided_interfaces correction_interfaces onboard_control correction_service \
-      --cmake-args -DCMAKE_BUILD_TYPE=Release
+      --cmake-args \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
   )
 }
 

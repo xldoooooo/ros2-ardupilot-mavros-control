@@ -43,21 +43,27 @@ verify_manifest_version() {
 
 usage() {
   cat <<'EOF'
-Usage: ./correction_service/deploy/install_correction_service.sh
+Usage: ./correction_service/deploy/install_correction_service.sh [--install-only]
 
 Build correction_interfaces/correction_service, verify the calibrated camera
 overlay and configuration, install odin-correction.service, then enable/start
 the independent node. The node remains idle with the camera closed until a
 ground start request. The installer refuses an active flight service because it
 updates the shared project overlay. It sends no arm/takeoff/flight command.
+
+--install-only performs the same validation, build and unit/configuration
+installation, but leaves odin-correction.service disabled and stopped.
 EOF
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  usage
-  exit 0
-fi
-(( $# == 0 )) || die "unknown argument: $1"
+install_only=false
+case "${1:-}" in
+  "") ;;
+  --install-only) install_only=true ;;
+  --help|-h) usage; exit 0 ;;
+  *) die "unknown argument: $1" ;;
+esac
+(( $# <= 1 )) || die "unexpected extra argument: $2"
 [[ -r /opt/ros/jazzy/setup.bash ]] || die "ROS 2 Jazzy setup is missing"
 [[ -f "${SERVICE_TEMPLATE}" && -f "${ENV_TEMPLATE}" ]] ||
   die "service deployment templates are incomplete"
@@ -106,7 +112,7 @@ PY
   cd -- "${WORKSPACE_ROOT}"
   colcon build \
     --packages-select correction_interfaces correction_service \
-    --symlink-install
+    --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 )
 source_setup "${WORKSPACE_ROOT}/install/setup.bash"
 interfaces_prefix="$(ros2 pkg prefix correction_interfaces)"
@@ -147,6 +153,14 @@ sed \
 run_root install -m 0644 "${unit_stage}" "/etc/systemd/system/${SERVICE_NAME}"
 run_root systemd-analyze verify "/etc/systemd/system/${SERVICE_NAME}"
 run_root systemctl daemon-reload
+
+if ${install_only}; then
+  printf '[correction-install] installed %s for %s; it was not enabled or started\n' \
+    "${SERVICE_NAME}" "${correction_user}"
+  printf '[correction-install] verify this aircraft camera path and calibration, then rerun without --install-only\n'
+  exit 0
+fi
+
 run_root systemctl enable --now "${SERVICE_NAME}"
 
 printf '[correction-install] installed and started %s for %s\n' \

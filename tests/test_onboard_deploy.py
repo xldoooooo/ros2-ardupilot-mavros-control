@@ -7,6 +7,8 @@ import subprocess
 import textwrap
 from xml.etree import ElementTree
 
+import pytest
+
 from ground_station_core.config import PROJECT_ROOT
 
 DEPLOY_DIR = PROJECT_ROOT / "src" / "onboard_control" / "deploy"
@@ -85,6 +87,7 @@ def test_video_service_installer_is_one_command_and_preserves_isolation() -> Non
     )
     assert help_result.returncode == 0, help_result.stderr
     assert "enable and start" in help_result.stdout
+    assert "--install-only" in help_result.stdout
 
     installer = VIDEO_INSTALLER.read_text(encoding="utf-8")
     for required in (
@@ -132,6 +135,7 @@ def test_onboard_service_installer_builds_and_installs_integrated_unit() -> None
         text=True,
     )
     assert help_result.returncode == 0, help_result.stderr
+    assert "--install-only" in help_result.stdout
     installer = ONBOARD_INSTALLER.read_text(encoding="utf-8")
     for required in (
         "build_onboard_control.sh\" --verify",
@@ -139,10 +143,80 @@ def test_onboard_service_installer_builds_and_installs_integrated_unit() -> None
         "start_onboard_control.sh\" --check",
         "systemctl enable --now",
         "systemctl is-active",
+        "it was not enabled or started",
+        "rerun this installer without --install-only",
     ):
         assert required in installer
     for forbidden in ("/cmd/arming", "/cmd/takeoff", "COMMAND_TAKEOFF"):
         assert forbidden not in installer
+
+
+def test_onboard_service_install_only_skips_hardware_and_service_start(tmp_path) -> None:
+    """仅安装模式须实际完成软件安装阶段，并停在硬件检查和启动之前。"""
+    if os.geteuid() == 0:
+        pytest.skip("sudo interception requires an unprivileged test user")
+    if not os.access("/opt/ros/jazzy/setup.bash", os.R_OK):
+        pytest.skip("ROS 2 Jazzy setup is unavailable")
+
+    workspace = tmp_path / "workspace"
+    deploy = workspace / "src" / "onboard_control" / "deploy"
+    deploy.mkdir(parents=True)
+    for source in (
+        ONBOARD_INSTALLER,
+        DEPLOY_DIR / "onboard-control.service.example",
+        DEPLOY_DIR / "onboard.env.example",
+    ):
+        target = deploy / source.name
+        target.write_bytes(source.read_bytes())
+        target.chmod(0o755 if source == ONBOARD_INSTALLER else 0o644)
+
+    call_log = tmp_path / "calls.log"
+    for name in ("build_onboard_control.sh", "start_onboard_control.sh"):
+        stub = workspace / name
+        stub.write_text(
+            '#!/usr/bin/env bash\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$CALL_LOG"\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "systemctl %s\\n" "$*" >> "$CALL_LOG"\n'
+        '[[ "${1:-}" == "is-active" ]] && exit 3\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "sudo").write_text(
+        '#!/usr/bin/env bash\nprintf "sudo %s\\n" "$*" >> "$CALL_LOG"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "systemctl").chmod(0o755)
+    (fake_bin / "sudo").chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        CALL_LOG=str(call_log),
+        PATH=f"{fake_bin}:{environment['PATH']}",
+    )
+    result = subprocess.run(
+        [str(deploy / ONBOARD_INSTALLER.name), "--install-only"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = call_log.read_text(encoding="utf-8")
+    assert "build_onboard_control.sh --verify" in calls
+    assert "sudo install -m 0644" in calls
+    assert "/etc/systemd/system/ros2-ardupilot-onboard.service" in calls
+    assert "sudo systemctl daemon-reload" in calls
+    assert "start_onboard_control.sh --check" not in calls
+    assert "systemctl enable --now" not in calls
+    assert "it was not enabled or started" in result.stdout
 
 
 def test_root_onboard_build_entry_is_portable_and_safe() -> None:

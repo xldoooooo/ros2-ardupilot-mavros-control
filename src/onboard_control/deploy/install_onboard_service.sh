@@ -11,11 +11,15 @@ readonly ENV_TEMPLATE="${SCRIPT_DIR}/onboard.env.example"
 
 usage() {
   cat <<'EOF'
-Usage: ./src/onboard_control/deploy/install_onboard_service.sh
+Usage: ./src/onboard_control/deploy/install_onboard_service.sh [--install-only]
 
 On Ubuntu 24.04/Jazzy, verify and build the onboard ROS packages, create the
 per-aircraft environment file when absent, install the four-component systemd
 unit, then enable and start it. Existing /etc onboard configuration is kept.
+
+--install-only still builds, tests, runs the hardware-isolated smoke test and
+installs the environment/unit, but skips the hardware check and does not enable
+or start the unit. Use it while Odin, extnav or aircraft hardware is incomplete.
 
 Run as the normal onboard user after ROS 2 Jazzy, MAVROS, Odin and extnav are
 installed. The script may ask for sudo once. It sends no arm/takeoff command.
@@ -36,11 +40,14 @@ run_root() {
   fi
 }
 
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  usage
-  exit 0
-fi
-(( $# == 0 )) || die "unknown argument: $1"
+install_only=false
+case "${1:-}" in
+  "") ;;
+  --install-only) install_only=true ;;
+  --help|-h) usage; exit 0 ;;
+  *) die "unknown argument: $1" ;;
+esac
+(( $# <= 1 )) || die "unexpected extra argument: $2"
 
 [[ -r /opt/ros/jazzy/setup.bash ]] ||
   die "ROS 2 Jazzy is missing: /opt/ros/jazzy/setup.bash"
@@ -87,6 +94,14 @@ sed \
 run_root install -m 0644 "${unit_stage}" "/etc/systemd/system/${SERVICE_NAME}"
 run_root systemd-analyze verify "/etc/systemd/system/${SERVICE_NAME}"
 run_root systemctl daemon-reload
+
+if ${install_only}; then
+  printf '[onboard-install] Installed %s for %s; it was not enabled or started.\n' \
+    "${SERVICE_NAME}" "${onboard_user}"
+  printf '[onboard-install] Install Odin/extnav, connect and verify the aircraft hardware, then rerun this installer without --install-only.\n'
+  printf '[onboard-install] No hardware check, arm or takeoff command was sent.\n'
+  exit 0
+fi
 
 # --check 只做硬件路径和 ROS 包发现；任何歧义都在启动 systemd 前明确失败。
 ONBOARD_ENV_FILE=/etc/ros2-ardupilot/onboard.env \

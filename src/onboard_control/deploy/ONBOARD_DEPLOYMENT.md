@@ -1,6 +1,11 @@
 # 机载服务最小部署与验证
 
 本文档用于把飞行包、独立 `video_service` 和独立 AprilTag-Odin 修正服务部署到伴随计算机。
+
+全新 Ubuntu 24.04 Jetson 请先按 [新机操作清单](JETSON_NEW_MACHINE_CHECKLIST.md)
+配置系统，并用 [前置依赖安装器](ONBOARD_DEPENDENCIES.md) 补齐 ROS、MAVROS、视频及可选驱动依赖。
+硬件尚未接齐时，`install_onboard_service.sh --install-only` 仍完成构建、测试和隔离 smoke，
+但只安装配置与 unit，不启用或启动飞控服务；硬件路径和外部驱动需随后独立验收。
 当前实机目标为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64；旧
 Ubuntu 22.04/Humble 飞机只作为兼容历史，不代表当前运行基线。
 

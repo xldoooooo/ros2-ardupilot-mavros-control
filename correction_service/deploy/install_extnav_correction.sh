@@ -78,7 +78,9 @@ fi
 source_setup /opt/ros/jazzy/setup.bash
 (
   cd -- "${WORKSPACE_ROOT}"
-  colcon build --packages-select correction_interfaces --symlink-install
+  colcon build \
+    --packages-select correction_interfaces \
+    --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 )
 source_setup "${WORKSPACE_ROOT}/install/setup.bash"
 interfaces_prefix="$(ros2 pkg prefix correction_interfaces)"
