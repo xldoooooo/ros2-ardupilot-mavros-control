@@ -25,6 +25,9 @@ readonly DRONE_START_SPARSE_PATH="/start_drone/"
 readonly ONBOARD_CONTROL_START_SPARSE_PATH="/start_onboard_control.sh"
 readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/stop_onboard_control.sh"
 readonly ONBOARD_BUILD_SPARSE_PATH="/build_onboard_control.sh"
+# Keep the thin reboot entry and its ROS client in minimal aircraft checkouts.
+readonly FCU_REBOOT_SPARSE_PATH="/reboot_fcu.sh"
+readonly FCU_REBOOT_CLIENT_SPARSE_PATH="/tools/reboot_fcu.py"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
 readonly SMOKE_INTERFACE_PREFIX="/_task08_smoke_onboard"
 readonly DEFAULT_SMOKE_DOMAIN_ID="231"
@@ -155,7 +158,8 @@ update_checkout() {
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
     "${DRONE_START_SPARSE_PATH}" "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_STOP_SPARSE_PATH}" \
-    "${ONBOARD_BUILD_SPARSE_PATH}"
+    "${ONBOARD_BUILD_SPARSE_PATH}" \
+    "${FCU_REBOOT_SPARSE_PATH}" "${FCU_REBOOT_CLIENT_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"
   validate_workspace_layout
 }

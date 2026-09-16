@@ -45,7 +45,9 @@ git sparse-checkout set \
   '/start_drone/' \
   '/start_onboard_control.sh' \
   '/stop_onboard_control.sh' \
-  '/build_onboard_control.sh'
+  '/build_onboard_control.sh' \
+  '/reboot_fcu.sh' \
+  '/tools/reboot_fcu.py'
 git checkout main
 ```
 
@@ -65,6 +67,8 @@ start_drone/
 start_onboard_control.sh
 stop_onboard_control.sh
 build_onboard_control.sh
+reboot_fcu.sh
+tools/reboot_fcu.py
 ```
 
 不要复制开发机的 `build/` 或 `install/`。目标机必须针对自身 ROS 发行版和 aarch64 原生编译。
@@ -102,6 +106,8 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 
 ```bash
 ./build_onboard_control.sh
+reboot_fcu.sh
+tools/reboot_fcu.py
 ```
 
 默认以 Release 模式重建飞行包和独立修正接口/节点。修正节点构建不启动相机或飞控。若需同时执行依赖检查、
@@ -326,3 +332,38 @@ extnav 安装器覆盖生产源前会创建带 SHA-256 的定点备份，只构�
 单调时钟，因此自带路由器没有外网时也必须能启动和作业；不得重新加入外网 NTP 完成门槛，也不要
 用固定秒数 `sleep` 伪装就绪。若离线开机后再接入互联网，应在人工解锁前等待系统校时与 MAVROS
 TIMESYNC 重新稳定，并重新核对 FCU、本地位置和推力语义。
+
+## 飞控热重启（Task33，飞行接口 3.3）
+
+地面站右上角“重启机载飞控”只在实机会话、机载在线、未解锁、新鲜落地状态、
+待机且无任务时启用；确认框默认取消。机载端再次检查同样条件，最终通过 MAVROS
+发送 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN`（246，param1=1，其余参数为0）。
+不会解锁、起飞、恢复飞行任务或重启机载计算机。
+
+无地面站时，在飞机工作区执行 `./reboot_fcu.sh`。脚本要求本机存在机载环境文件且正在运行
+该工作区的 onboard_control，然后用项目 Python 客户端申请短租约、调用同一个 `FlightCommand`
+并等待终态。如果地面站持有租约，脚本会拒绝，请先断开地面站。地面开发机直接执行会被拒绝。
+机载 Python 环境须预先创建（已有环境不必重建）：
+
+```bash
+python3 -m venv --system-site-packages .venv
+./reboot_fcu.sh
+```
+
+变更了 `ControlStatus` 的落地和重启状态字段，必须同步构建 `guided_interfaces` 和
+`onboard_control`（版本 3.3.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
+位于 `src/onboard_control/src/fcu_reboot.cpp`，Python 脚本客户端位于 `tools/reboot_fcu.py`。
+构建不会使正在运行的旧进程自动升级；部署后在确认未解锁、落地且无任务时重启机载服务。
+
+成功证据分两阶段输出到主 GUI 日志和脚本终端：
+
+- **飞控重启成功**：ArduPilot `timesync_status.remote_timestamp_ns` 回退超过1秒且回到启动后
+  30秒内。ACK 不是成功证据；ACK 丢失也不自动重发重启。
+- **控制链路成功恢复**：未解锁、新鲜落地/状态、重启后的连续位置和速度、原点回读、
+  新鲜 GUID_OPTIONS/MOT_THST_HOVER 参数事件、消息频率配置以及无输出发布冲突，持续满足2秒。
+  消息配置 ACK 不表示实测速率达标，定位有数据不等于已完成实飞精度验收。
+
+整个事务最多等待90秒。发送重启前先只读请求 GPS_GLOBAL_ORIGIN（最多等待3秒），
+重启后也主动请求回读，不依赖飞控自发广播。只恢复此前由飞控回读的原点，不凭空填入默认坐标；无原点、无定位、
+参数或遥测缺失时会明确报告恢复失败。机载节点持续运行期间，独立 FCU 重启也由相同启动时钟
+证据触发恢复。该机制针对 ArduPilot 的启动相对时钟，不处理 USB 消失后重新枚举，不恢复旧任务。

@@ -105,6 +105,8 @@ class VehicleSnapshot:
     interface_version: str = ""
     connected: bool = False
     armed: bool = False
+    on_ground: bool = False
+    reboot_in_progress: bool = False
     autopilot_mode: str = ""
     x: float = 0.0
     y: float = 0.0

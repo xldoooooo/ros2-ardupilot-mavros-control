@@ -34,6 +34,7 @@ target_link_libraries(dob_controller Eigen3::Eigen)
 add_executable(onboard_control_node
   src/main.cpp
   src/onboard_control_node.cpp
+  src/fcu_reboot.cpp
 )
 target_include_directories(onboard_control_node PRIVATE include ${EIGEN3_INCLUDE_DIRS})
 ament_target_dependencies(onboard_control_node

@@ -2969,3 +2969,42 @@ def test_log_auto_scroll_can_be_disabled() -> None:
     assert vertical.value() <= 2
     assert vertical.value() < vertical.maximum()
     panel.close()
+
+
+def test_reboot_fcu_confirmation_and_ground_gates() -> None:
+    """Only fresh, unarmed hardware idle permits reboot; cancel/state race sends nothing."""
+    snapshot = replace(_operational_snapshot(armed=False), on_ground=True)
+    window, ros = _window(snapshot)
+    ros.request_reboot_fcu = lambda: ros.calls.append(("reboot_fcu", None)) or 99
+    try:
+        window._environment_active = True
+        window._connection_mode = "hardware"
+        window._refresh()
+        assert window.reboot_fcu_button.isEnabled()
+        with patch.object(window, "_confirm_action", return_value=False):
+            window._reboot_fcu()
+        assert not ros.calls
+        for changes in ({"armed": True}, {"on_ground": False},
+                        {"reboot_in_progress": True}, {"connected": False},
+                        {"controller_active": True}, {"active_mode": FlightMode.WAYPOINT}):
+            ros.current_snapshot = replace(snapshot, **changes)
+            window._refresh()
+            assert not window.reboot_fcu_button.isEnabled()
+        ros.current_snapshot = snapshot
+        window._connection_mode = "simulation"
+        window._refresh()
+        assert not window.reboot_fcu_button.isEnabled()
+        window._connection_mode = "hardware"
+        def change_state(*args, **kwargs):
+            ros.current_snapshot = replace(snapshot, armed=True)
+            return True
+        with patch.object(window, "_confirm_action", side_effect=change_state):
+            window._reboot_fcu()
+        assert not ros.calls
+        ros.current_snapshot = snapshot
+        with patch.object(window, "_confirm_action", return_value=True):
+            window._reboot_fcu()
+        assert ros.calls == [("reboot_fcu", None)]
+        assert not window.reboot_fcu_button.isEnabled()
+    finally:
+        _close_window(window)

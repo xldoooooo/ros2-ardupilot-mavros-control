@@ -92,9 +92,9 @@ def test_protocol_version_is_synchronized_across_deployments() -> None:
         for package in ("guided_interfaces", "onboard_control")
     }
 
-    assert INTERFACE_VERSION == "3.2"
-    assert 'kInterfaceVersion[] = "3.2"' in onboard_source
-    assert package_versions == {"3.2.0"}
+    assert INTERFACE_VERSION == "3.3"
+    assert 'kInterfaceVersion[] = "3.3"' in onboard_source
+    assert package_versions == {"3.3.0"}
 
     executor = onboard_source.split(
         "void OnboardControlNode::update_waypoint_executor", 1

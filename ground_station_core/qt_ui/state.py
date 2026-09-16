@@ -24,6 +24,7 @@ class UiAvailability:
     waypoint_preview: bool
     waypoint_edit: bool
     waypoint_configuration: bool
+    reboot_fcu: bool
     flight_reason: str
 
 
@@ -99,7 +100,7 @@ def derive_availability(
         and snapshot.connected
         and snapshot.control_authority
     )
-    command_link = reliable_command_link and not busy
+    command_link = reliable_command_link and not busy and not snapshot.reboot_in_progress
     control_ready = (
         command_link
         and snapshot.local_position_valid
@@ -160,6 +161,12 @@ def derive_availability(
             and snapshot.connected
             and not snapshot.armed
             and snapshot.active_mode is FlightMode.IDLE
+        ),
+        reboot_fcu=(
+            command_link and mode == "hardware" and snapshot.on_ground
+            and not snapshot.armed and snapshot.active_mode is FlightMode.IDLE
+            and not snapshot.controller_active and not waypoint_running
+            and not flight_sequence_active
         ),
         flight_reason=reason,
     )

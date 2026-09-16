@@ -36,6 +36,8 @@
 #include <mavros_msgs/msg/param_event.hpp>
 #include <mavros_msgs/msg/mavlink.hpp>
 #include <mavros_msgs/msg/state.hpp>
+#include <mavros_msgs/msg/timesync_status.hpp>
+#include <mavros_msgs/srv/command_long.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
 #include <mavros_msgs/srv/message_interval.hpp>
@@ -166,6 +168,16 @@ private:
   void send_land_mode_request(const CommandIdentity & command, bool failsafe);
   bool active_task_matches(const CommandIdentity & command) const;
 
+  // Ground-only reboot transaction; observation also handles an external FCU reboot.
+  void initialize_reboot();
+  void start_fcu_reboot(const CommandIdentity &, std::shared_ptr<FlightCommand::Response>);
+  void send_fcu_reboot();
+  void query_reboot_origin();
+  void observe_fcu_clock(const mavros_msgs::msg::TimesyncStatus &);
+  void reboot_tick(SteadyTime now);
+  void finish_reboot(bool success, const std::string & message);
+  bool fresh_on_ground(SteadyTime now) const;
+
   // Maintenance services are serialized independently of flight tasks.
   void start_message_rate_configuration(
     const CommandIdentity & command, bool publish_command_result = true);
@@ -254,6 +266,23 @@ private:
   bool fcu_connected_{false};
   bool armed_{false};
   bool extended_state_observed_{false};
+  bool on_ground_{false};
+  SteadyTime last_extended_state_time_{};
+  bool reboot_active_{false};
+  bool reboot_observed_{false};
+  bool reboot_requested_{false};
+  bool reboot_sent_{false}, reboot_origin_prepared_{false};
+  SteadyTime last_reboot_origin_query_{};
+  bool reboot_origin_saved_{false};
+  bool reboot_guid_seen_{false}, reboot_hover_seen_{false};
+  geographic_msgs::msg::GeoPoint reboot_origin_;
+  CommandIdentity reboot_command_;
+  SteadyTime reboot_started_{}, reboot_detected_{}, reboot_ready_since_{};
+  SteadyTime last_boot_clock_time_{}, last_reboot_origin_send_{};
+  std::uint64_t boot_clock_ns_{0}, reboot_generation_{0};
+  std::uint64_t session_generation_{0};
+  rclcpp::Subscription<mavros_msgs::msg::TimesyncStatus>::SharedPtr boot_clock_subscription_;
+  rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedPtr reboot_client_;
   bool airborne_{false};
   std::string autopilot_mode_;
   bool pose_valid_{false};

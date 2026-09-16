@@ -504,6 +504,11 @@ class GroundStationWindow(QMainWindow):
         )
         self.correction_panel_button.clicked.connect(self._open_correction_panel)
         controls_layout.addWidget(self.correction_panel_button)
+        self.reboot_fcu_button = QPushButton("重启机载飞控")
+        self.reboot_fcu_button.setProperty("role", "danger")
+        self.reboot_fcu_button.setProperty("compact", True)
+        self.reboot_fcu_button.clicked.connect(self._reboot_fcu)
+        controls_layout.addWidget(self.reboot_fcu_button)
         self.exit_button = QPushButton("退出地面站")
         self.exit_button.setObjectName("exitButton")
         self.exit_button.setProperty("role", "danger")
@@ -1456,6 +1461,25 @@ class GroundStationWindow(QMainWindow):
             "operator", f"手动操纵坐标系切换为「{label}」：{detail}"
         )
 
+    def _reboot_fcu(self) -> None:
+        """默认取消的危险操作确认；确认期间状态变化必须重新门控。"""
+        self._refresh()
+        if not self._availability.reboot_fcu or self._pending_commands:
+            return
+        if not self._confirm_action(
+            "重启机载飞控",
+            "将热重启飞机飞控，控制链路会暂时中断。\n"
+            "请确认飞机已落地、未解锁且无人正在操作。不会恢复此前飞行任务。",
+            critical=True,
+        ):
+            return
+        self._refresh()
+        if not self._availability.reboot_fcu or self._pending_commands:
+            return
+        self._pending_commands.add("reboot_fcu")
+        self._ros.request_reboot_fcu()
+        self._refresh()
+
     def _takeoff(self, *, refresh_after_queue: bool = True) -> int | None:
         """仿真直接请求起飞；实机仍须高风险确认。"""
         altitude = self.operations.takeoff_altitude()
@@ -1861,6 +1885,9 @@ class GroundStationWindow(QMainWindow):
                 closing=self._shutting_down,
                 communication_running=self._communication_busy,
                 communication_cancel_pending=self._communication_cancel_pending,
+            )
+            self.reboot_fcu_button.setEnabled(
+                self._availability.reboot_fcu and not self._pending_commands
             )
             self.exit_button.setEnabled(not self._shutting_down)
             self.waypoints.apply_availability(self._availability)

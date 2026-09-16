@@ -224,7 +224,7 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     projector.observe_video_status(
         VideoServiceSnapshot(
             service_available=True,
-            interface_version="3.2",
+            interface_version="3.3",
             running=False,
             state="stopped",
             video_directory="/home/share",
@@ -337,7 +337,7 @@ def test_status_projector_never_reports_unfinalized_recording_as_video_path() ->
     projector.observe_video_status(
         VideoServiceSnapshot(
             service_available=True,
-            interface_version="3.2",
+            interface_version="3.3",
             running=True,
             state="running",
             image_directory="/home/share/jpg",

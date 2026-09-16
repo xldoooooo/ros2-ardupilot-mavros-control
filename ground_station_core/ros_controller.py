@@ -94,6 +94,8 @@ class _VehicleStateStore:
             interface_version=message.interface_version,
             connected=message.fcu_connected,
             armed=message.armed,
+            on_ground=bool(getattr(message, "on_ground", False)),
+            reboot_in_progress=bool(getattr(message, "reboot_in_progress", False)),
             autopilot_mode=message.autopilot_mode,
             x=message.position.x,
             y=message.position.y,
@@ -568,6 +570,10 @@ class GroundStationRosController:
     def request_takeoff(self, altitude: float) -> int:
         """请求机载端完成 GUIDED、武装、起飞与高度确认。"""
         return self._enqueue("takeoff", float(altitude))
+
+    def request_reboot_fcu(self) -> int:
+        """请求机载未解锁重启事务；服务端复核落地和待机条件。"""
+        return self._enqueue("reboot_fcu")
 
     def request_land(self) -> int:
         """请求机载端切换 LAND。"""
@@ -1558,6 +1564,7 @@ class GroundStationRosController:
                 if not client.service_is_ready():
                     raise RuntimeError("机载飞行命令服务不可用")
                 command_codes = {
+                    "reboot_fcu": ros_entities["FlightCommand"].Request.COMMAND_REBOOT_FCU,
                     "takeoff": ros_entities["FlightCommand"].Request.COMMAND_TAKEOFF,
                     "land": ros_entities["FlightCommand"].Request.COMMAND_LAND,
                     "hover": ros_entities["FlightCommand"].Request.COMMAND_HOVER,

@@ -26,6 +26,9 @@ std_msgs/Header header
 string interface_version
 bool fcu_connected
 bool armed
+# 新鲜落地证据和机载重启事务状态；用于 GUI 门控。
+bool on_ground
+bool reboot_in_progress
 string autopilot_mode
 bool local_position_valid
 geometry_msgs/Point position
