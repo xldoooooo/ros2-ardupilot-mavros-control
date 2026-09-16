@@ -400,6 +400,9 @@
   onboard_control、correction_service 或视频服务。Odin 厂商 launch 在无显示 SSH 中会让
   RViz 报错退出，但不影响 Odin 主数据链；extnav 目前在 Ctrl+C 时会因外部节点重复
   `rcl_shutdown` 打印 traceback 并返回非零，但进程能停止且无残留。
+- 2026-09-16 新飞机 `.169` 与 refresh 飞机 `.186` 均已定点同步上述三个启动文件；
+  refresh 机的 Odin/extnav overlay 分别在 `/home/nvidia/catkin_ws` 和
+  `/home/nvidia/vrpn_mavros`，从 `start_drone/` 目录直接执行两入口已通过未解锁台架验证。
 - systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、
   `time-sync.target` 或固定 `sleep`；自带路由器无外网时必须启动。离线开机后若再接入互联网，应在
   人工解锁前等待 Linux/MAVROS 时间状态稳定并重新核对 READY，但外网时间不是控制租约前置条件。
