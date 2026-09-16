@@ -177,6 +177,7 @@ def board_descriptor(object_points, image_points, image_size):
 
 
 def descriptor_distance(a, b):
+    """按位置、尺度、面内转角和透视变化计算姿态差异。"""
     angle = abs(a[3] - b[3])
     angle = min(angle, 2.0 * math.pi - angle)
     delta = np.array(
@@ -193,6 +194,7 @@ def descriptor_distance(a, b):
 
 
 def sample_quality(gray, object_points, image_points, tag_count, descriptors, image_size):
+    """沿用旧板清晰度、可见面积、Tag 数和姿态去重门限。"""
     x, y, w, h = cv2.boundingRect(image_points.reshape(-1, 2))
     board_roi = gray[y : y + h, x : x + w]
     sharpness = float(cv2.Laplacian(board_roi, cv2.CV_64F).var())
@@ -322,6 +324,7 @@ def load_calibration(path):
 
 
 def print_calibration(calibration, image_size):
+    """原样报告总残差和最差视图，不仅展示平均值。"""
     k = calibration["camera_matrix"]
     d = calibration["dist_coeffs"].reshape(-1)
     errors = calibration["per_view_errors"]
@@ -375,6 +378,7 @@ def evaluate_calibration(object_points, image_points, descriptors, image_size):
 
 
 def corner_motion(previous, marker_corners, marker_ids):
+    """比较共同 Tag 的角点位移，要求连续画面停稳后自动采样。"""
     current = {
         int(marker_id): corners.reshape(4, 2)
         for corners, marker_id in zip(marker_corners, marker_ids.reshape(-1))
@@ -387,6 +391,7 @@ def corner_motion(previous, marker_corners, marker_ids):
 
 
 def draw_coverage(image, descriptors):
+    """绘制九宫格和已采样中心，帮助用户覆盖画面边缘。"""
     height, width = image.shape[:2]
     for x in (width // 3, 2 * width // 3):
         cv2.line(image, (x, 0), (x, height), (70, 70, 70), 1)
@@ -398,6 +403,7 @@ def draw_coverage(image, descriptors):
 
 
 def put_text(image, text, line, color=(255, 255, 255)):
+    """在预览画面叠加清晰可读的采样与求解状态。"""
     scale = max(0.55, image.shape[1] / 1900.0)
     y = int(30 + line * 31 * scale)
     cv2.putText(image, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4, cv2.LINE_AA)

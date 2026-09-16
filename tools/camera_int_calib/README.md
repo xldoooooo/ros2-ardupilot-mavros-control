@@ -16,6 +16,17 @@
 - 每批独立目录，保存原始样本图、求解用角点、每视图残差以及两种 YAML；不筛掉高残差帧。
   `R` 新建批次，旧结果仍保留；不自动写入生产内参。
 
+## 部署到稀疏检出的飞机
+
+refresh 已添加工具和测试路径。其他使用相同非 cone 稀疏布局的飞机，同步代码后执行：
+
+```bash
+git sparse-checkout add /tools/camera_int_calib/ /tests/test_uq212_intrinsic_calibration.py
+```
+
+无需 colcon 构建；该工具通过源码导入已有采集模块。若希望沿用独立标定目录入口，
+为新脚本和启动器建立软链接，保留原 `wainstek_cam_calib.py` 和 `camera_calibration.yaml`。
+
 ## 同一块标定板
 
 沿用原脚本的 6×6 AprilGrid：tag36h11、ID 0～35、Tag 黑框边长 55 mm、净间隙 16.5 mm，
