@@ -331,6 +331,7 @@ class ActivityBanner(QFrame):
         super().__init__(parent)
         self.setObjectName("activityBanner")
         self.setProperty("tone", "debug")
+        self.setProperty("activityState", "idle")
         self.setMinimumHeight(38)
         self.setMaximumHeight(42)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -411,6 +412,10 @@ class ActivityBanner(QFrame):
             LogLevel.DEBUG: "idle", LogLevel.INFO: "success",
             LogLevel.WARN: "error", LogLevel.ERROR: "error",
         }[level]
+        # 底色和动画共用流程状态，日志等级仅保留为源端信息。
+        if self.property("activityState") != state:
+            self.setProperty("activityState", state)
+            repolish(self)
         # 连续进度消息不重置扫光，独立成功事件则重新播放一次。
         if state != self._state or state == "success":
             self._animation.stop()
