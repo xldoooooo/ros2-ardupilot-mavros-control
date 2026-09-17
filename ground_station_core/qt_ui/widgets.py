@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QMouseEvent, QResizeEvent, QShowEvent, QWheelEvent
+from math import sin, pi
+
+from PySide6.QtCore import QEvent, QPoint, QRectF, Qt, QTimer, QVariantAnimation
+from PySide6.QtGui import (
+    QColor, QLinearGradient, QMouseEvent, QPainter, QPainterPath,
+    QPaintEvent, QResizeEvent, QShowEvent, QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -338,9 +343,58 @@ class ActivityBanner(QFrame):
         self.message_label.setWordWrap(False)
         layout.addWidget(prefix)
         layout.addWidget(self.message_label, 1)
+        self._phase = 0.0
+        self._state = "idle"
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setOffset(0, 0)
+        self._glow.setBlurRadius(18)
+        self._glow.setColor(QColor(0, 0, 0, 0))
+        self.setGraphicsEffect(self._glow)
+        # 一个动画驱动扫光与光晕；成功只播放一次，其余活动状态循环。
+        self._animation = QVariantAnimation(self)
+        self._animation.setStartValue(0.0)
+        self._animation.setEndValue(1.0)
+        self._animation.valueChanged.connect(self._animate)
 
-    def set_message(self, message: str, level: LogLevel = LogLevel.DEBUG) -> None:
-        """按源端日志等级更新提示语气，不在显示层重新分类。"""
+    def _animate(self, value: float) -> None:
+        """每帧只更新绘制参数，不重建样式或布局。"""
+        self._phase = float(value)
+        color = QColor("#20ad67" if self._state == "success" else "#ef4444")
+        strength = sin(pi * self._phase) ** 2
+        color.setAlphaF(0.85 * strength if self._state in {"success", "error"} else 0)
+        self._glow.setColor(color)
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """在文字下方绘制向右移动的蓝色光带或脉冲边框。"""
+        super().paintEvent(event)
+        if self._state == "idle":
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 7, 7)
+        painter.setClipPath(path)
+        if self._state == "busy":
+            width = self.width() * 0.45
+            left = (self.width() + width) * self._phase - width
+            gradient = QLinearGradient(left, 0, left + width, 0)
+            gradient.setColorAt(0, QColor(45, 145, 235, 0))
+            gradient.setColorAt(0.6, QColor(45, 145, 235, 95))
+            gradient.setColorAt(1, QColor(45, 145, 235, 0))
+            painter.fillPath(path, gradient)
+            painter.fillRect(QRectF(left, self.height() - 4, width, 3), gradient)
+        else:
+            color = self._glow.color()
+            painter.setPen(color)
+            painter.drawRoundedRect(rect, 7, 7)
+        painter.end()
+
+    def set_message(
+        self, message: str, level: LogLevel = LogLevel.DEBUG, *, state: str | None = None
+    ) -> None:
+        """日志等级保持原样；调用方可用权威流程状态覆盖默认动画。"""
         tones = {
             LogLevel.DEBUG: "debug",
             LogLevel.INFO: "info",
@@ -353,3 +407,16 @@ class ActivityBanner(QFrame):
             repolish(self)
         set_text_if_changed(self.message_label, message)
         set_tooltip_if_changed(self, message)
+        state = state or {
+            LogLevel.DEBUG: "idle", LogLevel.INFO: "success",
+            LogLevel.WARN: "error", LogLevel.ERROR: "error",
+        }[level]
+        # 连续进度消息不重置扫光，独立成功事件则重新播放一次。
+        if state != self._state or state == "success":
+            self._animation.stop()
+            self._state = state
+            self._animate(0.0)
+            if state != "idle":
+                self._animation.setDuration(1400 if state == "busy" else 1200)
+                self._animation.setLoopCount(1 if state == "success" else -1)
+                self._animation.start()

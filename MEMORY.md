@@ -76,6 +76,9 @@
 - 航点编辑器支持按统一 `index,x,y,z,yaw` CSV 格式导入和导出；Yaw 在文件中使用角度、GUI
   内部继续使用弧度。导出只读取当前 GUI 列表，不依赖环境会话或机载任务，默认保存到项目
   `export/waypoints-export-YYYYMMDD-HHMMSS.csv`，空列表时入口禁用。
+- 右上角“动态”提示支持进行中蓝色循环扫光、完成绿色单次光晕、失败/异常红色循环光晕，
+  新消息切换当前提示；环境流程和命令非 final 回执显式传入 busy，不把中间 ACK 当完成。
+  动画只修改地面 Qt GUI，两台飞机均无需部署。
 - `ground_station_core/upstream/` 是独立 WebSocket/JAR 上位机协议边界；通讯故障不得破坏已有
   ROS、仿真或实机会话。
 - 航点输入行的定位准星按钮记录与主 GUI 实际位姿同一帧的原始 ENU x/y/z/yaw，追加至

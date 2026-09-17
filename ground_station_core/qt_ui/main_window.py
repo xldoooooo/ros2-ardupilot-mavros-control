@@ -787,7 +787,7 @@ class GroundStationWindow(QMainWindow):
         self._communication_busy = True
         self._communication_cancel_pending = False
         self.activity_banner.set_message(
-            "正在被动检测实机状态与日志链路…", LogLevel.INFO
+            "正在被动检测实机状态与日志链路…", LogLevel.INFO, state="busy"
         )
         self._refresh()
         started = self._environment.test_hardware_communication(
@@ -813,14 +813,14 @@ class GroundStationWindow(QMainWindow):
             return
         self._communication_cancel_pending = True
         self._events.warn("operator", "操作者请求终止实机通讯检测")
-        self.activity_banner.set_message("正在终止实机通讯检测…", LogLevel.WARN)
+        self.activity_banner.set_message("正在终止实机通讯检测…", LogLevel.WARN, state="busy")
         self._refresh()
 
     def _begin_environment_workflow(self, mode: str, message: str) -> None:
         """原子锁定互斥入口并记录待完成环境类型。"""
         self._pending_environment_mode = mode
         self._workflow_busy = True
-        self.activity_banner.set_message(message, LogLevel.INFO)
+        self.activity_banner.set_message(message, LogLevel.INFO, state="busy")
         self._refresh()
 
     def _queue_environment_status(self, level: LogLevel, message: str) -> None:
@@ -837,7 +837,9 @@ class GroundStationWindow(QMainWindow):
 
     def _on_environment_status(self, level: LogLevel, message: str) -> None:
         """在主线程显示源端已经标级的环境进度。"""
-        self.activity_banner.set_message(message, level)
+        self.activity_banner.set_message(
+            message, level, state="error" if level == LogLevel.ERROR else "busy"
+        )
 
     def _on_environment_done(self, success: bool, message: str) -> None:
         """完成环境切换并解除互斥锁。"""
@@ -871,7 +873,9 @@ class GroundStationWindow(QMainWindow):
             level = LogLevel.WARN
         else:
             level = LogLevel.ERROR
-        self.activity_banner.set_message(message, level)
+        self.activity_banner.set_message(
+            message, level, state="success" if success or was_cancelled else "error"
+        )
         self._refresh()
 
     def _stop_simulation(self) -> None:
@@ -930,7 +934,7 @@ class GroundStationWindow(QMainWindow):
             return
         self._events.warn("operator", f"操作者确认：{title}")
         self._workflow_busy = True
-        self.activity_banner.set_message(progress, LogLevel.WARN)
+        self.activity_banner.set_message(progress, LogLevel.WARN, state="busy")
 
         def worker() -> None:
             try:
@@ -1477,6 +1481,9 @@ class GroundStationWindow(QMainWindow):
         if not self._availability.reboot_fcu or self._pending_commands:
             return
         self._pending_commands.add("reboot_fcu")
+        self.activity_banner.set_message(
+            "正在重启机载飞控，等待恢复确认…", LogLevel.INFO, state="busy"
+        )
         self._ros.request_reboot_fcu()
         self._refresh()
 
@@ -1497,7 +1504,7 @@ class GroundStationWindow(QMainWindow):
             self._events.info("operator", f"仿真模式请求起飞至 {altitude:.1f} m")
         self._pending_commands.add("takeoff")
         ticket = self._ros.request_takeoff(altitude)
-        self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN)
+        self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN, state="busy")
         if refresh_after_queue:
             self._refresh()
         return ticket
@@ -1526,7 +1533,7 @@ class GroundStationWindow(QMainWindow):
                 self._upstream.begin_landing(ticket)
             except Exception as exc:
                 self._events.warn("upstream", f"降落状态重绑失败：{exc}")
-        self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN)
+        self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN, state="busy")
         if refresh_after_queue:
             self._refresh()
         return ticket
@@ -1550,7 +1557,7 @@ class GroundStationWindow(QMainWindow):
         self._ros.request_hover()
         self.operations.mark_manual_command()
         self._events.info("operator", "操作者请求悬停")
-        self.activity_banner.set_message("悬停请求已发送。", LogLevel.INFO)
+        self.activity_banner.set_message("悬停请求已发送。", LogLevel.INFO, state="busy")
 
     def _send_waypoints(
         self,
@@ -1656,6 +1663,9 @@ class GroundStationWindow(QMainWindow):
             generator,
             controller,
             tuple(photo_nos) if photo_nos is not None else (),
+        )
+        self.activity_banner.set_message(
+            "航点已排队，等待机载服务接收…", LogLevel.INFO, state="busy"
         )
         self._active_waypoint_ticket = ticket
         if refresh_after_queue:
@@ -1968,7 +1978,11 @@ class GroundStationWindow(QMainWindow):
                 self._pending_commands.discard(result.command)
             level = LogLevel.INFO if result.success else LogLevel.ERROR
             if not stale_waypoint_result:
-                self.activity_banner.set_message(result.message, level)
+                self.activity_banner.set_message(
+                    result.message, level,
+                    state=("error" if not result.success else
+                           "success" if result.final else "busy"),
+                )
             try:
                 self._upstream.observe_result(result)
             except Exception as exc:
@@ -2200,7 +2214,7 @@ class GroundStationWindow(QMainWindow):
         self._events.warn(source, message)
         self.activity_banner.set_message(
             "正在安全退出：释放租约、清理本地仿真并停止 ROS…",
-            LogLevel.WARN,
+            LogLevel.WARN, state="busy",
         )
         self._refresh()
 

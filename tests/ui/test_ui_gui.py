@@ -245,3 +245,48 @@ def test_log_auto_scroll_can_be_disabled() -> None:
     assert vertical.value() <= 2
     assert vertical.value() < vertical.maximum()
     panel.close()
+
+
+def test_activity_banner_animation_lifecycle_and_rendering() -> None:
+    """扫光连续更新、终态单闪/循环及实际绘制均在隔离 Qt 中检查。"""
+    from PySide6.QtCore import QAbstractAnimation
+    from ground_station_core.qt_ui.widgets import ActivityBanner
+
+    application = _application()
+    banner = ActivityBanner()
+    banner.resize(600, 42)
+    banner.show()
+    application.processEvents()
+    try:
+        banner.set_message("启动中", LogLevel.INFO, state="busy")
+        banner._animation.setCurrentTime(300)
+        first = banner.grab().toImage()
+        banner.set_message("等待连接", LogLevel.WARN, state="busy")
+        assert banner._animation.currentTime() == 300
+        banner._animation.setCurrentTime(800)
+        assert first != banner.grab().toImage()
+        assert banner._animation.loopCount() == -1
+
+        banner.set_message("完成", LogLevel.INFO)
+        banner._animation.setCurrentTime(600)
+        assert banner._glow.color().green() > banner._glow.color().red()
+        assert banner._glow.color().alpha() > 200
+        banner._animation.setCurrentTime(1200)
+        assert banner._animation.state() == QAbstractAnimation.State.Stopped
+        assert banner._glow.color().alpha() == 0
+        banner.set_message("另一操作完成", LogLevel.INFO)
+        assert banner._animation.state() == QAbstractAnimation.State.Running
+
+        banner.set_message("导入失败", LogLevel.WARN)
+        banner._animation.setCurrentTime(1800)
+        assert banner._animation.state() == QAbstractAnimation.State.Running
+        assert banner._animation.loopCount() == -1
+        assert banner._glow.color().red() > banner._glow.color().green()
+        banner.set_message("重新启动", LogLevel.INFO, state="busy")
+        assert banner._glow.color().alpha() == 0
+        banner.set_message("空闲", state="idle")
+        assert banner._animation.state() == QAbstractAnimation.State.Stopped
+    finally:
+        banner.close()
+        banner.deleteLater()
+        application.processEvents()
