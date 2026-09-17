@@ -5,24 +5,62 @@
 1. 安装 ROS、MAVROS、项目源码，并按
    [地面站视频依赖](video_service/README.md#地面站视频依赖ubuntu-2404--amd64)
    安装 FFmpeg、v4l-utils 与 amd64 MediaMTX；
-2. 在完整项目检出根目录运行：
-
+2. 
    ```bash
    ./setup_ground_station.sh
    ```
 
-这是地面站唯一的项目安装入口：它创建 Python 环境，安装 GUI 依赖，构建地面仿真与共享 ROS
-接口并检查运行环境。地面站不执行
-`src/onboard_control/deploy/install_onboard_service.sh` 或
-`video_service/deploy/install_onboard_video_service.sh`；这两个脚本只用于飞机上安装开机自启的
-systemd 服务。地面 Qt 面板需要本机摄像头时，会按需启动普通用户态视频进程，也不会安装机载
-`video-service.service`。
+
+## 关闭防火墙
+
+firewalld防火墙：
+
+``` bash
+sudo systemctl stop firewalld
+```
+
+禁止开机自启动
+
+```bash
+sudo systemctl disable firewalld
+```
+
+iptables防火墙
+
+```bash
+sudo service iptables stop
+```
+
+禁止开机自启动
+```bash
+sudo chkconfig iptables off
+```
+
+如果不想关闭防火墙，则对飞机地址添加信任
+```bash
+sudo firewall-cmd --permanent --zone=public \
+  --add-rich-rule='rule family="ipv4" source address="192.168.112.169" accept'
+sudo firewall-cmd --reload
+```
 
 
 ```bash
 ROS_DOMAIN_ID=0
 ROS_LOCALHOST_ONLY=0
 ```
+
+# Odin
+
+有些已经自动配置 或 参考
+
+https://asset.manifoldtech.cn/media/static/download/odin1/Odin1%20%E5%BF%AB%E9%80%9F%E5%90%AF%E5%8A%A8%20v1.5.0.pdf
+
+catkin_ws/ 下 control_command.yaml 可配置关闭发送某些数据以降低对机载计算机的cpu占用
+
+# AP飞控
+
+飞控板与伴随计算机接好后，还需配置飞控：
+
 
 # 机载服务
 
@@ -139,6 +177,7 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 ```text
 /etc/ros2-ardupilot/onboard.env
 ```
+
 ```bash
 ROS_DOMAIN_ID=0
 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
@@ -151,6 +190,13 @@ EXTNAV_OVERLAY_SETUP=/home/<机载用户>/<extnav工作区>/install/setup.bash
 板载 `/dev/ttyTHS1:460800` 只能在逐机核对接线后使用；存在稳定 `/dev/serial/by-id` 时优先使用
 后者。当前 Jetson 使用 Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`；旧 Humble 目标才使用
 `ROS_LOCALHOST_ONLY=0`。
+
+云台相机镜头参数
+
+```text
+/etc/ros2-ardupilot/
+```
+
 
 使能端口：
 
@@ -178,7 +224,8 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 onboard_control 和相关 RViz；只有服务 inactive 且目标进程全部退出时才返回成功。
 
 或者在启动机载服务的脚本的终端按一次 Ctrl+C, 出现
-```
+
+```bash
 [startup] stopping all four components...
 ```
 后等待，直到出现成功提示。连续Ctrl+C会导致残留
@@ -236,30 +283,35 @@ curl -u s12:2wsx1qaz \
 
 
 
-## AprilTag
-
-下视相机标定完成后的 Odin 世界坐标修正配置、ROS 接口、地面子面板、部署和已知限制见
-[correction_service/README.md](correction_service/README.md)。该功能只修正 `x/y/yaw`，
-默认 idle 且相机关闭；程序不解锁、不起飞。当前 Tag 若没有按 `tag_pose.csv` 精确摆正，只能
-用于 `apply=false` 桌面验证，不能据此声称获得准确世界航向。
-
-
-
-
 # 远程桌面
 
 Ubuntu2404 remmina远程桌面
 
+## 桌面共享
+
 1. 终端输入`seahorse`，左上角加号添加“密码密钥环”，名称为“Login”，用户名 密码 均留空，直接点continue；
 2. 右键Login密钥环，设为默认
 3. 设置-系统-远程桌面：打开桌面共享，关闭远程登录；
-4. 确认 设置-系统-用户 开启了自动登录
+4. 设置-系统-用户 开启自动登录
+
+远程过去可以直接进桌面，不需要密码，可以同时远程+连接显示器操作
+需要显卡欺骗器
+
+## 远程登陆
+
+1. 设置-系统-远程桌面：打开桌面共享，关闭远程登录；
+2. 设置-系统-用户 关闭自动登录
+
+远程后会顶掉旧会话，开启新会话；每次登陆需要密码
+不需要显卡欺骗器。不能同时远程+连接显示器操作
 
 
 
-# 路由器桥接
+# 路由器组合
 
-## 有线桥接1：主从路由器均使用主路由器ip
+## 组合方式1 LAN-LAN / AP模式
+
+主从路由器均使用主路由器ip，所有设备同一子网
 
 使用此方法桥接，连接主路由器或从路由器的所有设备都将使用主路由器分发的ip。
 因此，从路由器接入不同主路由器时，连接从路由器的设备ip会发生变化。
@@ -277,15 +329,35 @@ Ubuntu2404 remmina远程桌面
 7. 将主从路由器LAN口用网线相连
 8. 电脑wifi连接从路由器，验证能通过主路由器连接互联网。并验证ip地址与连接主路由器时一致。
 
-## 有线桥接2：配置从路由器独立静态ip
+## 组合方式2：二级路由，WAN动态IP
+
+配置从路由器分发静态ip，从路由独立子网
 
 使用此方法桥接，即使从路由器接入的主路由器发生变化，连接从路由器的设备的ip将总是保持不变。
 在连接不同主路由器之后，从路由器不需要修改任何设置，只需要查看从路由器ip并在主路由器配置静态路由
+从路由器再次接入同一个主路由器时，自身ip可能会变化
 
 1. 从路由器LAN模式设置为“手动”，设置ip例如`192.168.112.1`
-2. 打开从路由器DHCP服务, 自行配置开始与结束地址
+2. 打开从路由器DHCP服务, 自行配置开始与结束地址并确保无冲突
 2. 将主路由器LAN口与从路由器WAN口用网线连接
 3. 设置从路由器WAN口为“动态IP”，刷新并记录其ip地址，例如`192.168.1.100`
+4. 配置主路由器 高级设置-静态路由，添加规则：
+   + 目的地址：`192.168.112.0`
+   + 子网掩码：`255.255.255.0`
+   + 出接口：LAN
+   + 下一跳：`192.168.1.100`
+5. 测试主路由器能否ping通从路由器；能ping通即为成功
+
+## 组合方式3：二级路由，WAN静态IP
+
+配置从路由器自身静态ip，从路由独立子网，WAN地址固定
+
+使用此方法桥接，除了从路由器分发给设备的ip不变以外，从路由器再次接入同一个主路由器时，自身ip也不会变
+
+1. 从路由器LAN模式设置为“手动”，设置ip例如`192.168.112.1`
+2. 打开从路由器DHCP服务, 自行配置开始与结束地址并确保无冲突
+2. 将主路由器LAN口与从路由器WAN口用网线连接
+3. 设置从路由器WAN口为“静态IP”，例如`192.168.1.100`
 4. 配置主路由器 高级设置-静态路由，添加规则：
    + 目的地址：`192.168.112.0`
    + 子网掩码：`255.255.255.0`
