@@ -18,7 +18,7 @@ from correction_service.geometry import (
 
 from correction_service.config import load_config, _load_intrinsics
 
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "correction_service/config"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "correction_service/config"
 # AprilRobotics 官方 PNG 的 8×8 黑边及数据位，按原文件上方排列；不是由待测
 # OpenCV 字典或几何函数生成。白色保护边不计入 0.170m 的检测边长。
 # https://github.com/AprilRobotics/apriltag-imgs/blob/master/tag36h11/tag36_11_00000.png

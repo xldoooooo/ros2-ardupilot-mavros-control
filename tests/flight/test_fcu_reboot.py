@@ -20,7 +20,7 @@ def test_reboot_requires_ground_and_boot_evidence_then_recovers(tmp_path):
     from guided_interfaces.msg import ControlStatus, CommandResult, ControlHeartbeat
     from guided_interfaces.srv import AcquireControl, FlightCommand
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     executable = root / "install/onboard_control/lib/onboard_control/onboard_control_node"
     if not executable.exists():
         pytest.skip("build onboard_control first")

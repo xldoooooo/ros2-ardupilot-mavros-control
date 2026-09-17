@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_extnav_module() -> Any:

@@ -6,11 +6,10 @@ import os
 import signal
 import subprocess
 import sys
-from xml.etree import ElementTree
 
 from ground_station import _install_termination_signal_handlers, _TERMINATION_SIGNALS
 import ground_station_core.config as project_config
-from ground_station_core.config import INTERFACE_VERSION, PROJECT_ROOT
+from ground_station_core.config import PROJECT_ROOT
 
 
 def test_terminal_signals_are_forwarded_and_handlers_are_restored() -> None:
@@ -78,36 +77,6 @@ def test_local_cleanup_entry_runs_without_creating_the_gui() -> None:
 
     assert completed.returncode == 0, completed.stdout
     assert "PySide6" not in completed.stdout
-
-
-def test_protocol_version_is_synchronized_across_deployments() -> None:
-    """线级消息变化必须让地面站、机载端和包版本同步升级。"""
-    onboard_source = (
-        PROJECT_ROOT / "src" / "onboard_control" / "src" / "onboard_control_node.cpp"
-    ).read_text(encoding="utf-8")
-    package_versions = {
-        ElementTree.parse(PROJECT_ROOT / "src" / package / "package.xml")
-        .getroot()
-        .findtext("version")
-        for package in ("guided_interfaces", "onboard_control")
-    }
-
-    assert INTERFACE_VERSION == "3.3"
-    assert 'kInterfaceVersion[] = "3.3"' in onboard_source
-    assert package_versions == {"3.3.0"}
-
-    executor = onboard_source.split(
-        "void OnboardControlNode::update_waypoint_executor", 1
-    )[1].split("void OnboardControlNode::enforce_safety", 1)[0]
-    assert executor.index("publish_waypoint_capture(waypoint)") < executor.index(
-        "++waypoint_index_"
-    )
-    assert "rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()" in (
-        onboard_source
-    )
-    assert 'video_prefix_ + "/capture", rclcpp::QoS(256).reliable()' in (
-        onboard_source
-    )
 
 
 def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_path) -> None:

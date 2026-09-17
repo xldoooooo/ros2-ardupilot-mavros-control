@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:

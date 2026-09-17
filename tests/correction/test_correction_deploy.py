@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORRECTION_ROOT = PROJECT_ROOT / "correction_service"
 CORRECTION_START = PROJECT_ROOT / "start_onboard_correction.sh"
 CORRECTION_STOP = PROJECT_ROOT / "stop_onboard_correction.sh"

@@ -108,7 +108,7 @@ def test_old_external_driver_is_rejected(tmp_path):
 def test_launch_and_install_have_no_external_camera_overlay():
     """入口链不 source 外部工作区，也不间接加载历史 underlay。"""
     from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     launcher = (root / "start_onboard_correction.sh").read_text()
     installer = (root / "correction_service/deploy/install_correction_service.sh").read_text()
     for text in (launcher, installer):
