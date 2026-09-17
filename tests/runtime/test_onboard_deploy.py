@@ -19,7 +19,7 @@ INTEGRATED_START = PROJECT_ROOT / "start_onboard_control.sh"
 INTEGRATED_STOP = PROJECT_ROOT / "stop_onboard_control.sh"
 GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
 GROUND_SETUP = PROJECT_ROOT / "setup_ground_station.sh"
-ONBOARD_BUILD = PROJECT_ROOT / "build_onboard_control.sh"
+ONBOARD_BUILD = DEPLOY_DIR / "build_onboard_control.sh"
 RUNTIME_HELPERS = DRONE_START_DIRECTORY / "runtime_common.bash"
 ONBOARD_INSTALLER = DEPLOY_DIR / "install_onboard_service.sh"
 
@@ -112,7 +112,7 @@ def test_onboard_service_install_only_skips_hardware_and_service_start(tmp_path)
 
     call_log = tmp_path / "calls.log"
     for name in ("build_onboard_control.sh", "start_onboard_control.sh"):
-        stub = workspace / name
+        stub = (deploy if name == "build_onboard_control.sh" else workspace) / name
         stub.write_text(
             '#!/usr/bin/env bash\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$CALL_LOG"\n',
             encoding="utf-8",
@@ -159,8 +159,8 @@ def test_onboard_service_install_only_skips_hardware_and_service_start(tmp_path)
     assert "it was not enabled or started" in result.stdout
 
 
-def test_root_onboard_build_entry_is_portable_and_safe() -> None:
-    """根目录快捷入口须复用部署助手，并明确不管理服务或发送飞行命令。"""
+def test_onboard_build_entry_is_portable_and_safe() -> None:
+    """部署目录构建入口须复用部署助手，并明确不管理服务或发送飞行命令。"""
     assert os.access(ONBOARD_BUILD, os.X_OK)
     syntax = subprocess.run(
         ["bash", "-n", str(ONBOARD_BUILD)],
@@ -177,7 +177,7 @@ def test_root_onboard_build_entry_is_portable_and_safe() -> None:
         text=True,
     )
     assert help_result.returncode == 0, help_result.stderr
-    assert "./build_onboard_control.sh" in help_result.stdout
+    assert "./src/onboard_control/deploy/build_onboard_control.sh" in help_result.stdout
     assert "--verify" in help_result.stdout
 
     script = ONBOARD_BUILD.read_text(encoding="utf-8")
@@ -413,7 +413,6 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/start_drone/",
         "/start_onboard_control.sh",
         "/stop_onboard_control.sh",
-        "/build_onboard_control.sh",
     ):
         assert sparse_path in script
         assert sparse_path in guide

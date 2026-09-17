@@ -130,7 +130,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 
    ```bash
    cd /home/<机载用户>/ros2-ardupilot-mavros-control
-   ./build_onboard_control.sh --verify
+   ./src/onboard_control/deploy/build_onboard_control.sh --verify
    ```
 
    不要从 x86 地面机复制 `build/`、`install/` 或 MediaMTX 二进制。
@@ -233,7 +233,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
    地址。随后可由地面摄像头面板测试开启、跨机拉流、抓拍、停止；停止后确认没有
    FFmpeg/MediaMTX、8554 监听或摄像头占用。整个过程不得申请飞行租约、解锁或起飞。
 
-7. **更新与回退。** 更新源码后先运行 `./build_onboard_control.sh --verify`。配置更新用
+7. **更新与回退。** 更新源码后先运行 `./src/onboard_control/deploy/build_onboard_control.sh --verify`。配置更新用
    `install` 覆盖前先自行保留 `/etc/ros2-ardupilot/camera.conf`、`lens.conf`；只需重启视频
    unit 时执行 `sudo systemctl restart video-service.service`，不要重启或停止飞控 unit。
 

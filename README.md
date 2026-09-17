@@ -93,13 +93,13 @@ catkin_ws/ 下 control_command.yaml 可配置关闭发送某些数据以降低�
 地面开发机和飞机都在仓库根目录执行同一个命令：
 
 ```bash
-./build_onboard_control.sh
+./src/onboard_control/deploy/build_onboard_control.sh
 ```
 
 如需同时检查依赖、运行单元测试和隔离 smoke：
 
 ```bash
-./build_onboard_control.sh --verify
+./src/onboard_control/deploy/build_onboard_control.sh --verify
 ```
 
 脚本按目标机系统选择其原生 ROS 发行版。它不会启动、停止或重启机载服务，也不会发送飞行

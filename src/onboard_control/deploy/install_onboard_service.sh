@@ -53,8 +53,8 @@ esac
   die "ROS 2 Jazzy is missing: /opt/ros/jazzy/setup.bash"
 [[ -f "${SERVICE_TEMPLATE}" ]] || die "missing unit template: ${SERVICE_TEMPLATE}"
 [[ -f "${ENV_TEMPLATE}" ]] || die "missing environment template: ${ENV_TEMPLATE}"
-[[ -x "${WORKSPACE_ROOT}/build_onboard_control.sh" ]] ||
-  die "missing build entry: ${WORKSPACE_ROOT}/build_onboard_control.sh"
+[[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" ]] ||
+  die "missing build entry: ${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh"
 [[ -x "${WORKSPACE_ROOT}/start_onboard_control.sh" ]] ||
   die "missing integrated launcher: ${WORKSPACE_ROOT}/start_onboard_control.sh"
 
@@ -70,7 +70,7 @@ onboard_home="$(getent passwd "${onboard_user}" | cut -d: -f6)"
   die "cannot resolve home directory for ${onboard_user}"
 
 # 构建、单测和 localhost 隔离 smoke 不连接真实 MAVROS，也不发送飞行命令。
-"${WORKSPACE_ROOT}/build_onboard_control.sh" --verify
+"${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" --verify
 
 run_root install -d -m 0755 /etc/ros2-ardupilot
 if [[ ! -e /etc/ros2-ardupilot/onboard.env ]]; then

@@ -3,12 +3,12 @@
 
 set -Eeuo pipefail
 
-readonly project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 readonly workspace_helper="${project_root}/src/onboard_control/deploy/onboard_workspace.sh"
 
 usage() {
   cat <<'EOF'
-Usage: ./build_onboard_control.sh [--verify]
+Usage: ./src/onboard_control/deploy/build_onboard_control.sh [--verify]
 
 Without arguments, rebuild flight packages plus the independent correction
 interfaces/service in Release mode.

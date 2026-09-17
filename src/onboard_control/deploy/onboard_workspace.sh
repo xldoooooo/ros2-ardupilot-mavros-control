@@ -24,7 +24,6 @@ readonly VIDEO_STOP_SPARSE_PATH="/stop_onboard_video.sh"
 readonly DRONE_START_SPARSE_PATH="/start_drone/"
 readonly ONBOARD_CONTROL_START_SPARSE_PATH="/start_onboard_control.sh"
 readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/stop_onboard_control.sh"
-readonly ONBOARD_BUILD_SPARSE_PATH="/build_onboard_control.sh"
 # The client is already included by /src/onboard_control/; keep the root entry too.
 readonly FCU_REBOOT_SPARSE_PATH="/reboot_fcu.sh"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
@@ -125,8 +124,8 @@ validate_workspace_layout() {
     die "start_onboard_control.sh is missing from ${WORKSPACE_ROOT}"
   [[ -x "${WORKSPACE_ROOT}/stop_onboard_control.sh" ]] ||
     die "stop_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
-  [[ -x "${WORKSPACE_ROOT}/build_onboard_control.sh" ]] ||
-    die "build_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
+  [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" ]] ||
+    die "src/onboard_control/deploy/build_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
 }
 
 show_config() {
@@ -157,7 +156,6 @@ update_checkout() {
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
     "${DRONE_START_SPARSE_PATH}" "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_STOP_SPARSE_PATH}" \
-    "${ONBOARD_BUILD_SPARSE_PATH}" \
     "${FCU_REBOOT_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"
   validate_workspace_layout

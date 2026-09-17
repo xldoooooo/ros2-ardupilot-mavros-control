@@ -45,7 +45,6 @@ git sparse-checkout set \
   '/start_drone/' \
   '/start_onboard_control.sh' \
   '/stop_onboard_control.sh' \
-  '/build_onboard_control.sh' \
   '/reboot_fcu.sh'
 git checkout main
 ```
@@ -65,7 +64,7 @@ stop_onboard_video.sh
 start_drone/
 start_onboard_control.sh
 stop_onboard_control.sh
-build_onboard_control.sh
+src/onboard_control/deploy/build_onboard_control.sh
 reboot_fcu.sh
 src/onboard_control/scripts/reboot_fcu_client.py
 ```
@@ -104,14 +103,14 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 地面开发机和飞机都可以直接从仓库根目录执行同一个快捷入口：
 
 ```bash
-./build_onboard_control.sh
+./src/onboard_control/deploy/build_onboard_control.sh
 ```
 
 默认以 Release 模式重建飞行包和独立修正接口/节点。修正节点构建不启动相机或飞控。若需同时执行依赖检查、
 单元测试和隔离 smoke：
 
 ```bash
-./build_onboard_control.sh --verify
+./src/onboard_control/deploy/build_onboard_control.sh --verify
 ```
 
 脚本按主机自动选择 Jazzy/Humble，不启动、停止或重启机载服务，也不发送飞行命令。若构建时服务
@@ -154,7 +153,7 @@ setpoint_messages=0
 `correction_interfaces`、独立 `correction_service/` 与 `video_service/`、
 根目录修正服务启停入口、
 根目录视频启停入口、`start_drone/` 分步入口、`start_onboard_control.sh` 一键入口、
-`stop_onboard_control.sh` 飞控彻底停止入口和根目录 `build_onboard_control.sh`。更新使用
+`stop_onboard_control.sh` 飞控彻底停止入口和部署目录 `src/onboard_control/deploy/build_onboard_control.sh`。更新使用
 `git pull --ff-only`，
 不会 reset 或覆盖本地修改，也不会把仅供地面使用的
 `start_ground_all.sh` 检出到无人机。

@@ -84,7 +84,7 @@ sudo dpkg --audit
    ROS_APT_MIRROR=https://mirrors.ustc.edu.cn/ros2/ubuntu \
      ./src/onboard_control/deploy/setup_onboard_dependencies.sh --with-odin-deps --with-camera-deps
    python3 -m venv --system-site-packages .venv
-   ./build_onboard_control.sh --verify
+   ./src/onboard_control/deploy/build_onboard_control.sh --verify
    ```
 
    具体组件、下载校验及故障处理见 [ONBOARD_DEPENDENCIES.md](ONBOARD_DEPENDENCIES.md)。

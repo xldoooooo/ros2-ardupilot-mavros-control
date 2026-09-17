@@ -53,8 +53,9 @@
   colcon test-result --verbose
   ```
 
-- 地面端或飞机重建飞行包和独立修正接口/节点可运行 `./build_onboard_control.sh`；`--verify`
+- 地面端或飞机重建飞行包和独立修正接口/节点可运行 `./src/onboard_control/deploy/build_onboard_control.sh`；`--verify`
   追加依赖、ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
+  构建入口已迁入部署目录；两台飞机尚未同步此次路径迁移，下次同步须一并更新调用方。
 - `README.md` 当前存在并维护常用启动/停止说明；Ubuntu 22.04 通用部署见
   `DEPLOY_UBUNTU_2204.md`，机载最小部署见
   `src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md`。
@@ -443,7 +444,7 @@
 
 - 机载 sparse checkout 清单包含飞行 ROS 包、`correction_interfaces`、独立
   `correction_service/`、`video_service/`、根目录视频启停脚本、`start_drone/`、
-  `start_onboard_control.sh`、`stop_onboard_control.sh` 和 `build_onboard_control.sh`；不得复制
+  `start_onboard_control.sh`、`stop_onboard_control.sh` 和 `src/onboard_control/deploy/build_onboard_control.sh`；不得复制
   开发机的 `build/`、`install/` 到飞机。
 - 文档当前的 `'/video_service/'` Git sparse 规则会拉整个目录；开发树约 90 MB，主要是 x86
   MediaMTX 与历史 demo。当前 Jetson 实际通过选择性 rsync 部署，目录约 440 KB，虽含 Qt 面板

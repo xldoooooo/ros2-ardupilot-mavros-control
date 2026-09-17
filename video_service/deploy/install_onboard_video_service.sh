@@ -75,7 +75,7 @@ done
 
 # 新 sparse checkout 不要求用户先记住另一条构建命令。
 if [[ ! -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
-  "${WORKSPACE_ROOT}/build_onboard_control.sh" --verify
+  "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" --verify
 fi
 
 run_root install -d -m 0755 /etc/ros2-ardupilot
