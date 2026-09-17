@@ -35,7 +35,7 @@
   `/home/nvidia/ros2-ardupilot-mavros-control`。旧 `xld@192.168.112.186` 的
   Ubuntu 22.04/Humble 结果只属于历史基线，不得当作当前飞机状态。
 - Python 必须使用项目 `.venv`。地面站入口为 `ground_station.py`，推荐通过
-  `./start_ground_all.sh` 启动；`--check-environment` 只检查环境，不创建飞行会话。
+  `./scripts/ground/start_ground_all.sh` 启动；`--check-environment` 只检查环境，不创建飞行会话。
 - 当前 ROS 工作区包含：
   - `src/guided_interfaces`：地面站与机载端共享的唯一高层协议；
   - `src/correction_interfaces`：AprilTag-Odin 修正链独立接口 2.0；
@@ -55,7 +55,8 @@
 
 - 地面端或飞机重建飞行包和独立修正接口/节点可运行 `./src/onboard_control/deploy/build_onboard_control.sh`；`--verify`
   追加依赖、ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
-  构建入口已迁入部署目录；两台飞机尚未同步此次路径迁移，下次同步须一并更新调用方。
+  构建入口已迁入部署目录；操作脚本集中于 `scripts/ground/`、`scripts/onboard/`，共享函数位于
+  `scripts/lib/`。两台飞机尚未同步这两次路径迁移，下次同步须更新调用方及三个 systemd unit。
 - `README.md` 当前存在并维护常用启动/停止说明；Ubuntu 22.04 通用部署见
   `DEPLOY_UBUNTU_2204.md`，机载最小部署见
   `src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md`。
@@ -100,10 +101,10 @@
 
 ### 飞控热重启与当前部署差异
 
-- Task33 的 GUI“重启机载飞控”和机载 `./reboot_fcu.sh` 共用 `FlightCommand.COMMAND_REBOOT_FCU`。
+- Task33 的 GUI“重启机载飞控”和机载 `./scripts/onboard/reboot_fcu.sh` 共用 `FlightCommand.COMMAND_REBOOT_FCU`。
   服务端要求新鲜 FCU/落地证据、未解锁、待机、无任务；GUI 仅实机会话启用并默认取消确认。
   脚本只允许本机已部署并运行 onboard_control，使用项目 `.venv` 和短租约，不绕过机载门控。
-  命令行客户端归属 `src/onboard_control/scripts/reboot_fcu_client.py`；根入口与客户端须一起同步。
+  命令行客户端归属 `src/onboard_control/scripts/reboot_fcu_client.py`；机载 Shell 入口与客户端须一起同步。
 - 独立 `fcu_reboot.cpp` 用普通 MAVLink 246/param1=1 重启；ACK 不算成功，必须观察 FCU
   TIMESYNC 启动时钟回退。重启期间拒绝飞行/原点命令，不恢复任务，不解锁或起飞。
   重启前/后主动请求 GPS_GLOBAL_ORIGIN，恢复此前已回读原点，重新获取参数/消息配置，
@@ -127,8 +128,8 @@
 ### 独立摄像头服务
 
 - `video_service/` 与 ROS/飞行生命周期解耦。地面站只通过 detached Qt 面板打开它；关闭面板
-  不会停止正在运行的推流或录像。机载视频节点使用根目录 `start_onboard_video.sh` 和独立
-  systemd unit，严禁加入 `start_onboard_control.sh` 的共同故障域。面板启停直接调用
+  不会停止正在运行的推流或录像。机载视频节点使用 `scripts/onboard/start_onboard_video.sh` 和独立
+  systemd unit，严禁加入 `scripts/onboard/start_onboard_control.sh` 的共同故障域。面板启停直接调用
   `/video_service/set_video_state`，不得依赖 onboard_control 或飞行租约在线。
 - 生产链只打开一次 V4L2 摄像头，使用 FFmpeg 同时发布 MediaMTX RTSP/TCP 和保存录像；截图从
   本机 RTSP 获取，不会第二次占用摄像头。
@@ -140,7 +141,7 @@
   抓拍只在机载到达判定成立后、推进航点索引前异步发布。
 - MediaMTX 已从当前源码树移除，地面 amd64 与飞机 ARM64 都必须把各自架构的 v1.20.0 安装到
   系统 `/usr/local/bin/mediamtx`；默认配置和代码不再回退到仓库内二进制。
-- 当前地面站已安装并实测 amd64 MediaMTX v1.20.0；`setup_ground_station.sh` 会检查 FFmpeg、
+- 当前地面站已安装并实测 amd64 MediaMTX v1.20.0；`scripts/ground/setup_ground_station.sh` 会检查 FFmpeg、
   ffprobe、v4l2-ctl、固定 MediaMTX 路径及二进制能否在本机执行。删除仓库二进制后若旧面板后台
   仍存活，必须先对 `camera_service.py` 执行 `shutdown`，否则它仍会使用进程内存中的旧路径。
 - `video_service/config/intrinsics.yaml` 仍保存 Wasintek 1920×1080 标定内参；Wasintek 与 UQ212
@@ -158,8 +159,8 @@
 ### 独立 AprilTag-Odin 修正服务
 
 - 飞机开机自启 unit 为 `/etc/systemd/system/odin-correction.service`，与飞控和视频 unit 独立。
-  unit 与人工前台启动共用根目录 `start_onboard_correction.sh`；
-  `stop_onboard_correction.sh` 会停止 unit 并清理仅属于修正节点的残留进程。启停脚本都不管理
+  unit 与人工前台启动共用 `scripts/onboard/start_onboard_correction.sh`；
+  `scripts/onboard/stop_onboard_correction.sh` 会停止 unit 并清理仅属于修正节点的残留进程。启停脚本都不管理
   Odin、extnav、MAVROS、onboard_control 或视频；停止修正节点也不会清除 extnav
   已应用的 active correction。
 - `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
@@ -423,7 +424,7 @@
 - 机载默认配置位于 `video_service/config/camera.conf` 与 `lens.conf`，媒体目录为
   `/home/share`、`/home/share/jpg`。默认模式为 H.264 1920×1080@60，默认手动曝光为 25、增益
   为 200。FFmpeg 按编码、分辨率和帧率打开设备且 RTSP 可读后，服务等待 1 秒，再分步写入并
-  读回全部镜头参数；设置或读回失败只令视频失败。飞机上手工运行 `start_onboard_video.sh`
+  读回全部镜头参数；设置或读回失败只令视频失败。飞机上手工运行 `scripts/onboard/start_onboard_video.sh`
   与 systemd 都优先使用 `/etc/ros2-ardupilot/camera.conf` 和 `lens.conf`，仅未部署系统配置时
   才回退仓库默认文件。
 - 同型号 Wasintek 已在开发机和当前 Jetson 真机验证 H.264 1080p30/60、H.264 720p120 与 MJPEG
@@ -443,41 +444,41 @@
 ## 当前机载部署事实
 
 - 机载 sparse checkout 清单包含飞行 ROS 包、`correction_interfaces`、独立
-  `correction_service/`、`video_service/`、根目录视频启停脚本、`start_drone/`、
-  `start_onboard_control.sh`、`stop_onboard_control.sh` 和 `src/onboard_control/deploy/build_onboard_control.sh`；不得复制
+  `correction_service/`、`video_service/`、机载视频启停脚本、`scripts/lib/`、`scripts/onboard/components/`、
+  `scripts/onboard/start_onboard_control.sh`、`scripts/onboard/stop_onboard_control.sh` 和 `src/onboard_control/deploy/build_onboard_control.sh`；不得复制
   开发机的 `build/`、`install/` 到飞机。
 - 文档当前的 `'/video_service/'` Git sparse 规则会拉整个目录；开发树约 90 MB，主要是 x86
   MediaMTX 与历史 demo。当前 Jetson 实际通过选择性 rsync 部署，目录约 440 KB，虽含 Qt 面板
   源码但不含上述大文件；机载 unit 不导入 PySide6、不创建窗口。正式 Git 部署前应决定目录级
   common/onboard/ground 拆分，不能误称当前飞机已经按整目录 sparse 拉取。
-- `stop_onboard_video.sh` 默认停止独立 unit 并彻底清理残留视频节点、配置 RTSP 端口和真机摄像头
+- `scripts/onboard/stop_onboard_video.sh` 默认停止独立 unit 并彻底清理残留视频节点、配置 RTSP 端口和真机摄像头
   占用者；`--restart` 清理后只重启 `video-service.service`。它不得调用飞控停止入口或操作飞控
   systemd unit。
 - 新飞机的飞控、视频和 Odin 修正是三个独立 unit。飞控和视频继续使用各自既有安装器；修正链
   先运行带定点备份的 `install_extnav_correction.sh`，再运行
   `install_correction_service.sh`。更新共享 overlay 的安装器遇到 active 飞控会拒绝，任何安装器
   都不得在未知飞行状态下重启飞控。
-- `start_onboard_control.sh --check` 只做发现和配置检查，不启动组件；正式运行会统一启动 MAVROS、Odin、
-  extnav 和 onboard，并在已有实例时拒绝重复启动。`stop_onboard_control.sh` 同时停止 systemd
+- `scripts/onboard/start_onboard_control.sh --check` 只做发现和配置检查，不启动组件；正式运行会统一启动 MAVROS、Odin、
+  extnav 和 onboard，并在已有实例时拒绝重复启动。`scripts/onboard/stop_onboard_control.sh` 同时停止 systemd
   服务和其他终端手工启动的项目组件，并验证无残留。
-- 正式入口命名已统一：机载飞控为根目录 `start_onboard_control.sh` / `stop_onboard_control.sh`，完整
-  地面站安装为 `setup_ground_station.sh`。旧的 `start_drone_all.sh`、`stop_onboard_service.sh`、
+- 正式入口命名已统一：机载飞控为 `scripts/onboard/start_onboard_control.sh` / `scripts/onboard/stop_onboard_control.sh`，完整
+  地面站安装为 `scripts/ground/setup_ground_station.sh`。旧的 `start_drone_all.sh`、`stop_onboard_service.sh`、
   `setup_project.sh` 已从当前树和真机工作区移除；真机 unit 与 sparse 配置均指向新名称。
-- `setup_ground_station.sh` 是地面站唯一项目安装入口；它会构建地面仿真、飞行和修正面板所需
+- `scripts/ground/setup_ground_station.sh` 是地面站唯一项目安装入口；它会构建地面仿真、飞行和修正面板所需
   的接口/源码，但不会安装或启用飞机的三个 systemd unit。各 deploy/install 脚本仅供机载计算机
   使用。
 - 机载环境文件为 `/etc/ros2-ardupilot/onboard.env`。历史已确认的飞机串口是
   `/dev/ttyTHS1:460800`，但新部署优先使用人工确认的 `/dev/serial/by-id`；多个串口或 overlay
   候选时必须安全失败，不允许猜测。
-- `start_drone/start_odin.sh` 与 `start_drone/start_extnav.sh` 是两个独立前台入口，都会自动读取
+- `scripts/onboard/components/start_odin.sh` 与 `scripts/onboard/components/start_extnav.sh` 是两个独立前台入口，都会自动读取
   `/etc/ros2-ardupilot/onboard.env`；无需手动 source 任何 overlay，且不会启动 MAVROS、
   onboard_control、correction_service 或视频服务。Odin 厂商 launch 在无显示 SSH 中会让
   RViz 报错退出，但不影响 Odin 主数据链；extnav 目前在 Ctrl+C 时会因外部节点重复
   `rcl_shutdown` 打印 traceback 并返回非零，但进程能停止且无残留。
 - 2026-09-16 新飞机 `.169` 与 refresh 飞机 `.186` 均已定点同步上述三个启动文件；
   refresh 机的 Odin/extnav overlay 分别在 `/home/nvidia/catkin_ws` 和
-  `/home/nvidia/vrpn_mavros`，从 `start_drone/` 目录直接执行两入口已通过未解锁台架验证。
-- refresh 飞机 `.186` 也已同步根目录 `start_onboard_correction.sh` /
+  `/home/nvidia/vrpn_mavros`，当时从旧 `start_drone/` 目录直接执行两入口已通过未解锁台架验证。
+- refresh 飞机 `.186` 也已同步旧根目录 `start_onboard_correction.sh` /
   `stop_onboard_correction.sh`，实际 unit 与人工前台启动共用前者；已验证 2.0 节点默认
   idle、相机关闭以及停止零残留，该机终态保持 unit disabled/inactive。
 - systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、

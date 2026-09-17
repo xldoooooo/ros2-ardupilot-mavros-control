@@ -37,15 +37,16 @@ git sparse-checkout set \
   '/src/correction_interfaces/' \
   '/src/onboard_control/' \
   '/correction_service/' \
-  '/start_onboard_correction.sh' \
-  '/stop_onboard_correction.sh' \
+  '/scripts/onboard/start_onboard_correction.sh' \
+  '/scripts/onboard/stop_onboard_correction.sh' \
   '/video_service/' \
-  '/start_onboard_video.sh' \
-  '/stop_onboard_video.sh' \
-  '/start_drone/' \
-  '/start_onboard_control.sh' \
-  '/stop_onboard_control.sh' \
-  '/reboot_fcu.sh'
+  '/scripts/onboard/start_onboard_video.sh' \
+  '/scripts/onboard/stop_onboard_video.sh' \
+  '/scripts/onboard/components/' \
+  '/scripts/lib/' \
+  '/scripts/onboard/start_onboard_control.sh' \
+  '/scripts/onboard/stop_onboard_control.sh' \
+  '/scripts/onboard/reboot_fcu.sh'
 git checkout main
 ```
 
@@ -56,20 +57,37 @@ src/guided_interfaces/
 src/correction_interfaces/
 src/onboard_control/
 correction_service/
-start_onboard_correction.sh
-stop_onboard_correction.sh
+scripts/onboard/start_onboard_correction.sh
+scripts/onboard/stop_onboard_correction.sh
 video_service/
-start_onboard_video.sh
-stop_onboard_video.sh
-start_drone/
-start_onboard_control.sh
-stop_onboard_control.sh
+scripts/onboard/start_onboard_video.sh
+scripts/onboard/stop_onboard_video.sh
+scripts/onboard/components/
+scripts/lib/
+scripts/onboard/start_onboard_control.sh
+scripts/onboard/stop_onboard_control.sh
 src/onboard_control/deploy/build_onboard_control.sh
-reboot_fcu.sh
+scripts/onboard/reboot_fcu.sh
 src/onboard_control/scripts/reboot_fcu_client.py
 ```
 
 不要复制开发机的 `build/` 或 `install/`。目标机必须针对自身 ROS 发行版和 aarch64 原生编译。
+
+### 从旧 Shell 目录布局迁移
+
+地面入口现位于 `scripts/ground/`，机载入口位于 `scripts/onboard/`，分组件入口位于
+`scripts/onboard/components/`，共享函数位于 `scripts/lib/`。原根目录入口不再保留。
+已有 sparse checkout 须在拉取前纳入新目录，否则旧更新脚本的清单不会检出这些文件：
+
+```bash
+git sparse-checkout add '/scripts/onboard/' '/scripts/lib/'
+git pull --ff-only origin main
+```
+
+在允许停止服务的维护窗口完成迁移；同步后，按各组件部署步骤更新飞控、视频和修正三个
+systemd unit，使 `ExecStart` 使用新入口，再执行 `sudo systemctl daemon-reload`。
+仅拉取源码不会更新已安装的 unit；旧 unit 在后续启动时会找不到原路径。
+本轮目录整理未部署飞机，两个机体下次同步均须完成上述步骤，并包含此前构建入口的迁移。
 
 ### GitHub 直连超时时
 
@@ -151,15 +169,15 @@ setpoint_messages=0
 
 `update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护飞行 ROS 包、
 `correction_interfaces`、独立 `correction_service/` 与 `video_service/`、
-根目录修正服务启停入口、
-根目录视频启停入口、`start_drone/` 分步入口、`start_onboard_control.sh` 一键入口、
-`stop_onboard_control.sh` 飞控彻底停止入口和部署目录 `src/onboard_control/deploy/build_onboard_control.sh`。更新使用
+机载修正服务启停入口、
+机载视频启停入口、`scripts/onboard/components/` 分步入口、`scripts/onboard/start_onboard_control.sh` 一键入口、
+`scripts/onboard/stop_onboard_control.sh` 飞控彻底停止入口和部署目录 `src/onboard_control/deploy/build_onboard_control.sh`。更新使用
 `git pull --ff-only`，
 不会 reset 或覆盖本地修改，也不会把仅供地面使用的
-`start_ground_all.sh` 检出到无人机。
+`scripts/ground/start_ground_all.sh` 检出到无人机。
 
 `update` 只更新源码，不会替代目标机原生构建。源码与 `install/` 中
-`guided_interfaces` 或 `onboard_control` 的包版本不一致时，`start_onboard_control.sh` 会在启动
+`guided_interfaces` 或 `onboard_control` 的包版本不一致时，`scripts/onboard/start_onboard_control.sh` 会在启动
 任何飞行栈进程前安全失败，并提示先执行 `onboard_workspace.sh verify`；禁止绕过该检查继续
 运行旧飞行协议二进制。`correction_interfaces` 不加入该飞行启动硬门：正常构建仍会安装它，
 但缺失时 extnav 必须退化为 identity，而不能切断原 Odin→MAVROS 链。
@@ -221,7 +239,7 @@ Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jaz
 首次自动发现存在多个串口、多个 Odin/extnav overlay 或缺少硬件包时，`--check` 会明确失败。此时
 应人工核对并编辑 `/etc/ros2-ardupilot/onboard.env`，不能为了“一键”而猜测飞控设备。
 
-机载工作区根目录的 `start_onboard_control.sh` 自动发现并统一启动四个组件：
+机载工作区`scripts/onboard/start_onboard_control.sh` 自动发现并统一启动四个组件：
 
 - MAVROS（优先唯一的 `/dev/serial/by-id`，波特率默认 460800）；
 - Odin 驱动；
@@ -231,8 +249,8 @@ Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jaz
 在真机桌面终端中执行一行命令：
 
 ```bash
-bash start_onboard_control.sh --check
-bash start_onboard_control.sh
+bash scripts/onboard/start_onboard_control.sh --check
+bash scripts/onboard/start_onboard_control.sh
 ```
 
 脚本默认让四个组件都使用 ROS domain 0，并等待以下只读安全条件成立后打印
@@ -274,14 +292,14 @@ READY 使用单个持续订阅和 GNU `timeout` 的 120 秒相对定时器，不
 
 ```bash
 MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> \
-  bash start_onboard_control.sh --check
+  bash scripts/onboard/start_onboard_control.sh --check
 ```
 
 Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会话中，RViz 会因没有
 `DISPLAY` 而退出，但 Odin 驱动、外部定位桥和其余飞行数据链仍可运行；需要 RViz 时应从
 真机桌面终端启动。该无显示告警不影响其余三条数据链是否达到 `READY`，但仍应单独记录和处理。
 
-分步入口现集中在 `start_drone/`，包含 `start_link.sh`、`start_mavros.sh`、
+分步入口现集中在 `scripts/onboard/components/`，包含 `start_link.sh`、`start_mavros.sh`、
 `start_odin.sh` 和 `start_extnav.sh`。两个硬件脚本会自动读取
 `/etc/ros2-ardupilot/onboard.env`，因此可在两个终端中分别直接一键启动 Odin 和 extnav；
 两者都不启动 MAVROS、onboard_control、修正或视频服务。
@@ -296,7 +314,7 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 
 任务 22.5 的视频节点必须另外使用
 `video_service/deploy/video-service.service.example`。不要把它加入
-`start_onboard_control.sh` 的受监督子进程，也不要在 systemd 中对飞控服务声明
+`scripts/onboard/start_onboard_control.sh` 的受监督子进程，也不要在 systemd 中对飞控服务声明
 依赖。
 
 任务 27 的修正节点同样使用独立的
@@ -306,12 +324,12 @@ Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会
 ```bash
 ./correction_service/deploy/install_extnav_correction.sh
 ./correction_service/deploy/install_correction_service.sh
-./start_onboard_correction.sh
-./stop_onboard_correction.sh
+./scripts/onboard/start_onboard_correction.sh
+./scripts/onboard/stop_onboard_correction.sh
 ```
 
 extnav 安装器覆盖生产源前会创建带 SHA-256 的定点备份，只构建、不重启飞控；修正服务启动后
-保持 idle、相机关闭。后两个根目录脚本分别用于前台启动和彻底停止该独立 unit；
+保持 idle、相机关闭。后两个机载操作脚本分别用于前台启动和彻底停止该独立 unit；
 停止修正节点不会清除 extnav 已应用的 active correction。完整接口、Tag 坐标约定和 clear 方法见
 `correction_service/README.md`。`odin-correction.service` 不得对飞控 unit 设置
 `Requires=`、`PartOf=` 或 `BindsTo=`。
@@ -336,14 +354,14 @@ TIMESYNC 重新稳定，并重新核对 FCU、本地位置和推力语义。
 发送 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN`（246，param1=1，其余参数为0）。
 不会解锁、起飞、恢复飞行任务或重启机载计算机。
 
-无地面站时，在飞机工作区执行 `./reboot_fcu.sh`。脚本要求本机存在机载环境文件且正在运行
+无地面站时，在飞机工作区执行 `./scripts/onboard/reboot_fcu.sh`。脚本要求本机存在机载环境文件且正在运行
 该工作区的 onboard_control，然后用项目 Python 客户端申请短租约、调用同一个 `FlightCommand`
 并等待终态。如果地面站持有租约，脚本会拒绝，请先断开地面站。地面开发机直接执行会被拒绝。
 机载 Python 环境须预先创建（已有环境不必重建）：
 
 ```bash
 python3 -m venv --system-site-packages .venv
-./reboot_fcu.sh
+./scripts/onboard/reboot_fcu.sh
 ```
 
 变更了 `ControlStatus` 的落地和重启状态字段，必须同步构建 `guided_interfaces` 和

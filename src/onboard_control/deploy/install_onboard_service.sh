@@ -55,8 +55,8 @@ esac
 [[ -f "${ENV_TEMPLATE}" ]] || die "missing environment template: ${ENV_TEMPLATE}"
 [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" ]] ||
   die "missing build entry: ${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh"
-[[ -x "${WORKSPACE_ROOT}/start_onboard_control.sh" ]] ||
-  die "missing integrated launcher: ${WORKSPACE_ROOT}/start_onboard_control.sh"
+[[ -x "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh" ]] ||
+  die "missing integrated launcher: ${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh"
 
 if command systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
   die "${SERVICE_NAME} is active; stop it only in a confirmed safe maintenance window"
@@ -105,7 +105,7 @@ fi
 
 # --check 只做硬件路径和 ROS 包发现；任何歧义都在启动 systemd 前明确失败。
 ONBOARD_ENV_FILE=/etc/ros2-ardupilot/onboard.env \
-  "${WORKSPACE_ROOT}/start_onboard_control.sh" --check
+  "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh" --check
 run_root systemctl enable --now "${SERVICE_NAME}"
 
 printf '[onboard-install] Installed and started %s for %s\n' \

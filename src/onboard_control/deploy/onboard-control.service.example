@@ -14,7 +14,7 @@ WorkingDirectory=ONBOARD_WORKSPACE_PATH
 EnvironmentFile=-/etc/ros2-ardupilot/onboard.env
 Environment=HOME=ONBOARD_HOME_PATH
 Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH
-ExecStart=/bin/bash -lc 'exec "${ONBOARD_WORKSPACE}/start_onboard_control.sh"'
+ExecStart=/bin/bash -lc 'exec "${ONBOARD_WORKSPACE}/scripts/onboard/start_onboard_control.sh"'
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30

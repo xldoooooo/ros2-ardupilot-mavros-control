@@ -9,8 +9,8 @@ from xml.etree import ElementTree
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORRECTION_ROOT = PROJECT_ROOT / "correction_service"
-CORRECTION_START = PROJECT_ROOT / "start_onboard_correction.sh"
-CORRECTION_STOP = PROJECT_ROOT / "stop_onboard_correction.sh"
+CORRECTION_START = PROJECT_ROOT / "scripts/onboard/start_onboard_correction.sh"
+CORRECTION_STOP = PROJECT_ROOT / "scripts/onboard/stop_onboard_correction.sh"
 
 
 def _text(path: Path) -> str:
@@ -72,7 +72,7 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
     assert help_result.returncode == 0, help_result.stderr
     assert "--install-only" in help_result.stdout
 
-    assert "ExecStart=ONBOARD_WORKSPACE_PATH/start_onboard_correction.sh" in unit
+    assert "ExecStart=ONBOARD_WORKSPACE_PATH/scripts/onboard/start_onboard_correction.sh" in unit
     assert "CORRECTION_CAMERA_OVERLAY_SETUP" not in unit
     assert "SupplementaryGroups=video" in unit
     assert "KillMode=control-group" in unit
@@ -147,12 +147,12 @@ def test_onboard_sparse_checkout_and_build_include_correction_packages() -> None
     helper = _text(
         PROJECT_ROOT / "src" / "onboard_control" / "deploy" / "onboard_workspace.sh"
     )
-    launcher = _text(PROJECT_ROOT / "start_onboard_control.sh")
+    launcher = _text(PROJECT_ROOT / "scripts/onboard/start_onboard_control.sh")
 
     assert 'CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"' in helper
     assert 'CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"' in helper
-    assert 'CORRECTION_START_SPARSE_PATH="/start_onboard_correction.sh"' in helper
-    assert 'CORRECTION_STOP_SPARSE_PATH="/stop_onboard_correction.sh"' in helper
+    assert 'CORRECTION_START_SPARSE_PATH="/scripts/onboard/start_onboard_correction.sh"' in helper
+    assert 'CORRECTION_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_correction.sh"' in helper
     assert (
         "guided_interfaces correction_interfaces onboard_control correction_service"
         in helper

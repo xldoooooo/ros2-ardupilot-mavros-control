@@ -10,7 +10,7 @@ declare -A target_pids=()
 
 usage() {
   cat <<'EOF'
-Usage: ./stop_onboard_correction.sh
+Usage: ./scripts/onboard/stop_onboard_correction.sh
 
 Stop odin-correction.service and any residual manually launched correction
 node. This does not stop Odin, extnav, MAVROS, onboard_control, or video.

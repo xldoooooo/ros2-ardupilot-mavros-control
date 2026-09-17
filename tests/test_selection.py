@@ -27,6 +27,10 @@ from tests import run
         ("tests/test_camera_service.py", {"video"}),
         ("tests/test_ros_controller.py", {"flight", "waypoints"}),
         ("README.md", set()),
+        ("scripts/lib/runtime_common.bash", {"runtime", "flight", "video", "correction"}),
+        ("scripts/onboard/components/start_link.sh", {"runtime", "flight", "video", "correction"}),
+        ("scripts/ground/start_ground_all.sh", {"runtime"}),
+        ("scripts/onboard/reboot_fcu.sh", {"flight"}),
     ],
 )
 def test_independent_and_shared_boundaries(path: str, expected: set[str]) -> None:

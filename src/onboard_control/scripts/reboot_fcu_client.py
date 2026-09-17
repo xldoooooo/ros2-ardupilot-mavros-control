@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Onboard reboot client: acquire a lease, request the shared command and print results.
 
-Run through reboot_fcu.sh; never calls MAVROS, arms, takes off or restarts a process.
+Run through scripts/onboard/reboot_fcu.sh; never calls MAVROS, arms, takes off or restarts a process.
 """
 import time
 import uuid

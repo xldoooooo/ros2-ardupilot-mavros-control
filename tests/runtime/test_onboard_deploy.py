@@ -14,13 +14,13 @@ from ground_station_core.config import PROJECT_ROOT
 DEPLOY_DIR = PROJECT_ROOT / "src" / "onboard_control" / "deploy"
 WORKSPACE_SCRIPT = DEPLOY_DIR / "onboard_workspace.sh"
 DEPLOYMENT_GUIDE = DEPLOY_DIR / "ONBOARD_DEPLOYMENT.md"
-DRONE_START_DIRECTORY = PROJECT_ROOT / "start_drone"
-INTEGRATED_START = PROJECT_ROOT / "start_onboard_control.sh"
-INTEGRATED_STOP = PROJECT_ROOT / "stop_onboard_control.sh"
-GROUND_START = PROJECT_ROOT / "start_ground_all.sh"
-GROUND_SETUP = PROJECT_ROOT / "setup_ground_station.sh"
+DRONE_START_DIRECTORY = PROJECT_ROOT / "scripts/onboard/components"
+INTEGRATED_START = PROJECT_ROOT / "scripts/onboard/start_onboard_control.sh"
+INTEGRATED_STOP = PROJECT_ROOT / "scripts/onboard/stop_onboard_control.sh"
+GROUND_START = PROJECT_ROOT / "scripts/ground/start_ground_all.sh"
+GROUND_SETUP = PROJECT_ROOT / "scripts/ground/setup_ground_station.sh"
 ONBOARD_BUILD = DEPLOY_DIR / "build_onboard_control.sh"
-RUNTIME_HELPERS = DRONE_START_DIRECTORY / "runtime_common.bash"
+RUNTIME_HELPERS = PROJECT_ROOT / "scripts/lib/runtime_common.bash"
 ONBOARD_INSTALLER = DEPLOY_DIR / "install_onboard_service.sh"
 
 
@@ -80,7 +80,7 @@ def test_onboard_service_installer_builds_and_installs_integrated_unit() -> None
     for required in (
         "build_onboard_control.sh\" --verify",
         "/etc/ros2-ardupilot/onboard.env",
-        "start_onboard_control.sh\" --check",
+        "scripts/onboard/start_onboard_control.sh\" --check",
         "systemctl enable --now",
         "systemctl is-active",
         "it was not enabled or started",
@@ -111,8 +111,9 @@ def test_onboard_service_install_only_skips_hardware_and_service_start(tmp_path)
         target.chmod(0o755 if source == ONBOARD_INSTALLER else 0o644)
 
     call_log = tmp_path / "calls.log"
-    for name in ("build_onboard_control.sh", "start_onboard_control.sh"):
+    for name in ("build_onboard_control.sh", "scripts/onboard/start_onboard_control.sh"):
         stub = (deploy if name == "build_onboard_control.sh" else workspace) / name
+        stub.parent.mkdir(parents=True, exist_ok=True)
         stub.write_text(
             '#!/usr/bin/env bash\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$CALL_LOG"\n',
             encoding="utf-8",
@@ -406,13 +407,14 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/src/guided_interfaces/",
         "/src/onboard_control/",
         "/video_service/",
-        "/start_onboard_correction.sh",
-        "/stop_onboard_correction.sh",
-        "/start_onboard_video.sh",
-        "/stop_onboard_video.sh",
-        "/start_drone/",
-        "/start_onboard_control.sh",
-        "/stop_onboard_control.sh",
+        "/scripts/onboard/start_onboard_correction.sh",
+        "/scripts/onboard/stop_onboard_correction.sh",
+        "/scripts/onboard/start_onboard_video.sh",
+        "/scripts/onboard/stop_onboard_video.sh",
+        "/scripts/onboard/components/",
+        "/scripts/lib/",
+        "/scripts/onboard/start_onboard_control.sh",
+        "/scripts/onboard/stop_onboard_control.sh",
     ):
         assert sparse_path in script
         assert sparse_path in guide
@@ -421,7 +423,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     assert "./src/onboard_control/deploy/install_onboard_service.sh" in guide
     assert "/ground_station_core/" not in script
     assert "/src/guided_sim/" not in script
-    assert "/start_ground_all.sh" not in script
+    assert "/scripts/ground/start_ground_all.sh" not in script
     assert "sparse-checkout set --no-cone" not in script
 
     assert 'DEFAULT_SMOKE_DOMAIN_ID="231"' in script
@@ -463,7 +465,7 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "User=ONBOARD_USER" in service
     assert "/opt/ros/jazzy" not in service
     assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
-    assert '${ONBOARD_WORKSPACE}/start_onboard_control.sh' in service
+    assert '${ONBOARD_WORKSPACE}/scripts/onboard/start_onboard_control.sh' in service
     assert "mavros.service" not in service
     assert "systemd-time-wait-sync.service" not in service
     assert "time-sync.target" not in service

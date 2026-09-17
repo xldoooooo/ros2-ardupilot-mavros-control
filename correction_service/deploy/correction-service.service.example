@@ -15,7 +15,7 @@ Environment=ROS_DOMAIN_ID=0
 Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 Environment=CORRECTION_CONFIG_DIR=ONBOARD_WORKSPACE_PATH/correction_service/config
 EnvironmentFile=-/etc/ros2-ardupilot/correction.env
-ExecStart=ONBOARD_WORKSPACE_PATH/start_onboard_correction.sh
+ExecStart=ONBOARD_WORKSPACE_PATH/scripts/onboard/start_onboard_correction.sh
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=15

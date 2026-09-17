@@ -86,13 +86,13 @@ ws://127.0.0.1:8581/ws
 ### 4.2 启动地面站和仿真
 
 ```bash
-bash start_ground_all.sh
+bash scripts/ground/start_ground_all.sh
 ```
 
 如果希望通讯模块启动但不自动连接：
 
 ```bash
-UPSTREAM_WS_AUTO_CONNECT=0 bash start_ground_all.sh
+UPSTREAM_WS_AUTO_CONNECT=0 bash scripts/ground/start_ground_all.sh
 ```
 
 然后执行：
@@ -382,4 +382,3 @@ source install/setup.bash
 - 02 会同步 GUI 航点；
 - 03/05 在未起飞时仍拒绝；
 - 状态 topic 和返回字段没有被兼容修改破坏。
-

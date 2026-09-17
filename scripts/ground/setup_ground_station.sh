@@ -3,8 +3,8 @@
 
 set -Eeuo pipefail
 
-readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly runtime_helpers="${project_root}/start_drone/runtime_common.bash"
+readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly runtime_helpers="${project_root}/scripts/lib/runtime_common.bash"
 [[ -r "${runtime_helpers}" ]] || {
   echo "[ground-setup] runtime discovery helper is missing" >&2
   exit 1
@@ -74,4 +74,4 @@ colcon test \
 colcon test-result --verbose
 
 "${project_root}/.venv/bin/python3" ground_station.py --check-environment
-echo "[ground-setup] setup passed; run: bash start_ground_all.sh"
+echo "[ground-setup] setup passed; run: bash scripts/ground/start_ground_all.sh"

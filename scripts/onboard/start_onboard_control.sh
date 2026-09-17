@@ -3,8 +3,8 @@
 
 set -Eeuo pipefail
 
-readonly project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-readonly runtime_helpers="${project_root}/start_drone/runtime_common.bash"
+readonly project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+readonly runtime_helpers="${project_root}/scripts/lib/runtime_common.bash"
 readonly onboard_setup="${project_root}/install/setup.bash"
 [[ -r "${runtime_helpers}" ]] || {
   echo "[startup] runtime discovery helper is missing: ${runtime_helpers}" >&2
@@ -90,7 +90,7 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "[startup] discovery check passed; no component was started"
   exit 0
 elif [[ -n "${1:-}" ]]; then
-  echo "Usage: bash start_onboard_control.sh [--check]" >&2
+  echo "Usage: bash scripts/onboard/start_onboard_control.sh [--check]" >&2
   exit 2
 fi
 

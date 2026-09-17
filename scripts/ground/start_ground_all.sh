@@ -3,8 +3,8 @@
 
 set -Eeuo pipefail
 
-readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly runtime_helpers="${project_root}/start_drone/runtime_common.bash"
+readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly runtime_helpers="${project_root}/scripts/lib/runtime_common.bash"
 readonly workspace_setup="${project_root}/install/setup.bash"
 [[ -r "${runtime_helpers}" ]] || {
   echo "[ground-startup] runtime discovery helper is missing: ${runtime_helpers}" >&2

@@ -7,13 +7,13 @@ import subprocess
 from ground_station_core.config import PROJECT_ROOT
 
 
-INTEGRATED_START = PROJECT_ROOT / "start_onboard_control.sh"
+INTEGRATED_START = PROJECT_ROOT / "scripts/onboard/start_onboard_control.sh"
 
 
-VIDEO_LAUNCHER = PROJECT_ROOT / "start_onboard_video.sh"
+VIDEO_LAUNCHER = PROJECT_ROOT / "scripts/onboard/start_onboard_video.sh"
 
 
-VIDEO_STOPPER = PROJECT_ROOT / "stop_onboard_video.sh"
+VIDEO_STOPPER = PROJECT_ROOT / "scripts/onboard/stop_onboard_video.sh"
 
 
 VIDEO_INSTALLER = (
@@ -140,7 +140,7 @@ def test_video_service_has_an_independent_lifecycle() -> None:
     assert "User=ONBOARD_USER" in service
     assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
     assert "Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH" in service
-    assert "${ONBOARD_WORKSPACE}/start_onboard_video.sh" in service
+    assert "${ONBOARD_WORKSPACE}/scripts/onboard/start_onboard_video.sh" in service
     assert "systemd-time-wait-sync.service" not in service
     assert "time-sync.target" not in service
     assert "Wants=network-online.target" in service

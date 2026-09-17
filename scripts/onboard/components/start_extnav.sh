@@ -4,9 +4,9 @@
 set -Eeuo pipefail
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly project_root="$(cd -- "${script_dir}/.." && pwd -P)"
+readonly project_root="$(cd -- "${script_dir}/../../.." && pwd -P)"
 # shellcheck disable=SC1091
-source "${script_dir}/runtime_common.bash"
+source "${script_dir}/../../lib/runtime_common.bash"
 
 readonly onboard_environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
 runtime_source_environment_file "${onboard_environment_file}"

@@ -3,7 +3,7 @@
 
 set -Eeuo pipefail
 
-readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 readonly SERVICE_NAME="${VIDEO_SERVICE_SYSTEMD_UNIT:-video-service.service}"
 readonly DEFAULT_CONFIG="/etc/ros2-ardupilot/camera.conf"
 readonly PROJECT_CONFIG="${WORKSPACE_ROOT}/video_service/config/camera.conf"
@@ -15,7 +15,7 @@ declare -A camera_devices=()
 
 usage() {
   cat <<'EOF'
-Usage: ./stop_onboard_video.sh [--restart]
+Usage: ./scripts/onboard/stop_onboard_video.sh [--restart]
 
 Without options, stop video-service.service and remove every residual onboard
 video process, configured RTSP-port owner, and real camera-device owner.

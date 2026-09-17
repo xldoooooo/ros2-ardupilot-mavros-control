@@ -287,13 +287,13 @@ underlay 被重新引入。升级时须更新活动及命名档案的 `[driver]`
 systemd 管理。unit 与人工前台启动共用根目录入口：
 
 ```bash
-./start_onboard_correction.sh
-./stop_onboard_correction.sh
+./scripts/onboard/start_onboard_correction.sh
+./scripts/onboard/stop_onboard_correction.sh
 ```
 
-`start_onboard_correction.sh` 只在前台启动默认 idle 的修正节点，不启动 Odin、extnav、
+`scripts/onboard/start_onboard_correction.sh` 只在前台启动默认 idle 的修正节点，不启动 Odin、extnav、
 MAVROS、onboard_control 或视频。已有修正节点时它会拒绝重复启动。
-`stop_onboard_correction.sh` 停止 unit 并清理手工残留的修正进程，但不会清除
+`scripts/onboard/stop_onboard_correction.sh` 停止 unit 并清理手工残留的修正进程，但不会清除
 extnav 内已应用的 active correction，也不停止任何其他机载服务。
 
 extnav 安装器会拒绝运行中的飞控链路，先为指定源文件和 package manifest 创建 SHA-256

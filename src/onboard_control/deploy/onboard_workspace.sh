@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/start_drone/runtime_common.bash"
+readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/scripts/lib/runtime_common.bash"
 [[ -r "${RUNTIME_HELPERS}" ]] || {
   printf '[onboard-workspace] ERROR: runtime helper is missing: %s\n' \
     "${RUNTIME_HELPERS}" >&2
@@ -16,16 +16,17 @@ readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
-readonly CORRECTION_START_SPARSE_PATH="/start_onboard_correction.sh"
-readonly CORRECTION_STOP_SPARSE_PATH="/stop_onboard_correction.sh"
+readonly CORRECTION_START_SPARSE_PATH="/scripts/onboard/start_onboard_correction.sh"
+readonly CORRECTION_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_correction.sh"
 readonly VIDEO_SPARSE_PATH="/video_service/"
-readonly VIDEO_START_SPARSE_PATH="/start_onboard_video.sh"
-readonly VIDEO_STOP_SPARSE_PATH="/stop_onboard_video.sh"
-readonly DRONE_START_SPARSE_PATH="/start_drone/"
-readonly ONBOARD_CONTROL_START_SPARSE_PATH="/start_onboard_control.sh"
-readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/stop_onboard_control.sh"
-# The client is already included by /src/onboard_control/; keep the root entry too.
-readonly FCU_REBOOT_SPARSE_PATH="/reboot_fcu.sh"
+readonly VIDEO_START_SPARSE_PATH="/scripts/onboard/start_onboard_video.sh"
+readonly VIDEO_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_video.sh"
+readonly DRONE_START_SPARSE_PATH="/scripts/onboard/components/"
+readonly RUNTIME_SPARSE_PATH="/scripts/lib/"
+readonly ONBOARD_CONTROL_START_SPARSE_PATH="/scripts/onboard/start_onboard_control.sh"
+readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_control.sh"
+# The client is included by /src/onboard_control/; include its operator entry too.
+readonly FCU_REBOOT_SPARSE_PATH="/scripts/onboard/reboot_fcu.sh"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
 readonly SMOKE_INTERFACE_PREFIX="/_task08_smoke_onboard"
 readonly DEFAULT_SMOKE_DOMAIN_ID="231"
@@ -106,24 +107,26 @@ validate_workspace_layout() {
     die "independent correction service installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/correction_service/deploy/install_extnav_correction.sh" ]] ||
     die "extnav correction installer is missing or not executable"
-  [[ -x "${WORKSPACE_ROOT}/start_onboard_correction.sh" ]] ||
+  [[ -x "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_correction.sh" ]] ||
     die "independent correction service launcher is missing or not executable"
-  [[ -x "${WORKSPACE_ROOT}/stop_onboard_correction.sh" ]] ||
+  [[ -x "${WORKSPACE_ROOT}/scripts/onboard/stop_onboard_correction.sh" ]] ||
     die "independent correction service stop helper is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/video_service/deploy/install_onboard_video_service.sh" ]] ||
     die "independent video service installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/install_onboard_service.sh" ]] ||
     die "onboard flight service installer is missing or not executable"
-  [[ -x "${WORKSPACE_ROOT}/start_onboard_video.sh" ]] ||
+  [[ -x "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_video.sh" ]] ||
     die "independent video service launcher is missing or not executable"
-  [[ -x "${WORKSPACE_ROOT}/stop_onboard_video.sh" ]] ||
+  [[ -x "${WORKSPACE_ROOT}/scripts/onboard/stop_onboard_video.sh" ]] ||
     die "independent video service stop helper is missing or not executable"
-  [[ -d "${WORKSPACE_ROOT}/start_drone" ]] ||
-    die "start_drone is missing from ${WORKSPACE_ROOT}"
-  [[ -f "${WORKSPACE_ROOT}/start_onboard_control.sh" ]] ||
-    die "start_onboard_control.sh is missing from ${WORKSPACE_ROOT}"
-  [[ -x "${WORKSPACE_ROOT}/stop_onboard_control.sh" ]] ||
-    die "stop_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
+  [[ -d "${WORKSPACE_ROOT}/scripts/onboard/components" ]] ||
+    die "scripts/onboard/components is missing from ${WORKSPACE_ROOT}"
+  [[ -r "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash" ]] ||
+    die "scripts/lib/runtime_common.bash is missing from ${WORKSPACE_ROOT}"
+  [[ -f "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh" ]] ||
+    die "scripts/onboard/start_onboard_control.sh is missing from ${WORKSPACE_ROOT}"
+  [[ -x "${WORKSPACE_ROOT}/scripts/onboard/stop_onboard_control.sh" ]] ||
+    die "scripts/onboard/stop_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
   [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" ]] ||
     die "src/onboard_control/deploy/build_onboard_control.sh is missing or not executable in ${WORKSPACE_ROOT}"
 }
@@ -154,7 +157,8 @@ update_checkout() {
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
-    "${DRONE_START_SPARSE_PATH}" "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
+    "${DRONE_START_SPARSE_PATH}" "${RUNTIME_SPARSE_PATH}" \
+    "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_STOP_SPARSE_PATH}" \
     "${FCU_REBOOT_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"

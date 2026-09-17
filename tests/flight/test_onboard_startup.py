@@ -124,7 +124,7 @@ def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path, pa
 
         # 用启动脚本的真实过滤条件验证：字段不可跨消息拼凑，armed=true 不通过。
         expression = re.search(r"readonly readiness_filter='([^']+)'",
-                               (ROOT / "start_onboard_control.sh").read_text()).group(1)
+                               (ROOT / "scripts/onboard/start_onboard_control.sh").read_text()).group(1)
         pub = node.create_publisher(ControlStatus, "/startup_probe/status", 10)
         probe = subprocess.Popen([
             "timeout", "10", "ros2", "topic", "echo", "--no-daemon",
@@ -201,7 +201,7 @@ time_t time(time_t *out) {
                     'deadline=$((SECONDS+120)); while ((SECONDS<deadline)); do sleep .05; done'],
                    env=env, check=True, timeout=3)
     assert time.monotonic() - started < 2, "未复现旧 Bash 墙钟问题"
-    script = (ROOT / "start_onboard_control.sh").read_text()
+    script = (ROOT / "scripts/onboard/start_onboard_control.sh").read_text()
     command = re.search(r"^setsid timeout (.+?) 120 ros2", script, re.M).group(1).split()
     started = time.monotonic()
     # Force repeated wall-clock reads while the relative timer is running.
@@ -217,10 +217,11 @@ def test_cancel_launcher_stops_readiness_subscriber_and_components(tmp_path):
     """READY 尚未满足时取消，四组件和新增的持续订阅进程都必须退出。"""
     import shutil
     workspace = tmp_path / "workspace"
-    (workspace / "start_drone").mkdir(parents=True)
+    (workspace / "scripts/lib").mkdir(parents=True)
+    (workspace / "scripts/onboard").mkdir(parents=True)
     (workspace / "install").mkdir()
     (workspace / "install/setup.bash").touch()
-    helper = workspace / "start_drone/runtime_common.bash"
+    helper = workspace / "scripts/lib/runtime_common.bash"
     helper.write_text('''# Isolated discovery stubs: no hardware or ROS runtime.
 runtime_source_setup() { :; }
 runtime_detect_ros_setup() { echo "$ONBOARD_WORKSPACE/install/setup.bash"; }
@@ -229,8 +230,8 @@ runtime_verify_workspace_package_install() { :; }
 runtime_ensure_package() { :; }
 runtime_package_prefix() { echo /fake/overlay; }
 ''')
-    launcher = workspace / "start_onboard_control.sh"
-    shutil.copy2(ROOT / launcher.name, launcher)
+    launcher = workspace / "scripts/onboard/start_onboard_control.sh"
+    shutil.copy2(ROOT / "scripts/onboard" / launcher.name, launcher)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "pgrep").write_text('#!/bin/bash\nexit 1\n')

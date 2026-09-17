@@ -3,12 +3,12 @@
 
 set -Eeuo pipefail
 
-readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 readonly ENV_FILE="${CORRECTION_ENV_FILE:-/etc/ros2-ardupilot/correction.env}"
 
 usage() {
   cat <<'EOF'
-Usage: ./start_onboard_correction.sh
+Usage: ./scripts/onboard/start_onboard_correction.sh
 
 Start the independent correction_service node in the foreground. The node
 remains idle with the camera closed until an explicit calibration request.

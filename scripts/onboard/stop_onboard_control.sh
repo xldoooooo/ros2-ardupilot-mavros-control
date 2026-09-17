@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop the managed onboard service and any manually started flight-stack processes.
+# Operator entry to stop the onboard service and manually started flight-stack processes.
 
 set -Eeuo pipefail
 

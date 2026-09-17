@@ -1,5 +1,10 @@
 # 地面站
 
+Shell 操作入口集中在 `scripts/`：地面安装/启动使用 `scripts/ground/`，机载启停与飞控重启
+使用 `scripts/onboard/`，分组件启动使用 `scripts/onboard/components/`；共享函数位于
+`scripts/lib/`。组件构建与安装脚本仍在各组件的 `deploy/` 中。旧机载检出的迁移步骤见
+[Shell 目录迁移](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md#从旧-shell-目录布局迁移)。
+
 ## 新机部署完整地面站
 
 1. 安装 ROS、MAVROS、项目源码，并按
@@ -7,7 +12,7 @@
    安装 FFmpeg、v4l-utils 与 amd64 MediaMTX；
 2. 
    ```bash
-   ./setup_ground_station.sh
+   ./scripts/ground/setup_ground_station.sh
    ```
 
 
@@ -85,7 +90,7 @@ catkin_ws/ 下 control_command.yaml 可配置关闭发送某些数据以降低�
    摄像头故障隔离验收，不能用进程启动成功代替硬件验证。
 
 飞控、视频与 Odin 修正必须是三个独立 unit。两个相机服务都不能加入
-`start_onboard_control.sh`，也不能通过 `Requires=`、`PartOf=` 或 `BindsTo=` 绑定飞控服务。
+`scripts/onboard/start_onboard_control.sh`，也不能通过 `Requires=`、`PartOf=` 或 `BindsTo=` 绑定飞控服务。
 
 
 ## 重新构建机载控制
@@ -125,7 +130,7 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 机载计算机开机后：
 
 ```text
-/home/<机载用户>/ros2-ardupilot-mavros-control/start_onboard_control.sh
+/home/<机载用户>/ros2-ardupilot-mavros-control/scripts/onboard/start_onboard_control.sh
 ```
 
 地面站首次取得控制租约时建立本机发送时间基准，之后由 5 Hz 有序心跳持续刷新；命令 TTL 比较
@@ -135,7 +140,7 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 若离线开机后又接入互联网，Linux/MAVROS 可能记录系统校时或 TIMESYNC 滤波器重置；应在人工解锁
 前等待状态重新稳定并核对 FCU、本地位置和推力语义。外网时间始终不是建立控制权或起飞的前置条件。
 
-该服务会自动重启：`start_onboard_control.sh` 启动的四个组件中，任一主要进程异常退出后，脚本会清理
+该服务会自动重启：`scripts/onboard/start_onboard_control.sh` 启动的四个组件中，任一主要进程异常退出后，脚本会清理
 其余组件并以失败状态退出，systemd 在 10 秒后重启整组服务。
 
 通过 `systemctl stop` 主动停止服务不会触发自动重启。
@@ -157,9 +162,9 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 
 ```bash
 ./video_service/deploy/install_onboard_video_service.sh
-./start_onboard_video.sh
-./stop_onboard_video.sh
-./stop_onboard_video.sh --restart
+./scripts/onboard/start_onboard_video.sh
+./scripts/onboard/stop_onboard_video.sh
+./scripts/onboard/stop_onboard_video.sh --restart
 ```
 
 新飞机先按视频 README 手工安装 FFmpeg、v4l-utils 与系统 MediaMTX，再执行第一条部署配置、
@@ -172,7 +177,7 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 
 ## 配置
 
-`start_onboard_control.sh` 会自动读取以下配置文件：
+`scripts/onboard/start_onboard_control.sh` 会自动读取以下配置文件：
 
 ```text
 /etc/ros2-ardupilot/onboard.env
@@ -210,14 +215,14 @@ sudo usermod -aG dialout $USER
 
 ```bash
 cd /home/<机载用户>/ros2-ardupilot-mavros-control
-./start_onboard_control.sh
+./scripts/onboard/start_onboard_control.sh
 ```
 
 ## 结束机载服务
 
 ```bash
 cd /home/<机载用户>/ros2-ardupilot-mavros-control
-./stop_onboard_control.sh
+./scripts/onboard/stop_onboard_control.sh
 ```
 
 该入口先停止 systemd 服务，再清理从其他终端手工启动的 MAVROS、Odin、extnav、

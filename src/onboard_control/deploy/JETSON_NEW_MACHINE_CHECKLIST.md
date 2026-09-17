@@ -100,7 +100,7 @@ sudo dpkg --audit
    ./correction_service/deploy/install_correction_service.sh --install-only
    ```
 
-   硬件和外部驱动齐备后，才执行默认安装入口及 `start_onboard_control.sh --check`。
+   硬件和外部驱动齐备后，才执行默认安装入口及 `scripts/onboard/start_onboard_control.sh --check`。
 6. 视频为独立入口 `./video_service/deploy/install_onboard_video_service.sh`；
    correction 为 `./correction_service/deploy/install_correction_service.sh`。
    按各自 README 配置真实相机稳定路径，不把默认 `device=auto` 当成相机验收通过。

@@ -4,9 +4,9 @@
 set -Eeuo pipefail
 
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly project_root="$(cd "${script_dir}/.." && pwd)"
+readonly project_root="$(cd "${script_dir}/../../.." && pwd)"
 # shellcheck disable=SC1091
-source "${script_dir}/runtime_common.bash"
+source "${script_dir}/../../lib/runtime_common.bash"
 
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup

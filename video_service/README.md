@@ -53,7 +53,7 @@ file /usr/local/bin/mediamtx
 rm -rf -- "${mediamtx_stage}"
 ```
 
-应看到 `x86-64` 与 `v1.20.0`。执行根目录 `./setup_ground_station.sh` 时也会检查
+应看到 `x86-64` 与 `v1.20.0`。从项目根目录执行 `./scripts/ground/setup_ground_station.sh` 时也会检查
 `ffmpeg`、`ffprobe`、`v4l2-ctl` 和该固定路径，缺失时直接给出安装提示。若面板曾在升级前
 启动过旧 `camera_service.py serve`，先执行
 `./.venv/bin/python video_service/camera_service.py shutdown`；下一次点击“开启本机摄像头”时
@@ -107,7 +107,7 @@ ROS 航点抓拍不使用这条事件路径，而是逐条排队、逐条发布�
 ### 新飞机快速部署（Ubuntu 24.04 / Jazzy / ARM64）
 
 以下步骤是当前 Jetson Orin NX 真机验证过的可重复基线。全程保持飞控未解锁；视频 unit 必须
-独立于飞控 unit，不得加入 `start_onboard_control.sh`。
+独立于飞控 unit，不得加入 `scripts/onboard/start_onboard_control.sh`。
 
 先按下文第 2～3 步安装一次系统媒体依赖；完成机载源码同步后，视频服务本身只需一条命令：
 
@@ -240,7 +240,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 独立启动命令：
 
 ```bash
-./start_onboard_video.sh
+./scripts/onboard/start_onboard_video.sh
 ```
 
 手工执行与 systemd unit 使用相同的生产配置：若未显式设置环境变量，脚本优先读取
@@ -251,19 +251,19 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 彻底清理独立 unit、残留机载视频节点、配置的 RTSP 端口和真实摄像头占用者：
 
 ```bash
-./stop_onboard_video.sh
+./scripts/onboard/stop_onboard_video.sh
 ```
 
 清理后立即重新启动独立 systemd unit：
 
 ```bash
-./stop_onboard_video.sh --restart
+./scripts/onboard/stop_onboard_video.sh --restart
 ```
 
 停止脚本不会停止或重启 `ros2-ardupilot-onboard.service`。它会结束所有占用已配置真机摄像头
 设备的进程；执行前应确认没有需要保留的人工 qv4l2/FFmpeg 调试会话。
 
-不要把它添加成 `start_onboard_control.sh` 的第五个受监督子进程；该飞控脚本会在任一
+不要把它添加成 `scripts/onboard/start_onboard_control.sh` 的第五个受监督子进程；该飞控脚本会在任一
 子进程退出时清理整套飞行栈，违反视频故障隔离要求。参考
 `deploy/video-service.service.example` 建立单独 unit，且不要声明对飞控 unit 的
 `Requires` 或 `PartOf`。当前 Jetson 已按这一边界部署并启用 `video-service.service`。

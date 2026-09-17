@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Portable runtime discovery shared by the ground and onboard launchers.
+# Shared runtime discovery library for the ground and onboard shell launchers.
 
 # Print an error and stop the current launcher without mutating the host.
 runtime_die() {

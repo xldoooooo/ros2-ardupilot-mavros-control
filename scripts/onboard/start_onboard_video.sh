@@ -3,7 +3,7 @@
 
 set -Eeuo pipefail
 
-readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 readonly VIDEO_DIR="${WORKSPACE_ROOT}/video_service"
 readonly SYSTEM_CAMERA_CONFIG="/etc/ros2-ardupilot/camera.conf"
 readonly SYSTEM_LENS_CONFIG="/etc/ros2-ardupilot/lens.conf"
