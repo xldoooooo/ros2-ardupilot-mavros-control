@@ -355,6 +355,50 @@ def _window(
     return window, ros
 
 
+def test_add_current_waypoint_uses_displayed_pose_and_rejects_invalid_pose() -> None:
+    """实测点击追加原始实际位姿，保留旧点与输入值，失效时禁止打点。"""
+    pose = (1.23456, -2.34567, -0.01234, -1.23456)
+    snapshot = replace(_operational_snapshot(armed=False),
+                       x=pose[0], y=pose[1], z=pose[2], yaw=pose[3], target_x=99.0)
+    window, ros = _window(snapshot)
+    try:
+        panel = window.waypoints
+        assert not panel.add_current_button.isEnabled()
+        window._environment_active = True
+        window._connection_mode = "hardware"
+        window._refresh()
+        panel.add_button.click()
+        original = panel.waypoints
+        calls = list(ros.calls)
+        # 后端变化尚未渲染时，应记录用户眼前那一帧。
+        ros.current_snapshot = replace(snapshot, x=8.76543)
+        panel.add_current_button.click()
+        assert panel.waypoints == original + (pose,)
+        assert panel.x_input.value() == 0.0
+        assert panel.table.currentRow() == 1
+        assert panel.add_current_button.width() == panel.add_current_button.height()
+        assert panel.add_current_button.x() > panel.add_button.x()
+        assert not panel.add_current_button.icon().isNull()
+        assert ros.calls == calls
+        window._refresh()
+        panel.add_current_button.click()
+        assert panel.waypoints[-1] == (8.76543, *pose[1:])
+        count = len(panel.waypoints)
+        for invalid in (
+            replace(snapshot, local_position_valid=False),
+            replace(snapshot, onboard_available=False),
+            replace(snapshot, connected=False),
+            replace(snapshot, yaw=float("nan")),
+        ):
+            ros.current_snapshot = invalid
+            window._refresh()
+            assert not panel.add_current_button.isEnabled()
+            panel.add_current_button.click()
+            assert len(panel.waypoints) == count
+    finally:
+        _close_window(window)
+
+
 def _close_window(window: GroundStationWindow) -> None:
     """测试结束时绕过生产退出流程并销毁窗口。"""
     window._timer.stop()

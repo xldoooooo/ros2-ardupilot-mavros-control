@@ -78,6 +78,9 @@
   `export/waypoints-export-YYYYMMDD-HHMMSS.csv`，空列表时入口禁用。
 - `ground_station_core/upstream/` 是独立 WebSocket/JAR 上位机协议边界；通讯故障不得破坏已有
   ROS、仿真或实机会话。
+- 航点输入行的定位准星按钮记录与主 GUI 实际位姿同一帧的原始 ENU x/y/z/yaw，追加至
+  本地列表末尾；不经输入框取整或限幅，不自动上传。无有效位姿或编辑不可用时禁用。
+  此功能只涉及地面站，两台飞机均无需部署。
 
 ### 机载端
 

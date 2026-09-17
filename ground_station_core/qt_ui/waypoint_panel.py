@@ -104,6 +104,7 @@ class WaypointPanel(QWidget):
         self.setMinimumHeight(500)
         self._waypoints: list[tuple[float, float, float, float]] = []
         self._editing_enabled = True
+        self._current_pose: tuple[float, float, float, float] | None = None
         self._preview_enabled = False
         self._progress_tracking = False
         root = QVBoxLayout(self)
@@ -171,6 +172,15 @@ class WaypointPanel(QWidget):
         self.add_button.setProperty("baseToolTip", self.add_button.toolTip())
         self.add_button.clicked.connect(self._add_waypoint)
         coords.addWidget(self.add_button, 0)
+        self.add_current_button = self._icon_button(
+            QIcon(str(Path(__file__).resolve().parent / "assets" / "current-location.svg")),
+            "添加飞机当前实际位姿到航点列表末尾",
+            "addCurrentWaypointButton",
+        )
+        self.add_current_button.setProperty("compact", True)
+        self.add_current_button.setFixedSize(self._ROW_HEIGHT, self._ROW_HEIGHT)
+        self.add_current_button.clicked.connect(self._add_current_waypoint)
+        coords.addWidget(self.add_current_button, 0)
         # stretch=0：坐标与添加操作固定为单行，把纵向空间留给表格。
         card.content_layout.addLayout(coords, 0)
 
@@ -467,6 +477,27 @@ class WaypointPanel(QWidget):
             self.z_input.value(),
             math.radians(self.yaw_input.value()),
         )
+        self._append_waypoint(waypoint)
+
+    def update_current_pose(self, snapshot: VehicleSnapshot) -> None:
+        """缓存与主 GUI 实际位姿同一帧的原始 ENU 坐标和弧度偏航。"""
+        pose = (snapshot.x, snapshot.y, snapshot.z, snapshot.yaw)
+        self._current_pose = (
+            pose if snapshot.onboard_available and snapshot.connected
+            and snapshot.local_position_valid and all(math.isfinite(v) for v in pose)
+            else None
+        )
+        self.add_current_button.setEnabled(
+            self._editing_enabled and self._current_pose is not None
+        )
+
+    def _add_current_waypoint(self) -> None:
+        """只追加已显示的实际位姿，不经过输入框取整或限幅。"""
+        if self._editing_enabled and self._current_pose is not None:
+            self._append_waypoint(self._current_pose)
+
+    def _append_waypoint(self, waypoint: tuple[float, float, float, float]) -> None:
+        """统一追加、选中末行并通知日志与预览刷新。"""
         self._waypoints.append(waypoint)
         self._refresh_table(len(self._waypoints) - 1)
         self.status_label.setText(f"本地列表包含 {len(self._waypoints)} 个航点，尚未上传。")
@@ -547,6 +578,9 @@ class WaypointPanel(QWidget):
         """按选择行、编辑锁和列表内容更新本地操作按钮。"""
         row = self.table.currentRow()
         valid = 0 <= row < len(self._waypoints)
+        self.add_current_button.setEnabled(
+            self._editing_enabled and self._current_pose is not None
+        )
         self.remove_button.setEnabled(self._editing_enabled and valid)
         self.up_button.setEnabled(self._editing_enabled and valid and row > 0)
         self.down_button.setEnabled(

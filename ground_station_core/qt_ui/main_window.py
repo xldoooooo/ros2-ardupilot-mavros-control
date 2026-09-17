@@ -1846,6 +1846,7 @@ class GroundStationWindow(QMainWindow):
             self._events.warn("upstream", f"读取上位机连接状态失败：{exc}")
         self._update_status_badges(snapshot)
         self.operations.update_snapshot(snapshot, self._connection_mode)
+        self.waypoints.update_current_pose(snapshot)
         self.waypoints.update_progress(snapshot)
         self._consume_video_results()
         self._consume_results()

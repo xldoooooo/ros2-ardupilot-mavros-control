@@ -312,7 +312,8 @@ QPushButton#removeWaypointButton {{
     max-height: 26px;
     padding: 0;
 }}
-QPushButton#addWaypointButton {{
+QPushButton#addWaypointButton,
+QPushButton#addCurrentWaypointButton {{
     min-height: 26px;
     max-height: 26px;
     min-width: 26px;
@@ -322,14 +323,16 @@ QPushButton#addWaypointButton {{
     font-size: 14pt;
     font-weight: 700;
 }}
-QPushButton#addWaypointButton:hover {{ background: #edf3f7; }}
+QPushButton#addWaypointButton:hover,
+QPushButton#addCurrentWaypointButton:hover {{ background: #edf3f7; }}
 QPushButton#previewWaypointButton,
 QPushButton#importWaypointButton,
 QPushButton#exportWaypointButton {{ background: white; }}
 QPushButton#previewWaypointButton:hover,
 QPushButton#importWaypointButton:hover,
 QPushButton#exportWaypointButton:hover {{ background: #edf3f7; }}
-QPushButton#addWaypointButton:disabled {{
+QPushButton#addWaypointButton:disabled,
+QPushButton#addCurrentWaypointButton:disabled {{
     color: {COLORS['disabled']};
     background: #edf0f2;
     border-color: #dbe0e5;
