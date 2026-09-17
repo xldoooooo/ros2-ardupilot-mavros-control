@@ -659,6 +659,10 @@ class GroundStationWindow(QMainWindow):
             self._upstream_panel.show()
         self._upstream_panel.raise_()
         self._upstream_panel.activateWindow()
+        self._events.info("upstream", "已打开独立上位机通讯面板")
+        self.activity_banner.set_message(
+            "已打开独立上位机通讯面板。", LogLevel.INFO
+        )
 
     def _dispose_upstream_panel(self) -> None:
         """随主窗口退出销毁独立面板，避免其继续维持 Qt 事件循环。"""
