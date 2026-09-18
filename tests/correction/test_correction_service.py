@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import csv
 import importlib.util
 import json
 import logging
@@ -165,7 +166,16 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
                        np.array((41 + 5.57, 50 - 21.03, -46 - 12 - 9.26)) / 1000)
     assert np.array_equal(config.t_imu_camera[:3, 2], (0, 0, -1))
     assert np.array_equal(config.t_imu_camera[:3, :3] @ (0, -1, 0), (1, 0, 0))
-    assert config.tags[0].size_m == 0.170
+    # Tag 布设由现场 CSV 决定；换纸后仍须逐项精确加载，不能锁死历史17cm。
+    with (CONFIG_DIR / "tag_pose.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert set(config.tags) == {int(row["tag_id"]) for row in rows}
+    for row in rows:
+        tag = config.tags[int(row["tag_id"])]
+        assert (tag.x, tag.y, tag.z, tag.size_m) == tuple(
+            float(row[key]) for key in ("x", "y", "z", "size_m")
+        )
+        assert tag.yaw_rad == math.radians(float(row["yaw_deg"]))
     assert config.camera.image_topic == "/correction_service/image_raw"
     assert config.camera.device.endswith("UQ212_UQ212-video-index0")
     assert config.camera.fps == 120

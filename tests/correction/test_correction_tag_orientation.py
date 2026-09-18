@@ -16,7 +16,7 @@ from correction_service.geometry import (
     rotation_z,
 )
 
-from correction_service.config import load_config, _load_intrinsics
+from correction_service.config import _load_intrinsics, load_config
 
 CONFIG_DIR = Path(__file__).resolve().parents[2] / "correction_service/config"
 # AprilRobotics 官方 PNG 的 8×8 黑边及数据位，按原文件上方排列；不是由待测
@@ -97,7 +97,8 @@ def test_official_print_to_first_correction_and_return_to_center(
             np.array(((0, -1, 0), (-1, 0, 0), (0, 0, -1))),
             np.array((41 + 5.57, 50 - 21.03, -(46 + 12 + 9.26))) / 1000,
         )
-    tag = replace(cfg.tags[0], yaw_rad=math.radians(tag_yaw_deg))
+    # 历史独立真值场景固定17cm；现场换纸不得改变此场景的像素尺寸与精度断言。
+    tag = replace(cfg.tags[0], size_m=0.170, yaw_rad=math.radians(tag_yaw_deg))
     # 这里使用无畸变合成镜头，以单独检查角点方向；畸变另有公制回归覆盖。
     intrinsics = replace(cfg.intrinsics, distortion=np.zeros(5))
     detector = AprilTagDetector(intrinsics, cfg.detection)

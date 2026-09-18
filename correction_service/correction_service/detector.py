@@ -56,6 +56,10 @@ class AprilTagDetector:
         parameters.markerBorderBits = 1
         parameters.minMarkerPerimeterRate = 0.01
         parameters.maxMarkerPerimeterRate = 0.9
+        # 印刷纸张的额外外框可能被旧版 OpenCV 与真正 Tag 合并，并优先保留
+        # 无法解码的大框。缩小候选合并距离（相对周长），保留内部编码黑边；
+        # 不放宽字典纠错、黑边校验或后续 PnP/多 Tag 质量门。
+        parameters.minMarkerDistanceRate = 0.02
         if settings.corner_refinement:
             parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
             parameters.cornerRefinementWinSize = 7

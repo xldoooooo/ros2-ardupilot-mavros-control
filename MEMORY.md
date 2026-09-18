@@ -252,8 +252,15 @@
 - 当前 MAVROS 输入是 `geometry_msgs/PoseStamped`，不能携带 MAVLink estimator reset counter；
   extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同一图像多 Tag 联合检测和
   onboard 自动航点触发仍未实现；本版实现的是不同停留位置/不同 Tag 的顺序 keyframe。
-- 生产 `tag_pose.csv` 仍只有 Tag 0，未编造 Tag 1/2 坐标；多 Tag 目前仅通过合成真值和隔离 ROS
-  验证。相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
+- 2026-09-18 refresh 现场用户已配置 Tag0 `(0,0)`、Tag1 `(0,1.8)`，同向、边长均0.099m；
+  已有用户两点采样/apply成功日志，但仍无独立真值精度验收。现场 CSV 是用户改动，部署勿覆盖。
+  当日静止间歇漏检已复现：OpenCV4.6 默认候选合并距离把额外印刷外框与真实 Tag 合并，
+  原62帧仅26帧解码；单/双Tag配置结果完全一致。检测器固定 `minMarkerDistanceRate=0.02`
+  后同图62/62，独立实机两轮各63/63，编码边界角点回归通过。只修候选筛选，不改解码纠错、
+  PnP/多Tag门和校准数学。本地93项、refresh原生7项通过；refresh已部署构建并经用户同意重启
+  独立修正服务，窗口清空，extnav原active r4/session/数值保留，Odin/extnav未重启。
+  new/独立USB Jetson尚未同步本次检测器修复。详见当日tag外框检测报告。
+  相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
   重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。Task32 已定位大幅反向
   偏移的两处180°错误，推翻此前“仅剩外参平移/参考点问题”的归因；不能再拿使用同一错误
   变换生成和求解的合成数据证明物理方向正确。独立官方图案回归在修复前4场景全失败、修复后
