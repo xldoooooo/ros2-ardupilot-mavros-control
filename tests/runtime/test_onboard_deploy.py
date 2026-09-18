@@ -404,6 +404,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
 
     for sparse_path in (
+        "/.gitignore",
         "/src/guided_interfaces/",
         "/src/onboard_control/",
         "/video_service/",

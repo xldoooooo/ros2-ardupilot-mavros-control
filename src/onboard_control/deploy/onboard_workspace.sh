@@ -13,6 +13,8 @@ readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/scripts/li
 # shellcheck disable=SC1090
 source "${RUNTIME_HELPERS}"
 readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
+# Keep ignore rules available so build outputs stay out of update's dirty-tree check.
+readonly GITIGNORE_SPARSE_PATH="/.gitignore"
 readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
@@ -152,6 +154,7 @@ update_checkout() {
 
   # The checkout was initialized in non-cone mode; older Git treats --no-cone here as a path.
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
+    "${GITIGNORE_SPARSE_PATH}" \
     "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
     "${ONBOARD_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \

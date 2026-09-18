@@ -4,7 +4,7 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-09-17，仓库飞行线协议为 3.3（独立视频接口仍为 3.2）。
+本文件。当前基线日期为 2026-09-18，仓库飞行线协议为 3.3（独立视频接口仍为 3.2）。
 
 ## 绝对安全边界
 
@@ -56,7 +56,8 @@
 - 地面端或飞机重建飞行包和独立修正接口/节点可运行 `./src/onboard_control/deploy/build_onboard_control.sh`；`--verify`
   追加依赖、ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
   构建入口已迁入部署目录；操作脚本集中于 `scripts/ground/`、`scripts/onboard/`，共享函数位于
-  `scripts/lib/`。两台飞机尚未同步这两次路径迁移，下次同步须更新调用方及三个 systemd unit。
+  `scripts/lib/`。refresh 已于 2026-09-18 同步这两次路径迁移及三个 systemd unit；
+  new 尚未同步，下次同步须更新调用方及三个 systemd unit。
 - `README.md` 当前存在并维护常用启动/停止说明；Ubuntu 22.04 通用部署见
   `DEPLOY_UBUNTU_2204.md`，机载最小部署见
   `src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md`。
@@ -443,14 +444,22 @@
 
 ## 当前机载部署事实
 
+- 2026-09-18 refresh（`drone-refresh`，`.186`）从 `c9119e3` 快进同步 main 并收紧 non-cone
+  sparse checkout：仅检出 `.gitignore`、三个机载 ROS 包、`correction_service/`、`video_service/`、
+  机载操作脚本及共享函数。地面 GUI、根 tests、agent 报告、旧根 Shell 入口均不再检出。
+  保留本机 `.venv/`、`build/`、`install/`、`log/`。四包原生构建、24项包测试及localhost隔离
+  smoke通过，飞行接口3.3、修正接口2.0的源码/install一致。三个unit已改用新Shell路径，
+  仍为disabled/inactive；既有独立Odin进程未停止。new尚待同步这些迁移。
+  旧配置/unit、现场标定文件和调试材料备份于飞机
+  `/home/nvidia/ros2-ardupilot-maintenance/refresh-sparse-20260918-101142/`。
+
 - 机载 sparse checkout 清单包含飞行 ROS 包、`correction_interfaces`、独立
   `correction_service/`、`video_service/`、机载视频启停脚本、`scripts/lib/`、`scripts/onboard/components/`、
   `scripts/onboard/start_onboard_control.sh`、`scripts/onboard/stop_onboard_control.sh` 和 `src/onboard_control/deploy/build_onboard_control.sh`；不得复制
   开发机的 `build/`、`install/` 到飞机。
-- 文档当前的 `'/video_service/'` Git sparse 规则会拉整个目录；开发树约 90 MB，主要是 x86
-  MediaMTX 与历史 demo。当前 Jetson 实际通过选择性 rsync 部署，目录约 440 KB，虽含 Qt 面板
-  源码但不含上述大文件；机载 unit 不导入 PySide6、不创建窗口。正式 Git 部署前应决定目录级
-  common/onboard/ground 拆分，不能误称当前飞机已经按整目录 sparse 拉取。
+- `'/video_service/'` Git sparse 规则检出整个组件目录；2026-09-18 refresh 实测约268KB，
+  当前版本不再含MediaMTX二进制与历史demo。目录仍含地面面板源码，但机载unit不导入PySide6、
+  不创建窗口；本轮未为去掉少量面板源码而拆分组件。
 - `scripts/onboard/stop_onboard_video.sh` 默认停止独立 unit 并彻底清理残留视频节点、配置 RTSP 端口和真机摄像头
   占用者；`--restart` 清理后只重启 `video-service.service`。它不得调用飞控停止入口或操作飞控
   systemd unit。
@@ -603,7 +612,9 @@
 
 - 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界。2026-09-16 已
   确认 refresh 可快进同步 main，自有 UVC 采集修复的地面/远端/refresh 提交一致；机载已有
-  `start_drone/image/` 未跟踪产物须保留。其他飞机的 HEAD 与部署差异仍须连接后独立核对。
+  `start_drone/image/` 未跟踪标定文件已于2026-09-18归档至上述refresh备份的
+  `local-artifacts/start-drone-image/`，不能当作无用缓存删除。其他飞机的HEAD与部署差异仍须
+  连接后独立核对。
 - Linux 非实时调度下曾出现 deadline miss 和明显 jitter；平均 100 Hz 不等于硬实时。当前 Odin
   进程的 `LimitRTPRIO=0`、无有效 capability，IMU 线程申请 SCHED_FIFO/SCHED_RR 得到 EPERM 后
   回退 SCHED_OTHER。当前链路能 READY，但高负载下 Odin 时间抖动风险仍未量化；实机前仍需长时间

@@ -33,6 +33,7 @@ git clone \
 cd ros2-ardupilot-mavros-control
 git sparse-checkout init --no-cone
 git sparse-checkout set \
+  '/.gitignore' \
   '/src/guided_interfaces/' \
   '/src/correction_interfaces/' \
   '/src/onboard_control/' \
@@ -53,6 +54,7 @@ git checkout main
 检出后，除 Git 元数据外只应出现：
 
 ```text
+.gitignore
 src/guided_interfaces/
 src/correction_interfaces/
 src/onboard_control/
