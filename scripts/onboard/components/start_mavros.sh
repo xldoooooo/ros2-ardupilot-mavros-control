@@ -6,6 +6,7 @@ set -Eeuo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${script_dir}/../../lib/runtime_common.bash"
+runtime_source_environment_file "${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
 
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
@@ -13,6 +14,9 @@ fcu_device="$(runtime_detect_fcu_device "${MAVROS_FCU_DEVICE:-}")" || exit 1
 readonly fcu_device
 readonly fcu_baud="${MAVROS_FCU_BAUD:-460800}"
 runtime_source_setup "${ros_setup}"
+if [[ -n "${MAVROS_OVERLAY_SETUP:-}" ]]; then
+  runtime_source_setup "${MAVROS_OVERLAY_SETUP}"
+fi
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 [[ "${ROS_DISTRO:-}" == "humble" ]] && export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"

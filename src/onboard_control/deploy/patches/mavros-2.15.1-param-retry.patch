@@ -1,0 +1,39 @@
+# MAVROS 2.15.1: prevent duplicate replies amplifying retries or postponing deadlines.
+# Also defer scheduled pulls while another parameter operation is active.
+--- a/mavros/src/plugins/param.cpp
++++ b/mavros/src/plugins/param.cpp
+@@ -696,12 +696,15 @@
+           "resetting retries count", pmsg.param_index);
+         param_rx_retries = param_retries_count;
+       } else if (param_state == PR::RXPARAM_TIMEDOUT) {
+-        RCLCPP_INFO(
++        RCLCPP_DEBUG(
+           lg, "PR: got an unsolicited param value idx=%u, "
+           "not resetting retries count %zu", pmsg.param_index, param_rx_retries);
+       }
+
+-      restart_timeout_timer();
++      // A duplicate/out-of-order reply must not postpone the outstanding retry.
++      if (param_state != PR::RXPARAM_TIMEDOUT || it_is_first_requested) {
++        restart_timeout_timer();
++      }
+
+       /* index starting from 0, receivig done */
+       if (parameters_missing_idx.empty()) {
+@@ -714,7 +717,7 @@
+         go_idle();
+         list_receiving.notify_all();
+
+-      } else if (param_state == PR::RXPARAM_TIMEDOUT) {
++      } else if (param_state == PR::RXPARAM_TIMEDOUT && it_is_first_requested) {
+         uint16_t first_miss_idx = parameters_missing_idx.front();
+         RCLCPP_DEBUG(lg, "PR: requesting next timed out parameter idx=%u", first_miss_idx);
+         param_request_read("", first_miss_idx);
+@@ -811,6 +814,7 @@
+       // try later
+       RCLCPP_DEBUG(get_logger(), "PR: busy, reschedule pull");
+       schedule_pull();
++      return;
+     }
+
+     RCLCPP_DEBUG(get_logger(), "PR: start scheduled pull");

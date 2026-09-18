@@ -26,6 +26,33 @@ MAVROS 时间同步启动检查：完整机载入口及 `scripts/onboard/compone
   验证，飞控 unit 与独立视频 unit 均可保持 enabled，但两者不得建立共同故障域。
 - `smoke` 使用非零独立 ROS domain、localhost-only 发现和专用 MAVROS 前缀，不会发现真实 MAVROS；它只检查待机状态，并断言没有姿态 setpoint 消息。
 
+## MAVROS 2.15.1 参数重试修复
+
+该版本在参数整表补拉超时后，每收到一个非当前等待参数的回包，又发送一次缺失参数请求，
+并重置超时计时器。重复回包会放大请求并产生 `got an unsolicited param value` 刷屏。
+项目补丁只在当前等待参数到达时立即请求下一个，其他回包仍更新缓存，但不能延后超时；
+同时修正忙碌时的定时拉取没有返回、重新启动整表同步的问题。重试失败警告继续保留。
+
+在已安装 MAVROS 2.15.1 的 Jazzy 飞机维护窗口执行：
+
+```bash
+sudo apt-get install ros-jazzy-angles
+./src/onboard_control/deploy/install_mavros_param_fix.sh
+```
+
+安装器校验固定源码 SHA-256，在 `~/mavros_param_fix_ws` 构建独立 overlay，不覆盖
+`/opt/ros/jazzy`，也不自动重启服务。离线源码可通过 `MAVROS_SOURCE_ARCHIVE` 指定。
+在 `/etc/ros2-ardupilot/onboard.env` 设置实际路径：
+
+```bash
+MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_ws/install/local_setup.bash
+```
+
+完整机载入口及独立 MAVROS 入口均读取该配置；完整入口最后加载该 overlay，防止被其他
+工作区遮盖。重启机载服务后，检查进程 `/proc/<mavros_pid>/maps` 中的 `libmavros_plugins.so`
+确实来自该工作区。回退时移除该配置项并重启机载服务，系统安装仍保留。此步骤不会重启飞控。
+系统升级 MAVROS 时应重新评估补丁和 ABI，不应沿用为 2.15.1 编译的 overlay。
+
 ## 1. 首次最小拉取
 
 在部署用户自己的目录执行；启动器会从自身位置解析工作区，不要求固定用户名或绝对路径：

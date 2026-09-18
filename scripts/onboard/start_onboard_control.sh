@@ -71,6 +71,11 @@ runtime_ensure_package mavros
 runtime_ensure_package odin_ros_driver "${ODIN_OVERLAY_SETUP:-}"
 runtime_ensure_package extnav_bridge "${EXTNAV_OVERLAY_SETUP:-}"
 
+# Apply the explicitly selected MAVROS fix last so other overlays cannot shadow it.
+if [[ -n "${MAVROS_OVERLAY_SETUP:-}" ]]; then
+  runtime_source_setup "${MAVROS_OVERLAY_SETUP}"
+fi
+
 # Duplicate MAVROS or control nodes can contend for the serial port or setpoint topic.
 readonly process_pattern='mavros_node|odin1_ros2.launch.py|extnav_to_vision_pose|onboard_control_node'
 existing_processes="$(pgrep -af "${process_pattern}" || true)"
