@@ -384,3 +384,23 @@ Ubuntu2404 remmina远程桌面
 + DNS等：不用填
 
 然后浏览器登陆`192.168.1.2`即可 （登陆`tplink.cn`可能不行）
+
+
+# Jetson固件
+
+## 完全重装
+
+Nvidia SDK Manager
+
+1. 向jetson刷某个版本的ubuntu, 需要安装有对应版本ubuntu的上位机
+2. 勾选Jetson Orin NX 16GB, 取消勾选Host Computer
+3. Direct flash
+4. 全选
+
+## 有硬盘
+
+1. 确认原硬盘所在Jetson的Jetpack版本
+2. 新Jetson刷写同版本Jetpack, 只勾选第一个 Jetson OS （bootloader and xxx drivers）
+3. 替换硬盘
+
+不同Jetpack的Jetson直接换硬盘是无法进系统
