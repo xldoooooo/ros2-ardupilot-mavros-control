@@ -613,9 +613,17 @@
 - refresh MAVROS 2.15.1 的时间插件未继承启动YAML，实际timesync_rate=0，导致飞控重启
   请求缺少启动时钟而被拒绝。机载及分组件MAVROS入口现通过共享函数恢复禁用的MAVLINK
   时间同步到10Hz，并校验参数读回和真实时钟消息；不绕过飞控重启保护。隔离MAVROS及refresh
-  真实启动已验证：10:52:55时钟检查通过、10:52:57 READY，未解锁且已落地。refresh飞控unit
-  当前active/running但仍disabled；视频/修正未启动。代理未执行热重启，闭环待用户手动验收；
-  new尚待同步。
+  真实启动已验证。后续保留日志已确认用户热重启成功、时钟回退及控制链路恢复正常。
+  此检查会增加启动耗时，尚未优化；new尚待同步。
+- refresh MAVROS 2.15.1 参数补拉会被重复回包放大请求，导致 unsolicited 日志刷屏。
+  已部署固定版本补丁到 `/home/nvidia/mavros_param_fix_ws`，由 onboard.env 中
+  `MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_ws/install/local_setup.bash` 选择；
+  完整/独立MAVROS入口均支持，系统安装未覆盖。隔离测试请求数31→1，持续重复回包仍按3次
+  重试结束；真实串口第二轮拉取完整1246项，首轮曾因索引变化缺11项，不能把服务success
+  单独视为整表完整。保留诊断警告，不绕过飞控重启后的参数新鲜度验证。
+  2026-09-18本次检查时refresh飞控unit为inactive，测试MAVROS结束后停止，既有Odin/extnav
+  保留。未代用户再次热重启；补丁后的真实重启闭环待用户手动验证。new未部署；系统MAVROS
+  升级时应重评补丁及ABI。构建、启用、回退见ONBOARD_DEPLOYMENT.md。
 
 - 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界。2026-09-16 已
   确认 refresh 可快进同步 main，自有 UVC 采集修复的地面/远端/refresh 提交一致；机载已有
