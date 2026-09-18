@@ -229,6 +229,7 @@ runtime_detect_fcu_device() { echo /dev/null; }
 runtime_verify_workspace_package_install() { :; }
 runtime_ensure_package() { :; }
 runtime_package_prefix() { echo /fake/overlay; }
+runtime_ensure_mavros_timesync() { :; }
 ''')
     launcher = workspace / "scripts/onboard/start_onboard_control.sh"
     shutil.copy2(ROOT / "scripts/onboard" / launcher.name, launcher)

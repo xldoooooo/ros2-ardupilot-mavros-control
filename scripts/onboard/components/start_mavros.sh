@@ -18,4 +18,15 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 [[ "${ROS_DISTRO:-}" == "humble" ]] && export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
 
 echo "[mavros-startup] FCU=${fcu_device}:${fcu_baud}, ROS=${ROS_DISTRO:-unknown}"
-exec ros2 launch mavros apm.launch fcu_url:="${fcu_device}:${fcu_baud}"
+ros2 launch mavros apm.launch fcu_url:="${fcu_device}:${fcu_baud}" &
+mavros_pid=$!
+# Keep the launch tree owned by this entry while checking the runtime clock configuration.
+cleanup_mavros() {
+  kill -TERM "${mavros_pid}" 2>/dev/null || true
+  wait "${mavros_pid}" 2>/dev/null || true
+}
+trap cleanup_mavros EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+runtime_ensure_mavros_timesync
+wait "${mavros_pid}"

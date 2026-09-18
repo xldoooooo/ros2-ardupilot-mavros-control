@@ -192,6 +192,7 @@ launch_component "onboard" \
   "cd '${project_root}'; exec ros2 launch onboard_control control.launch.py"
 
 echo "[startup] all components launched on ROS domain ${ROS_DOMAIN_ID}"
+runtime_ensure_mavros_timesync
 echo "[startup] waiting for a safe, unarmed readiness snapshot (no control commands are sent)..."
 
 # Keep one DDS subscriber alive. GNU timeout uses a relative timer, so NTP wall-clock

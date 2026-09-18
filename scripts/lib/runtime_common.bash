@@ -237,6 +237,41 @@ runtime_ensure_package() {
   }
 }
 
+# Verify MAVROS's actual clock stream: 2.15.1 may ignore plugin YAML and default to 0 Hz.
+# Only restore a disabled MAVLINK rate; preserve positive operator-selected rates and modes.
+runtime_ensure_mavros_timesync() {
+  local mode="" rate="" attempt
+  for attempt in {1..5}; do
+    if mode="$(timeout 10 ros2 param get --no-daemon --spin-time 2 --timeout 5 --hide-type /mavros/time timesync_mode 2>/dev/null)"; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "${mode}" == MAVLINK ]] || {
+    runtime_die "MAVROS time plugin unavailable or timesync_mode is not MAVLINK: ${mode}"
+    return 1
+  }
+  rate="$(timeout 10 ros2 param get --no-daemon --spin-time 2 --timeout 5 --hide-type /mavros/time timesync_rate)" || return 1
+  if [[ "${rate}" == "0.0" || "${rate}" == "0" ]]; then
+    printf '[runtime-discovery] enabling MAVROS TIMESYNC at 10 Hz (plugin YAML was not effective)\n'
+    timeout 10 ros2 param set --no-daemon --spin-time 2 --timeout 5 /mavros/time timesync_rate 10.0 || return 1
+    rate="$(timeout 10 ros2 param get --no-daemon --spin-time 2 --timeout 5 --hide-type /mavros/time timesync_rate)" || return 1
+  fi
+  [[ "${rate}" =~ ^[0-9]+([.][0-9]+)?$ ]] &&
+    awk -v rate="${rate}" 'BEGIN {exit !(rate > 0)}' || {
+      runtime_die "MAVROS timesync_rate did not become positive: ${rate}"
+      return 1
+    }
+  # A successful parameter reply alone does not prove that the FCU clock is available.
+  timeout 15 ros2 topic echo --no-daemon --qos-profile sensor_data --once \
+    --filter 'm.remote_timestamp_ns > 0' \
+    /mavros/timesync_status mavros_msgs/msg/TimesyncStatus >/dev/null || {
+      runtime_die "no valid FCU TIMESYNC received within 15 s; check MAVROS and the FCU link"
+      return 1
+    }
+  printf '[runtime-discovery] FCU TIMESYNC verified (configured rate=%s Hz)\n' "${rate}"
+}
+
 # Print a serial candidate only when the current user can open it read/write.
 runtime_print_fcu_device() {
   local candidate="$1"
