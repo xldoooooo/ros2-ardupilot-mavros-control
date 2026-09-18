@@ -16,6 +16,20 @@ Shell 操作入口集中在 `scripts/`：地面安装/启动使用 `scripts/grou
    ```
 
 
+## 同步代码后更新地面站
+
+`git pull` 不会更新本机 `install/` 中的 ROS 接口。同步后运行
+`./scripts/ground/setup_ground_station.sh` 完成构建验证，再重新启动地面站和独立面板。
+若 Tag-Odin 面板提示无法导入 `ApplySavedCorrection`，说明修正接口仍是旧构建产物；
+可在项目根目录针对性重建：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select correction_interfaces correction_service --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+./scripts/ground/start_ground_all.sh
+```
+
 ## 关闭防火墙
 
 firewalld防火墙：

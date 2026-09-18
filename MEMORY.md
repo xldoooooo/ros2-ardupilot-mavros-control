@@ -36,6 +36,10 @@
   Ubuntu 22.04/Humble 结果只属于历史基线，不得当作当前飞机状态。
 - Python 必须使用项目 `.venv`。地面站入口为 `ground_station.py`，推荐通过
   `./scripts/ground/start_ground_all.sh` 启动；`--check-environment` 只检查环境，不创建飞行会话。
+- scq 地面机 `192.168.112.101` 同步源码后仍需重建 ROS 接口；2026-09-18 已重建
+  `correction_interfaces/correction_service`，修复旧 install 缺少 `ApplySavedCorrection` 的面板
+  启动错误。实际 Qt 离屏启动及实时订阅通过，面板专项 11 项通过；包测试仍有旧 Tag 尺寸
+  断言 0.170 m 与当前配置 0.099 m 不一致的既有失败。此部署不涉及两台飞机。
 - 当前 ROS 工作区包含：
   - `src/guided_interfaces`：地面站与机载端共享的唯一高层协议；
   - `src/correction_interfaces`：AprilTag-Odin 修正链独立接口 2.0；
