@@ -612,8 +612,10 @@
 
 - refresh MAVROS 2.15.1 的时间插件未继承启动YAML，实际timesync_rate=0，导致飞控重启
   请求缺少启动时钟而被拒绝。机载及分组件MAVROS入口现通过共享函数恢复禁用的MAVLINK
-  时间同步到10Hz，并校验参数读回和真实时钟消息；不绕过飞控重启保护。隔离MAVROS已验证，
-  refresh现场部署验收结果见当日timesync修复报告；new尚待同步。
+  时间同步到10Hz，并校验参数读回和真实时钟消息；不绕过飞控重启保护。隔离MAVROS及refresh
+  真实启动已验证：10:52:55时钟检查通过、10:52:57 READY，未解锁且已落地。refresh飞控unit
+  当前active/running但仍disabled；视频/修正未启动。代理未执行热重启，闭环待用户手动验收；
+  new尚待同步。
 
 - 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界。2026-09-16 已
   确认 refresh 可快进同步 main，自有 UVC 采集修复的地面/远端/refresh 提交一致；机载已有
