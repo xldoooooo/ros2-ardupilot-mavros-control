@@ -1,0 +1,1412 @@
+{
+  "description": "Read-only excerpts from refresh job journals; original P/Q, thresholds in report.",
+  "tag3_rejections": [
+    {
+      "source_file": "job-20260918-180451-a4e8652820f7.jsonl",
+      "job_started": {
+        "apply": false,
+        "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+        "event": "job_started",
+        "expected_tag_id": 3,
+        "extnav_revision": 3,
+        "odin_session_id": "odin-140830768132-235e5073",
+        "operation": "next",
+        "service_instance_id": "fe3356d0bbba45dbb8bf0d28ee86870a",
+        "t_imu_camera": [
+          [
+            0.0,
+            -1.0,
+            0.0,
+            0.04657
+          ],
+          [
+            -1.0,
+            0.0,
+            0.0,
+            0.02897
+          ],
+          [
+            0.0,
+            0.0,
+            -1.0,
+            -0.06726
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "tag_map": {
+          "0": {
+            "size_m": 0.099,
+            "tag_id": 0,
+            "x": 0.0,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "1": {
+            "size_m": 0.099,
+            "tag_id": 1,
+            "x": 5.35,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "2": {
+            "size_m": 0.099,
+            "tag_id": 2,
+            "x": 10.7,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "3": {
+            "size_m": 0.099,
+            "tag_id": 3,
+            "x": 5.35,
+            "y": -5.35,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          }
+        },
+        "timestamp": "2026-09-18T18:04:51.058002+08:00",
+        "window_before": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              -0.1695183380441268,
+              -0.22359960741326648
+            ],
+            "capture_end_ns": 1789725772747526552,
+            "capture_start_ns": 1789725769951538552,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.6609905373509095,
+            "effective_sigma_m": 0.012247576923445833,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 5.6040126006958386e-05,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.538047333333333,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0013151421564946302,
+            "prior_model_residual_m": 0.0001882422374369086,
+            "reprojection_error_px": 0.10432520481932757,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.7262348389398693,
+            "source_job_id": "26881c03ad28",
+            "span_s": 2.795988,
+            "tag_id": 0,
+            "weight": 6666.527092001207
+          },
+          {
+            "P_world_m": [
+              5.35,
+              0.0
+            ],
+            "Q_odin_m": [
+              5.180098650790934,
+              -0.23189295108675623
+            ],
+            "capture_end_ns": 1789725842213157136,
+            "capture_start_ns": 1789725839185156296,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 6.125832976709709,
+            "effective_sigma_m": 0.01225077234341158,
+            "independent_blocks": 13,
+            "max_sync_motion_error_m": 0.00028534717468035474,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 1.6882240000000002,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0014107419720691841,
+            "prior_model_residual_m": 0.0001883404758853402,
+            "reprojection_error_px": 0.09233887713930496,
+            "samples_accepted": 26,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.28328720674711205,
+            "source_job_id": "7b661d7e97a9",
+            "span_s": 3.02800084,
+            "tag_id": 1,
+            "weight": 6663.049829509652
+          }
+        ],
+        "window_revision": 3,
+        "window_size": 4
+      },
+      "rejection": {
+        "event": "window_candidate_rejected",
+        "new_keyframe": {
+          "P_world_m": [
+            5.35,
+            -5.35
+          ],
+          "Q_odin_m": [
+            5.177902559810847,
+            -5.237765317214485
+          ],
+          "capture_end_ns": 1789725897581022664,
+          "capture_start_ns": 1789725894853025728,
+          "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+          "correction_tilt_deg": 7.456697066741879,
+          "effective_sigma_m": 0.012248126812770363,
+          "independent_blocks": 11,
+          "max_sync_motion_error_m": 0.00012888142497776775,
+          "odin_session_id": "odin-140830768132-235e5073",
+          "odom_match_error_ms": 1.541848,
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.00263723529121774,
+          "prior_model_residual_m": 0.3441722342176025,
+          "reprojection_error_px": 0.0918123357143263,
+          "samples_accepted": 24,
+          "samples_rejected": 0,
+          "single_tag_yaw_deg": -0.3287142854462878,
+          "source_job_id": "a4e8652820f7",
+          "span_s": 2.727996936,
+          "tag_id": 3,
+          "weight": 6665.928507442939
+        },
+        "pre_eviction_registration": {
+          "baseline_tags": [
+            0,
+            3
+          ],
+          "max_residual_m": 0.20642470527646584,
+          "model_yaw_std_rad": 0.002046948938223977,
+          "odin_baseline_m": 7.330536680500443,
+          "reason": "加权配准 RMS 超限，窗口不符合单一 SE(2) 模型",
+          "residuals_m": [
+            0.060463900752624596,
+            0.14785853699852528,
+            0.20642470527646584
+          ],
+          "rms_m": 0.15069598987220656,
+          "two_point_limited": false,
+          "valid": false,
+          "world_baseline_m": 7.566042558696058,
+          "x_m": 0.20049125879702734,
+          "y_m": 0.16708764631743223,
+          "yaw_rad": -0.015582365095306097
+        },
+        "reason": "加权配准 RMS 超限，窗口不符合单一 SE(2) 模型",
+        "timestamp": "2026-09-18T18:04:57.656223+08:00",
+        "window_before": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              -0.1695183380441268,
+              -0.22359960741326648
+            ],
+            "capture_end_ns": 1789725772747526552,
+            "capture_start_ns": 1789725769951538552,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.6609905373509095,
+            "effective_sigma_m": 0.012247576923445833,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 5.6040126006958386e-05,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.538047333333333,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0013151421564946302,
+            "prior_model_residual_m": 0.0001882422374369086,
+            "reprojection_error_px": 0.10432520481932757,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.7262348389398693,
+            "source_job_id": "26881c03ad28",
+            "span_s": 2.795988,
+            "tag_id": 0,
+            "weight": 6666.527092001207
+          },
+          {
+            "P_world_m": [
+              5.35,
+              0.0
+            ],
+            "Q_odin_m": [
+              5.180098650790934,
+              -0.23189295108675623
+            ],
+            "capture_end_ns": 1789725842213157136,
+            "capture_start_ns": 1789725839185156296,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 6.125832976709709,
+            "effective_sigma_m": 0.01225077234341158,
+            "independent_blocks": 13,
+            "max_sync_motion_error_m": 0.00028534717468035474,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 1.6882240000000002,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0014107419720691841,
+            "prior_model_residual_m": 0.0001883404758853402,
+            "reprojection_error_px": 0.09233887713930496,
+            "samples_accepted": 26,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.28328720674711205,
+            "source_job_id": "7b661d7e97a9",
+            "span_s": 3.02800084,
+            "tag_id": 1,
+            "weight": 6663.049829509652
+          }
+        ]
+      }
+    },
+    {
+      "source_file": "job-20260918-180641-e9ccbf747c19.jsonl",
+      "job_started": {
+        "apply": false,
+        "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+        "event": "job_started",
+        "expected_tag_id": 3,
+        "extnav_revision": 3,
+        "odin_session_id": "odin-140830768132-235e5073",
+        "operation": "next",
+        "service_instance_id": "fe3356d0bbba45dbb8bf0d28ee86870a",
+        "t_imu_camera": [
+          [
+            0.0,
+            -1.0,
+            0.0,
+            0.04657
+          ],
+          [
+            -1.0,
+            0.0,
+            0.0,
+            0.02897
+          ],
+          [
+            0.0,
+            0.0,
+            -1.0,
+            -0.06726
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "tag_map": {
+          "0": {
+            "size_m": 0.099,
+            "tag_id": 0,
+            "x": 0.0,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "1": {
+            "size_m": 0.099,
+            "tag_id": 1,
+            "x": 5.35,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "2": {
+            "size_m": 0.099,
+            "tag_id": 2,
+            "x": 10.7,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "3": {
+            "size_m": 0.099,
+            "tag_id": 3,
+            "x": 5.35,
+            "y": -5.35,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          }
+        },
+        "timestamp": "2026-09-18T18:06:41.886427+08:00",
+        "window_before": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              -0.1695183380441268,
+              -0.22359960741326648
+            ],
+            "capture_end_ns": 1789725772747526552,
+            "capture_start_ns": 1789725769951538552,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.6609905373509095,
+            "effective_sigma_m": 0.012247576923445833,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 5.6040126006958386e-05,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.538047333333333,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0013151421564946302,
+            "prior_model_residual_m": 0.006558089392204483,
+            "reprojection_error_px": 0.10432520481932757,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.7262348389398693,
+            "source_job_id": "26881c03ad28",
+            "span_s": 2.795988,
+            "tag_id": 0,
+            "weight": 6666.527092001207
+          },
+          {
+            "P_world_m": [
+              5.35,
+              0.0
+            ],
+            "Q_odin_m": [
+              5.180098650790934,
+              -0.23189295108675623
+            ],
+            "capture_end_ns": 1789725842213157136,
+            "capture_start_ns": 1789725839185156296,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 6.125832976709709,
+            "effective_sigma_m": 0.01225077234341158,
+            "independent_blocks": 13,
+            "max_sync_motion_error_m": 0.00028534717468035474,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 1.6882240000000002,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0014107419720691841,
+            "prior_model_residual_m": 0.007391973137798029,
+            "reprojection_error_px": 0.09233887713930496,
+            "samples_accepted": 26,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.28328720674711205,
+            "source_job_id": "7b661d7e97a9",
+            "span_s": 3.02800084,
+            "tag_id": 1,
+            "weight": 6663.049829509652
+          },
+          {
+            "P_world_m": [
+              10.7,
+              0.0
+            ],
+            "Q_odin_m": [
+              10.512419429721113,
+              -0.25405911168750944
+            ],
+            "capture_end_ns": 1789725962915271256,
+            "capture_start_ns": 1789725959919298120,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 4.422053139229256,
+            "effective_sigma_m": 0.012247751257304451,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 8.60863566584498e-05,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.2618206666666665,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0028345940389644295,
+            "prior_model_residual_m": 0.012108861114541881,
+            "reprojection_error_px": 0.07483720044469765,
+            "samples_accepted": 24,
+            "samples_rejected": 1,
+            "single_tag_yaw_deg": 0.4780970155170641,
+            "source_job_id": "1cbfcbb4c355",
+            "span_s": 2.995973136,
+            "tag_id": 2,
+            "weight": 6666.3373113474745
+          }
+        ],
+        "window_revision": 4,
+        "window_size": 4
+      },
+      "rejection": {
+        "event": "window_candidate_rejected",
+        "new_keyframe": {
+          "P_world_m": [
+            5.35,
+            -5.35
+          ],
+          "Q_odin_m": [
+            5.167314545448651,
+            -5.228752062286122
+          ],
+          "capture_end_ns": 1789726008562535968,
+          "capture_start_ns": 1789726005766557360,
+          "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+          "correction_tilt_deg": 6.565785181648464,
+          "effective_sigma_m": 0.012249821788562262,
+          "independent_blocks": 12,
+          "max_sync_motion_error_m": 0.00024110962555382742,
+          "odin_session_id": "odin-140830768132-235e5073",
+          "odom_match_error_ms": 1.9897080000000003,
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.002270973561107242,
+          "prior_model_residual_m": 0.3578390222320199,
+          "reprojection_error_px": 0.08571217597486196,
+          "samples_accepted": 24,
+          "samples_rejected": 0,
+          "single_tag_yaw_deg": -0.07900515278472056,
+          "source_job_id": "e9ccbf747c19",
+          "span_s": 2.795978608,
+          "tag_id": 3,
+          "weight": 6664.083940890435
+        },
+        "pre_eviction_registration": {
+          "baseline_tags": [
+            0,
+            2
+          ],
+          "max_residual_m": 0.2683651073240069,
+          "model_yaw_std_rad": 0.001407326169741806,
+          "odin_baseline_m": 10.68198119525634,
+          "reason": "加权配准 RMS 超限，窗口不符合单一 SE(2) 模型",
+          "residuals_m": [
+            0.08987073306002448,
+            0.0849044546978992,
+            0.09467950611103561,
+            0.2683651073240069
+          ],
+          "rms_m": 0.1551299476799538,
+          "two_point_limited": false,
+          "valid": false,
+          "world_baseline_m": 10.7,
+          "x_m": 0.17376208677709926,
+          "y_m": 0.1342761087948956,
+          "yaw_rad": 0.002476162925492414
+        },
+        "reason": "加权配准 RMS 超限，窗口不符合单一 SE(2) 模型",
+        "timestamp": "2026-09-18T18:06:48.628685+08:00",
+        "window_before": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              -0.1695183380441268,
+              -0.22359960741326648
+            ],
+            "capture_end_ns": 1789725772747526552,
+            "capture_start_ns": 1789725769951538552,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.6609905373509095,
+            "effective_sigma_m": 0.012247576923445833,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 5.6040126006958386e-05,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.538047333333333,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0013151421564946302,
+            "prior_model_residual_m": 0.006558089392204483,
+            "reprojection_error_px": 0.10432520481932757,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.7262348389398693,
+            "source_job_id": "26881c03ad28",
+            "span_s": 2.795988,
+            "tag_id": 0,
+            "weight": 6666.527092001207
+          },
+          {
+            "P_world_m": [
+              5.35,
+              0.0
+            ],
+            "Q_odin_m": [
+              5.180098650790934,
+              -0.23189295108675623
+            ],
+            "capture_end_ns": 1789725842213157136,
+            "capture_start_ns": 1789725839185156296,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 6.125832976709709,
+            "effective_sigma_m": 0.01225077234341158,
+            "independent_blocks": 13,
+            "max_sync_motion_error_m": 0.00028534717468035474,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 1.6882240000000002,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0014107419720691841,
+            "prior_model_residual_m": 0.007391973137798029,
+            "reprojection_error_px": 0.09233887713930496,
+            "samples_accepted": 26,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.28328720674711205,
+            "source_job_id": "7b661d7e97a9",
+            "span_s": 3.02800084,
+            "tag_id": 1,
+            "weight": 6663.049829509652
+          },
+          {
+            "P_world_m": [
+              10.7,
+              0.0
+            ],
+            "Q_odin_m": [
+              10.512419429721113,
+              -0.25405911168750944
+            ],
+            "capture_end_ns": 1789725962915271256,
+            "capture_start_ns": 1789725959919298120,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 4.422053139229256,
+            "effective_sigma_m": 0.012247751257304451,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 8.60863566584498e-05,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.2618206666666665,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0028345940389644295,
+            "prior_model_residual_m": 0.012108861114541881,
+            "reprojection_error_px": 0.07483720044469765,
+            "samples_accepted": 24,
+            "samples_rejected": 1,
+            "single_tag_yaw_deg": 0.4780970155170641,
+            "source_job_id": "1cbfcbb4c355",
+            "span_s": 2.995973136,
+            "tag_id": 2,
+            "weight": 6666.3373113474745
+          }
+        ]
+      }
+    },
+    {
+      "source_file": "job-20260918-181454-9acdfe678b25.jsonl",
+      "job_started": {
+        "apply": false,
+        "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+        "event": "job_started",
+        "expected_tag_id": 3,
+        "extnav_revision": 5,
+        "odin_session_id": "odin-140830768132-235e5073",
+        "operation": "next",
+        "service_instance_id": "fe3356d0bbba45dbb8bf0d28ee86870a",
+        "t_imu_camera": [
+          [
+            0.0,
+            -1.0,
+            0.0,
+            0.04657
+          ],
+          [
+            -1.0,
+            0.0,
+            0.0,
+            0.02897
+          ],
+          [
+            0.0,
+            0.0,
+            -1.0,
+            -0.06726
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "tag_map": {
+          "0": {
+            "size_m": 0.099,
+            "tag_id": 0,
+            "x": 0.0,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "1": {
+            "size_m": 0.099,
+            "tag_id": 1,
+            "x": 5.35,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "2": {
+            "size_m": 0.099,
+            "tag_id": 2,
+            "x": 10.7,
+            "y": 0.0,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          },
+          "3": {
+            "size_m": 0.099,
+            "tag_id": 3,
+            "x": 5.35,
+            "y": -5.35,
+            "yaw_rad": 0.0,
+            "z": 0.0
+          }
+        },
+        "timestamp": "2026-09-18T18:14:54.215060+08:00",
+        "window_before": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              -0.14151979957516975,
+              -0.24687142066968784
+            ],
+            "capture_end_ns": 1789726399056286288,
+            "capture_start_ns": 1789726396260290280,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.145979196022276,
+            "effective_sigma_m": 0.012256233646439801,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 0.0004639646496480842,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.1688623333333332,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0017412235264888348,
+            "prior_model_residual_m": 0.008927003167386316,
+            "reprojection_error_px": 0.065282760421572,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.4594161855403406,
+            "source_job_id": "38714a004de4",
+            "span_s": 2.795996008,
+            "tag_id": 0,
+            "weight": 6657.113123680292
+          },
+          {
+            "P_world_m": [
+              5.35,
+              0.0
+            ],
+            "Q_odin_m": [
+              5.190638002572783,
+              -0.24665044913664574
+            ],
+            "capture_end_ns": 1789726452199046664,
+            "capture_start_ns": 1789726449371216696,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.214250360478651,
+            "effective_sigma_m": 0.012248121653676763,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 0.00012839019925824443,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 1.311541,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.00134847195469228,
+            "prior_model_residual_m": 0.008915190105987847,
+            "reprojection_error_px": 0.07541688443483449,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.3587134542272524,
+            "source_job_id": "300810497616",
+            "span_s": 2.827829968,
+            "tag_id": 1,
+            "weight": 6665.934123023403
+          }
+        ],
+        "window_revision": 8,
+        "window_size": 4
+      },
+      "rejection": {
+        "event": "window_candidate_rejected",
+        "new_keyframe": {
+          "P_world_m": [
+            5.35,
+            -5.35
+          ],
+          "Q_odin_m": [
+            5.1885057613964225,
+            -5.199809577145439
+          ],
+          "capture_end_ns": 1789726501285163880,
+          "capture_start_ns": 1789726498321165200,
+          "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+          "correction_tilt_deg": 6.7289417412212265,
+          "effective_sigma_m": 0.012247497997423334,
+          "independent_blocks": 12,
+          "max_sync_motion_error_m": 3.47447390055801e-05,
+          "odin_session_id": "odin-140830768132-235e5073",
+          "odom_match_error_ms": 2.216306,
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.0019197064242577075,
+          "prior_model_residual_m": 0.3970004715004574,
+          "reprojection_error_px": 0.10974967729590858,
+          "samples_accepted": 24,
+          "samples_rejected": 0,
+          "single_tag_yaw_deg": -0.8309226058920967,
+          "source_job_id": "9acdfe678b25",
+          "span_s": 2.96399868,
+          "tag_id": 3,
+          "weight": 6666.613013903415
+        },
+        "pre_eviction_registration": {
+          "baseline_tags": [
+            0,
+            3
+          ],
+          "max_residual_m": 0.24245189080539534,
+          "model_yaw_std_rad": 0.002061983417993413,
+          "odin_baseline_m": 7.276040740848277,
+          "reason": "加权配准 RMS 超限，窗口不符合单一 SE(2) 模型",
+          "residuals_m": [
+            0.08057609765248216,
+            0.16676056254799404,
+            0.24245189080539534
+          ],
+          "rms_m": 0.17618155509852648,
+          "two_point_limited": false,
+          "valid": false,
+          "world_baseline_m": 7.566042558696058,
+          "x_m": 0.18931427605758921,
+          "y_m": 0.17630800053987072,
+          "yaw_rad": -0.018233023549830172
+        },
+        "reason": "加权配准 RMS 超限，窗口不符合单一 SE(2) 模型",
+        "timestamp": "2026-09-18T18:15:01.370921+08:00",
+        "window_before": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              -0.14151979957516975,
+              -0.24687142066968784
+            ],
+            "capture_end_ns": 1789726399056286288,
+            "capture_start_ns": 1789726396260290280,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.145979196022276,
+            "effective_sigma_m": 0.012256233646439801,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 0.0004639646496480842,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 2.1688623333333332,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0017412235264888348,
+            "prior_model_residual_m": 0.008927003167386316,
+            "reprojection_error_px": 0.065282760421572,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.4594161855403406,
+            "source_job_id": "38714a004de4",
+            "span_s": 2.795996008,
+            "tag_id": 0,
+            "weight": 6657.113123680292
+          },
+          {
+            "P_world_m": [
+              5.35,
+              0.0
+            ],
+            "Q_odin_m": [
+              5.190638002572783,
+              -0.24665044913664574
+            ],
+            "capture_end_ns": 1789726452199046664,
+            "capture_start_ns": 1789726449371216696,
+            "config_fingerprint": "4a894db431b5df307382a9024e78723941dd2effb649b2d2292b159f0849c0f3",
+            "correction_tilt_deg": 7.214250360478651,
+            "effective_sigma_m": 0.012248121653676763,
+            "independent_blocks": 12,
+            "max_sync_motion_error_m": 0.00012839019925824443,
+            "odin_session_id": "odin-140830768132-235e5073",
+            "odom_match_error_ms": 1.311541,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.00134847195469228,
+            "prior_model_residual_m": 0.008915190105987847,
+            "reprojection_error_px": 0.07541688443483449,
+            "samples_accepted": 24,
+            "samples_rejected": 0,
+            "single_tag_yaw_deg": 0.3587134542272524,
+            "source_job_id": "300810497616",
+            "span_s": 2.827829968,
+            "tag_id": 1,
+            "weight": 6665.934123023403
+          }
+        ]
+      }
+    }
+  ],
+  "small_tag_jobs": [
+    {
+      "file": "job-20260918-183917-6bd55f1dab91.jsonl",
+      "time": "2026-09-18T18:39:17.389343+08:00",
+      "tag": 0,
+      "operation": "first",
+      "map": {
+        "0": {
+          "size_m": 0.0465,
+          "tag_id": 0,
+          "x": 0.0,
+          "y": 0.0,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        },
+        "1": {
+          "size_m": 0.0465,
+          "tag_id": 1,
+          "x": 0.0,
+          "y": -1.635,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        },
+        "2": {
+          "size_m": 0.0465,
+          "tag_id": 2,
+          "x": 10.7,
+          "y": 0.0,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        },
+        "3": {
+          "size_m": 0.0465,
+          "tag_id": 3,
+          "x": 5.35,
+          "y": -4.98,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        }
+      },
+      "window_size": 4,
+      "accepted": 138,
+      "rejected_logged": 153,
+      "tilt_rejects": 153,
+      "reject_reasons": {
+        "完整空间修正 tilt=*deg 超限": 153
+      },
+      "tilt_rejected_range": [
+        10.034,
+        28.578
+      ],
+      "progress_reasons": {
+        "样本数不足": 7,
+        "粗修正偏航离散度过大": 27
+      },
+      "end": {
+        "application_confirmed_by_status": false,
+        "application_state": "not_requested",
+        "candidate": {
+          "application_confirmed_by_status": false,
+          "application_job_id": "6bd55f1dab91-apply",
+          "application_state": "not_requested",
+          "apply_reason": "候选可显式应用；PoseStamped 无 estimator reset counter，ACK 不代表 EKF 稳定",
+          "base_window_revision": 1,
+          "can_apply": true,
+          "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+          "correction": [
+            -0.11976735112823857,
+            0.26326445890275363,
+            0.017336322904267124
+          ],
+          "delta": [
+            -0.11976735112823857,
+            0.26326445890275363,
+            0.017336322904267124
+          ],
+          "expected_extnav_revision": 7,
+          "expected_jump": [
+            0.342103615451875,
+            0.017336322904267128
+          ],
+          "fcu_reference": {
+            "candidate_mode": "tag_world_xy_local_z",
+            "lever_arm_m": [
+              0.06,
+              -0.03,
+              0.05
+            ],
+            "require_zero_installation_angles": true
+          },
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.012527747618166156,
+          "quality_reason": "首次沿用 Task27 完整 SE(3) 粗修正；尚无空间基线",
+          "registration": {
+            "baseline_tags": [
+              -1,
+              -1
+            ],
+            "max_residual_m": 0.0,
+            "model_yaw_std_rad": 0.006078725478317433,
+            "odin_baseline_m": 0.0,
+            "reason": "首次沿用 Task27 完整 SE(3) 粗修正；尚无空间基线",
+            "residuals_m": [
+              0.0
+            ],
+            "rms_m": 0.0,
+            "two_point_limited": false,
+            "valid": true,
+            "world_baseline_m": 0.0,
+            "x_m": -0.11976735112823857,
+            "y_m": 0.26326445890275363,
+            "yaw_rad": 0.017336322904267124
+          },
+          "saved": true,
+          "saved_window_revision": 2,
+          "session": "odin-4400355347210-d53a079a",
+          "source_job_id": "6bd55f1dab91",
+          "stage": "rough_single_tag",
+          "valid": true,
+          "yaw_std_rad": 0.006078725478317433
+        },
+        "event": "job_finished",
+        "extnav_revision": 0,
+        "message": "候选和 keyframe 已保存；dry-run 未调用 extnav",
+        "outcome": "saved_unapplied",
+        "resources_released": true,
+        "success": true,
+        "timestamp": "2026-09-18T18:40:04.025165+08:00",
+        "window_saved": true
+      },
+      "frozen": {
+        "candidate": {
+          "application_confirmed_by_status": false,
+          "application_job_id": "6bd55f1dab91-apply",
+          "application_state": "not_requested",
+          "apply_reason": "候选可显式应用；PoseStamped 无 estimator reset counter，ACK 不代表 EKF 稳定",
+          "base_window_revision": 1,
+          "can_apply": true,
+          "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+          "correction": [
+            -0.11976735112823857,
+            0.26326445890275363,
+            0.017336322904267124
+          ],
+          "delta": [
+            -0.11976735112823857,
+            0.26326445890275363,
+            0.017336322904267124
+          ],
+          "expected_extnav_revision": 7,
+          "expected_jump": [
+            0.342103615451875,
+            0.017336322904267128
+          ],
+          "fcu_reference": {
+            "candidate_mode": "tag_world_xy_local_z",
+            "lever_arm_m": [
+              0.06,
+              -0.03,
+              0.05
+            ],
+            "require_zero_installation_angles": true
+          },
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.012527747618166156,
+          "quality_reason": "首次沿用 Task27 完整 SE(3) 粗修正；尚无空间基线",
+          "registration": {
+            "baseline_tags": [
+              -1,
+              -1
+            ],
+            "max_residual_m": 0.0,
+            "model_yaw_std_rad": 0.006078725478317433,
+            "odin_baseline_m": 0.0,
+            "reason": "首次沿用 Task27 完整 SE(3) 粗修正；尚无空间基线",
+            "residuals_m": [
+              0.0
+            ],
+            "rms_m": 0.0,
+            "two_point_limited": false,
+            "valid": true,
+            "world_baseline_m": 0.0,
+            "x_m": -0.11976735112823857,
+            "y_m": 0.26326445890275363,
+            "yaw_rad": 0.017336322904267124
+          },
+          "saved": false,
+          "saved_window_revision": 0,
+          "session": "odin-4400355347210-d53a079a",
+          "source_job_id": "6bd55f1dab91",
+          "stage": "rough_single_tag",
+          "valid": true,
+          "yaw_std_rad": 0.006078725478317433
+        },
+        "event": "candidate_frozen",
+        "evicted_tag_ids": [],
+        "fcu_reference": {
+          "active_mode_before": "local_identity_origin",
+          "candidate_mode_after": "tag_world_xy_local_z",
+          "lever_arm_m": [
+            0.06,
+            -0.03,
+            0.05
+          ],
+          "require_zero_installation_angles": true
+        },
+        "pre_eviction_registration": null,
+        "temporary_window": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              0.10912868444809351,
+              -0.26985026701753845
+            ],
+            "capture_end_ns": 1789728003408277008,
+            "capture_start_ns": 1789727989716286448,
+            "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+            "correction_tilt_deg": 5.246636473346021,
+            "effective_sigma_m": 0.012527747618166156,
+            "independent_blocks": 34,
+            "max_sync_motion_error_m": 0.0026352344078786924,
+            "odin_session_id": "odin-4400355347210-d53a079a",
+            "odom_match_error_ms": 2.1837476799999997,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.005263117737550005,
+            "prior_model_residual_m": null,
+            "reprojection_error_px": 0.16176068356772866,
+            "samples_accepted": 138,
+            "samples_rejected": 201,
+            "single_tag_yaw_deg": 0.9932981346904881,
+            "source_job_id": "6bd55f1dab91",
+            "span_s": 13.69199056,
+            "tag_id": 0,
+            "weight": 6371.680768791035
+          }
+        ],
+        "thresholds": {
+          "candidate_max_age_seconds": 300.0,
+          "default_size": 5,
+          "max_apply_position_jump_m": 1.0,
+          "max_apply_yaw_jump_rad": 0.7853981633974483,
+          "max_model_yaw_std_rad": 0.017453292519943295,
+          "max_prior_model_residual_m": 0.5,
+          "max_registration_residual_m": 0.15,
+          "max_registration_rms_m": 0.08,
+          "maximum_baseline_ratio_error": 0.15,
+          "maximum_keyframe_gap_seconds": 600.0,
+          "maximum_size": 20,
+          "maximum_window_span_seconds": 1800.0,
+          "minimum_baseline_m": 1.0,
+          "recommended_precision_keyframes": 3
+        },
+        "timestamp": "2026-09-18T18:40:03.588025+08:00"
+      },
+      "accepted_tilt_range": [
+        1.5550313665149118,
+        9.878804084280256
+      ]
+    },
+    {
+      "file": "job-20260918-184051-a42fd2ecc672.jsonl",
+      "time": "2026-09-18T18:40:51.397157+08:00",
+      "tag": 1,
+      "operation": "next",
+      "map": {
+        "0": {
+          "size_m": 0.0465,
+          "tag_id": 0,
+          "x": 0.0,
+          "y": 0.0,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        },
+        "1": {
+          "size_m": 0.0465,
+          "tag_id": 1,
+          "x": 0.0,
+          "y": -1.635,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        },
+        "2": {
+          "size_m": 0.0465,
+          "tag_id": 2,
+          "x": 10.7,
+          "y": 0.0,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        },
+        "3": {
+          "size_m": 0.0465,
+          "tag_id": 3,
+          "x": 5.35,
+          "y": -4.98,
+          "yaw_rad": 0.0,
+          "z": 0.0
+        }
+      },
+      "window_size": 4,
+      "accepted": 24,
+      "rejected_logged": 18,
+      "tilt_rejects": 18,
+      "reject_reasons": {
+        "完整空间修正 tilt=*deg 超限": 18
+      },
+      "tilt_rejected_range": [
+        10.139,
+        23.86
+      ],
+      "progress_reasons": {
+        "样本数不足": 5
+      },
+      "end": {
+        "application_confirmed_by_status": false,
+        "application_state": "not_requested",
+        "candidate": {
+          "application_confirmed_by_status": false,
+          "application_job_id": "a42fd2ecc672-apply",
+          "application_state": "not_requested",
+          "apply_reason": "候选可显式应用；PoseStamped 无 estimator reset counter，ACK 不代表 EKF 稳定；两点解离群识别能力有限",
+          "base_window_revision": 2,
+          "can_apply": true,
+          "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+          "correction": [
+            -0.11211285805168703,
+            0.2731916598924967,
+            0.011083694457654825
+          ],
+          "delta": [
+            0.007654493076551541,
+            0.00992720098974309,
+            -0.0062526284466123
+          ],
+          "expected_extnav_revision": 8,
+          "expected_jump": [
+            0.011444508188381355,
+            0.006252628446612302
+          ],
+          "fcu_reference": {
+            "candidate_mode": "tag_world_xy_local_z",
+            "lever_arm_m": [
+              0.06,
+              -0.03,
+              0.05
+            ],
+            "require_zero_installation_angles": true
+          },
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.014275127065118633,
+          "quality_reason": "两点解合格，但离群识别能力有限",
+          "registration": {
+            "baseline_tags": [
+              0,
+              1
+            ],
+            "max_residual_m": 0.0045674922562048414,
+            "model_yaw_std_rad": 0.010657266699572666,
+            "odin_baseline_m": 1.6439328833396303,
+            "reason": "两点解合格，但离群识别能力有限",
+            "residuals_m": [
+              0.0045674922562048414,
+              0.004365391083425374
+            ],
+            "rms_m": 0.004465298418790292,
+            "two_point_limited": true,
+            "valid": true,
+            "world_baseline_m": 1.635,
+            "x_m": -0.11211285805168703,
+            "y_m": 0.2731916598924967,
+            "yaw_rad": 0.011083694457654825
+          },
+          "saved": true,
+          "saved_window_revision": 3,
+          "session": "odin-4400355347210-d53a079a",
+          "source_job_id": "a42fd2ecc672",
+          "stage": "refined_multi_tag",
+          "valid": true,
+          "yaw_std_rad": 0.010657266699572666
+        },
+        "event": "job_finished",
+        "extnav_revision": 0,
+        "message": "候选和 keyframe 已保存；dry-run 未调用 extnav",
+        "outcome": "saved_unapplied",
+        "resources_released": true,
+        "success": true,
+        "timestamp": "2026-09-18T18:41:00.674030+08:00",
+        "window_saved": true
+      },
+      "frozen": {
+        "candidate": {
+          "application_confirmed_by_status": false,
+          "application_job_id": "a42fd2ecc672-apply",
+          "application_state": "not_requested",
+          "apply_reason": "候选可显式应用；PoseStamped 无 estimator reset counter，ACK 不代表 EKF 稳定；两点解离群识别能力有限",
+          "base_window_revision": 2,
+          "can_apply": true,
+          "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+          "correction": [
+            -0.11211285805168703,
+            0.2731916598924967,
+            0.011083694457654825
+          ],
+          "delta": [
+            0.007654493076551541,
+            0.00992720098974309,
+            -0.0062526284466123
+          ],
+          "expected_extnav_revision": 8,
+          "expected_jump": [
+            0.011444508188381355,
+            0.006252628446612302
+          ],
+          "fcu_reference": {
+            "candidate_mode": "tag_world_xy_local_z",
+            "lever_arm_m": [
+              0.06,
+              -0.03,
+              0.05
+            ],
+            "require_zero_installation_angles": true
+          },
+          "odom_time_source": "arrival_history",
+          "position_std_m": 0.014275127065118633,
+          "quality_reason": "两点解合格，但离群识别能力有限",
+          "registration": {
+            "baseline_tags": [
+              0,
+              1
+            ],
+            "max_residual_m": 0.0045674922562048414,
+            "model_yaw_std_rad": 0.010657266699572666,
+            "odin_baseline_m": 1.6439328833396303,
+            "reason": "两点解合格，但离群识别能力有限",
+            "residuals_m": [
+              0.0045674922562048414,
+              0.004365391083425374
+            ],
+            "rms_m": 0.004465298418790292,
+            "two_point_limited": true,
+            "valid": true,
+            "world_baseline_m": 1.635,
+            "x_m": -0.11211285805168703,
+            "y_m": 0.2731916598924967,
+            "yaw_rad": 0.011083694457654825
+          },
+          "saved": false,
+          "saved_window_revision": 0,
+          "session": "odin-4400355347210-d53a079a",
+          "source_job_id": "a42fd2ecc672",
+          "stage": "refined_multi_tag",
+          "valid": true,
+          "yaw_std_rad": 0.010657266699572666
+        },
+        "event": "candidate_frozen",
+        "evicted_tag_ids": [],
+        "fcu_reference": {
+          "active_mode_before": "tag_world_xy_local_z",
+          "candidate_mode_after": "tag_world_xy_local_z",
+          "lever_arm_m": [
+            0.06,
+            -0.03,
+            0.05
+          ],
+          "require_zero_installation_angles": true
+        },
+        "pre_eviction_registration": {
+          "baseline_tags": [
+            0,
+            1
+          ],
+          "max_residual_m": 0.0045674922562048414,
+          "model_yaw_std_rad": 0.010657266699572666,
+          "odin_baseline_m": 1.6439328833396303,
+          "reason": "两点解合格，但离群识别能力有限",
+          "residuals_m": [
+            0.0045674922562048414,
+            0.004365391083425374
+          ],
+          "rms_m": 0.004465298418790292,
+          "two_point_limited": true,
+          "valid": true,
+          "world_baseline_m": 1.635,
+          "x_m": -0.11211285805168703,
+          "y_m": 0.2731916598924967,
+          "yaw_rad": 0.011083694457654825
+        },
+        "temporary_window": [
+          {
+            "P_world_m": [
+              0.0,
+              0.0
+            ],
+            "Q_odin_m": [
+              0.10912868444809351,
+              -0.26985026701753845
+            ],
+            "capture_end_ns": 1789728003408277008,
+            "capture_start_ns": 1789727989716286448,
+            "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+            "correction_tilt_deg": 5.246636473346021,
+            "effective_sigma_m": 0.012527747618166156,
+            "independent_blocks": 34,
+            "max_sync_motion_error_m": 0.0026352344078786924,
+            "odin_session_id": "odin-4400355347210-d53a079a",
+            "odom_match_error_ms": 2.1837476799999997,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.005263117737550005,
+            "prior_model_residual_m": 0.0045674922562048414,
+            "reprojection_error_px": 0.16176068356772866,
+            "samples_accepted": 138,
+            "samples_rejected": 201,
+            "single_tag_yaw_deg": 0.9932981346904881,
+            "source_job_id": "6bd55f1dab91",
+            "span_s": 13.69199056,
+            "tag_id": 0,
+            "weight": 6371.680768791035
+          },
+          {
+            "P_world_m": [
+              0.0,
+              -1.635
+            ],
+            "Q_odin_m": [
+              0.0909082077246587,
+              -1.9136821742250003
+            ],
+            "capture_end_ns": 1789728060060051320,
+            "capture_start_ns": 1789728055136051320,
+            "config_fingerprint": "407043bc14911e1439ed658c292bfc2f6536398d0cd42e750d743d4ba3d3cd96",
+            "correction_tilt_deg": 1.9781245007193335,
+            "effective_sigma_m": 0.012247449692861342,
+            "independent_blocks": 16,
+            "max_sync_motion_error_m": 4.896853006817671e-06,
+            "odin_session_id": "odin-4400355347210-d53a079a",
+            "odom_match_error_ms": 1.9232666666666667,
+            "odom_time_source": "arrival_history",
+            "position_std_m": 0.0008617013847808774,
+            "prior_model_residual_m": 0.004365391083425374,
+            "reprojection_error_px": 0.28892510809345334,
+            "samples_accepted": 24,
+            "samples_rejected": 18,
+            "single_tag_yaw_deg": 1.2076545677944732,
+            "source_job_id": "a42fd2ecc672",
+            "span_s": 4.924,
+            "tag_id": 1,
+            "weight": 6666.665600925975
+          }
+        ],
+        "thresholds": {
+          "candidate_max_age_seconds": 300.0,
+          "default_size": 5,
+          "max_apply_position_jump_m": 1.0,
+          "max_apply_yaw_jump_rad": 0.7853981633974483,
+          "max_model_yaw_std_rad": 0.017453292519943295,
+          "max_prior_model_residual_m": 0.5,
+          "max_registration_residual_m": 0.15,
+          "max_registration_rms_m": 0.08,
+          "maximum_baseline_ratio_error": 0.15,
+          "maximum_keyframe_gap_seconds": 600.0,
+          "maximum_size": 20,
+          "maximum_window_span_seconds": 1800.0,
+          "minimum_baseline_m": 1.0,
+          "recommended_precision_keyframes": 3
+        },
+        "timestamp": "2026-09-18T18:41:00.209947+08:00"
+      },
+      "accepted_tilt_range": [
+        0.8934215464062125,
+        9.87021934943131
+      ]
+    }
+  ]
+}
