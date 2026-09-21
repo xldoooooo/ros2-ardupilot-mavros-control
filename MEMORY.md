@@ -16,8 +16,9 @@
   `BUILD_TESTING=OFF`，`build_onboard_control.sh --verify` 只执行依赖检查、生产构建和
   localhost 隔离 smoke，不代表完整单元测试。完整测试仍以主工程为准。
 - 当前源码运行脚本已迁至 `scripts/ground/`、`scripts/onboard/`，机载构建入口在
-  `src/onboard_control/deploy/`。软著代码仓库的 README 已更新入口，但历史申报手册与截图
-  按用户要求保留旧版内容，不应误认作当前部署说明。
+  `src/onboard_control/deploy/`。软著代码仓库的 README 已更新入口。2026-09-21 按用户要求
+  重拍并替换仓库 `assets/地面站主界面.png`；未改原软著申报材料、历史手册或其他无变化图片。
+  历史手册仍是 V1.0 申报时内容，不应误认作当前部署说明。
 
 ## 绝对安全边界
 
