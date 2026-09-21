@@ -4,7 +4,20 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-09-18，仓库飞行线协议为 3.3（独立视频接口仍为 3.2）。
+本文件。当前基线日期为 2026-09-21，仓库飞行线协议为 3.3（独立视频接口仍为 3.2）。
+
+## 软著独立代码仓库
+
+- 软著代码仓库为 `/home/nvidia/scq/projects/uav-autonomous-inspection-control`，远端
+  `LostPatrol/uav-autonomous-inspection-control`，原始 V1.0 标签为 `v1.0.0`。其初始生产源码
+  对应主项目 `f037ba4`（2026-09-01）；2026-09-21 已将其后生产改动同步至该仓库 main，
+  保留 V1.0 品牌、Apache-2.0 文件头、许可证和著作权人，不改软著申报材料与旧标签。
+- 该独立仓库按原边界不分发测试源码、实验报告及构建产物；默认构建为
+  `BUILD_TESTING=OFF`，`build_onboard_control.sh --verify` 只执行依赖检查、生产构建和
+  localhost 隔离 smoke，不代表完整单元测试。完整测试仍以主工程为准。
+- 当前源码运行脚本已迁至 `scripts/ground/`、`scripts/onboard/`，机载构建入口在
+  `src/onboard_control/deploy/`。软著代码仓库的 README 已更新入口，但历史申报手册与截图
+  按用户要求保留旧版内容，不应误认作当前部署说明。
 
 ## 绝对安全边界
 
