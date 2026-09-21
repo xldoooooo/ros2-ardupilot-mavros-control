@@ -17,7 +17,9 @@
   localhost 隔离 smoke，不代表完整单元测试。完整测试仍以主工程为准。
 - 当前源码运行脚本已迁至 `scripts/ground/`、`scripts/onboard/`，机载构建入口在
   `src/onboard_control/deploy/`。软著代码仓库的 README 已更新入口。2026-09-21 按用户要求
-  重拍并替换仓库 `assets/地面站主界面.png`；未改原软著申报材料、历史手册或其他无变化图片。
+  重拍并替换仓库 `assets/地面站主界面.png`，随后补拍新增
+  `assets/AprilTag-Odin修正面板.png` 并在软著仓库 README 展示；未改原软著申报材料、
+  历史手册或其他无变化图片。Odin-Tag 图为隔离域离线布局截图，不代表实机标定或定位验收。
   历史手册仍是 V1.0 申报时内容，不应误认作当前部署说明。
 
 ## 绝对安全边界
