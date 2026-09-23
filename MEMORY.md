@@ -20,7 +20,8 @@
 - 2026-09-23 new被动录制160帧Odin点云与6228条里程计，状态采样均未解锁；实录回放因近身点距
   起点约10.4cm而返回NO_PATH，停流后STALE_INPUT，不是实景避障成功。上游bag链接返回404。
   10Hz定时搜索已有两平台短时基准，但仍有超时/间隔超标，未验收全链P99≤100ms或30分钟热稳态。
-  使用与限制详见独立仓库README和docs/VALIDATION.md，以及Task36执行报告。
+  英文主页和docs/README-zh.md提供简明入口，详细使用/可视化说明在docs/USAGE.md，
+  实测限制在docs/VALIDATION.md；公共头文件与消息内维护英文API契约注释。
 
 ## 软著独立代码仓库
 
