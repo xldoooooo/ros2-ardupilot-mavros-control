@@ -4,7 +4,23 @@
 临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
 
 当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线日期为 2026-09-21，仓库飞行线协议为 3.3（独立视频接口仍为 3.2）。
+本文件。当前基线日期为 2026-09-23，仓库飞行线协议为 3.3（独立视频接口仍为 3.2）。
+
+## 独立避障 ROS2 仓库（尚未集成）
+
+- Task36 独立移植位于 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端为
+  `LostPatrol/dyn_small_obs_avoidance-ros2`（公开、GPLv3、main，验收提交`1c87d08`）；只保留 `path_searching`、
+  `path_planning`。原始 HKU-MARS ROS1 检出未修改，也没有改本项目的飞行源码或避障占位行为。
+- Ubuntu24.04/Jazzy 的 amd64 与 new（Orin NX/aarch64）均已原生构建并通过12项核心测试及
+  ROS2进程测试；amd64核心ASan/UBSan通过。new独立目录为
+  `/home/nvidia/dyn_small_obs_avoidance-ros2`，未安装自启服务；refresh未同步该独立仓库。
+- 保留运动学A*、原语/终端三次多项式及双树累积地图，修复未初始化状态、队列降分、shot限幅、
+  采样/边界、空图、失败旧路径与资源预算问题。公开接口为带状态/输入时标的多项式与p/v/a；
+  未实现观察覆盖、动态障碍预测、yaw规划或飞行执行器接轨协议，不能直接当作实飞控制输入。
+- 2026-09-23 new被动录制160帧Odin点云与6228条里程计，状态采样均未解锁；实录回放因近身点距
+  起点约10.4cm而返回NO_PATH，停流后STALE_INPUT，不是实景避障成功。上游bag链接返回404。
+  10Hz定时搜索已有两平台短时基准，但仍有超时/间隔超标，未验收全链P99≤100ms或30分钟热稳态。
+  使用与限制详见独立仓库README和docs/VALIDATION.md，以及Task36执行报告。
 
 ## 软著独立代码仓库
 
