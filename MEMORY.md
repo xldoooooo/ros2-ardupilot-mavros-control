@@ -8,6 +8,12 @@
 
 ## 独立避障 ROS2 仓库（尚未集成）
 
+- 当前ROS包装层已于2026-09-29定点部署new（独立库d2e3a69）：盲区支持单帧异步等待
+  `cloud.blind_wait=0.15s`，源时间匹配容差仍0.05s；等待不刷新接收年龄。
+  `/kino_path`只发布成功预览，失败时RViz保留历史显示；有效性必须依据`/plan_result`，
+  失败结果仍无轨迹。现场20秒197次成功、4次输入过期/等待超时，196条非空路径、零空路径；
+  不能声称输入抖动已完全消除。new当前目标(2,0,1)、盲区0.5m、预算0.3s；refresh未同步。
+
 - Task36 独立移植位于 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端为
   `LostPatrol/dyn_small_obs_avoidance-ros2`（公开、GPLv3、main，验收提交`1c87d08`）；只保留 `path_searching`、
   `path_planning`。原始 HKU-MARS ROS1 检出未修改，也没有改本项目的飞行源码或避障占位行为。
