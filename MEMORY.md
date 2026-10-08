@@ -131,7 +131,7 @@
   追加依赖、ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
   构建入口已迁入部署目录；操作脚本集中于 `scripts/ground/`、`scripts/onboard/`，共享函数位于
   `scripts/lib/`。refresh 已于 2026-09-18 同步这两次路径迁移及三个 systemd unit；
-  new 尚未同步，下次同步须更新调用方及三个 systemd unit。
+  new 已于 2026-10-08 同步当前 main 的路径迁移及三个 systemd unit；逐机配置差异见下文。
 - `README.md` 当前存在并维护常用启动/停止说明；Ubuntu 22.04 通用部署见
   `DEPLOY_UBUNTU_2204.md`，机载最小部署见
   `src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md`。
@@ -196,9 +196,23 @@
 - new 已在未解锁台架通过实际 Qt GUI、机载脚本、外部单独重启三条路径；始终没有姿态推力输出，
   热重启期间 onboard/MAVROS/Odin 保持原进程。用户已明确确认使用首次地面站默认原点
   `(30.2489634, 120.2052342, 488.0m)`。首次无原点实验如实超时，不能把遥测恢复等同原点恢复。
-- new 仓库仍是旧 HEAD 加现场未提交/未跟踪部署内容；Task33 仅备份后定点同步对应源码并原生构建，
-  没有覆盖其他改动或强制改写机上 Git 历史。机载新增 `.venv` 使用系统 ROS Python 包。
-  完整任务证据、首轮失败与最终验收见 `agent/report/report-2026-09-17-task33-fcu-hot-reboot.md`。
+- new 主工程已于 2026-10-08 从旧 HEAD `6a40713` 加现场部署工作树切换为当前 main 的干净
+  sparse checkout，目录仍为 `/home/nvidia/ros2-ardupilot-mavros-control`。原工作树、Git 历史、
+  标定及配置归档保存在 `/home/nvidia/ros2-ardupilot-maintenance/new-sync-20261008-1920/`，
+  原生 `.venv/build/install/log` 保持原绝对路径；没有复制开发机二进制。
+- new 使用 Wasintek 1920×1080@30、Tag0=0.170 m，活动修正配置通过
+  `/etc/ros2-ardupilot/correction.env` 的 `CORRECTION_CONFIG_DIR` 选择
+  `/etc/ros2-ardupilot/correction-config`。保留原内参、Task32 外参、镜头参数及 Tag 世界配置；
+  采集入口升级为本包 `uvc_camera_node`，日志指向项目 `correction_service/log`。
+  **仓库默认 UQ212/0.099 m 配置属于 refresh，不可直接覆盖 new 的活动配置。**
+- new 的 MAVROS 为 2.14.0，已同步时间检查/overlay 支持代码，但未启用只适用于 2.15.1 的
+  参数重试补丁，也未升级系统 MAVROS。extnav 生产源码与当前受控补丁 SHA-256 一致。
+  本次未发现摄像头设备，不能声称真实取帧或完整硬件启动通过；飞控/视频保持停止，
+  修正服务恢复 enabled/active 且 idle。独立避障仓库未改，本任务不改变其既有同步记录。
+  四包 ARM64 Release 构建通过，机载24项测试23通过、1项既有失败（仓库默认Tag0=0.099 m，
+  测试仍断言0.170 m）；隔离smoke接口3.3、未连接FCU、armed=false、姿态输出0。
+  详见 `agent/report/report-2026-10-08-new-onboard-sync.md`。
+  Task33 历史验收见 `agent/report/report-2026-09-17-task33-fcu-hot-reboot.md`。
 
 ### 独立摄像头服务
 
@@ -701,7 +715,7 @@
   请求缺少启动时钟而被拒绝。机载及分组件MAVROS入口现通过共享函数恢复禁用的MAVLINK
   时间同步到10Hz，并校验参数读回和真实时钟消息；不绕过飞控重启保护。隔离MAVROS及refresh
   真实启动已验证。后续保留日志已确认用户热重启成功、时钟回退及控制链路恢复正常。
-  此检查会增加启动耗时，尚未优化；new尚待同步。
+  此检查会增加启动耗时，尚未优化；new已于2026-10-08同步代码，真实FCU启动尚未复验。
 - refresh MAVROS 2.15.1 参数补拉会被重复回包放大请求，导致 unsolicited 日志刷屏。
   已部署固定版本补丁到 `/home/nvidia/mavros_param_fix_ws`，由 onboard.env 中
   `MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_ws/install/local_setup.bash` 选择；
@@ -710,7 +724,8 @@
   单独视为整表完整。保留诊断警告，不绕过飞控重启后的参数新鲜度验证。
   2026-09-18本次检查时refresh飞控unit为inactive，测试MAVROS结束后停止，既有Odin/extnav
   保留。未代用户再次热重启；补丁后的真实重启闭环待用户手动验证。new未部署；系统MAVROS
-  升级时应重评补丁及ABI。构建、启用、回退见ONBOARD_DEPLOYMENT.md。
+  升级时应重评补丁及ABI。new已同步安装器但系统仍为2.14.0，不能启用此2.15.1补丁。
+  构建、启用、回退见ONBOARD_DEPLOYMENT.md。
 
 - 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界。2026-09-16 已
   确认 refresh 可快进同步 main，自有 UVC 采集修复的地面/远端/refresh 提交一致；机载已有
