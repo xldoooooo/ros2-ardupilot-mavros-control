@@ -11,23 +11,35 @@
 
 - 独立仓库为 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
   `LostPatrol/dyn_small_obs_avoidance-ros2`（公开、GPLv3、main），仅含 `path_searching`、
-  `path_planning`。2026-10-08 当前代码为 `afc868b`，配套实测文档提交为 `bde0647`，
+  `path_planning`。2026-10-08按用户追加要求对齐ROS1距离规则，策略代码 `01b3785`，
+  当前main含两平台验证文档 `5f9e5c7`，
   已推送 main 并整体同步 new 原目录 `/home/nvidia/dyn_small_obs_avoidance-ros2`。
   用户已明确允许舍弃 new 临时修改；修改前本地和飞机全目录备份可查 Task37 报告。
   **refresh 尚未同步独立库及历次后续修改，下次连接必须一并同步并原生重建。**
 - Task37 修复 XYZ schema 验证、输出构造后的新鲜度门控、浮点枚举/派生数值边界、整条输出
   采样上限与基准可复现性。输出默认上限为 10000 点、60 s 时长、0.1 s 合作式构造预算，
   超限返回空失败，不截断为成功。保留 `sampleTrajectory(double)` ABI。
-- amd64 和 new ARM64 均原生 Release 构建，32 个逻辑用例全部通过（colcon 36 项含4个包装项）；
-  amd64 ASan/UBSan/泄漏检测通过 18 核心、6 helper、5 ROS 进程用例，系统依赖未插桩。
+- Task37修复版本 `afc868b` 在amd64和new ARM64均原生Release构建，32个逻辑用例全部通过
+  （colcon 36项含4个包装项）；amd64 ASan/UBSan/泄漏检测通过18核心、6 helper、5 ROS进程，
+  系统依赖未插桩。后续0.45 m无补偿版本的回归结果单列如下，不套用旧版本全通过结论。
 - `/plan_result` 是当前有效性的权威，失败结果无轨迹；`/kino_path` 仅发布并保留最后成功预览，
   不刷新旧时标。盲区默认关闭；Odin 台架显式启用 `blind_radius:=0.5`，按源时标匹配里程计，
   异步等待最多 0.15 s、匹配容差 0.05 s，等待不刷新接收年龄。球内障碍被忽略，不能当作机体分类；
   零偏移以 IMU 原点为球心，尚无实际雷达外参标定。
 - `odin.launch.py` 使用 `odom`、接收时间新鲜度和 z 下界 -2 m；ROS 正式模板预算 0.3 s，
   核心直接调用默认仍 0.08 s，10 Hz 定时器不保证 10 Hz 输出。正式 safe_distance=0.45 m，
-  保留 voxel_size=0.1 m 与采样补偿，有效碰撞半径约 0.648205 m。
-- 2026-10-08 未解锁台架：同高前向4 m目标有599 NO_PATH、2 NO_MAP，目标最近点0.472943 m，
+  voxel_size=0.1 m、collision_step=0.05 m。用户随后明确要求采用ROS1设置：
+  **有效距离从0.648205 m改为0.45 m，取消体素/采样附加半径，严格小于距离阈值才拒绝。**
+  10项共有搜索默认参数及0.1 m体素、50帧/双树原本已与ROS1一致；ROS2专属预算/时效限制保留。
+- 当前amd64和new ARM64均已原生重建，回归同为33个逻辑用例32通过、1失败
+  （colcon37项中2个failure为该用例及其包装）。飞机隔离安装节点参数读回及核心库哈希已核对，
+  临时验证节点已退出，没有在新距离设置下替用户请求现场目标。
+  新增阈值两侧及等号边界用例通过；保留原连续净空断言不放宽：自定义0.1 m距离场景的
+  `CollisionBetweenPrimitiveEndpoints` 密采样距离0.0999903617 m，仍失败。
+  无补偿判定针对存储的体素质心及离散样点，不保证连续曲线/每个原始点同样净空。
+  详见 `agent/report/report-2026-10-08-task37-ros1-clearance-parameter-alignment.md`；
+  0.45 m版本尚待用户现场目标验证，没有沿用旧版本599次成功作为新验收。
+- 2026-10-08距离对齐前（`afc868b`）未解锁台架：同高前向4 m目标有599 NO_PATH、2 NO_MAP，目标最近点0.472943 m，
   位于有效半径内；另将目标提高0.4 m，60 s收到599 REACH_END、1 STALE_INPUT（匹配odom等待超时）。
   首条曲线解析动力学/C1/端点检查通过，573597个捕获原始点上的10009次曲线采样最小距离0.660981 m；
   未精确导出累计PCL bank，有限采样不等于连续碰撞证明。结果接收间隔P99为144.38 ms，
