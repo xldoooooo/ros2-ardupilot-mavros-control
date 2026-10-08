@@ -38,7 +38,10 @@
   `CollisionBetweenPrimitiveEndpoints` 密采样距离0.0999903617 m，仍失败。
   无补偿判定针对存储的体素质心及离散样点，不保证连续曲线/每个原始点同样净空。
   详见 `agent/report/report-2026-10-08-task37-ros1-clearance-parameter-alignment.md`；
-  0.45 m版本尚待用户现场目标验证，没有沿用旧版本599次成功作为新验收。
+  0.45 m版本已有用户台架验证：目标(4,0,0)当前返回NO_PATH，捕获帧目标最近点0.290498 m；
+  同帧离线目标高度0.5/1 m均REACH_END，尚未替用户修改现场目标。用户观察到行人经过时曾成功，
+  未独立冻结对应成功结果，不能计入系统成功统计。NO_PATH时RViz停留于最后成功预览。
+  证据见 `agent/report/report-2026-10-08-task37-live-no-path-diagnosis.md`，不套用旧599次成功为新验收。
 - 2026-10-08距离对齐前（`afc868b`）未解锁台架：同高前向4 m目标有599 NO_PATH、2 NO_MAP，目标最近点0.472943 m，
   位于有效半径内；另将目标提高0.4 m，60 s收到599 REACH_END、1 STALE_INPUT（匹配odom等待超时）。
   首条曲线解析动力学/C1/端点检查通过，573597个捕获原始点上的10009次曲线采样最小距离0.660981 m；
