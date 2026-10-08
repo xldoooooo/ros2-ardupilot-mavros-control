@@ -12,7 +12,7 @@
 - 独立仓库为 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
   `LostPatrol/dyn_small_obs_avoidance-ros2`（公开、GPLv3、main），仅含 `path_searching`、
   `path_planning`。2026-10-08按用户追加要求对齐ROS1距离规则，策略代码 `01b3785`，
-  当前main含两平台验证文档 `5f9e5c7`，
+  当前main含两平台验证及目标投递说明 `4119937`，
   已推送 main 并整体同步 new 原目录 `/home/nvidia/dyn_small_obs_avoidance-ros2`。
   用户已明确允许舍弃 new 临时修改；修改前本地和飞机全目录备份可查 Task37 报告。
   **refresh 尚未同步独立库及历次后续修改，下次连接必须一并同步并原生重建。**
@@ -39,17 +39,22 @@
   无补偿判定针对存储的体素质心及离散样点，不保证连续曲线/每个原始点同样净空。
   详见 `agent/report/report-2026-10-08-task37-ros1-clearance-parameter-alignment.md`；
   0.45 m版本已有用户台架验证：目标(4,0,0)当前返回NO_PATH，捕获帧目标最近点0.290498 m；
-  同帧离线目标高度0.5/1 m均REACH_END，尚未替用户修改现场目标。用户观察到行人经过时曾成功，
-  未独立冻结对应成功结果，不能计入系统成功统计。NO_PATH时RViz停留于最后成功预览。
-  证据见 `agent/report/report-2026-10-08-task37-live-no-path-diagnosis.md`，不套用旧599次成功为新验收。
+  同帧离线目标高度0.5/1 m均REACH_END。后续用户新启动节点status9、goal_revision0（尚未收到目标），
+  向该节点补发用户指定(4,0,0.5)后，20 s窗口收到发送前31次等待、发送后163次REACH_END，
+  162条非空Path/不同时间戳。证据见 `agent/report/report-2026-10-08-task37-goal-delivery-verification.md`。
+  目标不跨进程保存；重启后重发，RViz也订阅目标时CLI单次发布用 `-w 2 --keep-alive 3`，
+  没有RViz目标订阅时用 `-w 1`，并核对goal_revision递增。NO_PATH保留最后成功预览；
+  此短时新策略验证不套用旧599次成功，也不代表连续碰撞、长时或飞行跟踪验收。
 - 2026-10-08距离对齐前（`afc868b`）未解锁台架：同高前向4 m目标有599 NO_PATH、2 NO_MAP，目标最近点0.472943 m，
   位于有效半径内；另将目标提高0.4 m，60 s收到599 REACH_END、1 STALE_INPUT（匹配odom等待超时）。
   首条曲线解析动力学/C1/端点检查通过，573597个捕获原始点上的10009次曲线采样最小距离0.660981 m；
   未精确导出累计PCL bank，有限采样不等于连续碰撞证明。结果接收间隔P99为144.38 ms，
   未验收全链P99≤100 ms、30分钟热稳态或飞行跟踪。详细证据见
   `agent/report/report-2026-10-08-task37-refine-dyn-ros2.md` 和独立库 `docs/VALIDATION.md`。
-- 未安装规划自启服务；本任务临时规划进程已停止，原有Odin/MAVROS/onboard服务未重启，
-  最终FCU为 connected=true、armed=false、STABILIZE；本次只发布独立规划目标，无飞行指令。
+- 未安装规划自启服务；初次Task37临时规划进程已停止且原服务当时未重启，
+  初次试验最终FCU为 connected=true、armed=false、STABILIZE。后续机载总服务18:04停止，
+  用户另启动Odin和独立规划器，当前保持用户节点运行、目标(4,0,0.5)；不把历史FCU状态当成当前状态。
+  整个避障组件任务仅发布独立规划目标，没有飞行指令。
 - Task36 原始移植保留运动学A*、原语/终端三次多项式与双树逐帧累积；原HKU-MARS ROS1检出未改。
   尚无观察覆盖、动态障碍预测、yaw或执行器接轨；审查 A01–A28 差异/设计建议见 `docs/PORTING.md`，
   不声称轨迹与 ROS1 逐点等价。2026-09-23 的实录回放因近身点占用失败，仅属历史证据。
