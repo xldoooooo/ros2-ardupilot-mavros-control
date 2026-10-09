@@ -202,6 +202,16 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /ground_station/avoidance_path
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Simulation Obstacles
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /simulation/obstacles
+      Value: true
     - Alpha: 0.6
       Class: rviz_default_plugins/PointCloud2
       Enabled: false

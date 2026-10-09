@@ -1,4 +1,4 @@
-# 仿真包只保留模型与可视化；所有持续飞行控制已迁入 onboard_control。
+# 仿真包提供模型、可视化与合成环境观测；持续飞行控制只由 onboard_control 执行。
 cmake_minimum_required(VERSION 3.16)
 project(guided_sim)
 
@@ -19,11 +19,12 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
-# TF 可视化桥不参与飞行控制。
+# TF、预览桥及合成扫描均不参与飞行控制。
 install(
   PROGRAMS
     scripts/pose_to_tf.py
     scripts/avoidance_preview.py
+    scripts/simulation_obstacles.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

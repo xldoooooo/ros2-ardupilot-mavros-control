@@ -426,7 +426,7 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
         success=True, message="ok"
     )
 
-    result = initializer._simulation_workflow(lambda *_args: None)
+    result = initializer._simulation_workflow(lambda *_args: None, avoidance_demo=False)
 
     assert "仿真闭环初始化完成" in result
     assert sorted(supervisor.packages) == [

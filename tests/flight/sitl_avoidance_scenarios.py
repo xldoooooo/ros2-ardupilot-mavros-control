@@ -187,7 +187,8 @@ def main():
         done = threading.Event()
         init = {}
         env.initialize_simulation(lambda level, m: print(m, flush=True),
-                                  lambda ok, m: (init.update(ok=ok, message=m), done.set()))
+                                  lambda ok, m: (init.update(ok=ok, message=m), done.set()),
+                                  avoidance_demo=False)
         if not done.wait(150) or not init.get("ok"): raise RuntimeError(str(init))
         # Explicit isolation gate before issuing any arm/takeoff-capable simulation command.
         assert controller.domain_id == 231

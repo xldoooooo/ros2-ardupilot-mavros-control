@@ -26,6 +26,32 @@ RViz显示已接受轨迹，断流0.8s自动撤销；点云预览默认关闭，
 [独立避障桥说明](src/avoidance_bridge/README.md)。当前生产适配只支持未应用Odin-Tag修正的
 extnav基线；约20°仰角及物理外参未在此任务修改。部署和台架结果不代表实飞验收。
 
+### 地面站直接体验本地仿真避障
+
+地面站的“启动本地仿真”自动启动合成扫描、地图桥和独立规划器，不需要另开终端启动
+`start_avoidance.sh`。当前开发机已构建这些组件；首次安装还需按上文构建独立规划库和
+`avoidance_bridge`，并用地面站安装脚本构建 `guided_sim`。同步代码后关闭并重新打开地面站。
+等日志显示“仿真避障已就绪”，即可选择“遇障悬停”或“自主避障”并起飞。
+
+推荐先选“自主避障”，起飞高度 **1.5m**，稳定约2秒后 RViz 自动出现红色圆柱，中心位于
+初始位置前方 map +X 方向1.5m、半径0.18m。添加航点 **X=3、Y=0、Z=1.5、Yaw=0** 后发送，
+可看到橙色规划轨迹和实际绕行。“遇障悬停”使用同一航点会等待障碍移开；若一直阻塞，
+15秒后自动 LAND，这是该策略的预期行为。
+
+如需演示移障后恢复，可在本地仿真已运行时执行一次（只作用于仿真域）：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ROS_DOMAIN_ID=231 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+  ros2 topic pub --once /simulation/obstacle_enabled std_msgs/msg/Bool '{data: false}'
+```
+
+该演示使用有限房间（相对初始位置 X=-2.5～6m、Y=±2.5m、Z=-0.25～3.5m）和朝 map +X 的
+有限前向视野，射线只保留第一个表面，不把遮挡/未观测空间伪装为空闲。合成输入只允许
+domain231/LOCALHOST，实机会话仍需真实雷达、坐标对齐和规划组件；起飞按钮继续依据真实
+就绪状态启用。组件缺失时日志给出原因，直线仿真仍可使用。
+
 完整ArduPilot闭环场景用项目Python单独运行（固定domain231/LOCALHOST，只操作仿真；
 不要与会清理全局仿真进程的测试同时运行）：
 

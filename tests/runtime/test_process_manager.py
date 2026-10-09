@@ -30,6 +30,9 @@ def test_process_matcher_uses_argv_tokens_not_shell_text() -> None:
     assert ProcessSupervisor._is_related_argv(
         ["python3", "/project/install/guided_sim/lib/guided_sim/avoidance_preview.py"]
     )
+    assert ProcessSupervisor._is_related_argv(
+        ["python3", "/project/install/guided_sim/lib/guided_sim/simulation_obstacles.py"]
+    )
     assert not ProcessSupervisor._is_related_argv(
         ["/opt/ros/jazzy/bin/ros2", "launch", "mavros", "apm.launch"]
     )

@@ -98,6 +98,7 @@ class ProcessSupervisor:
         "onboard_control_node",
         "pose_to_tf.py",
         "avoidance_preview.py",  # 地面只读预览桥，同样应随 GUI 会话清理。
+        "simulation_obstacles.py",  # 仅仿真域的合成扫描，退出时回收遗留节点。
     }
 
     def __init__(self, event_log: EventLog | None = None) -> None:
@@ -349,6 +350,7 @@ class ProcessSupervisor:
             "rviz",
             "rviz_hardware_preview",
             "guided_sim",
+            "simulation_avoidance",
         }
     )
 

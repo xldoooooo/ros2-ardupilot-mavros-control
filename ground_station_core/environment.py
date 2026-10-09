@@ -16,6 +16,7 @@ from .config import (
     HARDWARE_DOMAIN_ID,
     INTERFACE_VERSION,
     ONBOARD_PARAM_FILE,
+    PROJECT_ROOT,
     SIMULATION_DISCOVERY_RANGE,
     SIMULATION_DOMAIN_ID,
     ardupilot_root,
@@ -107,9 +108,9 @@ class EnvironmentInitializer:
             return thread is not None and thread.is_alive()
 
     def initialize_simulation(
-        self, status: StatusCallback, done: DoneCallback
+        self, status: StatusCallback, done: DoneCallback, *, avoidance_demo: bool = True
     ) -> bool:
-        """异步启动 SITL、MAVROS、同款机载 C++ 服务与 RViz。
+        """异步启动 SITL、控制/RViz及默认避障演示；自带扫描的测试可显式关闭演示。
 
         仿真不调用 set_gp_origin：SITL 使用自身 Home（默认 CMAC）建立 EKF
         原点，本地位姿应在原点附近。强制写入与 SITL Home 不一致的经纬高
@@ -117,7 +118,7 @@ class EnvironmentInitializer:
         """
         return self._start_workflow(
             "simulation",
-            lambda: self._simulation_workflow(status),
+            lambda: self._simulation_workflow(status, avoidance_demo=avoidance_demo),
             status,
             done,
         )
@@ -350,7 +351,7 @@ class EnvironmentInitializer:
         )
         return message
 
-    def _simulation_workflow(self, status: StatusCallback) -> str:
+    def _simulation_workflow(self, status: StatusCallback, *, avoidance_demo: bool = True) -> str:
         """执行可取消的完整闭环仿真初始化（不写 GPS 原点，沿用 SITL Home）。"""
         try:
             self._ensure_ros_ready(
@@ -496,10 +497,52 @@ class EnvironmentInitializer:
 
         self._publish_status(status, LogLevel.INFO, "5/5 正在验证已预热的 RViz...")
         self._wait_process_stable(rviz, 0.2)
-        return (
-            "仿真闭环初始化完成：SITL/MAVROS/机载 C++ 控制/RViz；"
-            f"日志目录: {self._supervisor.log_directory}"
-        )
+        # GUI simulation includes perception/planning. Dedicated tests may supply their own scene.
+        avoidance_ready = avoidance_demo and self._start_simulation_avoidance_demo(status)
+        message = "仿真闭环初始化完成：SITL/MAVROS/机载 C++ 控制/RViz；"
+        if avoidance_ready:
+            message += "避障演示已就绪；"
+        return message + f"日志目录: {self._supervisor.log_directory}"
+
+    def _start_simulation_avoidance_demo(self, status: StatusCallback) -> bool:
+        """自动准备本地几何扫描和真实规划服务；组件缺失不阻断原直线仿真。"""
+        if self._ros.domain_id != SIMULATION_DOMAIN_ID or self._ros.discovery_range != SIMULATION_DISCOVERY_RANGE:
+            raise RuntimeError("禁止在实机或非LOCALHOST会话启动合成避障场景")
+        process = None
+        try:
+            planner_root = Path(os.environ.get('AVOIDANCE_WORKSPACE',
+                                             str(PROJECT_ROOT.parent / 'dyn_small_obs_avoidance-ros2')))
+            planner_setup = planner_root / 'install/setup.bash'
+            if not planner_setup.is_file():
+                raise FileNotFoundError(f"本地规划库尚未安装：{planner_setup}")
+            setups = (*ros_setup_files(), planner_setup, PROJECT_ROOT / 'install/setup.bash')
+            self._verify_ros_packages_parallel(('path_planning', 'avoidance_bridge'), setups)
+            self._publish_status(status, LogLevel.INFO, "正在自动准备仿真避障扫描、地图和规划服务...")
+            process = self._supervisor.start(
+                'simulation_avoidance',
+                ('ros2', 'launch', 'guided_sim', 'avoidance_demo.launch.py'),
+                setup_files=setups,
+                extra_environment={'ROS_DOMAIN_ID': str(SIMULATION_DOMAIN_ID),
+                                   **ros_discovery_environment(SIMULATION_DISCOVERY_RANGE)},
+            )
+            deadline = time.monotonic()+12.
+            while time.monotonic() < deadline:
+                self._check_cancelled()
+                self._check_process(process)
+                if self._ros.snapshot().avoidance_ready:
+                    self._publish_status(status, LogLevel.INFO,
+                                         "仿真避障已就绪；起飞稳定2秒后在前方1.5m加入圆柱，RViz显示红色障碍")
+                    return True
+                self._cancel_event.wait(.1)
+            raise RuntimeError("仿真避障扫描/地图/规划器未在12秒内就绪")
+        except _WorkflowCancelled:
+            raise
+        except Exception as exc:
+            # Leave a slow-starting component managed so it can become ready or be cleaned normally.
+            self._publish_status(status, LogLevel.WARN,
+                                 f"仿真避障暂不可用：{exc}；直线仿真可继续。依赖缺失时请运行build_avoidance.sh。"
+                                 + (f" 日志：{process.log_path}" if process is not None else ""))
+            return False
 
     def _hardware_workflow(
         self, origin: tuple[float, float, float], status: StatusCallback
