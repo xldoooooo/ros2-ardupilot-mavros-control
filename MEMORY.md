@@ -1,849 +1,161 @@
-<!-- 当前工程基线、部署差异与长期约束；详细实验记录保存在 agent/report。 -->
+<!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-本文件只维护当前真实基线、长期有效的工程约束和少量关键历史节点。逐任务过程、实验数据、
-临时路径和旧版本结论统一查阅 `agent/report/`，不再在本文件重复堆叠。
+维护日期：2026-10-10。源码事实已核对；远端状态为最近一次部署记录，本次未连接飞机。
+源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
-当本文件与源码、包清单或最新验证报告冲突时，以当前源码和实际运行时检查为准，并及时修正
-本文件。当前基线维护日期为 2026-10-10，仓库飞行线协议为 3.4（独立视频接口仍为 3.2）。
+## 工作边界
 
-## 航点避障与独立 ROS2 规划库
+- **严禁代理自行解锁或起飞实机，必须由用户手动操作。** 实机排查保持 `armed=false`；
+  进程启动、服务 ACK、话题可见、台架通过均不代表可实飞。
+- 执行规则以 `AGENTS.md` 为准；未经明确允许不得实现 `TODO.md`。
+- 正式“连接实机服务”会申请租约、续发心跳、配置消息频率并写入人工确认的 GPS/EKF 原点。
+  齿轮右侧 Wi-Fi 检测才是被动订阅入口，不申请控制权或管理远端进程。
+- 同步必须保留逐机配置和用户标定，不用 `reset/clean` 清除现场改动；飞机原生构建，
+  不复制开发机 `build/`、`install/`。核对源码、安装产物和运行接口，不能只看 Git HEAD。
 
-- 独立仓库为 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
-  `LostPatrol/dyn_small_obs_avoidance-ros2`（公开、GPLv3、main），仅含 `path_searching`、
-  `path_planning`。当前 main 为 `0d86e7e`、包版本0.2.0；Task38服务/连续碰撞实现为
-  `d8c1d8b`。开发机和refresh ARM64完整Release原生回归44/44通过（含CTest包装）。
-  ARM暴露的delayed-pair测试消费时序问题已修复，匹配/等待/接收年龄标准未放宽。
-  refresh主工程已选择性同步并原生构建3.4，保留既有Tag本地改动（Git HEAD仍b692076）；
-  运行接口与关键源码/install配置hash核对一致。未解锁台架结束后原三个unit均inactive，
-  本次启动的服务已回收，没有安装规划自启unit。
-  **new独立库仍为Task37的4119937，主工程仍为3.3；下次连接必须补齐Task38并原生重建。**
-- 主工程新增独立 `avoidance_bridge`，默认接入Odin当前注册扫描与原始高频里程计，无Tag修正。
-  `build_avoidance.sh` 构建两工作区，`start_avoidance.sh`/`stop_avoidance.sh` 单独管理规划组件，
-  原飞行总服务不依赖它们，没有安装规划自启服务。直线分支不读取规划就绪状态。
-  两个避障启停脚本已修正为Git可执行模式100755并同步refresh权限，可直接`./脚本名`启动；
-  new下次同步时也要补齐该权限修复。
-- 开发机GUI“启动本地仿真”自动带起合成扫描、identity地图桥和真实规划服务，等待机载权威
-  就绪后两种避障策略可起飞，无需额外终端。扫描与launch仅允许domain231/LOCALHOST；
-  有限前向房间首表面射线，起飞稳定2秒后加入前方1.5m的0.18m半径圆柱，RViz默认显示。
-  缺少独立库/桥时提示原因，原直线仿真可继续；自带扫描的独立闭环脚本显式关闭GUI演示。
-  默认GUI真实SITL绕行通过，实际采样净空0.457m、横向偏移0.913m、到点拍照1次，完整回收。
-  遇障悬停默认入口也通过：阻塞漂移0.048m且无拍照，移障后0.87秒恢复原航点并拍照1次。
-  此GUI入口改动仅在开发机构建；hp-desktop及两架飞机下次同步需补齐，实机仍使用真实输入。
-- 遇障悬停检查实际FCU到**下一个**业务航点的完整直线；自主避障直接计算多项式p/v/a复用
-  原PD+DOB。暂停保留任务和航点，停止入点/拍照；连续0.4s有效结果后恢复，等待15s超时
-  锁存LAND，服务失败/无应答重试直到实际LAND或解除武装，禁止旧结果/普通操纵恢复任务。
-  起飞前锁定策略、参考生成器与跟踪器，起飞失败解锁、断线重连按机载状态恢复锁定。
-- 请求携带控制会话、任务revision、1-based航点、单调请求id；响应增加桥/规划器会话和坐标revision。
-  结果年龄上限0.8s，航点执行Path只显示当前接受轨迹；取消、失效、组件退出清除预览。
-  当前固定参考上限水平1m/s、垂直0.2m/s、水平加速度0.35m/s²、垂直0.15m/s²；
-  速度包线约束的是参考，现有PD+DOB可能出现实际速度超调，不能声称实测速度严格≤1m/s。
-- 0.1m观测体素、首帧原点半径20m、300000格、最多10000条射线/帧、2Hz地图构建。
-  未观测区域不等于空闲；只有新射线穿过旧格才移除占用，无TTL消障。容量饱和/断流/坐标变化
-  进入unknown，恢复不能刷新原等待期限。观测覆盖仅离散中心线、自由证据依赖静态假设，
-  不保证完整机体扫掠、动态障碍预测或全视野持续覆盖。
-- 保持用户指定**体素质心距离0.45m，无体素/采样补偿，严格小于才拒绝**；连续三次曲线
-  净空改用距离平方导数实根，修复Task37遗留的原语两端之间漏碰撞及float端点边界误判。
-  阈值等号/两侧、两候选float并列和原失败连续净空用例均通过；不承诺每个原始点包络。
-  低加速度采用max_tau=1s以跨过0.1m搜索hash格；参考C1/端点/速度加速度验证不通过即等待。
-- extnav只接受当前未应用Tag的同session/revision最终样本。障碍世界点加权威杆臂T进入map，
-  请求p/goal减T、多项式常数项加T；raw/FCU接收配对≤0.1s、一致性≤0.25m。
-  未修改约20°仰角、Tag代码或外参；测量原点暂用raw IMU，实际雷达中心/近身覆盖尚待验收。
-- RViz新增当前轨迹与可选点云；点云默认关闭，最多10000XYZ点×2Hz，约240kB/s加DDS开销。
-  refresh只读30s实测当前原始点云约34k点/帧、4.1MB/s payload，不默认转发全部云。
-  完整软件/SITL/台架证据、初次失败与未验收指标见Task38集成执行报告。
-- Task38最终Python分阶段346项通过，主控制器开发机/refresh各25项colcon通过（含包装），
-  bridge C++各2项通过；修复最后部署/重启客户端3.4门控后相关18项再次通过。
-  六个真实ArduPilot SITL场景通过：无规划直线、遇障恢复、圆柱绕行、自主无路恢复、超时LAND、
-  等待中取消。绕行实际采样净空0.525m、最高水平速度0.807m/s；无路恢复移障后约1.1s恢复。
-  refresh仅虚构控制会话进行地图查询，实际地面起点前向目标32次均无可行轨迹/unknown，
-  不能宣称实机航线可执行。预览30s跨局域网49帧/10000点，约196kB/s；20s查询窗口控制
-  deadline miss无新增，但启动短窗曾有327ms抖动。实飞、长时P99/热稳态仍未验收。
-  详见`agent/report/report-2026-10-09-task38-dyn-integration.md`；hp-desktop也未同步Task38。
-- 历史Task37距离对齐前的599次成功、144.38ms输出间隔P99属于旧台架版本，不套用Task38。
-  旧`/kino_path`保留最后成功预览但不参与执行；飞行只使用带身份的当前结果。
-  原ROS1检出未改，不声称逐点等价；详见独立库README与docs/VALIDATION.md。
+## 当前架构与入口
 
-## 软著独立代码仓库
+- 开发机及两架现役飞机均为 Ubuntu 24.04 / ROS 2 Jazzy；机载为 Jetson Orin NX / ARM64。
+  Python 使用项目 `.venv`。旧 Ubuntu 22.04/Humble 台架数据不再代表现役环境。
+- 飞行协议 **3.4**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.4.0**；
+  独立视频协议 **3.2**，AprilTag 修正协议 **2.0**。地面与机载共享接口必须同步重建。
+- PySide6 地面站是薄客户端；`src/onboard_control` 是唯一飞行控制权威，负责租约、安全状态机、
+  航点推进及 100 Hz PD+DOB。唯一生产输出为 `/mavros/setpoint_raw/attitude`；GUI、规划器、
+  RViz 不得成为第二个 setpoint 发布者。控制参数集中在 `src/onboard_control/config/control.yaml`。
+- GUI 初始 `ROS IDLE`；仿真使用 domain **231 / LOCALHOST**，实机使用 **0 / SUBNET**。
+  切换会销毁旧 ROS context；SITL 使用自身 Home，禁止写入 GUI 缓存的实机 GPS 原点。
+  退出只清理本项目启动的本地进程组，不停止 ROS daemon 或其他工作负载。
+- 三个机载 unit 独立：`ros2-ardupilot-onboard.service`（MAVROS/Odin/extnav/onboard）、
+  `video-service.service`、`odin-correction.service`。视频和修正不能绑定飞控共同启停/故障域；
+  地面正式连接不启动或停止远端服务。避障另行启停，目前没有规划自启 unit。
 
-- 软著代码仓库为 `/home/nvidia/scq/projects/uav-autonomous-inspection-control`，远端
-  `LostPatrol/uav-autonomous-inspection-control`，原始 V1.0 标签为 `v1.0.0`。其初始生产源码
-  对应主项目 `f037ba4`（2026-09-01）；2026-09-21 已将其后生产改动同步至该仓库 main，
-  保留 V1.0 品牌、Apache-2.0 文件头、许可证和著作权人，不改软著申报材料与旧标签。
-- 该独立仓库按原边界不分发测试源码、实验报告及构建产物；默认构建为
-  `BUILD_TESTING=OFF`，`build_onboard_control.sh --verify` 只执行依赖检查、生产构建和
-  localhost 隔离 smoke，不代表完整单元测试。完整测试仍以主工程为准。
-- 当前源码运行脚本已迁至 `scripts/ground/`、`scripts/onboard/`，机载构建入口在
-  `src/onboard_control/deploy/`。软著代码仓库的 README 已更新入口。2026-09-21 按用户要求
-  重拍并替换仓库 `assets/地面站主界面.png`，随后补拍新增
-  `assets/AprilTag-Odin修正面板.png` 并在软著仓库 README 展示；未改原软著申报材料、
-  历史手册或其他无变化图片。Odin-Tag 图为隔离域离线布局截图，不代表实机标定或定位验收。
-  历史手册仍是 V1.0 申报时内容，不应误认作当前部署说明。
+| 用途 | 当前入口 / 说明 |
+| --- | --- |
+| 地面站安装、启动 | `scripts/ground/setup_ground_station.sh`、`scripts/ground/start_ground_all.sh` |
+| 机载构建 | `src/onboard_control/deploy/build_onboard_control.sh`；`--verify` 追加测试及隔离 smoke，不重启服务 |
+| 飞控启停 | `scripts/onboard/start_onboard_control.sh`、`stop_onboard_control.sh`；启动 `--check` 不启动组件 |
+| 视频启停 | `scripts/onboard/start_onboard_video.sh`、`stop_onboard_video.sh`；后者 `--restart` 只重启视频 |
+| 修正启停 | `scripts/onboard/start_onboard_correction.sh`、`stop_onboard_correction.sh` |
+| 避障构建、启停 | `src/onboard_control/deploy/build_avoidance.sh`、`scripts/onboard/start_avoidance.sh`、`stop_avoidance.sh` |
+| Odin/extnav 单独启动 | `scripts/onboard/components/start_odin.sh`、`start_extnav.sh`；读取 `onboard.env`，不启动其他组件 |
 
-## 绝对安全边界
+部署细节查 [机载部署指导](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)、
+[视频说明](video_service/README.md)、[修正说明](correction_service/README.md)、
+[避障桥说明](src/avoidance_bridge/README.md)。旧根目录脚本和 `start_drone/` 入口已迁移。
 
-- 严禁代理自行解锁或起飞实机；实机解锁与起飞只能由用户人工完成。
-- 默认实机排查必须保持 `armed=false`，优先使用只读状态、被动 DDS 检测、隔离 smoke 和无桨
-  台架检查。不得把“进程启动”“服务 ACK”或“话题可见”扩大解释为可实飞。
-- 正式“连接实机服务”不是纯只读操作：它会申请控制租约、续发心跳、确认消息频率并写入人工
-  确认的 GPS/EKF 原点。齿轮右侧 Wi-Fi 检测才是只订阅状态与日志的被动入口。
-- 修改或部署机载代码后，必须核对源码、`install/`、运行进程报告的接口版本一致；禁止让旧安装
-  产物静默运行。
-- 对飞机、云服务器或其他远端主机的服务进行停止、重启、覆盖或删除前，必须确认目标和影响；
-  不得干扰与当前任务无关的既有服务。
+## 逐机部署差异与待同步项
 
-## 当前环境、入口与验证命令
+默认连接 `ssh drone-refresh`；不可达时停止并询问用户，不自行切换飞机。
+最近核对别名为 refresh → `.186`、new → `.169`；历史名称/IP 曾变化，连接时核对目标。
+两机工作区均为 `/home/nvidia/ros2-ardupilot-mavros-control`；地面笔记本为 `ssh hp-desktop`（`.101`）。
 
-- 开发机：Ubuntu 24.04、ROS 2 Jazzy，已安装 MAVROS 与 ArduPilot SITL。
-- 独立新 USB Jetson（不是现役飞机）：序列号 `1424324322770`，地址 `192.168.55.1`，
-  SSH HostKeyAlias `jetson-usb-1424324322770`，Ubuntu 24.04/Jazzy/ARM64。
-  基础环境、Odin/extnav/相机驱动已原生构建；当前未接任何外设，三项机载服务保持 disabled/inactive。
-  Intel 8265 在 Tegra `6.8.12-1021-tegra` 需匹配 DKMS 模块和未压缩固件，重启扫描已通过。
-  厂商 OpenCV 4.8 必须配独立 cv_bridge 4.1.0 overlay，避免 Odin 同进程混用 OpenCV 4.6/4.8。
-  NoMachine 尚缺 `9.8.2-1` ARM64 历史安装包。完整复现入口为
-  `src/onboard_control/deploy/JETSON_NEW_MACHINE_CHECKLIST.md`。
-- 全新机先用 `setup_onboard_dependencies.sh` 补齐依赖；无外设时三项安装器使用 `--install-only`。
-  主项目采用非 symlink 安装，独立 Odin/extnav 工作区可用 symlink，不能在同一包上混用。
-- 当前真机伴随计算机已更换为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64；SSH 为
-  `nvidia@192.168.112.169`，工作区为
-  `/home/nvidia/ros2-ardupilot-mavros-control`。旧 `xld@192.168.112.186` 的
-  Ubuntu 22.04/Humble 结果只属于历史基线，不得当作当前飞机状态。
-- Python 必须使用项目 `.venv`。地面站入口为 `ground_station.py`，推荐通过
-  `./scripts/ground/start_ground_all.sh` 启动；`--check-environment` 只检查环境，不创建飞行会话。
-- scq 地面机 `192.168.112.101` 同步源码后仍需重建 ROS 接口；2026-09-18 已重建
-  `correction_interfaces/correction_service`，修复旧 install 缺少 `ApplySavedCorrection` 的面板
-  启动错误。实际 Qt 离屏启动及实时订阅通过，面板专项 11 项通过；包测试仍有旧 Tag 尺寸
-  断言 0.170 m 与当前配置 0.099 m 不一致的既有失败。此部署不涉及两台飞机。
-- 当前 ROS 工作区包含：
-  - `src/guided_interfaces`：地面站与机载端共享的唯一高层协议；
-  - `src/correction_interfaces`：AprilTag-Odin 修正链独立接口 2.0；
-  - `src/onboard_control`：机载 C++ 控制与安全状态机；
-  - `src/guided_sim`：URDF、RViz 与预览/TF 可视化，不含第二套控制器；
-  - `correction_service`：独立按需下视相机、Tag 估计、extnav CAS 和地面调试面板。
-- 常用构建与验证：
+| 目标 | 最近确认的基线 | 下次操作必须注意 |
+| --- | --- | --- |
+| refresh | 主工程选择性同步至飞行协议 3.4，Git HEAD 仍 `b692076`；独立规划库 `0d86e7e` / 0.2.0，已原生构建；避障启停脚本执行位已补齐 | 保留现场 Tag/相机配置；20° Odin 安装角尚未适配；主工程不能只按 HEAD 判断版本 |
+| new | 2026-10-08 已同步 main 的路径迁移和修正采集代码，飞行协议仍 3.3；独立规划库仍 Task37 `4119937` | **补齐 Task38 主工程 3.4、规划库 0.2.0、脚本执行位并原生重建**；重新验证真实 FCU/摄像头启动 |
+| hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38 和 GUI 仿真避障入口，需同步源码及重建接口** |
+| 开发机 | 3.4；GUI 仿真自动启动真实规划器、identity 桥和合成扫描 | GUI 入口改动仅在开发机构建，其他三机尚未同步此次改动；实机仍使用真实传感器输入 |
 
-  ```bash
-  source /opt/ros/jazzy/setup.bash
-  colcon build --packages-select \
-    guided_interfaces correction_interfaces onboard_control guided_sim correction_service
-  source install/setup.bash
-  QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q tests
-  colcon test-result --verbose
-  ```
+- **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
+  new 使用 Wasintek 1920×1080@30 / Tag0 0.170 m，修正活动目录为
+  `/etc/ros2-ardupilot/correction-config`，由 `correction.env` 的 `CORRECTION_CONFIG_DIR` 选择。
+  仓库根 `correction_service/config/` 默认属于 refresh；命名相机档案不会自动切换运行配置。
+- refresh MAVROS **2.15.1** 使用 `/home/nvidia/mavros_param_fix_ws` 的固定版本参数重试补丁，
+  通过 `onboard.env` 的 `MAVROS_OVERLAY_SETUP` 加载，系统安装未覆盖。
+  new 系统为 **2.14.0**，不能启用该补丁；系统升级后需重新检查补丁与 ABI。
+- 飞控环境为 `/etc/ros2-ardupilot/onboard.env`，视频优先使用同目录 `camera.conf/lens.conf`。
+  串口和 overlay 按目标机核对，不照搬历史 `/dev/ttyTHS*`。systemd 不依赖外网校时；
+  `network-online.target` 未必已有 Wi-Fi IPv4，视频入口保留 DDS 创建前的本地路由等待。
+- 独立 USB Jetson（`192.168.55.1`、序列号 `1424324322770`）不是现役飞机，基础环境已构建，
+  无外设、后续补丁未逐项同步。新机事项查 [检查清单](src/onboard_control/deploy/JETSON_NEW_MACHINE_CHECKLIST.md)；
+  厂商 OpenCV 4.8 必须使用配套 cv_bridge overlay，避免与系统 4.6 在 Odin 同进程混用。
 
-- 地面端或飞机重建飞行包和独立修正接口/节点可运行 `./src/onboard_control/deploy/build_onboard_control.sh`；`--verify`
-  追加依赖、ROS/C++ 测试和 localhost 隔离 smoke。构建不会自动重启运行中的机载服务。
-  构建入口已迁入部署目录；操作脚本集中于 `scripts/ground/`、`scripts/onboard/`，共享函数位于
-  `scripts/lib/`。refresh 已于 2026-09-18 同步这两次路径迁移及三个 systemd unit；
-  new 已于 2026-10-08 同步当前 main 的路径迁移及三个 systemd unit；逐机配置差异见下文。
-- `README.md` 当前存在并维护常用启动/停止说明；Ubuntu 22.04 通用部署见
-  `DEPLOY_UBUNTU_2204.md`，机载最小部署见
-  `src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md`。
+## 不能误改的业务语义
 
-## 当前架构边界
+- 机载 `ControlStatus` 是权威；同一时刻只有一个租约持有者，5 Hz 心跳续租。
+  命令 TTL 使用双方相对单调时间基准，不比较绝对日期、不依赖 NTP；重复/乱序/过期命令拒绝。
+  失联先悬停，默认 10 秒后 LAND；LAND 成功以实际解除武装为准，不能用 SetMode ACK 替代。
+- 原始姿态控制必须确认 `GUID_OPTIONS` bit 3 的归一化推力语义；`hover_throttle=0.22`
+  仅为回退值，运行时用 `MOT_THST_HOVER`。消息频率 ACK 不等于实测达到 100 Hz；
+  必须请求 `EXTENDED_SYS_STATE(245)` 才能可靠检测其他来源的起降边沿。
+- 航点是绝对本地 ENU；CSV 为 `index,x,y,z,yaw`，文件 yaw 用角度、GUI 内部用弧度。
+  默认“梯形速度 + 轨迹 PD+DOB”；策略、参考生成器、跟踪器在同一武装周期锁定。
+  LAND 在持权且可靠连接时允许幂等重发，不能被普通 GUI busy 或诊断异常锁死。
+- FCU 热重启只允许未解锁、落地、待机且无任务；必须观察启动时钟回退，恢复原点、
+  参数和新鲜遥测后才成功。遥测恢复/重启 ACK 不等于控制链恢复，不自动恢复任务。
+- 上位机映射唯一在 `ground_station_core/upstream/mapping.py`；自动低电量/异常返航目前
+  只在 WebSocket 在线的仿真会话启用，实机仅提示。机库判定仅为 ENU 阈值；
+  `cameraAngle` 尚未实现。`pointNo` 用任务点索引，`photoNo` 原样用于文件命名；
+  08/09 使用视频服务实际结果，占位路径不代表已生成媒体。协议详见 [对接说明](docs/上位机-WebSocket%20对接.md)。
+- 视频使用单次 V4L2 采集，FFmpeg 同时推流和录像，截图从 RTSP 获取；RTSP 固定 TCP。
+  MediaMTX 使用系统 `/usr/local/bin/mediamtx`，当前部署 v1.20.0，仓库不带二进制。
+  直播尚未启用去畸变；重复序列号摄像头使用 by-path 区分，不能依赖 `/dev/videoN`。
+  RTP/JPEG 的 MJPEG 宽高上限为 2040；HP 的 DRI 兼容只转码 RTSP 分支，录像保持原码流。
 
-### 地面站
+## AprilTag / Odin 当前基线与风险
 
-- GUI 为 PySide6/Qt 6，本项目没有浏览器 Web GUI。`ground_station.py` 只负责环境自举和 Qt
-  入口；主要代码位于 `ground_station_core/`。
-- `ground_station_core/ros_controller.py` 是地面端 ROS 客户端门面：按需创建独立
-  `rclpy.Context`，发布心跳/运动意图，调用高层服务，聚合 `ControlStatus`。它不得创建
-  MAVROS 姿态 setpoint 发布者或保存安全关键的持续控制算法。
-- `ground_station_core/environment.py` 编排本地 SITL 或实机会话；实机路径只连接远端机载服务，
-  不启动或终止远端 MAVROS、Odin、extnav 或 onboard 节点。
-- `ground_station_core/process_manager.py` 只管理本项目明确启动的本地进程组。退出、仿真终止和
-  异常退出兜底必须清理 SITL、仿真 MAVROS、仿真 onboard、合成扫描/规划组件与 RViz，不得停止 ROS daemon 或
-  其他 ROS 工作负载。
-- 航点编辑器支持按统一 `index,x,y,z,yaw` CSV 格式导入和导出；Yaw 在文件中使用角度、GUI
-  内部继续使用弧度。导出只读取当前 GUI 列表，不依赖环境会话或机载任务，默认保存到项目
-  `export/waypoints-export-YYYYMMDD-HHMMSS.csv`，空列表时入口禁用。
-- 右上角“动态”提示支持进行中蓝色循环扫光、完成绿色单次光晕、失败/异常红色循环光晕，
-  底色与动画共用流程状态（进行中浅蓝、完成浅绿、失败浅红、空闲中性），不随日志等级错配。
-  新消息切换当前提示；环境流程和命令非 final 回执显式传入 busy，不把中间 ACK 当完成。
-  上位机通讯、摄像头和修正面板打开后均显示成功提示；通讯面板再次唤起也重新提示。
-  动画只修改地面 Qt GUI，两台飞机均无需部署。
-- `ground_station_core/upstream/` 是独立 WebSocket/JAR 上位机协议边界；通讯故障不得破坏已有
-  ROS、仿真或实机会话。
-- 航点输入行的定位准星按钮记录与主 GUI 实际位姿同一帧的原始 ENU x/y/z/yaw，追加至
-  本地列表末尾；不经输入框取整或限幅，不自动上传。无有效位姿或编辑不可用时禁用。
-  此功能只涉及地面站，两台飞机均无需部署。
+- 链路：raw Odin IMU → 公共 SE(2) corrected Odin IMU → 杆臂转换后的 `/extnav/pose_fcu`
+  与 `/mavros/vision_pose/pose` → `/mavros/local_position/pose`（最终 FCU EKF）。
+  corrected 不是 FCU 中心，也不是 EKF final；有效分支已移除多余固定 `+T_xy`，z 仍保留局部约定。
+- extnav 唯一维护 active correction，以 Odin session + revision CAS 更新。
+  停止修正服务或 clear 窗口不清 active；Odin 断流、时间戳回退或 frame 变化使其失效，不能重放旧样本。
+  ACK 未决锁存 `application_unknown`，只允许同一候选幂等对账/重试。
+- 首次候选保持 `planar_xy_yaw(H_WI * inverse(H_OI))`，**不能改为单点 `P-RQ` 重锚**。
+  从第二个不同 Tag 起，滑窗才从原始 P/Q 点对按绝对逆方差重算 SE(2)，不累计增量或平均单 Tag yaw。
+  同帧多 Tag 联合估计、自动航点触发未实现；相机/400 Hz raw 订阅只在任务期间启用，idle 释放。
+- Task32 已修复 OpenCV 与 AprilRobotics 官方图案的 Tag 基变换，并撤销错误相机 `Rz(180°)` 补偿。
+  配置 Tag +X 指官方图案上方、+Y 左、+Z 上；方向改动必须用官方图案和独立物理真值验证，
+  yaw 正确或自生成合成闭环不足以证明位置方向正确。
+- UQ212 原生采集 MJPEG 1920×1080@120，解码/发布默认限 30 Hz；实际内参采用 30 张实测结果，
+  状态仍 `calibrated_pending_independent_validation`。外参是机械近似
+  `t=(0.04657,0.02897,-0.06726)m`，尚未独立标定验收。现场 Tag0 `(0,0)`、Tag1 `(0,1.8)`
+  同向、边长 0.099 m；部署保留用户 CSV，不复用旧内外参下的窗口。
+- **refresh Odin 已改为仰角 20°，生产转换仍是零安装角，尚未适配。** raw/extnav pitch
+  实测约 −19.42°，最终 FCU EKF 约 +0.62°；EKF3 的外部姿态输入不直接融合 roll/pitch，
+  GUI 近零不能证明 extnav 已补偿。需重新核对 IMU→FCU 姿态、杆臂位置/速度及应用跳变预测；
+  仅改 `pitch_cam` 或放宽 tilt 门不能替代完整转换。new 的安装变化未检查。
+  证据见 [安装角分析](agent/report/report-2026-10-09-odin-20deg-coordinate-assessment.md)及
+  [EKF 倾角分析](agent/report/report-2026-10-09-extnav-ekf-pitch-difference.md)。
+- **绝对定位/航向精度仍未验收。** 短时稳定、检测率提升、用户两点 apply 成功和 EKF 跟随
+  不构成真值证明；10° tilt / 45°跳变门只是用户授权的地面实验门限。
+  尚需精测 Tag 世界位姿、明确物理参考点、重标外参及跨位置/跨 session 独立验证。
+  当前 PoseStamped 不传 MAVLink estimator reset counter，应用修正仍有 EKF 瞬态风险。
 
-### 机载端
+## 避障当前基线与验收边界
 
-- `src/onboard_control` 是唯一飞行控制权威：租约仲裁、起降编排、航点推进、失联保护、100 Hz
-  PD+DOB、姿态/推力输出和 MAVROS 网关都位于机载 C++ 服务。
-- 手动运动、悬停和航点最终共用同一个 `DobController`，唯一生产输出为
-  `/mavros/setpoint_raw/attitude`；检测到多个 setpoint 发布者必须故障关闭。
-- 起飞由 ArduPilot GUIDED/arm/takeoff 完成安全离地，稳定后切入机载控制；LAND 交给
-  ArduPilot，并以实际解除武装作为可靠终态，不把 SetMode ACK 当成已经落地。
-- 连续控制参数集中在 `src/onboard_control/config/control.yaml`。GUI 不复制控制增益或安全阈值。
+- 独立算法工作区 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
+  `LostPatrol/dyn_small_obs_avoidance-ros2`（GPLv3）；仅含 `path_searching/path_planning`。
+  `avoidance_bridge` 负责观测地图和规划请求，onboard 仍唯一执行控制。
+  直线策略不依赖规划器；两种避障策略不可用时拒绝接单，不能回退直线。
+- 遇障悬停检查实际 FCU 到下一个业务航点的完整直线；自主避障用多项式 p/v/a 复用原 PD+DOB。
+  阻塞保留任务、停止推进/拍照，持续有效 0.4 秒恢复，连续等待 15 秒锁存 LAND。
+  响应关联控制会话、任务/航点、请求、桥/规划会话和坐标 revision，0.8 秒过期；不执行旧预览。
+- 实机当前只支持**未应用 Tag 的 extnav 基线**。世界障碍加权威杆臂 T 进入 map，
+  规划请求 p/goal 减 T、返回多项式常数项加 T；不能按 Odin 仰角另旋转世界点云。
+  raw/FCU 接收时间配对不代表采样同步；实际雷达测量中心外参及近身观测覆盖尚未验收。
+- 地图 0.1 m 体素、固定首帧原点半径 20 m；**未观测是 unknown，不是 free**。
+  无 TTL 消障，只用新射线穿越退役占用。自由证据依赖静态假设，覆盖检查仅离散中心线，
+  不保证整个机体扫掠体积、动态障碍预测或持续全视野覆盖。输入必须是当前注册扫描，不能冒用历史累计云。
+- 净空按用户指定**体素质心距离 0.45 m，严格小于才拒绝，无体素/采样补偿**；
+  连续多项式用解析实根检查，不等于每个原始点或真实障碍表面的包络保证。
+  水平/垂直参考速度上限 1.0/0.2 m/s、加速度 0.35/0.15 m/s²；实际 PD+DOB 可能超调。
+- 软件回归、真实 ArduPilot SITL 的绕行/恢复/超时 LAND/取消场景及 refresh 未解锁台架已验证。
+  GUI 默认仿真入口也通过两种避障策略；扫描演示仅限隔离仿真，缺少依赖会提示原因。
+  **refresh 台架实际地面起点查询仍无可行轨迹/unknown，不能宣称实机航线可执行。**
+  实飞、长时 P99、热稳态、视频并行负载和实际速度严格上限仍未验收；Linux 平均 100 Hz
+  不等于硬实时，Odin 实时调度权限不足及启动窗口抖动需量化。
+  证据见 [Task38 集成报告](agent/report/report-2026-10-09-task38-dyn-integration.md)及
+  [GUI 仿真报告](agent/report/report-2026-10-10-task38-gui-sitl-avoidance.md)。
 
-### 飞控热重启与当前部署差异
+## 关键历史与资料索引
 
-- Task33 的 GUI“重启机载飞控”和机载 `./scripts/onboard/reboot_fcu.sh` 共用 `FlightCommand.COMMAND_REBOOT_FCU`。
-  服务端要求新鲜 FCU/落地证据、未解锁、待机、无任务；GUI 仅实机会话启用并默认取消确认。
-  脚本只允许本机已部署并运行 onboard_control，使用项目 `.venv` 和短租约，不绕过机载门控。
-  命令行客户端归属 `src/onboard_control/scripts/reboot_fcu_client.py`；机载 Shell 入口与客户端须一起同步。
-- 独立 `fcu_reboot.cpp` 用普通 MAVLink 246/param1=1 重启；ACK 不算成功，必须观察 FCU
-  TIMESYNC 启动时钟回退。重启期间拒绝飞行/原点命令，不恢复任务，不解锁或起飞。
-  重启前/后主动请求 GPS_GLOBAL_ORIGIN，恢复此前已回读原点，重新获取参数/消息配置，
-  原点、新鲜位置/速度和未解锁落地状态连续就绪2秒才报告“控制链路成功恢复”；90秒超时明确失败。
-  节点持续运行期间的外部 FCU 重启也走同一恢复逻辑。
-- 2026-09-17 Task33 实际 SSH 别名为 **drone-new → 192.168.112.169**，
-  **drone-refresh → 192.168.112.186**（两台现均已连接核对）。旧记录中的
-  地址/机体名称对应关系可能已经变化，后续必须以用户指定别名及当次核对为准。
-  new 与 refresh 的机载源码/install 均已升级飞行接口3.3，新脚本已部署。
-  refresh 当前没有飞控；已通过四包原生构建、24项测试和localhost隔离smoke，三项生产服务仍为
-  disabled/inactive，未进行该机真实FCU重启验收。refresh通过Git快进同步main，保留现场image产物。
-  refresh 与 new 均已同步客户端迁移及 tools 目录移除，根入口、新客户端和部署自检3.3版本校验
-  已一致；new 的部署文档/脚本安装副本也已更新，隔离smoke通过，生产服务未重启。
-- new 已在未解锁台架通过实际 Qt GUI、机载脚本、外部单独重启三条路径；始终没有姿态推力输出，
-  热重启期间 onboard/MAVROS/Odin 保持原进程。用户已明确确认使用首次地面站默认原点
-  `(30.2489634, 120.2052342, 488.0m)`。首次无原点实验如实超时，不能把遥测恢复等同原点恢复。
-- new 主工程已于 2026-10-08 从旧 HEAD `6a40713` 加现场部署工作树切换为当前 main 的干净
-  sparse checkout，目录仍为 `/home/nvidia/ros2-ardupilot-mavros-control`。原工作树、Git 历史、
-  标定及配置归档保存在 `/home/nvidia/ros2-ardupilot-maintenance/new-sync-20261008-1920/`，
-  原生 `.venv/build/install/log` 保持原绝对路径；没有复制开发机二进制。
-- new 使用 Wasintek 1920×1080@30、Tag0=0.170 m，活动修正配置通过
-  `/etc/ros2-ardupilot/correction.env` 的 `CORRECTION_CONFIG_DIR` 选择
-  `/etc/ros2-ardupilot/correction-config`。保留原内参、Task32 外参、镜头参数及 Tag 世界配置；
-  采集入口升级为本包 `uvc_camera_node`，日志指向项目 `correction_service/log`。
-  **仓库默认 UQ212/0.099 m 配置属于 refresh，不可直接覆盖 new 的活动配置。**
-- new 的 MAVROS 为 2.14.0，已同步时间检查/overlay 支持代码，但未启用只适用于 2.15.1 的
-  参数重试补丁，也未升级系统 MAVROS。extnav 生产源码与当前受控补丁 SHA-256 一致。
-  本次未发现摄像头设备，不能声称真实取帧或完整硬件启动通过；飞控/视频保持停止，
-  修正服务恢复 enabled/active 且 idle。独立避障仓库未改，本任务不改变其既有同步记录。
-  四包 ARM64 Release 构建通过，机载24项测试23通过、1项既有失败（仓库默认Tag0=0.099 m，
-  测试仍断言0.170 m）；隔离smoke接口3.3、未连接FCU、armed=false、姿态输出0。
-  详见 `agent/report/report-2026-10-08-new-onboard-sync.md`。
-  Task33 历史验收见 `agent/report/report-2026-09-17-task33-fcu-hot-reboot.md`。
-
-### 独立摄像头服务
-
-- `video_service/` 与 ROS/飞行生命周期解耦。地面站只通过 detached Qt 面板打开它；关闭面板
-  不会停止正在运行的推流或录像。机载视频节点使用 `scripts/onboard/start_onboard_video.sh` 和独立
-  systemd unit，严禁加入 `scripts/onboard/start_onboard_control.sh` 的共同故障域。面板启停直接调用
-  `/video_service/set_video_state`，不得依赖 onboard_control 或飞行租约在线。
-- 生产链只打开一次 V4L2 摄像头，使用 FFmpeg 同时发布 MediaMTX RTSP/TCP 和保存录像；截图从
-  本机 RTSP 获取，不会第二次占用摄像头。
-- 机载端通过独立 `VideoControl`、`VideoCapture`、`VideoCaptureResult`、`VideoStatus` 和
-  `SetVideoState` 通讯；飞行自动事件只从 onboard_control 发布，面板手动操作直接连接
-  video_service，onboard_control 不提供纯视频手动代理。视频服务缺失、卡死或失败不得改变
-  飞行状态、任务终态或安全链。
-- 飞行自动开关以 MAVROS `ExtendedState` 的起飞/空中/落地边沿为准，解除武装是关闭备份；航点
-  抓拍只在机载到达判定成立后、推进航点索引前异步发布。
-- MediaMTX 已从当前源码树移除，地面 amd64 与飞机 ARM64 都必须把各自架构的 v1.20.0 安装到
-  系统 `/usr/local/bin/mediamtx`；默认配置和代码不再回退到仓库内二进制。
-- 当前地面站已安装并实测 amd64 MediaMTX v1.20.0；`scripts/ground/setup_ground_station.sh` 会检查 FFmpeg、
-  ffprobe、v4l2-ctl、固定 MediaMTX 路径及二进制能否在本机执行。删除仓库二进制后若旧面板后台
-  仍存活，必须先对 `camera_service.py` 执行 `shutdown`，否则它仍会使用进程内存中的旧路径。
-- `video_service/config/intrinsics.yaml` 仍保存 Wasintek 1920×1080 标定内参；Wasintek 与 UQ212
-  档案分别位于 `video_service/config/Wasintek/`、`video_service/config/UQ212/`。当前直播仍走
-  原生压缩码流转封装，没有启用去畸变。真机
-  离线基准表明 CPU 校正与重编码开销显著，在选定并验证 Jetson 硬件流水线前不得默认开启。
-- 2026-08-20 经用户明确授权重写 `main`：历史 127 MiB MP4、53 MiB MediaMTX 和 25 MiB
-  rtsp-simple-server 三个 blob 已从活动对象库彻底消失；`agent/task/assets` 图片/视频只保留本地，
-  不再跟踪。`.git` 从约 290 MiB 降至约 41 MiB。
-- 改写前的完整 `.git`（包括4个无法判定无用的不可达提交及独立对象）备份在
-  `/home/nvidia/backups/ros2-ardupilot-git-pre-history-rewrite-20260820.tar.gz`，SHA-256 为
-  `77ff2b0b6a82dfbf922c3f3b41effbffae20cdbbeea62aa1f832dd96c9625215`。活动仓库已清理这些对象，
-  但仍可从该项目外备份恢复。远端历史改写后旧提交 ID 失效，其他机器应重新 clone。
-
-### 独立 AprilTag-Odin 修正服务
-
-- 飞机开机自启 unit 为 `/etc/systemd/system/odin-correction.service`，与飞控和视频 unit 独立。
-  unit 与人工前台启动共用 `scripts/onboard/start_onboard_correction.sh`；
-  `scripts/onboard/stop_onboard_correction.sh` 会停止 unit 并清理仅属于修正节点的残留进程。启停脚本都不管理
-  Odin、extnav、MAVROS、onboard_control 或视频；停止修正节点也不会清除 extnav
-  已应用的 active correction。
-- `correction_service` 与飞控/视频生命周期解耦，默认 idle、下视相机关闭且不订阅 400 Hz Odin；
-  first/next 或 apply_saved 才创建有界任务专属 raw 订阅，采样时另启相机；冻结候选后必须先释放
-  资源再保存/应用。2.0 已在当前 Jetson 验证 idle 只保留 extnav 状态订阅、相机设备无人占用，
-  当前解码/发布上限为 30 Hz；采集进程 CPU 已单独测量（见下文），尚无整条 2.0 链路的
-  CPU/RSS 总量基准，任务 27 的 1.0 资源数据只能作为历史参考。
-- extnav 始终直接订阅 `/odin1/odometry_highfreq`。valid 时对 Odin IMU 中心左乘公共 SE(2)，
-  `/odin1/odometry_highfreq_corrected` 仍表示 Odin IMU 中心；随后才按物理杆臂转换为 FCU 中心，
-  同一冻结结果发布到 `/extnav/pose_fcu` 与 `/mavros/vision_pose/pose`。MAVROS EKF final 是
-  `/mavros/local_position/pose`，不得再把 corrected 误称为最终飞控中心或 EKF 输出。
-- 当前零安装角、杆臂 `T=(0.06,-0.03,0.05)m`。有效分支水平位置为
-  `(Q*p+t-Q*R*T).xy`，已移除旧实现多出的固定 `+T_xy`；无效/API 缺失分支仍用
-  `p+T-R*T` 保持旧局部零点。z 保持旧局部数值约定，不是 Tag 世界高度。valid/revision/session/
-  center mode 与最终 pose/velocity 必须来自同一 raw 快照，失效后无新 raw 时不重复旧世界样本。
-- active 修正只由 extnav 维护，通过 Odin session + revision CAS 更新；correction_service
-  失败/退出不清除最后 ACK 的修正。Odin 断流/时间戳回退/frame 改变会立即 invalid 并清除
-  最终样本缓存；后续新鲜 raw 按 identity/local 分支继续发布，无 raw 时不重放旧世界样本。
-- 仓库 correction 接口与相关包已升级为 2.0.0：服务端权威维护 instance/window revision、
-  keyframe FIFO、成功 N、保存候选和 application 事实。首次必须严格沿用 Task27：由完整
-  `C_full=H_WI*inverse(H_OI)` 直接提取 x/y/yaw，首次离群筛选仍只用 x/y/yaw；同批 Q 只保存
-  为首个 keyframe 并接受自身质量门，不能用 `t=P-RQ` 反向重锚首次候选。第二个不同 Tag 起才
-  以绝对逆方差权重从原始 `P_i/Q_i` 重算完整 orientation-preserving SE(2)，不累计增量、不平均
-  single-Tag yaw。窗口默认 5、最大 20，长度 2 可用但明确标记离群识别能力有限；FIFO 淘汰前
-  先检查完整证据，新点失败不修改旧窗口/N/active。
-- first/next 为单次收敛自动结束；dry-run 保存窗口但不调 extnav，apply 只有 ACK 或权威状态对账
-  确认后才保存正式窗口。ACK 超时未决必须锁存 `application_unknown`，同一 job/candidate 才能
-  幂等重试，禁止刷新 CAS 覆盖第三方 revision。clear 只清服务窗口/N，不清 extnav active；
-  apply_saved 不开相机、不增 N，只短时取 fresh raw 复算 FCU 中心实际跳变。
-- 当前真机 Odin header 是设备时钟，相机 PTS 是主机 ROS 时钟；同 epoch 时严格按 header，epoch
-  不兼容时在任务历史内按接收时间匹配，`arrival_history` 硬门 30 ms，禁止使用识别完成时最新值。
-- refresh 飞机下视相机已更换为 UQ212 `1bcf:28c4`，稳定设备路径为
-  `/dev/v4l/by-id/usb-YLX-WYZ-260812_UQ212_UQ212-video-index0`。活动配置使用设备原生声明的
-  MJPEG 1920×1080@120 fps，不再请求未声明的 30 fps。内参已按用户授权采用
-  `uq212_runs/20260917-011117-295510` 原始30张实测结果（没有剔除20/21）：
-  fx/fy=942.12407094/942.34898494px，cx/cy=954.19993099/538.64045061px，RMS=0.88630854px，
-  全五参数畸变非零。开发机/refresh 活动、UQ212档案及install配置一致，状态仍为
-  calibrated_pending_independent_validation；异常角点及边缘覆盖不足风险未消失。
-  仓库 UQ212 外参在 2026-09-17 改为用户确认机械尺寸：
-  `t=(0.04657,0.02897,-0.06726)m`，光轴沿 IMU -Z，画面上方沿 +X、右方沿 -Y，
-  用户确认横平竖直、无偏航角，旋转为 `[[0,-1,0],[-1,0,0],[0,0,-1]]`。镜头中心近似光心，质量状态仍未验证，Wasintek 档案未修改。
-  2026-09-17 已同步 refresh 并重建 correction_service、重启独立修正服务；源码/install
-  配置一致，实测内参部署后运行指纹 `34489d9b900618fcb85f20c27e3474d7af16a71595374c2847e80556d72eac55`
-  与开发机一致，服务 idle、窗口为空。new 飞机仍待同步。此次没有调用 extnav 应用/清除；
-  extnav 状态读取超时，不能确认其当前 revision。需用新内参重新采样并应用，不复用旧窗口。
-  绝对精度与实物外参仍待独立验收。Wasintek/UQ212 档案分别保存在
-  `correction_service/config/Wasintek/` 与 `correction_service/config/UQ212/`，运行时不自动加载；
-  根 `config/` 的四份同名文件是唯一活动相机配置，`camera.conf` 的 `device` 是设备路径入口。
-  当前目录结构与递归安装逻辑已同步并构建到 refresh 飞机。
-- correction_service 的相机采集由本包 `uvc_camera_node.py` / `uvc_capture.py` 自行维护，直接
-  打开系统 UVC 设备，V4L2 mmap MJPEG → OpenCV mono8。活动配置与两个命名档案统一使用
-  `correction_service/uvc_camera_node`；旧外部 driver 配置会明确拒绝。启动/安装器不再加载
-  联合标定相机 overlay，启动使用 ROS + 本工作区 `local_setup.bash`，避免历史 underlay 注入。
-  外参 `source_path` 仅为历史来源元数据，运行时不读取该目录。新采集时间使用内核 monotonic
-  时间戳，不按声明 fps 推算，仍保留 200 ms 帧龄门和原标定/镜头控制流程。
-  `camera.publish_fps` 独立限制解码/发布平均频率：默认 30.0、0 不限；`camera.fps=120` 仍是
-  UQ212 原生采集请求。限频在解码前按采集单调时间执行，持续归还设备缓冲区，无休眠积压；
-  修改配置后重启独立 correction 生效。地面/refresh 已部署，drone-new/USB Jetson 待同步。
-  2026-09-17 refresh 带本地 DDS 消费者的交错对比中，采集进程 CPU 从单核 72.68% 降至
-  43.06%（约 -40.8%），发布约 29.95～29.97 Hz；这是采集进程指标，不是整个修正链的降幅。
-  两轮 Tag0 dry-run 均 24 accepted / 0 rejected，主动停止亦释放设备。用户在部署前已手动
-  应用的新 Odin session 修正 valid=true/revision=1 全程保留；本次测试没有 apply/clear extnav。
-  详见 `agent/report/report-2026-09-17-correction-configurable-publish-fps.md`。
-- 2026-09-16 refresh 上旧相机依赖与首帧超时已修复。地面真实 Qt 面板连续 Tag0 dry-run
-  收敛，各 24 accepted / 0 rejected，并完整释放相机；当前候选 yaw 修正约 -108.46°，超过
-  既有 45°应用跳变门，因此没有应用，extnav 仍 valid=false/revision=0。该角是两个坐标系的
-  修正角，不是飞机物理偏航的测量真值。最终独立修正服务 active/disabled，窗口清空；Odin/extnav
-  未重启，MAVROS/飞控服务本来未运行，未发送飞行指令。地面/refresh 均已部署自有 UVC 版本；
-  drone-new 与独立 USB Jetson 尚未同步，下次更新须一起部署源码、相机配置及 unit/入口。
-  详见 `agent/report/report-2026-09-16-correction-owned-uvc-capture.md`。
-- Task32 已撤销 2026-08-31 错加的相机光轴 `Rz(180deg)`：根因实际是
-  OpenCV 36h11 角点零位与 AprilRobotics 官方 PNG 相差180°。配置 +X 指官方图案上方、
-  +Y左、+Z朝上；`T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`。
-  `geometry.py` 与恢复的外参须配套部署；旧窗口与旧 active 不得沿用。Tag 0 为世界原点/
-  yaw 0/边长 0.170 m；Tag 未经测量摆正时仍不能据候选声称世界坐标精度。
-- `correction_service/config/lens.conf` 显式保存 UQ212 驱动报告的默认值，包括 auto exposure 3、
-  brightness 0、contrast 34、saturation 60、gamma 120、sharpness 2 和 zoom 0；UQ212 不提供旧
-  Wasintek 的 gain 控制。节点必须先收到首帧、等待流稳定 1 秒，再按文件顺序写入；曝光模式切换后
-  等待 0.2 秒，全部写完后统一读回验证并丢弃切换期残留帧。任务 JSONL 保存
-  requested/readback。面板中的
-  `Tag解码次数` 是各帧解出的目标总数，不是 Tag ID；`0` 表示没有一帧解出标记。
-- 地面站右上角修正入口紧邻摄像头面板，面板从服务端权威状态派生动态 N、窗口/候选/质量和
-  按钮；分别显示 raw Odin、corrected Odin、FCU 输入和 MAVROS EKF final。另由同一条 FCU
-  输入只读派生 Task29 修正前的旧 `+T_xy` 位姿，只有 valid 且 final sample revision/session 对齐
-  时才展示，不发布或写入任何生产链。勾选应用仍先执行 dry-run，候选冻结并展示具体值/revisions/
-  跳变/reset 风险后才二次确认 apply_saved。面板以 820 px 为响应式断点，最小 560×520 时顶部
-  五个操作按钮无需水平滚动即可完整访问，长内容由换行和纵向滚动承载。
-- 当前 MAVROS 输入是 `geometry_msgs/PoseStamped`，不能携带 MAVLink estimator reset counter；
-  extnav 只发布内部 counter，源码保留 `TODO(task27-reset-counter)`。同一图像多 Tag 联合检测和
-  onboard 自动航点触发仍未实现；本版实现的是不同停留位置/不同 Tag 的顺序 keyframe。
-- 2026-09-18 refresh 现场用户已配置 Tag0 `(0,0)`、Tag1 `(0,1.8)`，同向、边长均0.099m；
-  已有用户两点采样/apply成功日志，但仍无独立真值精度验收。现场 CSV 是用户改动，部署勿覆盖。
-  当日静止间歇漏检已复现：OpenCV4.6 默认候选合并距离把额外印刷外框与真实 Tag 合并，
-  原62帧仅26帧解码；单/双Tag配置结果完全一致。检测器固定 `minMarkerDistanceRate=0.02`
-  后同图62/62，独立实机两轮各63/63，编码边界角点回归通过。只修候选筛选，不改解码纠错、
-  PnP/多Tag门和校准数学。本地93项、refresh原生7项通过；refresh已部署构建并经用户同意重启
-  独立修正服务，窗口清空，extnav原active r4/session/数值保留，Odin/extnav未重启。
-  new/独立USB Jetson尚未同步本次检测器修复。详见当日tag外框检测报告。
-  同日用户报告单Tag约5cm偏差后，进一步发现固定7px亚像素窗口不适合缩放后约57px的小Tag：
-  外框场景63帧角点全部回退/停留在整数像素。现改为解码后按半格像素大小限制精修半径，
-  上限仍7px；同图角点均恢复亚像素，新增9.9cm独立投影位置真值8场景通过，本地101项、
-  refresh原生15项通过。refresh源码/install已构建，但现场仍在采样，等待协调重启加载；
-  未覆盖用户当前active/窗口，new/USB未部署。检测率和短时稳定性不证明5cm绝对误差已消除，
-  仍待确认用户显示字段/实物参考点并复测。详见small-tag-subpixel-accuracy报告。
-  相机曾拆装，外参可能偏离旧标定；布设精测 Tag、固定并重标外参、独立检查点和跨 session
-  重复试验完成前，`0.1～0.2°` 只算目标，实机精度必须标记“未验证”。Task32 已定位大幅反向
-  偏移的两处180°错误，推翻此前“仅剩外参平移/参考点问题”的归因；不能再拿使用同一错误
-  变换生成和求解的合成数据证明物理方向正确。独立官方图案回归在修复前4场景全失败、修复后
-  全通过；本地244项、Jetson相关9项测试通过。三次静态开流均24 accepted/0 rejected，
-  tilt约1.71～1.76°，应用后FCU约 `(-0.2091,+0.0251)m`，与用户描述的后方约20cm相符。
-  第四轮复采/应用后150秒观察，FCU与MAVROS水平位置差0.924mm、yaw差0.00378°；应用初期
-  yaw误差曾约3.45°，约60秒才降至0.12°，不能把ACK或位置跟随当作EKF全状态稳定。
-  未进行实机搬回Tag中心、重新外参标定、多Tag实测或飞行；首次公式、滑窗算法、杆臂T与质量
-  门均未改。已部署并仅重启独立修正服务，飞行/视频原进程保留，实验active已清回identity r4，
-  服务窗口/N/候选均清空（window r8）；用户须重新首次校准后人工移回Tag中心复验。
-  详见 `agent/report/report-2026-09-15-task32-fix29-tag-coordinate-convention.md`。
-- 2026-09-15 相机问题复核中，用户截图对应 job `51e9548ecb24` 的 137 个处理帧均未解出 Tag，
-  但失败帧未保存，无法证明曝光或代码是根因。旧 `brightness=10/gain=240/exposure=25` 同链帧
-  均值 193.4、纯白 7.342%；改为 video_service 同款 brightness 6/gain 200 并按用户要求把曝光设为
-  50 后，当前静态场景帧均值 62.2、纯白 0.001%。三个独立开流 dry-run 分别为 25/0、24/0、24/0
-  accepted/rejected，重投影误差 0.239/0.238/0.259 px，且每次日志均确认首帧后 requested/readback
-  一致。可确认过曝已消除且当前识别稳定，但不能倒推出旧参数就是此前间歇零识别的唯一根因。
-  这组窗口/revision仅属于当时记录；当前状态以Task32验收终态为准。
-- 根目录 `odom_pose_in_map.py` 是只读诊断脚本：订阅 `/tf` 中的 `odom->map` 和
-  `/odin1/odometry_highfreq` 中的 `odom->imu`，按
-  `T_map_imu = inverse(T_odom_map) * T_odom_imu` 解算并默认以 10 Hz 打印，不发布 ROS 消息。
-  当前 Jetson 同路径已部署；这不是飞控输入链或 AprilTag 修正链的一部分。
-
-### 专利材料基线
-
-- Task31 已形成发明专利申请材料
-  `/home/nvidia/scq/专利/一种基于跨时刻视觉标记基线约束的无人机航向校准方法.docx`，当前版本
-  为 26 页 A4，包含 12 项权利要求、15 个公式、2 个实施例和 4 幅说明书附图；原三维观测链图、
-  事务式窗口图已删除，其余附图连续重编号。图1各连接箭头已贴合方框边界，“通过”标注与下方方框
-  分离，拒绝/回退连线沿文本框外侧布置；图2图例明确 `×` 为局部观测加权质心 Q̄、`+` 为已知标记
-  加权质心 P̄，并以 O 系、W 系方向箭头和夹角 ψ 表示航向校准旋转，权重与说明标注均避开曲线和数据点。
-  图2点对箭线现延伸至两端点中心，再由上层空心点符号遮盖端部，视觉上与两端连续贴合且不压黑方形
-  标记；图2至图4的全部文字统一使用文泉驿正黑（系统 `SimHei` 的实际解析字体）。
-  文档的 5 个
-  专利分节均从第 1 页重新编号，因此 LibreOffice 状态栏的 `Page N` 会计入 4 个分节奇偶逻辑页位，
-  不能作为实际纸张页数；实际页数以逐页渲染或人工计数为准，当前为 26 页。核心保护链
-  为跨时刻标记中心绝对点对、有效
-  不确定度逆方差加权、固定尺度且正行列式的 SE(2) 绝对重算，以及淘汰旧帧前全量检验并原子提交
-  或回滚的事务式窗口；单标记完整姿态只用于首点初始化，不并入基线精化航向。
-- 专利正文把用户提供的“约 10 m 基线航向绝对误差不大于 0.2°、单标记对照不大于 0.5°”明确
-  限定为一次现场试验记录，与固定随机种子合成样例和蒙特卡洛数据分开陈述；该记录不改变当前仓库
-  生产代码仍缺少可复现实机多 Tag 验证的工程基线。现有技术对比覆盖 `CN117934632A`、
-  `CN114567930A`、`CN114820768A` 和 `CN118052886A`，但不等同于穷尽式法律检索。
-
-## 当前接口与控制语义
-
-- 当前飞行线协议 `INTERFACE_VERSION = "3.4"`；`guided_interfaces`、`onboard_control` 与`guided_sim`
-  包版本均为 `3.4.0`。地面站、共享接口和机载运行产物必须同步部署。
-- `ControlStatus` 是 GUI 的权威状态源，包含飞控/武装/位姿/速度/姿态/电池、控制模式、参考值、
-  租约、航点进度、航点入点失败计数、无人机异常、推力语义、setpoint 冲突和控制周期诊断。
-- 所有高层输入携带 `source_id`、单调序号、时间戳和 TTL。同一时刻只允许一个租约持有者；地面站
-  以 5 Hz 心跳续租。首次成功租约以地面站发送时间和机载接收单调时钟建立相对基准，有序心跳持续
-  刷新；TTL 比较相对流逝时间，不比较两机绝对日期，也不依赖外网 NTP。重复、乱序、过期或非持权
-  命令仍必须拒绝。
-- 租约丢失时机载端立即抓取当前位置悬停；默认 10 秒未恢复则请求 LAND。外部切走 GUIDED、
-  位姿/飞控状态超时、非有限输出、setpoint 冲突或飞行中推力语义失效都属于安全降落条件。
-- ArduPilot 必须启用 `GUID_OPTIONS` bit 3，使 `SET_ATTITUDE_TARGET.thrust` 表示真实归一化推力；
-  未确认时拒绝原始姿态/推力控制。
-- `hover_throttle: 0.22` 只是启动回退值；运行时由飞控 `MOT_THST_HOVER` 覆盖。不得把历史 SITL
-  或某架实机的数值硬编码回控制器，更不得未经授权写飞控参数。
-- `message_rates_configured=true` 只表示 `MessageInterval` 请求得到 ACK，不代表已经实测三路消息
-  达到 100 Hz。状态日志必须区分 requested、accepted、applied 与 observed。
-- 自动频率链必须包含 MAVLink `EXTENDED_SYS_STATE(245)` 2 Hz；当前 ArduPilot 真机默认不发送
-  该消息，不主动请求就没有 `/mavros/extended_state`，也无法检测遥控器等非地面站起飞边沿。
-
-## ROS 会话、仿真与实机隔离
-
-- GUI 打开后默认保持 `ROS IDLE`，不会创建 DDS participant。启动仿真、正式实机连接或 Wi-Fi
-  被动检测时才按需启动 ROS。
-- 本地仿真固定使用 domain 231 + localhost-only 发现，并清除显式静态发现变量；实机固定使用
-  domain 0 + subnet 发现。切换或断开会销毁旧 context，不保留跨会话 participant。
-- SITL 使用自身 Home 建立 EKF；仿真禁止写入 GUI 缓存的实机 GPS 原点，否则会造成数百万米级
-  ENU 偏移。实机原点只在正式连接流程中使用，并等待 FCU `gp_origin` 匹配回读。
-- Wi-Fi 检测只订阅 `ControlStatus` 和远端日志，不申请租约、不发心跳/维护/飞行命令，也不管理
-  远端进程。
-- Humble/Jazzy 混合 Fast DDS 图曾稳定传输当前自定义状态与服务，但仍会出现
-  `sequence size exceeds remaining buffer`。ROS 官方不保证跨发行版通信；统一发行版/RMW 或
-  完成独立长期验收前，不得把当前结果视为完整实飞通信基线。
-
-## 当前 GUI 与航点功能
-
-- 主窗口默认 1600×920，最小 1180×700；采用 frameless 外框、自绘阴影和统一
-  `ShadowMessageBox`。退出、真机危险操作、终止仿真、断开和清空航点继续使用默认取消确认。
-  只有隔离仿真中的起飞、降落和发送航点按现有产品要求免二次确认。
-- 手动操纵为双摇杆美国手布局，默认坐标系是“本地 ENU”，可切换“机体坐标”；左右摇杆灵敏度
-  独立。鼠标和键盘必须共用 `OperationsPanel.trigger_motion()`，所有控件服从统一安全门控。
-- 航点使用绝对本地 ENU `X/Y/Z/Yaw`。CSV 表头为 `index,x,y,z,yaw`，一次最多 256 点；导入先
-  完整校验、默认取消确认，确认后才原子替换 GUI 列表。
-- RViz 航点预览只显示名义直线路径、编号和权威实时机体位姿，不申请租约、不发送飞行命令或
-  MAVROS setpoint。仿真预览复用 domain 231，实机预览使用 domain 0，断开时清理。
-- `EventLog` 在事件产生处保存 DEBUG/INFO/WARN/ERROR、来源、时间和序号；Qt 只筛选已有等级，
-  不按文本猜测。SITL/MAVROS 启动刷屏可降为 DEBUG，但显式 WARN/ERROR 不得屏蔽。
-- 上位机通讯面板是无父级的普通 `Qt.Window`，不得恢复为主窗口的 transient `QDialog`：后者会
-  被窗口管理器强制压在主窗口上方且缺少有效最小化提示。面板可独立最小化，再点主界面入口会
-  恢复；主窗口退出时必须显式销毁该独立面板。
-- 地面站与独立摄像头入口在原生 Wayland 下、且用户未显式指定时，于创建 `QApplication` 前选择
-  Qt `adwaita` 窗口装饰；X11 和显式 `QT_WAYLAND_DECORATION` 配置不得被覆盖。
-- 上位机通讯面板和摄像头配置面板的投影不能依赖 GNOME Wayland 合成器：两者使用与主窗口一致
-  的 frameless 透明顶层窗口、14 px 留边和 Qt 自绘阴影，并保留独立任务栏、标题栏拖动、四边缩放、
-  最小化、最大化/还原和关闭。摄像头的原生 `QVideoWidget` 不挂图形特效，阴影只画在独立背景框。
-- LAND 是已武装状态下的安全动作：只要机载可靠命令链存在并持有控制权，就不得被 GUI busy、
-  当前模式、位置/推力诊断或已有 LAND pending 锁死，并允许幂等重发。离线、关闭中、无控制权
-  或多个机载状态端点冲突仍必须安全禁用。
-
-## 当前航点参考生成与异常恢复
-
-- `FlightCommand`起飞和`ExecuteWaypoints`均携带策略、参考生成器和跟踪控制器；直线、
-  遇障悬停、自主避障执行各自真实行为，规划不可用时两种避障策略拒绝接单，不回退直线。
-- 参考生成器包含位置阶跃、二阶滤波、梯形速度和限 jerk S 曲线；跟踪侧包含位置 PD+DOB 与轨迹
-  PD+DOB。GUI 默认组合为梯形速度 + 轨迹 PD+DOB；协议未知值、机载待机状态仍安全回退到位置
-  阶跃 + 位置 PD+DOB，限 jerk S 曲线 + 轨迹 PD+DOB 仍是另一组已验证平滑组合。
-- 选择组合只允许在解除武装待机时进行；机载端会锁定同一武装周期的方法，防止绕过 GUI 热切换。
-- 平滑任务启动时若实际速度超过默认 `0.20 m/s`，机载端先抓取当前位置并悬停制动，首次立即记
-  `1/10`，之后默认每秒重判；恢复后继续原任务，连续 10 次失败才锁存无人机异常。
-- 航点进入位置候选区但速度不满足时使用独立入点计数器，默认每秒重判；达到 10 次后锁存异常。
-  启动与入点计数互不污染，取消、新任务、解除武装和可靠异常清除会按各自语义重置。
-- 机载可靠航点终态携带的 `waypoint_index/waypoint_count` 必须保留到 GUI；LAND 抢先切换状态时，
-  仅当前票据的最终成功结果可补齐 `N/N`，迟到旧票据不得回填已经重置的进度。
-- 上述 3.1 航点异常与恢复链已通过单元测试和多轮完整 SITL；截至当前没有实机飞行验证。
-
-## 当前上位机 WebSocket 语义
-
-- 命令映射唯一维护在 `ground_station_core/upstream/mapping.py`：01 起飞、02 原子替换 GUI 航点、
-  03 起飞→巡检航点→末点 LAND、05 飞至 `(0,0,起飞高度)` 后 LAND、06 正常 LAND、07 原地
-  紧急 LAND。所有动作复用现有 GUI 门控和高层 ROS 服务；实机危险动作仍需要本地人工确认。
-- 低电量和无人机异常自动返航只在 WebSocket 实际在线的仿真会话中启用；WebSocket 断线时仿真
-  与实机都不触发这两类自动飞行动作。WebSocket 在线实机当前仅在地面站日志/横幅提示，明确
-  不下发航点或 LAND，实机实现保留为 TODO。该门控只决定是否新触发组合，不强行撤销断线前
-  已经由机载端接收的飞行命令。
-- 09 由真实 `VideoCaptureResult` 驱动，`pointNo` 仍来自 `taskPoints.index`，`pointPic` 使用实际
-  JPG 路径；08 在巡检航点与降落可靠终态后等待图片结果和录像封装，再发送实际
-  `videoPath/JPGPath`。真实路径为空时分别使用 `/home/share/test.mp4` 与
-  `/home/share/jpg` 占位，但不反向判定飞行失败；返航不发 08/09。
-- WebSocket 的连接、SYSTEM 首帧和 SUB_ACK 共用单次握手超时：首次 15 秒，连续失败后按
-  20/25/30 秒递增并在 30 秒封顶；成功订阅或用户主动更换连接后恢复为 15 秒。
-- 状态 01 表示“已解除武装、位于机库阈值内且可再次起飞”的边沿。默认阈值为
-  `|X|<1.0 m`、`|Y|<1.0 m`、`|Z|<0.5 m`，巡检落地后默认再等待 60 秒；这些值可由
-  `UPSTREAM_HANGAR_*` 和 `UPSTREAM_INSPECTION_STANDBY_DELAY_SECONDS` 覆盖。
-- 03 巡检即使已经解除武装，在上述待机时间和机库判定完成前仍属于活动组合；GUI 起飞必须保持
-  禁用，与上位机“组合操作仍在执行”的拒绝语义一致，不能仅凭解除武装提前开放。
-- 当前机库判定只有本地 ENU 阈值，没有独立机库硬件证据；`cameraAngle` 继续忽略。`photoNo`
-  已按原值随航点传给视频服务，只用于图片命名，不得与 `pointNo` 混用，也不得校正其重复、负数
-  或顺序。
-- `dev/integration/gcs-websocket-client/` 是交付上位机联调方的纯通讯模拟客户端，与生产地面站、
-  ROS、MAVROS 和实机完全隔离。它以单个 Python 文件完成 JAR 主题握手、自动重连、01 待机、
-  1 Hz `0A/0B`、命令确认和 01/02/03/05/06/07 模拟时序；03 默认按起飞 5 秒、每航点 5 秒、
-  降落 5 秒执行，并以 `/home/share/test.mp4`、`/home/share/jpg` 和
-  `/home/share/jpg/test.jpg` 作为 08/09 占位路径。返航/降落可抢占巡检且不发送巡检专用 08/09。
-
-## 当前摄像头兼容边界
-
-- 支持原生 H.264 或 MJPEG，录像可选 MP4/MKV/AVI，RTSP 固定 TCP。服务、面板和飞行链完全
-  解耦；地面站退出不会自动停止摄像头后台。
-- 甲方 Windows 单机调参与局域网拉流验收采用精简步骤式教程，位于
-  `docs/Windows-USB摄像头调参与RTSP推流教程.md`：使用 OBS 调参与 H.264 编码、MediaMTX 提供
-  RTSP/TCP、VLC 跨设备验证；示例 `rtsp://192.168.112.101:8556/camera` 中 IP 必须替换为推流
-  电脑的真实局域网 IPv4，不能把示例 IP 当成任意可选地址。
-- 摄像头预览在首个有效 sink 帧前以及断流、无效帧、停止和超时时必须使用普通 Qt 控件逐像素
-  绘制不透明纯黑，并隐藏原生 `QVideoWidget` surface；`LoadedMedia/BufferedMedia` 本身不等于
-  已有画面，状态文字只能显示在黑色预览区之外。暂停状态保留最后一帧。
-- 多设备探测以本次实际 `selected_device` 为权威，不能把旧持久化设备路径与另一设备模式混用。
-- RFC 2435 的 RTP/JPEG 宽高字段上限为 2040 像素；超限 MJPEG 模式会在面板隐藏并由后台拒绝，
-  H.264 高分辨率不受该限制。
-- HP Quanta 5MP 的 MJPEG 含 DRI/restart markers：录像保留原始 stream-copy，只有 RTSP 分支
-  自动规范化为兼容 MJPEG；无 DRI 的 Wasintek MJPEG 和所有 H.264 继续零转码。DRI 兼容分支
-  有明显 CPU/RSS 成本，不能把它推广到所有设备。
-- Wasintek 设备已验证 MJPEG 1280×720@120；HP 已验证兼容分支 MJPEG 1920×1080@30。具体设备
-  能力仍以目标机 `probe` 为准，不应把某台机器的 `/dev/videoN` 当成稳定标识。
-- 机载默认配置位于 `video_service/config/camera.conf` 与 `lens.conf`，媒体目录为
-  `/home/share`、`/home/share/jpg`。默认模式为 H.264 1920×1080@60，默认手动曝光为 25、增益
-  为 200。FFmpeg 按编码、分辨率和帧率打开设备且 RTSP 可读后，服务等待 1 秒，再分步写入并
-  读回全部镜头参数；设置或读回失败只令视频失败。飞机上手工运行 `scripts/onboard/start_onboard_video.sh`
-  与 systemd 都优先使用 `/etc/ros2-ardupilot/camera.conf` 和 `lens.conf`，仅未部署系统配置时
-  才回退仓库默认文件。
-- 同型号 Wasintek 已在开发机和当前 Jetson 真机验证 H.264 1080p30/60、H.264 720p120 与 MJPEG
-  720p30 的 RTSP、录像、JPG、镜头参数、封装和资源释放。Jetson 使用 NVIDIA FFmpeg 8.0.1；
-  MediaMTX v1.20.0 ARM64 安装在 `/usr/local/bin/mediamtx`，SHA-256 为
-  `2da379972ba86627632aa7e3f779c680ba04a5ee26ef2a20dc61cefcc24f73b8`。
-- 当前 Jetson 同时连接两台序列号均为 `00.00.01` 的 Wasintek，`/dev/v4l/by-id` 会发生同名覆盖，
-  不能区分设备；应使用 `video-index0` 的 `/dev/v4l/by-path` 或按 V4L2 capture 能力探测，并排除
-  `video-index1` 元数据节点。2026-09-09 当前接线中 USB 端口 `2` 为前视、扩展坞端口 `1.2` 为
-  下视，两路已并发验证 MJPEG 1920×1080@30；`/dev/videoN` 仍只代表本次枚举结果。
-- 飞机家目录 `/home/nvidia/testcam.py` 已改为 Linux `CAP_V4L2` 与物理路径枚举，可同时预览两路或
-  用 `--no-gui --snapshot-dir` 自检。2026-09-09 的“相机需旋转90°”建议仅针对当时接线/摆放，
-  不得继续作为当前安装指令；Task32已按官方Tag图案方向审计当前画面并恢复原始相机旋转外参。
-- 同一曝光下 H.264/MJPEG 的光学运动模糊基本相同；MJPEG 独立帧通常更利于单帧抓拍但带宽高，
-  H.264 更适合持续 720p120 推流录像。未经同一运动标靶 A/B，不作清晰度定量排名。
-
-## 当前机载部署事实
-
-- 2026-09-18 refresh（`drone-refresh`，`.186`）从 `c9119e3` 快进同步 main 并收紧 non-cone
-  sparse checkout：仅检出 `.gitignore`、三个机载 ROS 包、`correction_service/`、`video_service/`、
-  机载操作脚本及共享函数。地面 GUI、根 tests、agent 报告、旧根 Shell 入口均不再检出。
-  保留本机 `.venv/`、`build/`、`install/`、`log/`。四包原生构建、24项包测试及localhost隔离
-  smoke通过，飞行接口3.3、修正接口2.0的源码/install一致。三个unit已改用新Shell路径，
-  仍为disabled/inactive；既有独立Odin进程未停止。new尚待同步这些迁移。
-  旧配置/unit、现场标定文件和调试材料备份于飞机
-  `/home/nvidia/ros2-ardupilot-maintenance/refresh-sparse-20260918-101142/`。
-
-- 机载 sparse checkout 清单包含飞行 ROS 包、`correction_interfaces`、独立
-  `correction_service/`、`video_service/`、机载视频启停脚本、`scripts/lib/`、`scripts/onboard/components/`、
-  `scripts/onboard/start_onboard_control.sh`、`scripts/onboard/stop_onboard_control.sh` 和 `src/onboard_control/deploy/build_onboard_control.sh`；不得复制
-  开发机的 `build/`、`install/` 到飞机。
-- `'/video_service/'` Git sparse 规则检出整个组件目录；2026-09-18 refresh 实测约268KB，
-  当前版本不再含MediaMTX二进制与历史demo。目录仍含地面面板源码，但机载unit不导入PySide6、
-  不创建窗口；本轮未为去掉少量面板源码而拆分组件。
-- `scripts/onboard/stop_onboard_video.sh` 默认停止独立 unit 并彻底清理残留视频节点、配置 RTSP 端口和真机摄像头
-  占用者；`--restart` 清理后只重启 `video-service.service`。它不得调用飞控停止入口或操作飞控
-  systemd unit。
-- 新飞机的飞控、视频和 Odin 修正是三个独立 unit。飞控和视频继续使用各自既有安装器；修正链
-  先运行带定点备份的 `install_extnav_correction.sh`，再运行
-  `install_correction_service.sh`。更新共享 overlay 的安装器遇到 active 飞控会拒绝，任何安装器
-  都不得在未知飞行状态下重启飞控。
-- `scripts/onboard/start_onboard_control.sh --check` 只做发现和配置检查，不启动组件；正式运行会统一启动 MAVROS、Odin、
-  extnav 和 onboard，并在已有实例时拒绝重复启动。`scripts/onboard/stop_onboard_control.sh` 同时停止 systemd
-  服务和其他终端手工启动的项目组件，并验证无残留。
-- 正式入口命名已统一：机载飞控为 `scripts/onboard/start_onboard_control.sh` / `scripts/onboard/stop_onboard_control.sh`，完整
-  地面站安装为 `scripts/ground/setup_ground_station.sh`。旧的 `start_drone_all.sh`、`stop_onboard_service.sh`、
-  `setup_project.sh` 已从当前树和真机工作区移除；真机 unit 与 sparse 配置均指向新名称。
-- `scripts/ground/setup_ground_station.sh` 是地面站唯一项目安装入口；它会构建地面仿真、飞行和修正面板所需
-  的接口/源码，但不会安装或启用飞机的三个 systemd unit。各 deploy/install 脚本仅供机载计算机
-  使用。
-- 机载环境文件为 `/etc/ros2-ardupilot/onboard.env`。历史已确认的飞机串口是
-  `/dev/ttyTHS1:460800`，但新部署优先使用人工确认的 `/dev/serial/by-id`；多个串口或 overlay
-  候选时必须安全失败，不允许猜测。
-- `scripts/onboard/components/start_odin.sh` 与 `scripts/onboard/components/start_extnav.sh` 是两个独立前台入口，都会自动读取
-  `/etc/ros2-ardupilot/onboard.env`；无需手动 source 任何 overlay，且不会启动 MAVROS、
-  onboard_control、correction_service 或视频服务。Odin 厂商 launch 在无显示 SSH 中会让
-  RViz 报错退出，但不影响 Odin 主数据链；extnav 目前在 Ctrl+C 时会因外部节点重复
-  `rcl_shutdown` 打印 traceback 并返回非零，但进程能停止且无残留。
-- 2026-09-16 新飞机 `.169` 与 refresh 飞机 `.186` 均已定点同步上述三个启动文件；
-  refresh 机的 Odin/extnav overlay 分别在 `/home/nvidia/catkin_ws` 和
-  `/home/nvidia/vrpn_mavros`，当时从旧 `start_drone/` 目录直接执行两入口已通过未解锁台架验证。
-- refresh 飞机 `.186` 也已同步旧根目录 `start_onboard_correction.sh` /
-  `stop_onboard_correction.sh`，实际 unit 与人工前台启动共用前者；已验证 2.0 节点默认
-  idle、相机关闭以及停止零残留，该机终态保持 unit disabled/inactive。
-- systemd 服务只等待 `network-online.target`，不得依赖 `systemd-time-wait-sync.service`、
-  `time-sync.target` 或固定 `sleep`；自带路由器无外网时必须启动。离线开机后若再接入互联网，应在
-  人工解锁前等待 Linux/MAVROS 时间状态稳定并重新核对 READY，但外网时间不是控制租约前置条件。
-- 2026-09-17 启动器已用持续状态订阅 + GNU timeout 相对定时替换受校时影响的 Bash SECONDS，
-  删除四组件间串行 sleep；机载端连接后异步非强制拉参数，首次检查 2 秒、未通过时每秒重试，
-  保留必要参数值和未武装/位姿就绪门。随后接入 volatile MAVROS 参数事件，复用同一值校验，
-  两个必需值齐全即可就绪，不等整表服务返回；断线清除事件缓存，旧在途读不能覆盖新事件。
-  new 随后将重复 ROS CLI 包查询改为按 AMENT_PREFIX_PATH 顺序读取 ament 索引；不跨环境缓存。
-  --check 单轮由 6.223 降至 1.727 秒；仅清理查询时 READY 为 28.867 秒（最初 54.14 秒）。
-  关键参数优先读取现已正式接入并部署 new：使用现有 MAVROS raw 路由与标准编码，每次连接
-  前 10 秒最多四轮，间隔至少 1 秒，收齐停止、断线重置；未武装且控制器未启用才请求。
-  只持有地面站租约不阻止只读同步；原整表/缓存回退和值校验保留。新增 libmavconn 显式依赖。
-  priority_parameter_reads=false 可关闭；路由默认 /uas1/mavlink_sink，目标 1/1、源 255/190。
-  强制签名且拒绝无签名读取的链路需关闭此路径；自定义目标/路由需同步配置，源标识避免冲突。
-  正式版本 new 两轮 READY 为 7.553/7.174 秒，未解锁；第一轮整表 35.012 秒完成。
-  SITL 完整就绪仍 44.188 秒；有一轮消息 245 频率配置服务超时，重测通过但根因未定位。
-  插件裁剪只形成 mavros-plugin-trimming-plan 报告，未实施；Odin 辅助节点也仅估算、未裁剪。
-  用户不用时会停服务以避免 Odin 发热；本轮验证结束四组件已停止，不应无故长期保持运行。
-  已定点部署 new 并核对 source/install/runtime，
-  refresh 已于 2026-09-17 从 9e59afb 快进同步到 66a3a09 并重建，19 项 C++ 测试通过。
-  refresh 当前无飞控、有 Odin：短时采到 3205 条里程计、156 条未连接/未武装状态，优先读取为 0，
-  未误报 READY；串口仍 /dev/ttyTHS2，专用配置保持不变，测试后 disabled/inactive、无残留。
-  独立 USB Jetson 尚未同步上述启动/查询修复；不得以 new 的历史 Git HEAD 判断补丁缺失。
-  子进程墙钟前跳回归已通过，真实离线冷启动后 NTP 校时仍待下一次现场开机复验，未主动改变实机时钟。
-- 2026-08-26 已纠正独立视频 unit 遗留的外网校时依赖并部署到当前 Jetson；实际 unit 只等待
-  `network-online.target`，视频服务最终 active/enabled、零重启，飞控 unit 未被重启。地面摄像头
-  面板首次启停命令会有限等待服务发现 2 秒，不再把正常的 DDS 建链延迟立即误报为端点缺失。
-- 上述视频部署完成且确认飞控 PID 未变后，飞控 unit 曾于 2026-08-26 21:21:31 收到来源未记录的
-  systemd 停止事务并完成四组件清理。随后经用户明确授权的两次整机重启均让 enabled 飞控 unit
-  正常自启动；第二次冷启动后的当前状态为飞控与视频 unit 均 active、零重启、`armed=false`。
-- 当前 Jetson 的 source/install/runtime 已原生构建并运行接口 3.2。2026-08-24 维护窗口已把
-  61 个机载范围文件与本地 `465ce8a` 逐文件同步并通过 SHA-256 比对，两个安装器已把飞控与视频
-  systemd unit 更新为当前模板；两项服务最终均为 active/enabled、零重启，MAVROS 为 connected、
-  `armed=false`、STABILIZE。机载视频现场配置仍位于 `/etc/ros2-ardupilot/camera.conf`、
-  `lens.conf`，安装器重装时未覆盖。
-- 2026-08-24 时飞机 Git HEAD 为历史 `6a40713`，任务 22.5 通过逐文件同步部署，当时工作树有明确的
-  3.2 修改和 `video_service/` 新目录；2026-08-24 的选择性同步也没有改写该历史 HEAD。另有 Odin
-  自动生成的 `image/cam_in_ex.txt` 与 `src/odin_ros_driver/`。不得用 reset/clean 或盲目 pull
-  覆盖；这属于历史部署状态，refresh 当前已恢复可快进同步的 sparse checkout。
-- 部署前备份为 `/home/nvidia/backups/task22_5-predeploy-20260819-2317.tar.gz`，SHA-256
-  `a070336413b6308db55a2155526be21c87f11fb249ccaca031ca95847697b27c`。真机台架媒体已从生产
-  目录移至 `/home/nvidia/task22_5-bench-artifacts-20260819/`。
-- 2026-08-24 同步与 unit 重装前备份为
-  `/home/nvidia/backups/onboard-sync-pre-20260824-224307.tar.gz`，SHA-256 为
-  `e714dc92bf49153658e3bfb329e4cedcc19dca6591b3325ea33f85547528abd8`。
-- 2026-08-25 离线时间修复已选择性同步并在 Jetson 原生重建；新 unit 无任何外网校时等待，生产
-  source/install/runtime 对齐。部署前备份为
-  `/home/nvidia/backups/offline-clock-predeploy-20260825-0009.tar.gz`，SHA-256 为
-  `7f78963ad63dbf80adb73ec7b9fb0f359ba3236c6bdaab302a90800c29c74368`。
-- 任务 27 的改动前全量备份位于
-  `/home/nvidia/scq/backups/task27-20260828-225107/`，包含本地完整仓库、飞机项目/运行时和
-  Odin/extnav/标定三份已校验归档；生产 extnav 定点备份位于飞机
-  `/home/nvidia/backups/extnav-task27-20260828-234049/`。详细哈希见任务 27 报告。
-- 2026-09-09 Jetson 选择性部署任务 29 的 correction interfaces/service 与 extnav 2.0，当时飞机 Git
-  HEAD 为历史 `6a40713`，不能用 pull/reset 覆盖当时现场工作树。部署前可验证备份位于
-  `/home/nvidia/backups/task29-predeploy-20260909-2205/`，extnav 安装器备份位于
-  `/home/nvidia/backups/extnav-task29-20260909-220308/`。2026-09-09 台架结束时飞行链已按测试前
-  状态停止，视频服务 inactive；`odin-correction.service` active/enabled 但 idle、窗口为空、
-  相机和任务 raw 订阅均已释放。
-
-## 当前验证基线（2026-09-09）
-
-- 离线时间修复已通过本地 180 项 Python、19 项 ROS/C++、隔离 smoke，以及 Jetson ARM64 的
-  `+30 天 → -30 天` 地面时间跳变探针；新鲜命令接受、回退 30 秒命令仍按 TTL 拒绝。真实生产服务
-  最终连续两次 `armed=false`、无租约/控制器/冲突/failsafe，约 100.03 Hz、零 deadline miss；
-  全程未向真实 MAVROS 发送飞行命令。真实断 WAN 冷启动仍需下次现场开机补记运维验收。
-- 上位机 08 媒体占位路径已提升为模块常量，JPG 默认路径当前为 `/home/share/jpg`；握手递增超时
-  覆盖连续失败、30 秒上限和成功后复位，专项测试 15 项通过。
-- 独立 WebSocket 模拟客户端已通过随附真实 JAR：两点巡检顺序为
-  `01→ACK02→02→ACK03→03→09×2→07→08→01`，`0A/0B` 两轮间隔均为 1.001 秒；01、05
-  抢占、06、07、低电量 0C/自动返航和两次会话自动重连均另行通过。全部为本机消息模拟，未连接
-  ROS、仿真飞控或实机。
-
-- 2026-08-24 任务 24 的窗口装饰、摄像头纯黑预览、LAND 门控和航点终态投影修复构成当前
-  `main` 基线；工作树中的用户自有改动仍须保留。
-- 正确加载 ROS 2 Jazzy 和项目 `install/` overlay 后，项目正式 Python 范围 `tests/`：229 passed。
-- 当前 colcon 结果：22 tests、0 errors、0 failures、0 skipped；五包 Release 构建通过。
-- 任务 29 已在当前 Jetson 原生构建并完成多轮 Tag0 未武装台架。初始 8° tilt/10° yaw 跳变门
-  下，两轮 dry-run 分别为 24 accepted/2 rejected/7.43 s 与 24/375/53.98 s，约 -14.3° 候选被
-  安全拒绝。经用户明确要求，为地面原理验证把 tilt 门适度改为 10°、应用 yaw 跳变门改为 45°；
-  复测得到 24/0/7.48 s、tilt 8.657°、yaw -14.420°，随后显式 apply_saved 得到 ACK/revision 1。
-  FCU 输入按预估跳变约 0.0895 m/14.42°，MAVROS EKF 稳定后跟随至毫米级/约 0.003°；清回
-  identity 时 EKF yaw 曾短时过冲约 +1.99°，约 30 s 后回到 0.064°，证实 reset counter 风险。
-  最终 correction 窗口为空，extnav clear 为 correction_valid=false/revision 2；raw/corrected 约
-  400 Hz、FCU pose 约 100 Hz、MAVROS vision 输入约 39 Hz，飞机端包测试 22 项零失败。
-- 任务 27 真机未解锁台架已通过 dry-run、apply+ACK、服务退出保留 active、显式 clear、identity
-  精确透传、失败保底、按需 raw 订阅和相机释放。apply job revision 1 的候选约为
-  `(-0.0132 m, -0.2611 m, +89.7599°)`，随后因 Tag 未摆正已 clear 到 revision 2 identity；该数值
-  不能作为世界坐标精度结论。最终按需订阅 dry-run 为 171 accepted/0 rejected，匹配误差约
-  0.84 ms、处理约 7.76 Hz。
-- 任务 24 已通过真实 JAR + Qt + ROS + MAVROS + ArduPilot SITL 全流程：最终解除武装、航点进度
-  `2/2`，已武装 LAND 误禁用和组合待机起飞误启用记录均为空；Ubuntu 24.04 GNOME Wayland
-  目标机确认纯黑预览中心和四角均为不透明 `#000000`；两个子面板自绘阴影在真实 Wayland 渲染
-  中均得到 alpha 33 的半透明阴影像素，不再依赖 `adwaita` 或合成器外部阴影。
-- 当前 Jetson 已完成接口 3.2 ARM64 Release 构建、19 项测试和无 MAVROS 隔离 smoke；真实 FCU
-  最终为 connected、`armed=false`、STABILIZE、无租约/控制器、约 100.03 Hz。真实
-  `EXTENDED_SYS_STATE` 连续为 ON_GROUND，自动视频期望为关闭。
-- 2026-08-24 同步重启后再次通过 19 项测试和隔离 smoke；真实控制状态为待机、无租约、无冲突、
-  约 100.04 Hz、该次零 deadline miss。独立视频实际完成开启、RTSP/TCP H.264
-  1920×1080@60 探测和关闭，生成 6.17 秒 MP4；最终视频 stopped，FFmpeg、MediaMTX 与 8554
-  端口均释放。全程没有解锁或起飞。
-- 真机 H.264 1080p30/MP4、MJPEG 720p30/MKV、三类 JPG、原始 `photoNo`、跨机 FFmpeg/Qt
-  拉流、播放暂停、真机地址读取、无租约启停、stale 判定、视频 unit 干净停止、媒体故障隔离和
-  恢复均通过；当前摄像头/8554 端口未占用，生产媒体目录保留本次 1080p60 验收的 MP4/JPG。
-- 新默认 H.264 1920×1080@60 已在当前飞机复验：RTSP 与 32.17 秒 MP4 均为
-  1920×1080@60，人工 JPG 为 1920×1080，镜头读回曝光 25/增益 200；最终视频 stopped、
-  媒体进程/端口/设备均释放，飞控 unit 未被触及。
-- 上位机任务 22 与平滑航点启动余速修复均完成真实 JAR + Qt + ROS + MAVROS + ArduPilot SITL
-  多轮端到端验证，最终解除武装且无残留进程。
-- 本次真机补测始终没有解锁或起飞；实际起飞/落地自动启停和实际飞抵航点自动抓拍仍只完成
-  隔离 ROS 边沿与自动化验证，必须由用户未来人工飞行时补验。
-- UQ212 内参标定工具按用户要求已移出本项目维护范围，仓库内程序、README和11项专用测试
-  已删除；已部署在飞机项目外的 `/home/nvidia/camera_int_calib/uq212_cam_calib.py` 及历史标定结果
-  未删除。生产相机配置和已采用的30张实测内参继续保留；本项目不再负责维护该外部标定程序。
-- 2026-08-21 的独立外参标定工具仍位于飞机 `/home/nvidia/AprilTag/`；Wasintek 档案保存
-  后续 2026-08-27 的历史标定；当前 UQ212 使用上述30张实测内参与 2026-09-17 机械近似外参。Task32已撤销历史180°外参补偿；该旧结论
-  不能再用于判断相机是否倒装。
-
-## 已知风险与维护重点
-
-- refresh MAVROS 2.15.1 的时间插件未继承启动YAML，实际timesync_rate=0，导致飞控重启
-  请求缺少启动时钟而被拒绝。机载及分组件MAVROS入口现通过共享函数恢复禁用的MAVLINK
-  时间同步到10Hz，并校验参数读回和真实时钟消息；不绕过飞控重启保护。隔离MAVROS及refresh
-  真实启动已验证。后续保留日志已确认用户热重启成功、时钟回退及控制链路恢复正常。
-  此检查会增加启动耗时，尚未优化；new已于2026-10-08同步代码，真实FCU启动尚未复验。
-- refresh MAVROS 2.15.1 参数补拉会被重复回包放大请求，导致 unsolicited 日志刷屏。
-  已部署固定版本补丁到 `/home/nvidia/mavros_param_fix_ws`，由 onboard.env 中
-  `MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_ws/install/local_setup.bash` 选择；
-  完整/独立MAVROS入口均支持，系统安装未覆盖。隔离测试请求数31→1，持续重复回包仍按3次
-  重试结束；真实串口第二轮拉取完整1246项，首轮曾因索引变化缺11项，不能把服务success
-  单独视为整表完整。保留诊断警告，不绕过飞控重启后的参数新鲜度验证。
-  2026-09-18本次检查时refresh飞控unit为inactive，测试MAVROS结束后停止，既有Odin/extnav
-  保留。未代用户再次热重启；补丁后的真实重启闭环待用户手动验证。new未部署；系统MAVROS
-  升级时应重评补丁及ABI。new已同步安装器但系统仍为2.14.0，不能启用此2.15.1补丁。
-  构建、启用、回退见ONBOARD_DEPLOYMENT.md。
-
-- 当前飞机和地面开发机均为 Jazzy，已不再经过旧 Humble/Jazzy 混合 DDS 边界。2026-09-16 已
-  确认 refresh 可快进同步 main，自有 UVC 采集修复的地面/远端/refresh 提交一致；机载已有
-  `start_drone/image/` 未跟踪标定文件已于2026-09-18归档至上述refresh备份的
-  `local-artifacts/start-drone-image/`，不能当作无用缓存删除。其他飞机的HEAD与部署差异仍须
-  连接后独立核对。
-- Linux 非实时调度下曾出现 deadline miss 和明显 jitter；平均 100 Hz 不等于硬实时。当前 Odin
-  进程的 `LimitRTPRIO=0`、无有效 capability，IMU 线程申请 SCHED_FIFO/SCHED_RR 得到 EPERM 后
-  回退 SCHED_OTHER。当前链路能 READY，但高负载下 Odin 时间抖动风险仍未量化；实机前仍需长时间
-  统计，再评审 `LimitRTPRIO`/`CAP_SYS_NICE`、CPU 隔离和优先级，不能未经测试直接给整个飞控 unit
-  提权。
-- 2026-08-24 重启前 MAVROS 2.14.0 曾多次报告 `Time jump detected`。该告警表示 10 Hz MAVLink
-  TIMESYNC 的时钟偏移样本在滤波收敛后连续偏离当前估计，并触发时间同步滤波器重置，不等于 Linux
-  NTP 当前失效或飞控重启。命令租约已不依赖该绝对时间；若离线开机后联网发生大幅校时或该告警在
-  飞行前持续复现，仍应记录
-  `/mavros/timesync_status`、串口负载和飞控端时间源，避免带着不稳定时间戳进入外部定位验收。
-- 当前 Jetson 的 `load-iwlwifi.service` 与 `nvpmodel.service` 为既有 failed unit；Wi-Fi 和本次
-  视频/飞控测试仍可用，但失败原因尚未纳入任务 22.5。Odin launch 还会在无显示环境启动 RViz
-  并报 Qt platform 错误，四组件服务仍可达到 READY；后续应作为独立运维任务处理。
-- Task32已证实：Tag方向错误与相机180°补偿可以让yaw近似正确、水平位置却反号；仅检验yaw、
-  重投影残差、矩阵正交性或自生成合成闭环均不足以确认坐标语义。后续方向改动必须使用官方
-  图案像素、明确的纸张方向和独立物理真值检查，不能再用改外参来掩盖Tag基变换错误。
-- AprilTag-Odin 的绝对精度仍未验收：当前机械近似外参水平杆臂为 5.48 cm，结果表示 Odin IMU 而非相机
-  光心；历史 Wasintek 标定基线曾估计
-  出约 162.6 ms 时间偏移，尚无硬件 PTS、固定 td=0 的多轮独立从零标定。历史同一 Odin session
-  的跨任务候选可相差 4.86～7.14 cm/0.24～1.44°，而任务内部标准差很小，说明当前约 2 秒质量门
-  只验证短时稳定。地面原理验证使用的 10° tilt 上限更不能声称 5 cm 绝对精度；正式使用前必须
-  做测量级 Tag 定位定向、明确 IMU/相机参考点、跨位置返回闭环和外参重复性验收。
-- 2026-09-09 的高tilt样本来自修复两处180°错误之前，不能继续当作当前安装基线。Task32四次
-  静态采样tilt约1.71～1.76°，但10°/45°仍只是此前用户授权的地面实验门限；相机重装后的小角度
-  外参误差尚未精测，不得靠继续放宽门限或EKF跟随输入来声称世界真值准确。
-- Python/OpenCV 活跃采样约占 1.14 个 Jetson CPU 核且只有约 7.8 Hz；idle 已通过按需订阅降到约
-  0.02 核。若需要更高频率或与其他视觉任务并行，应以实测为依据评估 C++、ROI/分辨率和 CPU
-  调度，不能只提高配置频率。
-- 当前 Jetson 的 `NetworkManager-wait-online.service` 被 masked，`network-online.target` 会比
-  生产 Wi-Fi IPv4 提前约 3～4 秒完成。2026-08-26 第一次真实冷启动已复现视频 ROS 节点过早创建后
-  本机可用、scq 不可达且 RTSP 地址误选 `192.168.55.1`；根启动脚本现会在创建 Fast DDS participant
-  前有限等待非 `linkdown` 默认路由的源 IPv4，最长 30 秒且不探测外网。第二次真实冷启动确认脚本在
-  DHCP 后约 0.03 秒放行，scq 自动恢复发现且地址为 `192.168.112.169`。
-- 机库硬件确认、`cameraAngle` 云台控制和更多硬件异常类型仍未实现；不要把占位接口写成
-  已完成功能，也不要未经明确允许实现 `TODO.md`。
-- 当前维护热点是少数持续膨胀的核心文件：
-  1. `GroundStationWindow` 同时承担 Qt 编排和上位机组合任务状态机；
-  2. `GroundStationRosController` 同时承担 ROS 生命周期、租约、命令分派和状态聚合；
-  3. `OnboardControlNode` 同时承担 MAVROS 网关、任务、安全、控制和状态发布；
-  4. `OperationsPanel` 与 `tests/test_qt_gui.py` 体量较大。
-  后续应做保持行为不变的定向拆分，不做全仓推倒重写；优先提取纯业务状态机，最后再谨慎调整
-  100 Hz 机载控制路径。
-- `DEPLOY_UBUNTU_2204.md` 仍有个别接口 3.0 的历史文字；当前接口必须以
-  `ground_station_core/config.py` 和飞行包`package.xml`的 3.4/3.4.0 为准，视频独立为3.2。
-
-## 关键历史节点
-
-- **2026-08-06：机载权威边界建立。** 地面站收敛为薄客户端，PD+DOB、租约、失联保护和唯一
-  setpoint 发布迁入机载 C++；完整 SITL 基线形成。详见
-  `agent/report/history/report-2026-08-06.md`。
-- **2026-08-10：仿真/实机域隔离与生命周期收敛。** 仿真固定 domain 231/localhost，实机
-  domain 0/subnet；DDS context 切换、退出和异常残留清理形成当前边界。详见
-  `agent/report/report-2026-08-10-ground-simulation-domain-isolation-cleanup-fix.md`。
-- **2026-08-11～13：机载部署与真机未武装链路。** 建立 portable build、sparse 部署、systemd
-  校时门、彻底停止入口和 source/install 版本门；接口 3.0 在真机完成未武装通讯与连接验证。
-  详见 `agent/report/report-2026-08-13-hardware-communication-interface-fix.md`。
-- **2026-08-12：连续航点参考与可视化。** 接口 3.0 引入四种参考生成器、两种 PD+DOB 跟踪模式、
-  CSV 导入和 RViz 航点预览；平滑组合只在 SITL 调参与验证。详见
-  `agent/report/report-2026-08-12-waypoint-smooth-reference-methods.md`。
-- **2026-08-17～18：独立 USB 摄像头服务。** 建立单次采集、RTSP/录像/截图、双设备切换和 HP
-  MJPEG DRI 兼容路径。详见
-  `agent/report/report-2026-08-17-camera-video-service-ground-station-integration.md` 与
-  `agent/report/report-2026-08-18-hp-mjpeg-dri-rtsp-green-fix.md`。
-- **2026-08-18～19：上位机时序与接口 3.1。** 实现 03 巡检组合、05/低电量/异常返航、可靠
-  01/08/09 状态语义、航点入点异常和启动余速重试；只完成自动化与 SITL 验证。详见
-  `agent/report/report-2026-08-18-task22-timeseq.md` 与
-  `agent/report/report-2026-08-19-waypoint-start-speed-retry-fix.md`。
-- **2026-08-19：独立机载视频与接口 3.2。** 完成视频 ROS 边界、任意起降边沿开关、航点/人工
-  抓拍、上位机真实媒体路径、三模式面板、配置与目录迁移；随后在新 Jetson 上完成 ARM64 部署、
-  未武装真实摄像头/跨机/故障隔离台架，并补上 `EXTENDED_SYS_STATE(245)` 自动请求。实际飞行
-  边沿与航点抓拍仍未执行。详见 `agent/report/report-2026-08-19-task22-5-onboard-video.md` 与
-  `agent/report/report-2026-08-19-task22-5-real-aircraft-bench.md`。
-- **2026-08-28～29：独立 AprilTag-Odin 平面修正链。** 建立接口 1.0、完整 SE(3) 候选、历史
-  时间匹配、稳健质量门、extnav 原子 SE(2)/session 保底、按需相机与高频订阅、detached 地面
-  面板和带备份部署；新 Jetson 在 armed=false 下完成 apply/ACK/clear 与故障隔离，最终保持
-  revision 2 identity。详见
-  `agent/report/report-2026-08-29-27-tag-odin-fix-refined.md`。
-- **2026-08-31：错误的180°外参补偿（已撤销）。** 当时仅凭yaw接近零误判相机倒装，给原矩阵
-  右乘 `Rz(180deg)`；Task32已证实实际问题在OpenCV/官方Tag方向约定，这次补偿使错误互相
-  抵消航向却反转位置。旧报告保留为历史，不再作为当前结论或部署依据。
-- **2026-09-09：多 Tag 滑窗与 FCU 中心水平原点修正。** 仓库接口升级到 2.0，加入服务端
-  P/Q keyframe FIFO、加权 SE(2)、单次事务/丢 ACK 对账、显式 apply_saved 和四段位姿面板；
-  extnav 有效分支移除多余 `+T_xy`。随后选择性部署当前 Jetson，纠正下视相机 USB 端口，完成
-  多轮 Tag0 dry-run、事务拒绝分支、频率/资源释放和终态计时真机验证；随后按用户明确要求适度
-  放宽地面实验门限，完成一次 apply/ACK、四段位姿与 EKF 响应观察并清回 identity。仍未进行真实
-  多 Tag 或精度验收。详见
-  `agent/report/report-2026-09-09-task29-multi-tag-window-fcu-center.md` 与
-  `agent/report/report-2026-09-09-task29-aircraft-deployment-camera-bench.md`、
-  `agent/report/report-2026-09-09-task29-relaxed-gates-apply-bench.md`。
-- **2026-09-10：撤销错误的首次单点重锚。** 曾错误地把 Task27 的非零 tilt 投影差解释为 Bug，
-  在 `49f5b32` 中将首次平移改为 `P-Rz(yaw)Q` 并部署，用户复测由约 `(0.20,0.10)m` 恶化到
-  `(0.25,0.15)m`。该判断忽略了 Task29 明文规定首次应 `planar_xy_yaw(C_full)`，且单点重锚会
-  把被丢弃的倾斜和高度耦合进原点平移。本地现已恢复 Task27 首次逐帧几何、x/y/yaw 筛选与冻结
-  候选；保留 Task29 有效分支删除 `+T_xy`，多 Tag P/Q 配准只从第二点起生效。飞机本轮断开，
-  当时尚未部署复验；大幅位置偏差的方向根因后来由Task32定位。旧报告已标为结论作废，详见
-  `agent/report/report-2026-09-10-task29-restore-task27-first-calibration.md`。
-- **2026-09-15：Task32修复反向位置。** 在恢复Task27首次公式后仍存在大偏差，最终通过官方
-  Tag0像素与现场“上”标记证实Tag基变换错180°，并撤销错误相机补偿。独立图像回归、当前
-  Jetson静态三轮采样与apply/ACK均通过，FCU回到约 `(-0.209,+0.025)m`。仍待人工移回Tag
-  中心复验与精确外参/世界真值验收；旧“相机平移可能差22～25cm”的推断作废。
-
-## 版本库与记录规范
-
-- 每次功能或代码修改后，在 `agent/report/` 新建当日报告，不覆盖旧报告；失败指标和未覆盖边界
-  必须如实记录。
-- `agent/codex/`、`agent/grok/` 是本地过程目录，正式配置和长期证据不得只放在其中。
-- 视频录屏、飞行日志、SITL/MAVProxy 产物、colcon/Python 缓存等按 `.gitignore` 管理；大视频不
-  直接提交 Git，需分发时使用外部存储或经明确评估后使用 Git LFS。
-- `docs/assets/` 用于本机 Windows 摄像头教程截图，整目录由 `.gitignore` 排除；教程 Markdown 可
-  单独提交，但不得把其中 PNG 等图片推入仓库历史。
-- `TODO.md` 只记录计划；未经用户明确允许不得实现其中内容。
+- 2026-08-20 曾经用户授权改写 Git 历史以移除大视频/二进制，旧提交 ID 已失效；完整改写前备份
+  `/home/nvidia/backups/ros2-ardupilot-git-pre-history-rewrite-20260820.tar.gz`。大媒体不提交 Git。
+- new 同步前完整现场归档在 `/home/nvidia/ros2-ardupilot-maintenance/new-sync-20261008-1920/`；
+  refresh 路径迁移及标定归档在 `/home/nvidia/ros2-ardupilot-maintenance/refresh-sparse-20260918-101142/`。
+  其中现场标定不是可删除缓存；其他备份和哈希按对应报告查询。
+- 历史任务/报告集中在 `agent/task/history/`、`agent/report/history/`，近期报告在 `agent/report/`。
+  报告保留当时结论，已撤销的首次重锚、180°外参补偿及旧协议测试数据不能当作当前基线。
+  曾有包测试将 Tag0 固定断言为 0.170 m、与默认 0.099 m 冲突；遇到该失败须核对当前配置，
+  不把旧通过数量当作本次测试结果。
