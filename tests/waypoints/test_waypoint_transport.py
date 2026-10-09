@@ -39,7 +39,7 @@ def test_waypoint_result_keeps_authoritative_terminal_progress() -> None:
 
 
 def test_waypoint_request_preserves_three_independent_gui_choices() -> None:
-    """避障空壳、命令生成和跟踪控制必须作为独立字段原子排队。"""
+    """锁定策略、命令生成和跟踪控制必须作为独立字段原子排队。"""
     controller = GroundStationRosController(source_id="pytest-waypoint-methods")
 
     controller.request_waypoints(

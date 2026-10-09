@@ -4,6 +4,7 @@ visualize.launch.py — Launch visualization tools for the quadcopter.
 Starts:
   - robot_state_publisher  (publishes URDF model joints to /tf_static)
   - pose_to_tf             (bridges the selected session pose to isolated TF)
+  - avoidance_preview     (clears expired or revoked onboard trajectory previews)
   - rviz2                  (loads the packaged quadcopter.rviz config)
 
 Usage:
@@ -68,6 +69,13 @@ def generate_launch_description():
     )
 
     # RViz 仅加载只读显示工具，不安装可绕过 Qt 门控的 2D/3D 命令工具。
+    avoidance_preview = Node(
+        package='guided_sim',
+        executable='avoidance_preview.py',
+        name='ground_station_avoidance_preview',
+        output='screen',
+    )
+
     rviz2 = Node(
         package='rviz2',
         executable='rviz2',
@@ -84,5 +92,6 @@ def generate_launch_description():
         ),
         robot_state_publisher,
         pose_to_tf,
+        avoidance_preview,
         rviz2,
     ])

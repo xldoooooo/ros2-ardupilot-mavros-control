@@ -11,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+#include <random>
 
 #include <mavros_msgs/mavlink_convert.hpp>
 
@@ -23,8 +24,8 @@ namespace onboard_control
 namespace
 {
 
-// 3.3 adds ground-only FCU reboot and authoritative recovery state.
-constexpr char kInterfaceVersion[] = "3.3";
+// 3.4 adds independent avoidance, waiting state and pre-takeoff configuration lock.
+constexpr char kInterfaceVersion[] = "3.4";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -96,6 +97,32 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     declare_parameter<double>("land_confirmation_timeout_seconds", 120.0);
   waypoint_tolerance_ = declare_parameter<double>("waypoint_tolerance", 0.3);
   waypoint_hold_seconds_ = declare_parameter<double>("waypoint_hold_seconds", 1.0);
+  avoidance_wait_timeout_seconds_ = declare_parameter<double>("avoidance_wait_timeout_seconds", 15.0);
+  avoidance_result_timeout_seconds_ = declare_parameter<double>("avoidance_result_timeout_seconds", 0.8);
+  avoidance_resume_seconds_ = declare_parameter<double>("avoidance_resume_seconds", 0.4);
+  avoidance_join_position_tolerance_ = declare_parameter<double>("avoidance_join_position_tolerance", 0.08);
+  avoidance_join_velocity_tolerance_ = declare_parameter<double>("avoidance_join_velocity_tolerance", 0.08);
+  avoidance_limits_.velocity_xy = declare_parameter<double>("avoidance_max_velocity_xy", 1.0);
+  avoidance_limits_.velocity_z = declare_parameter<double>("avoidance_max_velocity_z", 0.2);
+  avoidance_limits_.acceleration_xy = declare_parameter<double>("avoidance_max_acceleration_xy", 0.35);
+  avoidance_limits_.acceleration_z = declare_parameter<double>("avoidance_max_acceleration_z", 0.15);
+  for (double value : {avoidance_wait_timeout_seconds_, avoidance_result_timeout_seconds_,
+    avoidance_resume_seconds_, avoidance_join_position_tolerance_, avoidance_join_velocity_tolerance_,
+    avoidance_limits_.velocity_xy, avoidance_limits_.velocity_z,
+    avoidance_limits_.acceleration_xy, avoidance_limits_.acceleration_z})
+  {
+    if (!std::isfinite(value) || value <= 0.0) {
+      throw std::invalid_argument("avoidance timing and flight limits must be positive and finite");
+    }
+  }
+  if (avoidance_limits_.velocity_xy > 1.0 ||
+    avoidance_wait_timeout_seconds_ <= avoidance_result_timeout_seconds_)
+  {
+    throw std::invalid_argument("avoidance speed must be <=1m/s and wait must exceed result timeout");
+  }
+  std::random_device random;
+  avoidance_controller_session_ = std::to_string(random()) + "-" +
+    std::to_string(random()) + "-" + std::to_string(SteadyClock::now().time_since_epoch().count());
   max_velocity_xy_ = declare_parameter<double>("max_velocity_xy", 1.5);
   max_velocity_z_ = declare_parameter<double>("max_velocity_z", 0.8);
   max_yaw_rate_ = declare_parameter<double>("max_yaw_rate", 1.0);
@@ -295,6 +322,15 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     std::bind(
       &OnboardControlNode::on_execute_waypoints, this,
       std::placeholders::_1, std::placeholders::_2));
+  avoidance_request_publisher_ = create_publisher<guided_interfaces::msg::AvoidanceRequest>(
+    interface_prefix_ + "/avoidance_request", rclcpp::QoS(1));
+  avoidance_result_subscription_ = create_subscription<guided_interfaces::msg::AvoidanceResult>(
+    interface_prefix_ + "/avoidance_result", rclcpp::QoS(1),
+    std::bind(&OnboardControlNode::on_avoidance_result, this, std::placeholders::_1));
+  avoidance_path_publisher_ = create_publisher<nav_msgs::msg::Path>(
+    interface_prefix_ + "/avoidance_path", rclcpp::QoS(1));
+  avoidance_timer_ = create_wall_timer(std::chrono::milliseconds(200),
+    std::bind(&OnboardControlNode::avoidance_tick, this));
   origin_service_ = create_service<SetGpsOrigin>(
     interface_prefix_ + "/set_gps_origin",
     std::bind(
@@ -390,6 +426,12 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
   }
 
   if (was_armed && !armed_) {
+    avoidance_land_latched_ = false;
+    if (avoidance_land_service_request_) {
+      set_mode_client_->remove_pending_request(*avoidance_land_service_request_);
+      avoidance_land_service_request_.reset();
+    }
+    ++avoidance_land_request_generation_;
     airborne_ = false;
     publish_video_control(false, "onboard-flight", "飞行器已解除武装");
     const ActiveTask completed_task = active_task_;
@@ -730,6 +772,11 @@ void OnboardControlNode::on_motion_intent(
 {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   CommandIdentity command{message->source_id, message->sequence, "motion"};
+  if (avoidance_land_latched_) {
+    publish_result(command, guided_interfaces::msg::CommandResult::STATUS_REJECTED, true,
+      "避障等待超时，LAND已锁存，必须实际落地并解除武装后才能接受运动");
+    return;
+  }
   std::string reason;
   if (!validate_envelope(
       message->header.stamp, message->ttl_ms, message->source_id, reason) ||
@@ -817,6 +864,12 @@ void OnboardControlNode::on_flight_command(
   }
 
   CommandIdentity command{request->source_id, request->sequence, "unknown"};
+  if (avoidance_land_latched_ && request->command != FlightCommand::Request::COMMAND_LAND &&
+    request->command != FlightCommand::Request::COMMAND_CONFIGURE_RATES)
+  {
+    response->message = "避障等待超时，LAND已锁存，必须实际落地并解除武装后才能接受新任务";
+    return;
+  }
   switch (request->command) {
     case FlightCommand::Request::COMMAND_REBOOT_FCU:
       command.name = "reboot_fcu";
@@ -836,7 +889,27 @@ void OnboardControlNode::on_flight_command(
         response->message = "起飞高度必须在 (0, 20] 米范围内";
         return;
       }
+      if (!validate_waypoint_configuration(request->flight_strategy, request->reference_generator,
+          request->tracking_controller, reason) ||
+        waypoint_configuration_change_locked(request->flight_strategy,
+          static_cast<ReferenceGeneratorType>(request->reference_generator),
+          static_cast<TrackingControllerType>(request->tracking_controller)))
+      {
+        response->message = reason.empty() ? "飞行配置已锁定，禁止中途更换" : reason;
+        return;
+      }
+      if (request->flight_strategy != 0 && !avoidance_ready(SteadyClock::now())) {
+        response->message = "机载避障地图/坐标/规划服务尚未就绪，拒绝避障起飞";
+        return;
+      }
+      waypoint_flight_strategy_ = request->flight_strategy;
       start_takeoff(command, request->value);
+      // start_takeoff取消未武装旧任务时会清除旧锁；提交新锁必须在该边界之后。
+      if (active_task_ == ActiveTask::kTakeoff) {
+        lock_waypoint_configuration(request->flight_strategy,
+          static_cast<ReferenceGeneratorType>(request->reference_generator),
+          static_cast<TrackingControllerType>(request->tracking_controller));
+      }
       response->accepted = true;
       response->message = "起飞命令已由机载服务接收";
       break;
@@ -950,6 +1023,10 @@ void OnboardControlNode::on_execute_waypoints(
 {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::string reason;
+  if (avoidance_land_latched_) {
+    response->message = "避障等待超时，LAND已锁存，拒绝新航点任务";
+    return;
+  }
   if (!validate_envelope(request->stamp, request->ttl_ms, request->source_id, reason) ||
     !authorize_flight_sequence(request->source_id, request->sequence, reason))
   {
@@ -997,18 +1074,20 @@ void OnboardControlNode::on_execute_waypoints(
     return;
   }
 
-  // 策略接口已预留；仅 STRAIGHT 有实现，其余暂按直线飞行。
-  waypoint_flight_strategy_ = request->flight_strategy;
-  if (waypoint_flight_strategy_ != ExecuteWaypoints::Request::STRATEGY_STRAIGHT) {
-    RCLCPP_WARN(
-      get_logger(),
-      "航点飞行策略 %u 尚未实现，按直线飞行执行",
-      static_cast<unsigned>(waypoint_flight_strategy_));
-    waypoint_flight_strategy_ = ExecuteWaypoints::Request::STRATEGY_STRAIGHT;
+  if (!validate_waypoint_configuration(request->flight_strategy, request->reference_generator,
+      request->tracking_controller, reason))
+  {
+    response->message = reason;
+    return;
+  }
+  if (request->flight_strategy != 0 && !avoidance_ready(SteadyClock::now())) {
+    response->message = "机载避障地图/坐标/规划服务尚未就绪，拒绝避障航点任务";
+    return;
   }
 
   CommandIdentity command{request->source_id, request->sequence, "waypoints"};
   cancel_active_task("旧任务已被新的航点任务覆盖");
+  waypoint_flight_strategy_ = request->flight_strategy;
   lock_waypoint_configuration(
     request->flight_strategy,
     requested_reference_generator,
@@ -1279,6 +1358,7 @@ void OnboardControlNode::activate_tracking_controller(const TrackingControllerTy
 
 void OnboardControlNode::reset_waypoint_reference_state()
 {
+  reset_avoidance();
   reference_generator_.reset();
   generator_waypoint_initialized_ = false;
   generator_waypoint_index_ = 0;
@@ -1340,6 +1420,13 @@ void OnboardControlNode::initialize_waypoint_segment()
   active_reference_phase_ = generated.phase;
   generator_waypoint_index_ = waypoint_index_;
   generator_waypoint_initialized_ = true;
+  if (waypoint_flight_strategy_ != 0) {
+    reset_avoidance();
+    reference_.position = vehicle_.position;
+    reference_.velocity.setZero();
+    reference_.acceleration.setZero();
+    begin_avoidance_wait(SteadyClock::now(), "等待当前航点的新鲜规划/通道结果");
+  }
 }
 
 void OnboardControlNode::cancel_active_task(const std::string & reason)
@@ -1516,6 +1603,7 @@ void OnboardControlNode::send_takeoff_request(const CommandIdentity & command)
 void OnboardControlNode::send_land_mode_request(
   const CommandIdentity & command, const bool failsafe)
 {
+  if (avoidance_land_latched_) {avoidance_last_land_attempt_ = SteadyClock::now();}
   if (!set_mode_client_->service_is_ready()) {
     publish_result(
       command, guided_interfaces::msg::CommandResult::STATUS_FAILED, true,
@@ -1528,10 +1616,13 @@ void OnboardControlNode::send_land_mode_request(
   }
   auto request = std::make_shared<mavros_msgs::srv::SetMode::Request>();
   request->custom_mode = "LAND";
-  set_mode_client_->async_send_request(
+  const auto generation = ++avoidance_land_request_generation_;
+  const auto handle = set_mode_client_->async_send_request(
     request,
-    [this, command, failsafe](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture future) {
+    [this, command, failsafe, generation](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture future) {
       std::lock_guard<std::recursive_mutex> lock(mutex_);
+      if (generation != avoidance_land_request_generation_) {return;}
+      avoidance_land_service_request_.reset();
       if (!active_task_matches(command)) {
         return;
       }
@@ -1566,6 +1657,7 @@ void OnboardControlNode::send_land_mode_request(
         command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
         message);
     });
+  if (avoidance_land_latched_) {avoidance_land_service_request_ = handle.request_id;}
 }
 
 void OnboardControlNode::start_message_rate_configuration(
@@ -1906,17 +1998,28 @@ void OnboardControlNode::update_waypoint_executor(
     return;
   }
 
-  const GeneratedReference generated = reference_generator_->update(dt_seconds);
-  reference_ = generated.control;
-  target_yaw_rate_ = generated.yaw_rate;
-  active_reference_phase_ = generated.phase;
+  bool reference_finished = false;
+  if (waypoint_flight_strategy_ == 0) {
+    // 原直线数值路径保持原样，不依赖规划器、点云、结果年龄或等待状态。
+    const GeneratedReference generated = reference_generator_->update(dt_seconds);
+    reference_ = generated.control;
+    target_yaw_rate_ = generated.yaw_rate;
+    active_reference_phase_ = generated.phase;
+    reference_finished = generated.finished;
+  } else {
+    if (!update_avoidance_reference(now, dt_seconds)) {return;}
+    reference_finished = waypoint_flight_strategy_ == 1 ?
+      (avoidance_trajectory_started_ &&
+      std::chrono::duration<double>(now - *avoidance_trajectory_started_).count() >=
+      avoidance_trajectory_.duration()) : active_reference_phase_ == ReferencePhase::kComplete;
+  }
   const auto & waypoint = waypoints_[waypoint_index_];
   const Eigen::Vector3d target(
     waypoint.position.x, waypoint.position.y, waypoint.position.z);
 
   const double distance = (vehicle_.position - target).norm();
   const bool baseline = active_reference_generator_ == ReferenceGeneratorType::kStepPosition;
-  const bool reference_ready = baseline || generated.finished;
+  const bool reference_ready = baseline || reference_finished;
   const bool attempt_candidate = reference_ready && distance < waypoint_tolerance_;
   const bool arrival_satisfied = attempt_candidate &&
     vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_;
@@ -1956,6 +2059,7 @@ void OnboardControlNode::update_waypoint_executor(
     const CommandIdentity completed = active_command_;
     const std::uint32_t count = static_cast<std::uint32_t>(waypoints_.size());
     active_task_ = ActiveTask::kNone;
+    reset_avoidance();
     waypoint_index_ = waypoints_.size() - 1;
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_HOVER;
     reference_.velocity.setZero();
@@ -1971,6 +2075,7 @@ void OnboardControlNode::update_waypoint_executor(
   }
 
   generator_waypoint_initialized_ = false;
+  reset_avoidance();
   const auto & next = waypoints_[waypoint_index_];
   std::ostringstream stream;
   stream << "前往航点 " << waypoint_index_ + 1 << "/" << waypoints_.size()
@@ -2209,6 +2314,21 @@ void OnboardControlNode::status_tick()
   message.target_yaw = reference_.yaw;
   message.target_yaw_rate = target_yaw_rate_;
   message.active_reference_generator = static_cast<std::uint8_t>(active_reference_generator_);
+  if (waypoint_flight_strategy_ == 1 && active_task_ == ActiveTask::kWaypoint) {
+    message.active_reference_generator = guided_interfaces::msg::ControlStatus::REFERENCE_PLANNER_TRAJECTORY;
+  }
+  message.flight_strategy = waypoint_flight_strategy_;
+  message.waypoint_configuration_locked = armed_flight_strategy_lock_.has_value();
+  message.locked_reference_generator = static_cast<std::uint8_t>(
+    armed_reference_generator_lock_.value_or(active_reference_generator_));
+  message.locked_tracking_controller = static_cast<std::uint8_t>(
+    armed_tracking_controller_lock_.value_or(active_tracking_controller_));
+  message.avoidance_ready = avoidance_ready(now);
+  message.avoidance_state = avoidance_land_latched_ ? 4 : avoidance_state_;
+  message.avoidance_wait_remaining_seconds = avoidance_wait_started_ ?
+    std::max(0.0, avoidance_wait_timeout_seconds_ -
+    std::chrono::duration<double>(now - *avoidance_wait_started_).count()) : 0.0;
+  message.avoidance_detail = avoidance_detail_;
   message.active_tracking_controller = static_cast<std::uint8_t>(active_tracking_controller_);
   message.reference_phase = static_cast<std::uint8_t>(active_reference_phase_);
   message.lease_owner = lease_owner_;

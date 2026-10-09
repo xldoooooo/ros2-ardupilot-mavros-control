@@ -19,11 +19,7 @@ class FlightMode(str, Enum):
 
 
 class WaypointFlightStrategy(int, Enum):
-    """航点任务飞行策略；数值与 ExecuteWaypoints.srv 常量对齐。
-
-    当前机载端仅实现 STRAIGHT；AVOID / HOVER_ON_OBSTACLE 为预留，
-    地面站与机载均按直线飞行执行，直至避障能力落地。
-    """
+    """起飞前锁定的机载航点策略；避障依赖规划桥的新鲜能力状态。"""
 
     STRAIGHT = 0
     AVOID = 1
@@ -54,6 +50,7 @@ class WaypointReferenceGenerator(int, Enum):
     SECOND_ORDER_FILTER = 1
     TRAPEZOIDAL_PROFILE = 2
     JERK_LIMITED_S_CURVE = 3
+    PLANNER_TRAJECTORY = 4  # 仅用于机载实际参考回读，不作为上传输入。
 
     @property
     def label(self) -> str:
@@ -63,6 +60,7 @@ class WaypointReferenceGenerator(int, Enum):
             WaypointReferenceGenerator.SECOND_ORDER_FILTER: "二阶命令滤波",
             WaypointReferenceGenerator.TRAPEZOIDAL_PROFILE: "普通梯形速度",
             WaypointReferenceGenerator.JERK_LIMITED_S_CURVE: "限 jerk S 曲线",
+            WaypointReferenceGenerator.PLANNER_TRAJECTORY: "规划器带时间轨迹",
         }[self]
 
     @classmethod
@@ -144,6 +142,14 @@ class VehicleSnapshot:
         WaypointTrackingController.POSITION_PD_DOB
     )
     reference_phase: int = 0
+    flight_strategy: WaypointFlightStrategy = WaypointFlightStrategy.STRAIGHT
+    waypoint_configuration_locked: bool = False
+    locked_reference_generator: WaypointReferenceGenerator = WaypointReferenceGenerator.STEP_POSITION
+    locked_tracking_controller: WaypointTrackingController = WaypointTrackingController.POSITION_PD_DOB
+    avoidance_ready: bool = False
+    avoidance_state: int = 0
+    avoidance_wait_remaining_seconds: float = 0.0
+    avoidance_detail: str = ""
     lease_owner: str = ""
     lease_active: bool = False
     control_authority: bool = False

@@ -35,7 +35,10 @@ from ..models import (
     WaypointTrackingController,
 )
 from .state import UiAvailability
-from .widgets import Card, DownwardComboBox, NoWheelDoubleSpinBox
+from .widgets import (
+    Card, DownwardComboBox, NoWheelDoubleSpinBox,
+    set_text_if_changed, set_tooltip_if_changed,
+)
 
 
 class WaypointDropTable(QTableWidget):
@@ -88,7 +91,7 @@ class WaypointPanel(QWidget):
 
     _ROW_HEIGHT = 28
 
-    # 参数依次为航点、避障策略空壳、命令生成方式和跟踪控制方式。
+    # 参数依次为航点、飞行策略、命令生成方式和跟踪控制方式。
     send_requested = Signal(object, object, object, object)
     clear_requested = Signal()
     preview_requested = Signal()
@@ -104,6 +107,8 @@ class WaypointPanel(QWidget):
         self.setMinimumHeight(500)
         self._waypoints: list[tuple[float, float, float, float]] = []
         self._editing_enabled = True
+        self._configuration_enabled = False
+        self._locked_configuration = False
         self._current_pose: tuple[float, float, float, float] | None = None
         self._preview_enabled = False
         self._progress_tracking = False
@@ -333,8 +338,7 @@ class WaypointPanel(QWidget):
         self.strategy_combo = DownwardComboBox()
         self.strategy_combo.setObjectName("waypointStrategyCombo")
         self.strategy_combo.setToolTip(
-            "航点飞行策略。当前仅实现「直线飞行」；"
-            "「自动避障」与「遇到障碍悬停」为预留选项，发送后仍按直线飞行执行。"
+            "起飞前锁定策略；避障无法规划或遇障时制动等待，超时原地降落。"
         )
         self.strategy_combo.setProperty("baseToolTip", self.strategy_combo.toolTip())
         for strategy in WaypointFlightStrategy:
@@ -348,6 +352,8 @@ class WaypointPanel(QWidget):
         )
         self.reference_combo.setProperty("baseToolTip", self.reference_combo.toolTip())
         for generator in WaypointReferenceGenerator:
+            if generator is WaypointReferenceGenerator.PLANNER_TRAJECTORY:
+                continue  # 规划轨迹只用于实际回读，输入仍保留四种原有生成器。
             self.reference_combo.addItem(generator.label, generator)
         # GUI 默认使用当前推荐的连续梯形速度参考；协议的未知值回退仍保留基线。
         self.reference_combo.setCurrentIndex(
@@ -384,7 +390,40 @@ class WaypointPanel(QWidget):
             field.addWidget(combo)
             selection_row.addLayout(field, 1)
         card.content_layout.addLayout(selection_row)
+        self.strategy_combo.currentIndexChanged.connect(self._apply_strategy_constraints)
         return card
+
+    def _apply_strategy_constraints(self) -> None:
+        """明确显示规划轨迹语义，并约束避障使用连续参考及轨迹跟踪。"""
+        strategy = self.selected_strategy()
+        automatic = strategy is WaypointFlightStrategy.AVOID
+        obstacle = strategy is not WaypointFlightStrategy.STRAIGHT
+        if not self._locked_configuration and (
+                automatic or (obstacle and self.selected_reference_generator()
+                              is WaypointReferenceGenerator.STEP_POSITION)):
+            # 自动避障的输入值 2 仍供机载原有 yaw 管理；实际 xyz 由规划器接管。
+            self.reference_combo.setCurrentIndex(
+                WaypointReferenceGenerator.TRAPEZOIDAL_PROFILE.value
+            )
+        if obstacle and not self._locked_configuration:
+            self.tracking_combo.setCurrentIndex(
+                WaypointTrackingController.TRAJECTORY_PD_DOB.value
+            )
+        for generator in WaypointReferenceGenerator:
+            if generator is not WaypointReferenceGenerator.PLANNER_TRAJECTORY:
+                self.reference_combo.setItemText(generator.value, (
+                    "规划器带时间轨迹"
+                    if automatic and generator == self.selected_reference_generator()
+                    else generator.label
+                ))
+        step_item = self.reference_combo.model().item(0)
+        step_item.setEnabled(not obstacle)
+        self.reference_combo.setEnabled(self._configuration_enabled and not automatic)
+        self.tracking_combo.setEnabled(self._configuration_enabled and not obstacle)
+        if obstacle:
+            set_tooltip_if_changed(self.tracking_combo, "避障固定使用轨迹 PD+DOB，起飞后锁定配置。")
+        if automatic:
+            set_tooltip_if_changed(self.reference_combo, "直接执行规划器带时间轨迹；保留梯形参考参数管理偏航。")
 
     def selected_strategy(self) -> WaypointFlightStrategy:
         """返回当前下拉框选中的航点飞行策略。"""
@@ -607,6 +646,7 @@ class WaypointPanel(QWidget):
     def apply_availability(self, state: UiAvailability) -> None:
         """仅在已启动仿真/实机会话时可编辑；上传仍受完整飞行门控。"""
         self._editing_enabled = state.waypoint_edit
+        self._configuration_enabled = state.waypoint_configuration
         self._preview_enabled = state.waypoint_preview
         for control in (
             self.x_input,
@@ -682,10 +722,34 @@ class WaypointPanel(QWidget):
         else:
             preview_tip = state.flight_reason or "需先启动仿真或连接机载服务"
         self.preview_button.setToolTip(preview_tip)
+        self._apply_strategy_constraints()
         self._update_local_controls()
 
     def update_progress(self, snapshot: VehicleSnapshot) -> None:
         """把机载 1-based 当前目标索引换算为实际已完成航点格数。"""
+        self._locked_configuration = snapshot.armed and snapshot.waypoint_configuration_locked
+        if self._locked_configuration:
+            # 重连时恢复服务端锁值；当前悬停参考可能为阶跃，不能据此推断飞行配置。
+            for combo, value in (
+                (self.strategy_combo, WaypointFlightStrategy.from_value(snapshot.flight_strategy)),
+                (self.reference_combo, WaypointReferenceGenerator.from_value(snapshot.locked_reference_generator)),
+                (self.tracking_combo, WaypointTrackingController.from_value(snapshot.locked_tracking_controller)),
+            ):
+                blocked = combo.blockSignals(True)
+                combo.setCurrentIndex(combo.findData(value))
+                combo.blockSignals(blocked)
+            self._apply_strategy_constraints()
+        if snapshot.flight_strategy != WaypointFlightStrategy.STRAIGHT:
+            state = {0: "未启用", 1: "等待可行路线", 2: "执行中", 3: "制动", 4: "超时降落"}
+            detail = state.get(snapshot.avoidance_state, "未知状态")
+            if snapshot.avoidance_state in (1, 3):
+                detail += f"（剩余 {snapshot.avoidance_wait_remaining_seconds:.1f} s）"
+            set_tooltip_if_changed(self.progress, detail + "：" + snapshot.avoidance_detail)
+            set_text_if_changed(self.status_label, detail + "：" + snapshot.avoidance_detail)
+            self.status_label.show()
+        else:
+            set_tooltip_if_changed(self.progress, "")
+            self.status_label.hide()
         if self._progress_tracking and snapshot.waypoint_count > 0:
             self.progress.setRange(0, snapshot.waypoint_count)
             # WAYPOINT 模式中的索引指向“正在飞往”的目标，因此完成数少一；

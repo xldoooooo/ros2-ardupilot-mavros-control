@@ -16,6 +16,7 @@ find_package(guided_interfaces REQUIRED)
 find_package(mavros_msgs REQUIRED)
 find_package(libmavconn REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -35,6 +36,7 @@ add_executable(onboard_control_node
   src/main.cpp
   src/onboard_control_node.cpp
   src/fcu_reboot.cpp
+  src/avoidance_execution.cpp
 )
 target_include_directories(onboard_control_node PRIVATE include ${EIGEN3_INCLUDE_DIRS})
 ament_target_dependencies(onboard_control_node
@@ -44,6 +46,7 @@ ament_target_dependencies(onboard_control_node
   mavros_msgs
   libmavconn
   rclcpp
+  nav_msgs
   sensor_msgs
   tf2
   tf2_geometry_msgs
@@ -74,6 +77,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_waypoint_arrival_tracker test/test_waypoint_arrival_tracker.cpp)
   if(TARGET test_waypoint_arrival_tracker)
     target_include_directories(test_waypoint_arrival_tracker PRIVATE include)
+  endif()
+  ament_add_gtest(test_avoidance_trajectory test/test_avoidance_trajectory.cpp)
+  if(TARGET test_avoidance_trajectory)
+    target_include_directories(test_avoidance_trajectory PRIVATE include ${EIGEN3_INCLUDE_DIRS})
+    target_link_libraries(test_avoidance_trajectory dob_controller Eigen3::Eigen)
   endif()
 endif()
 

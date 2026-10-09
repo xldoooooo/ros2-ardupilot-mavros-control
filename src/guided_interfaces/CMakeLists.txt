@@ -10,10 +10,13 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/AvoidanceRequest.msg"
+  "msg/AvoidanceResult.msg"
   "msg/CommandResult.msg"
   "msg/ControlHeartbeat.msg"
   "msg/ControlStatus.msg"
   "msg/MotionIntent.msg"
+  "msg/PolynomialSegment.msg"
   "msg/VideoCapture.msg"
   "msg/VideoCaptureResult.msg"
   "msg/VideoControl.msg"

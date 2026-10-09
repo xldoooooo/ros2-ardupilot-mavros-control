@@ -182,9 +182,17 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
         target_acceleration=SimpleNamespace(x=0.2, y=0.0, z=-0.1),
         target_yaw=0.6,
         target_yaw_rate=0.1,
-        active_reference_generator=3,
+        active_reference_generator=4,
         active_tracking_controller=1,
         reference_phase=4,
+        flight_strategy=1,
+        waypoint_configuration_locked=True,
+        locked_reference_generator=2,
+        locked_tracking_controller=1,
+        avoidance_ready=True,
+        avoidance_state=1,
+        avoidance_wait_remaining_seconds=7.5,
+        avoidance_detail="NO_PATH：等待地图更新",
         lease_owner="gcs-test",
         lease_active=True,
         active_command_sequence=44,
@@ -230,13 +238,21 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     )
     assert (
         snapshot.active_reference_generator
-        is WaypointReferenceGenerator.JERK_LIMITED_S_CURVE
+        is WaypointReferenceGenerator.PLANNER_TRAJECTORY
     )
     assert (
         snapshot.active_tracking_controller
         is WaypointTrackingController.TRAJECTORY_PD_DOB
     )
     assert snapshot.reference_phase == 4
+    assert snapshot.flight_strategy == 1
+    assert snapshot.waypoint_configuration_locked
+    assert snapshot.locked_reference_generator == 2
+    assert snapshot.locked_tracking_controller == 1
+    assert snapshot.avoidance_ready
+    assert snapshot.avoidance_state == 1
+    assert snapshot.avoidance_wait_remaining_seconds == 7.5
+    assert snapshot.avoidance_detail == "NO_PATH：等待地图更新"
     assert snapshot.battery_valid
     assert snapshot.battery_voltage == 15.8
     assert snapshot.battery_current == 3.2
@@ -266,7 +282,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "3.3"
+    assert INTERFACE_VERSION == "3.4"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

@@ -135,7 +135,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         window._handle_upstream_command(execute)
         assert ros.calls[-1] == (
             "takeoff",
-            window.operations.takeoff_altitude(),
+            (window.operations.takeoff_altitude(), 0, 2, 1),
         )
         assert not any(call[0] == "waypoints" for call in ros.calls)
         assert window._upstream_sequence is not None

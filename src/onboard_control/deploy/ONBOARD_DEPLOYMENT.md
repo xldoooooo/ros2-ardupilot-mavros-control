@@ -401,7 +401,7 @@ python3 -m venv --system-site-packages .venv
 ```
 
 变更了 `ControlStatus` 的落地和重启状态字段，必须同步构建 `guided_interfaces` 和
-`onboard_control`（版本 3.3.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
+`onboard_control`（当前版本 3.4.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
 位于 `src/onboard_control/src/fcu_reboot.cpp`，Python 脚本客户端位于 `src/onboard_control/scripts/reboot_fcu_client.py`。
 构建不会使正在运行的旧进程自动升级；部署后在确认未解锁、落地且无任务时重启机载服务。
 
@@ -417,3 +417,32 @@ python3 -m venv --system-site-packages .venv
 重启后也主动请求回读，不依赖飞控自发广播。只恢复此前由飞控回读的原点，不凭空填入默认坐标；无原点、无定位、
 参数或遥测缺失时会明确报告恢复失败。机载节点持续运行期间，独立 FCU 重启也由相同启动时钟
 证据触发恢复。该机制针对 ArduPilot 的启动相对时钟，不处理 USB 消失后重新枚举，不恢复旧任务。
+
+## 航点避障部署（Task38）
+
+飞行接口 3.4 增加起飞前的策略锁定、避障状态与带时间多项式协议。必须同时更新地面站、
+`guided_interfaces`、`onboard_control` 和 `guided_sim`；旧 3.3 客户端不能混用。视频接口仍为 3.2。
+先按原部署步骤构建飞行服务，再安装独立规划组件：
+
+```bash
+git clone https://github.com/LostPatrol/dyn_small_obs_avoidance-ros2.git ../dyn_small_obs_avoidance-ros2
+bash src/onboard_control/deploy/build_avoidance.sh
+bash scripts/onboard/start_avoidance.sh --check
+bash scripts/onboard/start_avoidance.sh
+```
+
+已有独立仓库时先同步其 main，不重复 clone。默认寻找主工程同级目录，可用
+`AVOIDANCE_WORKSPACE` 指定位置；构建脚本使用 Release 普通安装，不能把开发机 symlink 安装复制到飞机。
+规划器和桥接器单独运行，原飞行服务启动/停止脚本不管理它们；用
+`bash scripts/onboard/stop_avoidance.sh` 停止。尚未自动安装规划 systemd 服务。
+直线策略无需这两个进程；另外两种策略仅在规划组件及输入就绪时允许起飞和下发航点。
+
+默认接入 `/odin1/cloud_slam` 与 `/odin1/odometry_highfreq`，要求前者为单帧、已经在 `odom`
+注册的当前扫描，不接受累计地图伪装成观测射线。Tag 修正保持未应用；坐标校验读取 extnav
+同会话状态、杆臂和最终 FCU 位姿，不修改 Odin 仰角或原 Tag 外参。未知区域、断流、坐标变化
+或地图容量耗尽都进入等待，15 s 超时请求并持续确认 LAND。射线覆盖只判定离散中心线，
+尚无完整机体扫掠覆盖和动态障碍预测，不能把服务就绪等同于实际环境的航线可执行。
+
+RViz 的规划轨迹默认显示；点云默认关闭。需要限量预览时启动参数追加 `preview:=true`，
+然后勾选 RViz Obstacle Preview；输出最多 10000 点、2 Hz，只有订阅者存在时生成预览。
+实机检查始终保持未解锁，起飞和解锁只由用户手动完成。

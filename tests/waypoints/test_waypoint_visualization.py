@@ -1,5 +1,7 @@
 """RViz 航点图层、只读位姿桥和运行依赖的静态回归。"""
 
+import yaml
+
 from ground_station_core.config import PROJECT_ROOT
 from ground_station_core.ros_controller import (
     VEHICLE_POSE_TOPIC,
@@ -60,3 +62,22 @@ def test_pose_bridge_selects_local_sim_or_aggregated_hardware_pose() -> None:
     assert "ground_station_waypoint_preview_rviz" in launch
     assert "<exec_depend>nav_msgs</exec_depend>" in package
     assert "<exec_depend>visualization_msgs</exec_depend>" in package
+
+
+def test_avoidance_rviz_layers_share_map_and_limit_optional_cloud_subscription() -> None:
+    """规划轨迹默认可见；点云默认关闭且订阅 QoS 不积压可靠重传。"""
+    config = yaml.safe_load((
+        PROJECT_ROOT / "src" / "guided_sim" / "rviz" / "quadcopter.rviz"
+    ).read_text(encoding="utf-8"))["Visualization Manager"]
+    assert config["Global Options"]["Fixed Frame"] == "map"
+    displays = {display["Name"]: display for display in config["Displays"]}
+    trajectory = displays["Avoidance Trajectory"]
+    assert trajectory["Class"] == "rviz_default_plugins/Path"
+    assert trajectory["Enabled"]
+    assert trajectory["Topic"]["Value"] == "/ground_station/avoidance_path"
+    cloud = displays["Obstacle Preview"]
+    assert cloud["Class"] == "rviz_default_plugins/PointCloud2"
+    assert not cloud["Enabled"]
+    assert cloud["Topic"]["Value"] == "/onboard_control/obstacle_preview"
+    assert cloud["Topic"]["Reliability Policy"] == "Best Effort"
+    assert cloud["Topic"]["Depth"] == 1

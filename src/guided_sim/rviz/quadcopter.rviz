@@ -1,3 +1,4 @@
+# 主工程 map 可视化：航点、机载规划轨迹，以及按需启用的降采样点云。
 Panels:
   - Class: rviz_common/Displays
     Help Height: 138
@@ -185,6 +186,38 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /ground_station/waypoint_path
       Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 255; 128; 0
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.05
+      Name: Avoidance Trajectory
+      Pose Style: None
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ground_station/avoidance_path
+      Value: true
+    - Alpha: 0.6
+      Class: rviz_default_plugins/PointCloud2
+      Enabled: false
+      Name: Obstacle Preview
+      Color Transformer: FlatColor
+      Color: 80; 80; 160
+      Position Transformer: XYZ
+      Size (m): 0.04
+      Style: Points
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /onboard_control/obstacle_preview
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255

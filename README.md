@@ -1,4 +1,42 @@
+<!-- 地面站、机载独立服务与可选避障的当前构建和操作入口。 -->
 # 地面站
+
+## 航点避障（Task38）
+
+飞行接口为 **3.4**，地面站与机载 `guided_interfaces/onboard_control` 必须同步重建。
+直线任务沿用原参考生成器；遇障悬停检查下一业务航点的整条直线，自主避障执行规划器
+原始三次多项式 p/v/a，沿用同一 PD+DOB、实际到点判定和拍照事件。
+避障失效会制动等待同一航点，恢复窗口0.4s，连续等待15s超时后任务失败并锁存 LAND，
+直到实际解除武装。起飞时锁定策略/生成器/跟踪器，空中不能改变。
+
+避障为独立按需组件，原飞控启动器和直线构建不要求安装规划库：
+
+```bash
+./src/onboard_control/deploy/build_onboard_control.sh
+# 将独立规划库检出到项目同级目录 dyn_small_obs_avoidance-ros2，或设置 AVOIDANCE_WORKSPACE。
+bash src/onboard_control/deploy/build_avoidance.sh
+bash scripts/onboard/start_avoidance.sh --check
+bash scripts/onboard/start_avoidance.sh
+# 只停止规划与地图适配，不停止飞控/Odin。
+bash scripts/onboard/stop_avoidance.sh
+```
+
+RViz显示已接受轨迹，断流0.8s自动撤销；点云预览默认关闭，可传 `preview:=true` 开启
+最多10000个XYZ点、2Hz（仅有订阅时计算）。完整坐标/观测约束与SITL入口见
+[独立避障桥说明](src/avoidance_bridge/README.md)。当前生产适配只支持未应用Odin-Tag修正的
+extnav基线；约20°仰角及物理外参未在此任务修改。部署和台架结果不代表实飞验收。
+
+完整ArduPilot闭环场景用项目Python单独运行（固定domain231/LOCALHOST，只操作仿真；
+不要与会清理全局仿真进程的测试同时运行）：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+.venv/bin/python tests/flight/sitl_avoidance_scenarios.py --scenario hover_recover --output agent/codex/task38/hover-recover.json
+```
+
+场景还包括 `straight`、`avoid`、`avoid_recover`、`timeout`、`fault_cancel`；有限前向视野射线只保留首个表面，
+障碍遮挡后方，不注入隐藏空闲格。每次运行启动并回收本地SITL/MAVROS/控制器/RViz，互斥执行。
 
 Shell 操作入口集中在 `scripts/`：地面安装/启动使用 `scripts/ground/`，机载启停与飞控重启
 使用 `scripts/onboard/`，分组件启动使用 `scripts/onboard/components/`；共享函数位于

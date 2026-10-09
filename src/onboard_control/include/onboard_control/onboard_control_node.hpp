@@ -21,6 +21,8 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <guided_interfaces/msg/command_result.hpp>
+#include <guided_interfaces/msg/avoidance_request.hpp>
+#include <guided_interfaces/msg/avoidance_result.hpp>
 #include <guided_interfaces/msg/control_heartbeat.hpp>
 #include <guided_interfaces/msg/control_status.hpp>
 #include <guided_interfaces/msg/motion_intent.hpp>
@@ -45,11 +47,13 @@
 #include <mavros_msgs/srv/set_mode.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/parameter_client.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
 
 #include "onboard_control/dob_controller.hpp"
 #include "onboard_control/reference_generator.hpp"
 #include "onboard_control/waypoint_arrival_tracker.hpp"
+#include "onboard_control/avoidance_trajectory.hpp"
 
 namespace onboard_control
 {
@@ -198,6 +202,16 @@ private:
   void trigger_failsafe_land(const std::string & reason);
   void publish_attitude_setpoint(double dt_seconds);
   void initialize_waypoint_segment();
+  // 独立规划结果只能改变当前航点参考；所有飞控输出仍通过原 PD+DOB。
+  void avoidance_tick();
+  void on_avoidance_result(const guided_interfaces::msg::AvoidanceResult::SharedPtr message);
+  bool update_avoidance_reference(const SteadyTime & now, double dt_seconds);
+  void begin_avoidance_wait(const SteadyTime & now, const std::string & reason);
+  void reset_avoidance();
+  bool avoidance_ready(const SteadyTime & now) const;
+  bool validate_waypoint_configuration(std::uint8_t strategy, std::uint8_t generator,
+    std::uint8_t tracking, std::string & reason) const;
+  void publish_avoidance_path();
   void activate_tracking_controller(TrackingControllerType type);
   void reset_waypoint_reference_state();
   bool waypoint_configuration_change_locked(
@@ -320,7 +334,7 @@ private:
   WaypointArrivalTracker waypoint_arrival_tracker_{1.0, 10};
   bool vehicle_abnormal_{false};
   std::string vehicle_abnormal_reason_;
-  // ExecuteWaypoints.flight_strategy；非 STRAIGHT 时预留，当前仍走直线飞行。
+  // 武装周期内固定的实际策略；直线分支不读取任何规划门控。
   std::uint8_t waypoint_flight_strategy_{0};
   ReferenceGeneratorType active_reference_generator_{
     ReferenceGeneratorType::kStepPosition};
@@ -334,6 +348,39 @@ private:
   std::optional<std::uint8_t> armed_flight_strategy_lock_;
   std::optional<ReferenceGeneratorType> armed_reference_generator_lock_;
   std::optional<TrackingControllerType> armed_tracking_controller_lock_;
+
+  // 请求时序采用同机steady clock，ROS stamp只用于可视化；身份不可跨进程复用。
+  std::string avoidance_controller_session_;
+  std::uint64_t avoidance_task_revision_{0}, avoidance_request_sequence_{0};
+  std::string avoidance_bridge_session_, avoidance_planner_session_;
+  std::uint64_t avoidance_coordinate_revision_{0};
+  bool avoidance_component_ready_{false};
+  SteadyTime avoidance_heartbeat_time_{};
+  std::optional<SteadyTime> avoidance_wait_started_, avoidance_clear_since_;
+  std::optional<SteadyTime> avoidance_last_valid_, avoidance_trajectory_started_;
+  struct AvoidancePending
+  {
+    std::uint64_t id;
+    std::uint8_t mode;
+    SteadyTime sent;
+  };
+  std::optional<AvoidancePending> avoidance_pending_;
+  AvoidanceTrajectory avoidance_trajectory_;
+  AvoidanceLimits avoidance_limits_;
+  std::uint8_t avoidance_state_{0};
+  std::string avoidance_detail_;
+  double avoidance_wait_timeout_seconds_{15.0};  // 含制动时间，不随失败结果重新计时。
+  double avoidance_result_timeout_seconds_{0.8};  // 请求发出至使用的最大稳态时间。
+  double avoidance_resume_seconds_{0.4};  // 稳定停止且持续获得有效结果才恢复。
+  double avoidance_join_position_tolerance_{0.08}, avoidance_join_velocity_tolerance_{0.08};
+  bool avoidance_land_latched_{false};  // 超时LAND只能在实际解除武装后清除。
+  SteadyTime avoidance_last_land_attempt_{};
+  std::optional<std::int64_t> avoidance_land_service_request_;
+  std::uint64_t avoidance_land_request_generation_{0};
+  rclcpp::Publisher<guided_interfaces::msg::AvoidanceRequest>::SharedPtr avoidance_request_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr avoidance_path_publisher_;
+  rclcpp::Subscription<guided_interfaces::msg::AvoidanceResult>::SharedPtr avoidance_result_subscription_;
+  rclcpp::TimerBase::SharedPtr avoidance_timer_;
 
   // Lease, sender-local time alignment, replay protection and link-loss state.
   std::string lease_owner_;

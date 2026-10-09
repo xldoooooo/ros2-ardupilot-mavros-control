@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!-- Independent observation/coordinate adapter; it never publishes flight commands. -->
+<package format="3">
+  <name>avoidance_bridge</name><version>0.1.0</version>
+  <description>Onboard bounded observed map and asynchronous planning adapter.</description>
+  <maintainer email="nvidia@example.com">nvidia</maintainer><license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend><depend>sensor_msgs</depend><depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend><depend>guided_interfaces</depend><depend>correction_interfaces</depend>
+  <depend>path_planning</depend><depend>tf2</depend>
+  <exec_depend>launch_ros</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -23,6 +23,7 @@ install(DIRECTORY
 install(
   PROGRAMS
     scripts/pose_to_tf.py
+    scripts/avoidance_preview.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

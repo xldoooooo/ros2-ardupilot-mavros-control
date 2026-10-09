@@ -691,6 +691,7 @@ class GroundStationWindow(QMainWindow):
             self._log_coordinate_mode_change
         )
         self.waypoints.send_requested.connect(self._send_waypoints)
+        self.waypoints.strategy_combo.currentIndexChanged.connect(self._refresh)
         self.waypoints.clear_requested.connect(self._confirm_clear_waypoints)
         self.waypoints.preview_requested.connect(self._preview_waypoints)
         self.waypoints.import_file_requested.connect(self._choose_waypoint_file)
@@ -1494,11 +1495,20 @@ class GroundStationWindow(QMainWindow):
     def _takeoff(self, *, refresh_after_queue: bool = True) -> int | None:
         """仿真直接请求起飞；实机仍须高风险确认。"""
         altitude = self.operations.takeoff_altitude()
+        strategy = self.waypoints.selected_strategy()
+        snapshot = self._ros.snapshot()
+        if int(strategy) != 0 and not snapshot.avoidance_ready:
+            self.activity_banner.set_message(
+                "机载避障尚未就绪：" + (snapshot.avoidance_detail or "等待规划器与点云"),
+                LogLevel.WARN, state="warning",
+            )
+            return None
         simulation = self._connection_mode == "simulation"
         if not simulation:
             if not self._confirm_action(
                 "确认起飞",
-                f"飞行器将尝试切换 GUIDED、武装并起飞至 {altitude:.1f} m。\n\n"
+                f"飞行器将尝试切换 GUIDED、武装并起飞至 {altitude:.1f} m。\n"
+                f"本次锁定策略：{strategy.label}；起飞后禁止修改。\n\n"
                 "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
                 critical=True,
             ):
@@ -1507,7 +1517,10 @@ class GroundStationWindow(QMainWindow):
         else:
             self._events.info("operator", f"仿真模式请求起飞至 {altitude:.1f} m")
         self._pending_commands.add("takeoff")
-        ticket = self._ros.request_takeoff(altitude)
+        ticket = self._ros.request_takeoff(
+            altitude, strategy, self.waypoints.selected_reference_generator(),
+            self.waypoints.selected_tracking_controller(),
+        )
         self.activity_banner.set_message("起飞请求已发送，等待机载确认…", LogLevel.WARN, state="busy")
         if refresh_after_queue:
             self._refresh()
@@ -1603,13 +1616,27 @@ class GroundStationWindow(QMainWindow):
             else self.waypoints.selected_tracking_controller()
         )
         controller = WaypointTrackingController.from_value(selected_controller)
+        generator_label = (
+            WaypointReferenceGenerator.PLANNER_TRAJECTORY.label
+            if flight_strategy is WaypointFlightStrategy.AVOID else generator.label
+        )
+        if flight_strategy is not WaypointFlightStrategy.STRAIGHT:
+            snapshot = self._ros.snapshot()
+            if not snapshot.avoidance_ready:
+                self.activity_banner.set_message(
+                    "机载避障尚未就绪：" + (snapshot.avoidance_detail or "等待规划器与点云"),
+                    LogLevel.WARN, state="warning",
+                )
+                return None
+            if (controller is not WaypointTrackingController.TRAJECTORY_PD_DOB
+                    or generator is WaypointReferenceGenerator.STEP_POSITION):
+                self.activity_banner.set_message(
+                    "避障必须使用连续参考和轨迹 PD+DOB。", LogLevel.WARN, state="warning"
+                )
+                return None
         first = values[0]
         last = values[-1]
         combination_warnings: list[str] = []
-        if flight_strategy is not WaypointFlightStrategy.STRAIGHT:
-            combination_warnings.append(
-                f"避障策略「{flight_strategy.label}」尚未实现，机载端将按直线飞行执行。"
-            )
         recommended_pair = (
             generator is WaypointReferenceGenerator.STEP_POSITION
             and controller is WaypointTrackingController.POSITION_PD_DOB
@@ -1636,7 +1663,7 @@ class GroundStationWindow(QMainWindow):
                 "确认执行航点任务",
                 f"即将上传并执行 {len(values)} 个本地 ENU 航点。\n"
                 f"飞行策略：{flight_strategy.label}\n"
-                f"命令生成：{generator.label}\n"
+                f"命令生成：{generator_label}\n"
                 f"跟踪控制：{controller.label}\n"
                 f"首点 ({first[0]:+.1f}, {first[1]:+.1f}, {first[2]:+.1f})，"
                 f"末点 ({last[0]:+.1f}, {last[1]:+.1f}, {last[2]:+.1f})。\n\n"
@@ -1647,13 +1674,13 @@ class GroundStationWindow(QMainWindow):
             self._events.warn(
                 "operator",
                 f"操作者确认执行 {len(values)} 个航点（避障={flight_strategy.label}，"
-                f"命令生成={generator.label}，跟踪={controller.label}）",
+                f"命令生成={generator_label}，跟踪={controller.label}）",
             )
         else:
             self._events.info(
                 "operator",
                 f"仿真模式请求执行 {len(values)} 个航点"
-                f"（避障={flight_strategy.label}，命令生成={generator.label}，"
+                f"（避障={flight_strategy.label}，命令生成={generator_label}，"
                 f"跟踪={controller.label}）",
             )
         self._waypoint_running = True
@@ -1885,6 +1912,7 @@ class GroundStationWindow(QMainWindow):
             waypoint_count=len(self.waypoints.waypoints),
             waypoint_running=self._waypoint_running,
             flight_sequence_active=self._upstream_sequence is not None,
+            selected_strategy=self.waypoints.selected_strategy(),
         )
         render_key = (
             self._availability,

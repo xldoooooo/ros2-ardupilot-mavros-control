@@ -121,17 +121,17 @@ def test_simulation_skips_takeoff_confirmation_but_hardware_keeps_it() -> None:
         )
         window.operations.takeoff_altitude_input.setValue(0.5)
         window._takeoff()
-        assert ros.calls == [("takeoff", 0.5)]
+        assert ros.calls == [("takeoff", (0.5, 0, 2, 1))]
 
         window._pending_commands.clear()
         window._connection_mode = "hardware"
         window._refresh()
         window._confirm_action = lambda *_args, **_kwargs: False
         window._takeoff()
-        assert ros.calls == [("takeoff", 0.5)]
+        assert ros.calls == [("takeoff", (0.5, 0, 2, 1))]
         window._confirm_action = lambda *_args, **_kwargs: True
         window._takeoff()
-        assert ros.calls == [("takeoff", 0.5), ("takeoff", 0.5)]
+        assert ros.calls == [("takeoff", (0.5, 0, 2, 1)), ("takeoff", (0.5, 0, 2, 1))]
         assert not window.operations.takeoff_button.isEnabled()
     finally:
         _close_window(window)

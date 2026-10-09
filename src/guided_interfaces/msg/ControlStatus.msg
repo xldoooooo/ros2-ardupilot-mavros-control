@@ -12,6 +12,8 @@ uint8 REFERENCE_STEP_POSITION=0
 uint8 REFERENCE_SECOND_ORDER_FILTER=1
 uint8 REFERENCE_TRAPEZOIDAL_PROFILE=2
 uint8 REFERENCE_JERK_LIMITED_S_CURVE=3
+# 仅用于实际回读；ExecuteWaypoints 输入仍为 0..3。
+uint8 REFERENCE_PLANNER_TRAJECTORY=4
 uint8 TRACKING_POSITION_PD_DOB=0
 uint8 TRACKING_TRAJECTORY_PD_DOB=1
 uint8 REFERENCE_PHASE_IDLE=0
@@ -21,6 +23,16 @@ uint8 REFERENCE_PHASE_ACCELERATING=3
 uint8 REFERENCE_PHASE_CRUISING=4
 uint8 REFERENCE_PHASE_DECELERATING=5
 uint8 REFERENCE_PHASE_COMPLETE=6
+
+# 本次起飞锁定的策略和机载避障执行状态。
+uint8 STRATEGY_STRAIGHT=0
+uint8 STRATEGY_AVOID=1
+uint8 STRATEGY_HOVER_ON_OBSTACLE=2
+uint8 AVOIDANCE_DISABLED=0
+uint8 AVOIDANCE_WAITING=1
+uint8 AVOIDANCE_EXECUTING=2
+uint8 AVOIDANCE_BRAKING=3
+uint8 AVOIDANCE_LAND=4
 
 std_msgs/Header header
 string interface_version
@@ -51,6 +63,15 @@ float64 target_yaw_rate
 uint8 active_reference_generator
 uint8 active_tracking_controller
 uint8 reference_phase
+uint8 flight_strategy
+# 飞行前配置锁的权威回读，用于地面站重连恢复选择；不要以 active_reference 推断。
+bool waypoint_configuration_locked
+uint8 locked_reference_generator
+uint8 locked_tracking_controller
+bool avoidance_ready
+uint8 avoidance_state
+float64 avoidance_wait_remaining_seconds
+string avoidance_detail
 string lease_owner
 bool lease_active
 uint32 lease_remaining_ms

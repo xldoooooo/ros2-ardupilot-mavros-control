@@ -14,6 +14,19 @@ uint64 sequence
 uint32 ttl_ms
 uint8 command
 float64 value
+# TAKEOFF 锁定本次飞行策略、参考生成器和跟踪器；其它命令忽略此配置。
+uint8 STRATEGY_STRAIGHT=0
+uint8 STRATEGY_AVOID=1
+uint8 STRATEGY_HOVER_ON_OBSTACLE=2
+uint8 flight_strategy 0
+uint8 REFERENCE_STEP_POSITION=0
+uint8 REFERENCE_SECOND_ORDER_FILTER=1
+uint8 REFERENCE_TRAPEZOIDAL_PROFILE=2
+uint8 REFERENCE_JERK_LIMITED_S_CURVE=3
+uint8 reference_generator 0
+uint8 TRACKING_POSITION_PD_DOB=0
+uint8 TRACKING_TRAJECTORY_PD_DOB=1
+uint8 tracking_controller 0
 ---
 bool accepted
 string message

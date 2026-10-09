@@ -74,8 +74,8 @@ def main() -> int:
             raise RuntimeError("onboard_control 服务异常或不可用")
         if node.count_publishers(prefix + "/status") != 1:
             raise RuntimeError("机载服务端点不唯一")
-        if status.interface_version != "3.3":
-            raise RuntimeError("机载接口版本不匹配，要求 3.3")
+        if status.interface_version != "3.4":
+            raise RuntimeError("机载接口版本不匹配，要求 3.4")
         if not status.fcu_connected or status.armed or not status.on_ground or status.reboot_in_progress or status.control_mode != ControlStatus.MODE_IDLE:
             raise RuntimeError("飞控不满足在线、未解锁、已落地、待机条件")
         request = envelope(AcquireControl.Request())

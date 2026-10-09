@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..models import FlightMode, VehicleSnapshot
+from ..models import FlightMode, VehicleSnapshot, WaypointFlightStrategy
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,7 @@ def derive_availability(
     waypoint_count: int,
     waypoint_running: bool,
     flight_sequence_active: bool = False,
+    selected_strategy: object = WaypointFlightStrategy.STRAIGHT,
 ) -> UiAvailability:
     """按连接、租约、飞行安全状态和任务状态计算互斥操作。"""
     mode = str(connection_mode or "none")
@@ -112,6 +113,14 @@ def derive_availability(
         FlightMode.HOVER,
         FlightMode.WAYPOINT,
     }
+    avoidance_available = (
+        int(selected_strategy) == WaypointFlightStrategy.STRAIGHT.value
+        or snapshot.avoidance_ready
+    )
+    if not avoidance_available and reason == "飞行控制链路已就绪":
+        reason = "机载避障尚未就绪：" + (
+            snapshot.avoidance_detail or "等待规划器、点云和坐标对齐"
+        )
 
     return UiAvailability(
         start_environment=start_environment,
@@ -121,6 +130,7 @@ def derive_availability(
         origin_settings=origin_settings,
         takeoff=(
             control_ready
+            and avoidance_available
             and not snapshot.vehicle_abnormal
             and not flight_sequence_active
             and not snapshot.armed
@@ -132,6 +142,7 @@ def derive_availability(
         hover=control_ready and snapshot.armed and airborne_control_mode,
         waypoint_send=(
             control_ready
+            and avoidance_available
             and snapshot.armed
             and airborne_control_mode
             and waypoint_count > 0

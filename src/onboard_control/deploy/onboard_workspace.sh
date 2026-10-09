@@ -29,6 +29,10 @@ readonly ONBOARD_CONTROL_START_SPARSE_PATH="/scripts/onboard/start_onboard_contr
 readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_control.sh"
 # The client is included by /src/onboard_control/; include its operator entry too.
 readonly FCU_REBOOT_SPARSE_PATH="/scripts/onboard/reboot_fcu.sh"
+# 避障仍按需独立构建；稀疏同步包含其源代码，不让原飞控构建依赖规划工作区。
+readonly AVOIDANCE_SPARSE_PATH="/src/avoidance_bridge/"
+readonly AVOIDANCE_START_SPARSE_PATH="/scripts/onboard/start_avoidance.sh"
+readonly AVOIDANCE_STOP_SPARSE_PATH="/scripts/onboard/stop_avoidance.sh"
 readonly SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"
 readonly SMOKE_INTERFACE_PREFIX="/_task08_smoke_onboard"
 readonly DEFAULT_SMOKE_DOMAIN_ID="231"
@@ -163,7 +167,8 @@ update_checkout() {
     "${DRONE_START_SPARSE_PATH}" "${RUNTIME_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_STOP_SPARSE_PATH}" \
-    "${FCU_REBOOT_SPARSE_PATH}"
+    "${FCU_REBOOT_SPARSE_PATH}" \
+    "${AVOIDANCE_SPARSE_PATH}" "${AVOIDANCE_START_SPARSE_PATH}" "${AVOIDANCE_STOP_SPARSE_PATH}"
   git -C "${WORKSPACE_ROOT}" pull --ff-only origin "${ONBOARD_GIT_BRANCH:-main}"
   validate_workspace_layout
 }
@@ -216,6 +221,7 @@ build_workspace() {
   (
     cd -- "${WORKSPACE_ROOT}"
     colcon build \
+      --base-paths src correction_service \
       --packages-select \
         guided_interfaces correction_interfaces onboard_control correction_service \
       --cmake-args \
@@ -319,8 +325,8 @@ smoke_test() {
     die "isolated status topic was not received"
   }
 
-  grep -Eq "^interface_version: ['\"]?3\\.3['\"]?$" "${status_log}" ||
-    die "smoke status did not report interface version 3.3"
+  grep -Eq "^interface_version: ['\"]?3\\.4['\"]?$" "${status_log}" ||
+    die "smoke status did not report interface version 3.4"
   grep -q '^fcu_connected: false$' "${status_log}" ||
     die "smoke node unexpectedly reported an FCU connection"
   grep -q '^armed: false$' "${status_log}" ||
@@ -336,7 +342,7 @@ smoke_test() {
   [[ ${echo_status} -eq 124 ]] ||
     die "smoke node emitted an attitude setpoint or the no-output check failed (${echo_status})"
 
-  log "smoke passed: interface=3.3, fcu_connected=false, armed=false, setpoint_messages=0"
+  log "smoke passed: interface=3.4, fcu_connected=false, armed=false, setpoint_messages=0"
   cleanup_smoke
   trap - EXIT INT TERM
 }

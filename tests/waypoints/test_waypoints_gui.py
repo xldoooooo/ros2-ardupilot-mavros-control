@@ -168,8 +168,8 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         ros.current_snapshot = _operational_snapshot(armed=False)
         window._connection_mode = "hardware"
         window._refresh()
-        window.waypoints.strategy_combo.setCurrentIndex(1)  # 自动避障（预留）
-        ros.current_snapshot = _operational_snapshot(armed=True)
+        window.waypoints.strategy_combo.setCurrentIndex(1)  # 自动避障锁定规划轨迹。
+        ros.current_snapshot = replace(_operational_snapshot(armed=True), avoidance_ready=True)
         window._refresh()
         window._confirm_action = lambda *_args, **_kwargs: False
         window._send_waypoints(
@@ -190,9 +190,9 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
             photo_nos_arg,
         ) = ros.calls[-1][1]
         assert len(waypoints_arg) == 2
-        # 界面可选避障，但当前实现路径仍传递所选策略枚举；执行侧按直线处理。
+        # 规划轨迹实际由机载回读 4；输入保留 2 用于 yaw 参考管理。
         assert strategy_arg is WaypointFlightStrategy.AVOID
-        assert generator_arg is WaypointReferenceGenerator.JERK_LIMITED_S_CURVE
+        assert generator_arg is WaypointReferenceGenerator.TRAPEZOIDAL_PROFILE
         assert controller_arg is WaypointTrackingController.TRAJECTORY_PD_DOB
         assert photo_nos_arg == ()
 

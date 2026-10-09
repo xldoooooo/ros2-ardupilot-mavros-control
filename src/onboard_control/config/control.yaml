@@ -25,6 +25,17 @@
     # 航点到达判定与键盘运动参考限制
     waypoint_tolerance: 0.30  # 飞机到航点的三维距离容差，单位：米。
     waypoint_hold_seconds: 0.3  # 进入航点容差后必须持续保持的时间，单位：秒。
+
+    # 仅避障任务读取；直线任务不依赖规划器，等待包括制动且失败不重置计时。
+    avoidance_wait_timeout_seconds: 15.0  # 无通道/完整路径连续等待超时后失败并LAND。
+    avoidance_result_timeout_seconds: 0.8  # 从本机请求发出至使用的最大秒数，含求解/DDS。
+    avoidance_resume_seconds: 0.4  # 停稳并持续得到成功结果的恢复观察窗口。
+    avoidance_join_position_tolerance: 0.08  # 实际位置到曲线起点允许差，米。
+    avoidance_join_velocity_tolerance: 0.08  # 实际速度到曲线起始速度允许差，米/秒。
+    avoidance_max_velocity_xy: 1.0  # 水平合速度上限，米/秒。
+    avoidance_max_velocity_z: 0.2  # 垂直速度上限，米/秒。
+    avoidance_max_acceleration_xy: 0.35  # 水平合加速度上限，米/秒²。
+    avoidance_max_acceleration_z: 0.15  # 垂直加速度上限，米/秒²。
     max_velocity_xy: 1.5  # 键盘运动模式的最大水平参考速度，单位：米/秒。
     max_velocity_z: 0.8  # 键盘运动模式的最大垂直参考速度，单位：米/秒。
     max_yaw_rate: 1.0  # 键盘运动模式的最大偏航角速度，单位：弧度/秒。

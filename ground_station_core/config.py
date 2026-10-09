@@ -36,8 +36,10 @@ INTERFACE_PREFIX = os.environ.get("GROUND_STATION_INTERFACE_PREFIX", "/onboard_c
 COMMAND_TTL_MS = 1500  # 高层离散命令和按键意图的网络有效期。
 LEASE_DURATION_MS = 1500  # 控制权需由 5 Hz 心跳持续续租。
 HEARTBEAT_PERIOD_SECONDS = 0.2
-# 3.3 增加飞控热重启与落地/恢复状态；必须和机载端同步部署。
-INTERFACE_VERSION = "3.3"
+# 3.4 增加避障执行和起飞配置锁定；必须和机载端同步部署。
+INTERFACE_VERSION = "3.4"
+# 视频服务使用独立接口，不能随飞行协议升级而失配。
+VIDEO_INTERFACE_VERSION = "3.2"
 
 # 手动操纵状态块的可调告警阈值；展示层不再散落硬编码数值。
 STATUS_RATE_TARGET_HZ = 10.0

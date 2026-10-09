@@ -75,8 +75,14 @@ class _FakeRosController:
         self.calls.append((name, argument))
         return self._ticket
 
-    def request_takeoff(self, altitude: float) -> int:
-        return self._record("takeoff", altitude)
+    def request_takeoff(
+        self, altitude: float, strategy: object = 0,
+        reference_generator: object = 0, tracking_controller: object = 0,
+    ) -> int:
+        """保留起飞三项配置，验证 GUI 与上位机均提交同一锁定选择。"""
+        return self._record("takeoff", (
+            altitude, strategy, reference_generator, tracking_controller,
+        ))
 
     def request_land(self) -> int:
         return self._record("land")

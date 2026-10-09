@@ -30,6 +30,7 @@ from .models import (
     VideoCaptureEvent,
     VideoServiceSnapshot,
     VehicleSnapshot,
+    WaypointFlightStrategy,
     WaypointReferenceGenerator,
     WaypointTrackingController,
 )
@@ -131,6 +132,24 @@ class _VehicleStateStore:
                 message.active_tracking_controller
             ),
             reference_phase=int(message.reference_phase),
+            flight_strategy=WaypointFlightStrategy.from_value(
+                getattr(message, "flight_strategy", 0)
+            ),
+            waypoint_configuration_locked=bool(
+                getattr(message, "waypoint_configuration_locked", False)
+            ),
+            locked_reference_generator=WaypointReferenceGenerator.from_value(
+                getattr(message, "locked_reference_generator", 0)
+            ),
+            locked_tracking_controller=WaypointTrackingController.from_value(
+                getattr(message, "locked_tracking_controller", 0)
+            ),
+            avoidance_ready=bool(getattr(message, "avoidance_ready", False)),
+            avoidance_state=int(getattr(message, "avoidance_state", 0)),
+            avoidance_wait_remaining_seconds=float(
+                getattr(message, "avoidance_wait_remaining_seconds", 0.0)
+            ),
+            avoidance_detail=str(getattr(message, "avoidance_detail", "")),
             lease_owner=message.lease_owner,
             lease_active=message.lease_active,
             control_authority=(
@@ -222,6 +241,7 @@ class _VehicleStateStore:
                 controller_active=False,
                 lease_active=False,
                 control_authority=False,
+                avoidance_ready=False,
             )
         return snapshot
 
@@ -567,9 +587,21 @@ class GroundStationRosController:
         """请求机载端抓取当前位置并切换统一 PD+DOB 悬停。"""
         return self._enqueue("hover")
 
-    def request_takeoff(self, altitude: float) -> int:
-        """请求机载端完成 GUIDED、武装、起飞与高度确认。"""
-        return self._enqueue("takeoff", float(altitude))
+    def request_takeoff(
+        self, altitude: float, strategy: object = 0,
+        reference_generator: object = 0, tracking_controller: object = 0,
+    ) -> int:
+        """请求起飞并原子提交本次飞行锁定的策略及跟踪配置。"""
+        strategy_value = int(WaypointFlightStrategy(int(strategy)))
+        generator_value = int(WaypointReferenceGenerator(int(reference_generator)))
+        controller_value = int(WaypointTrackingController(int(tracking_controller)))
+        if generator_value == WaypointReferenceGenerator.PLANNER_TRAJECTORY.value:
+            raise ValueError("规划器带时间轨迹仅用于状态回读，不能作为起飞输入")
+        return self._enqueue("takeoff", {
+            "altitude": float(altitude), "strategy": strategy_value,
+            "reference_generator": generator_value,
+            "tracking_controller": controller_value,
+        })
 
     def request_reboot_fcu(self) -> int:
         """请求机载未解锁重启事务；服务端复核落地和待机条件。"""
@@ -595,19 +627,12 @@ class GroundStationRosController:
         tracking_controller: int | object = 0,
         photo_nos: object = (),
     ) -> int:
-        """上传航点、避障空壳与两项独立控制实验选择。
-
-        strategy 对齐 ExecuteWaypoints.flight_strategy；未实现的策略机载会按直线飞行。
-        """
-        from .models import WaypointFlightStrategy
-
-        strategy_value = int(WaypointFlightStrategy.from_value(strategy))
-        generator_value = int(
-            WaypointReferenceGenerator.from_value(reference_generator)
-        )
-        controller_value = int(
-            WaypointTrackingController.from_value(tracking_controller)
-        )
+        """上传航点和起飞时锁定的三项配置，由机载端复核一致性。"""
+        strategy_value = int(WaypointFlightStrategy(int(strategy)))
+        generator_value = int(WaypointReferenceGenerator(int(reference_generator)))
+        controller_value = int(WaypointTrackingController(int(tracking_controller)))
+        if generator_value == WaypointReferenceGenerator.PLANNER_TRAJECTORY.value:
+            raise ValueError("规划器带时间轨迹仅用于状态回读，不能作为上传输入")
         waypoint_values = tuple(waypoints)
         photo_no_values = tuple(str(value) for value in photo_nos)
         if photo_no_values and len(photo_no_values) != len(waypoint_values):
@@ -1584,7 +1609,13 @@ class GroundStationRosController:
                 request.sequence = command.ticket
                 request.ttl_ms = COMMAND_TTL_MS
                 request.command = command_codes[command.name]
-                request.value = float(command.argument or 0.0)
+                if command.name == "takeoff" and isinstance(command.argument, dict):
+                    request.value = float(command.argument["altitude"])
+                    request.flight_strategy = int(command.argument["strategy"])
+                    request.reference_generator = int(command.argument["reference_generator"])
+                    request.tracking_controller = int(command.argument["tracking_controller"])
+                else:
+                    request.value = float(command.argument or 0.0)
                 future = client.call_async(request)
 
             pending_services[command.ticket] = (

@@ -11,7 +11,7 @@ from typing import Any
 
 from .models import UpstreamStandbyPolicy
 from .protocol import make_status
-from ..config import INTERFACE_VERSION
+from ..config import VIDEO_INTERFACE_VERSION
 from ..event_log import EventLog
 from ..models import (
     CommandResult,
@@ -315,7 +315,7 @@ class UpstreamStatusProjector:
         all_results_arrived = len(mission.picture_paths) >= expected
         compatible_video = (
             self._video.service_available
-            and self._video.interface_version == INTERFACE_VERSION
+            and self._video.interface_version == VIDEO_INTERFACE_VERSION
         )
         video_finalized = (
             compatible_video

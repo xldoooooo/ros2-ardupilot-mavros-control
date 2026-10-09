@@ -97,6 +97,7 @@ class ProcessSupervisor:
         "keyboard_vel_controller",
         "onboard_control_node",
         "pose_to_tf.py",
+        "avoidance_preview.py",  # 地面只读预览桥，同样应随 GUI 会话清理。
     }
 
     def __init__(self, event_log: EventLog | None = None) -> None:
