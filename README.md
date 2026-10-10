@@ -1,73 +1,22 @@
 <!-- 地面站、机载独立服务与可选避障的当前构建和操作入口。 -->
 # 地面站
 
-## 航点避障（Task38）
+## 航点避障
 
-飞行接口为 **3.4**，地面站与机载 `guided_interfaces/onboard_control` 必须同步重建。
-直线任务沿用原参考生成器；遇障悬停检查下一业务航点的整条直线，自主避障执行规划器
-原始三次多项式 p/v/a，沿用同一 PD+DOB、实际到点判定和拍照事件。
-避障失效会制动等待同一航点，恢复窗口0.4s，连续等待15s超时后任务失败并锁存 LAND，
-直到实际解除武装。起飞时锁定策略/生成器/跟踪器，空中不能改变。
-
-避障为独立按需组件，原飞控启动器和直线构建不要求安装规划库：
+避障失效会制动等待同一航点，恢复窗口0.4s，连续等待15s超时后任务失败
 
 ```bash
-./src/onboard_control/deploy/build_onboard_control.sh
-# 将独立规划库检出到项目同级目录 dyn_small_obs_avoidance-ros2，或设置 AVOIDANCE_WORKSPACE。
-bash src/onboard_control/deploy/build_avoidance.sh
-bash scripts/onboard/start_avoidance.sh --check
 bash scripts/onboard/start_avoidance.sh
-# 只停止规划与地图适配，不停止飞控/Odin。
 bash scripts/onboard/stop_avoidance.sh
 ```
 
-RViz显示已接受轨迹，断流0.8s自动撤销；点云预览默认关闭，可传 `preview:=true` 开启
-最多10000个XYZ点、2Hz（仅有订阅时计算）。完整坐标/观测约束与SITL入口见
-[独立避障桥说明](src/avoidance_bridge/README.md)。当前生产适配只支持未应用Odin-Tag修正的
-extnav基线；约20°仰角及物理外参未在此任务修改。部署和台架结果不代表实飞验收。
-
-### 地面站直接体验本地仿真避障
-
-地面站的“启动本地仿真”自动启动合成扫描、地图桥和独立规划器，不需要另开终端启动
-`start_avoidance.sh`。当前开发机已构建这些组件；首次安装还需按上文构建独立规划库和
-`avoidance_bridge`，并用地面站安装脚本构建 `guided_sim`。同步代码后关闭并重新打开地面站。
-等日志显示“仿真避障已就绪”，即可选择“遇障悬停”或“自主避障”并起飞。
-
-推荐先选“自主避障”，起飞高度 **1.5m**，稳定约2秒后 RViz 自动出现红色圆柱，中心位于
-初始位置前方 map +X 方向1.5m、半径0.18m。添加航点 **X=3、Y=0、Z=1.5、Yaw=0** 后发送，
-可看到橙色规划轨迹和实际绕行。“遇障悬停”使用同一航点会等待障碍移开；若一直阻塞，
-15秒后自动 LAND，这是该策略的预期行为。
-
-如需演示移障后恢复，可在本地仿真已运行时执行一次（只作用于仿真域）：
-
+如需演示移障后恢复，可在本地仿真已运行时执行一次
 ```bash
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
 ROS_DOMAIN_ID=231 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
   ros2 topic pub --once /simulation/obstacle_enabled std_msgs/msg/Bool '{data: false}'
 ```
-
-该演示使用有限房间（相对初始位置 X=-2.5～6m、Y=±2.5m、Z=-0.25～3.5m）和朝 map +X 的
-有限前向视野，射线只保留第一个表面，不把遮挡/未观测空间伪装为空闲。合成输入只允许
-domain231/LOCALHOST，实机会话仍需真实雷达、坐标对齐和规划组件；起飞按钮继续依据真实
-就绪状态启用。组件缺失时日志给出原因，直线仿真仍可使用。
-
-完整ArduPilot闭环场景用项目Python单独运行（固定domain231/LOCALHOST，只操作仿真；
-不要与会清理全局仿真进程的测试同时运行）：
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-.venv/bin/python tests/flight/sitl_avoidance_scenarios.py --scenario hover_recover --output agent/codex/task38/hover-recover.json
-```
-
-场景还包括 `straight`、`avoid`、`avoid_recover`、`timeout`、`fault_cancel`；有限前向视野射线只保留首个表面，
-障碍遮挡后方，不注入隐藏空闲格。每次运行启动并回收本地SITL/MAVROS/控制器/RViz，互斥执行。
-
-Shell 操作入口集中在 `scripts/`：地面安装/启动使用 `scripts/ground/`，机载启停与飞控重启
-使用 `scripts/onboard/`，分组件启动使用 `scripts/onboard/components/`；共享函数位于
-`scripts/lib/`。组件构建与安装脚本仍在各组件的 `deploy/` 中。旧机载检出的迁移步骤见
-[Shell 目录迁移](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md#从旧-shell-目录布局迁移)。
 
 ## 新机部署完整地面站
 
@@ -79,20 +28,6 @@ Shell 操作入口集中在 `scripts/`：地面安装/启动使用 `scripts/grou
    ./scripts/ground/setup_ground_station.sh
    ```
 
-
-## 同步代码后更新地面站
-
-`git pull` 不会更新本机 `install/` 中的 ROS 接口。同步后运行
-`./scripts/ground/setup_ground_station.sh` 完成构建验证，再重新启动地面站和独立面板。
-若 Tag-Odin 面板提示无法导入 `ApplySavedCorrection`，说明修正接口仍是旧构建产物；
-可在项目根目录针对性重建：
-
-```bash
-source /opt/ros/jazzy/setup.bash
-colcon build --packages-select correction_interfaces correction_service --cmake-args -DCMAKE_BUILD_TYPE=Release
-source install/setup.bash
-./scripts/ground/start_ground_all.sh
-```
 
 ## 关闭防火墙
 
@@ -213,7 +148,7 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 
 地面站首次取得控制租约时建立本机发送时间基准，之后由 5 Hz 有序心跳持续刷新；命令 TTL 比较
 两端自该基准起的相对流逝时间，不比较两台机器的绝对日期。因此飞机和地面站只连接到自带路由器、
-完全没有互联网时，也能建立租约并执行正常作业。序号防重放、TTL、租约失联悬停/降落均继续生效。
+完全没有互联网时，也能建立租约并执行正常作业。
 
 若离线开机后又接入互联网，Linux/MAVROS 可能记录系统校时或 TIMESYNC 滤波器重置；应在人工解锁
 前等待状态重新稳定并核对 FCU、本地位置和推力语义。外网时间始终不是建立控制权或起飞的前置条件。
