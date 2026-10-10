@@ -255,12 +255,15 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
     return;
   }
   avoidance_planner_session_ = message->planner_session;
-  if (message->mode == Request::PLAN &&
-    (candidate.empty() || !candidate.can_join(vehicle_, avoidance_join_position_tolerance_,
-    avoidance_join_velocity_tolerance_)))
-  {
-    begin_avoidance_wait(now, candidate.empty() ? trajectory_error : "规划起点p/v无法平稳接入");
-    return;
+  if (message->mode == Request::PLAN) {
+    // 用接收时最新 FCU 位置投影到连续曲线，裁掉求解/DDS 延迟期间已越过的前缀。
+    candidate.start_at_closest(vehicle_.position);
+    if (candidate.empty() || !candidate.can_join(vehicle_, avoidance_join_position_tolerance_,
+      avoidance_join_velocity_tolerance_))
+    {
+      begin_avoidance_wait(now, candidate.empty() ? trajectory_error : "规划最近点p/v无法平稳接入");
+      return;
+    }
   }
   avoidance_last_valid_ = sent;
   if (avoidance_wait_started_) {
@@ -271,7 +274,7 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
       avoidance_resume_seconds_) {return;}
     if (message->mode == Request::PLAN) {
       avoidance_trajectory_ = std::move(candidate);
-      avoidance_trajectory_started_ = now;  // 停稳时重新求解；不把旧header当执行时间原点。
+      avoidance_trajectory_started_ = now;  // 裁剪后的最近点是零秒，所有消费者共享此时间原点。
     } else {
       reference_generator_->reset(vehicle_.position, reference_.yaw, target,
         normalize_angle(waypoints_[waypoint_index_].yaw));
@@ -282,6 +285,11 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
     avoidance_detail_ = "当前航点参考有效，继续原任务";
     waypoint_arrival_tracker_.reset();
     set_status_message("避障等待结束，继续同一航点");
+    publish_avoidance_path();
+  } else if (message->mode == Request::PLAN) {
+    avoidance_trajectory_ = std::move(candidate);
+    avoidance_trajectory_started_ = now;
+    avoidance_state_ = 2;
     publish_avoidance_path();
   }
 }

@@ -1,4 +1,4 @@
-"""Real onboard executor regression against localhost DDS doubles, without a flight simulator."""
+"""Real onboard executor regressions, including delayed-path joining, on localhost DDS doubles."""
 import os
 import subprocess
 import time
@@ -44,9 +44,12 @@ def avoidance_node(tmp_path, monkeypatch):
         leased = False
         policy = "silent"
         height = 1.
+        position_x = 0.
+        velocity_x = 0.
 
         def __init__(self):
-            self.status, self.results, self.requests = [], [], []
+            self.status, self.results, self.requests, self.paths = [], [], [], []
+            self.delayed_replies = []
             self.node, self.executor, self.mavros = node, executor, mavros
             self.pubs = {name: node.create_publisher(kind, mavros + "/" + name, 10)
                          for kind, name in [(State, "state"), (ExtendedState, "extended_state"),
@@ -60,6 +63,8 @@ def avoidance_node(tmp_path, monkeypatch):
                                      qos_profile_sensor_data)
             node.create_subscription(CommandResult, onboard + "/command_result", self.results.append, 50)
             node.create_subscription(AvoidanceRequest, onboard + "/avoidance_request", self.plan, 10)
+            from nav_msgs.msg import Path as RosPath
+            node.create_subscription(RosPath, onboard + "/avoidance_path", self.paths.append, 10)
             self.lease = node.create_client(AcquireControl, onboard + "/acquire_control")
             self.flight = node.create_client(FlightCommand, onboard + "/flight_command")
             self.waypoints = node.create_client(ExecuteWaypoints, onboard + "/execute_waypoints")
@@ -76,9 +81,16 @@ def avoidance_node(tmp_path, monkeypatch):
             self.pubs["state"].publish(self.state)
             self.pubs["extended_state"].publish(ExtendedState(landed_state=2 if self.state.armed else 1))
             pose = PoseStamped()
+            pose.pose.position.x = self.position_x
             pose.pose.position.z, pose.pose.orientation.w = self.height, 1.
             self.pubs["local_position/pose"].publish(pose)
-            self.pubs["local_position/velocity_local"].publish(TwistStamped())
+            twist = TwistStamped()
+            twist.twist.linear.x = self.velocity_x
+            self.pubs["local_position/velocity_local"].publish(twist)
+            for deadline, result in list(self.delayed_replies):
+                if time.monotonic() >= deadline:
+                    self.reply.publish(result)
+                    self.delayed_replies.remove((deadline, result))
             for name, value in [("GUID_OPTIONS", 8), ("MOT_THST_HOVER", .22)]:
                 event = ParamEvent(param_id=name)
                 event.value.type = 2 if isinstance(value, int) else 3
@@ -116,6 +128,15 @@ def avoidance_node(tmp_path, monkeypatch):
                 result.task_revision += 1
             elif self.policy == "wrong_request":
                 result.request_id += 10000
+            elif self.policy == "delayed_curve" and request.mode == request.PLAN:
+                from guided_interfaces.msg import PolynomialSegment
+                # 原规划从 x=0 开始；回包时飞机已向前0.24m，旧起点接入必须失败。
+                curve = PolynomialSegment(duration=10., x=[0., .12, -.006, 0.],
+                                          y=[0., 0., 0., 0.], z=[1., 0., 0., 0.])
+                result.segments = [curve]
+                self.position_x, self.velocity_x = .24, .10
+                self.delayed_replies.append((time.monotonic() + .05, result))
+                return
             self.reply.publish(result)
 
         def spin(self, seconds):
@@ -141,13 +162,13 @@ def avoidance_node(tmp_path, monkeypatch):
             self.until(future.done)
             return future.result()
 
-        def execute(self, strategy=2, generator=2, tracking=1):
+        def execute(self, strategy=2, generator=2, tracking=1, goal_x=4.):
             request = self.request(ExecuteWaypoints)
             request.ttl_ms = 3000
             request.flight_strategy = strategy
             request.reference_generator, request.tracking_controller = generator, tracking
             waypoint = Waypoint()
-            waypoint.position.x, waypoint.position.z = 4., 1.
+            waypoint.position.x, waypoint.position.z = goal_x, 1.
             request.waypoints = [waypoint]
             return self.call(self.waypoints, request)
 
@@ -183,6 +204,27 @@ def avoidance_node(tmp_path, monkeypatch):
             executor.shutdown(timeout_sec=1.)
             node.destroy_node()
             rclpy.shutdown(context=context)
+
+
+def test_delayed_curve_joins_current_position_and_validates_trimmed_remainder(avoidance_node):
+    """A stale geometric prefix cannot command reverse motion; timing/validation share the new origin."""
+    from guided_interfaces.msg import AvoidanceRequest, ControlStatus
+    h = avoidance_node
+    h.policy = "delayed_curve"
+    assert h.execute(strategy=1, goal_x=.6).accepted
+    h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
+    h.until(lambda: any(r.mode == AvoidanceRequest.VALIDATE_TRAJECTORY for _, r in h.requests))
+    paths = [p for p in h.paths if p.poses]
+    assert paths and abs(paths[0].poses[0].pose.position.x - .24) < 1e-8
+    assert all(p.poses[0].pose.position.x >= .24 - 1e-8 for p in paths)
+    validation = next(r for _, r in h.requests if r.mode == AvoidanceRequest.VALIDATE_TRAJECTORY)
+    assert len(validation.segments) == 1
+    segment = validation.segments[0]
+    assert abs(segment.x[0] - .24) < 1e-8
+    assert 7.7 < segment.duration < 7.8
+    assert 0. < validation.trajectory_elapsed < .5
+    h.until(lambda: h.status[-1].target_position.x > .24 + .005)
+    assert abs(h.status[-1].target_position.x - .24) < .08
 
 
 def test_identity_recovery_and_late_success_after_cancel_or_hover(avoidance_node):

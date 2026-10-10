@@ -18,6 +18,8 @@ from tests import run
         ("ground_station_core/waypoint_io.py", {"waypoints"}),
         ("ground_station_core/qt_ui/waypoint_panel.py", {"waypoints"}),
         ("src/onboard_control/src/fcu_reboot.cpp", {"flight"}),
+        ("src/onboard_control/src/avoidance_execution.cpp", {"flight", "waypoints"}),
+        ("src/onboard_control/include/onboard_control/avoidance_trajectory.hpp", {"flight", "waypoints"}),
         (
             "src/onboard_control/src/onboard_control_node.cpp",
             {"flight", "waypoints", "video"},
@@ -59,6 +61,7 @@ def test_plan_collects_only_selected_directories_and_cpp_suites() -> None:
     waypoint = run.commands({"waypoints"}, [])
     assert "test_reference_generator" in waypoint[1][-1]
     assert "test_waypoint_arrival_tracker" in waypoint[1][-1]
+    assert "test_avoidance_trajectory" in waypoint[1][-1]
     assert "test_dob_controller" not in waypoint[1][-1]
 
 

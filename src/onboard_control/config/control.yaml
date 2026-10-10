@@ -30,8 +30,8 @@
     avoidance_wait_timeout_seconds: 15.0  # 无通道/完整路径连续等待超时后失败并LAND。
     avoidance_result_timeout_seconds: 0.8  # 从本机请求发出至使用的最大秒数，含求解/DDS。
     avoidance_resume_seconds: 0.4  # 停稳并持续得到成功结果的恢复观察窗口。
-    avoidance_join_position_tolerance: 0.08  # 实际位置到曲线起点允许差，米。
-    avoidance_join_velocity_tolerance: 0.08  # 实际速度到曲线起始速度允许差，米/秒。
+    avoidance_join_position_tolerance: 0.08  # 实际位置到连续曲线最近接入点允许差，米。
+    avoidance_join_velocity_tolerance: 0.08  # 实际速度到最近接入点的参考速度允许差，米/秒。
     avoidance_max_velocity_xy: 1.0  # 水平合速度上限，米/秒。
     avoidance_max_velocity_z: 0.2  # 垂直速度上限，米/秒。
     avoidance_max_acceleration_xy: 0.35  # 水平合加速度上限，米/秒²。

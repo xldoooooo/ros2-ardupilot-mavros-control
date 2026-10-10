@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task38真实ArduPilot闭环验证：仅domain231/LOCALHOST仿真，不连接实机。"""
+"""真实ArduPilot避障闭环验证，含最近点接入回归：仅domain231/LOCALHOST仿真。"""
 from __future__ import annotations
 
 import argparse
@@ -258,8 +258,10 @@ def main():
         else:
             final(ticket)
         if args.scenario not in ("timeout","fault_cancel"):
-            assert len(scene.captures)-capture_start == 1
+            # 任务终态与拍照事件来自不同 DDS 话题，等待异步订阅线程收到事件再核对次数。
+            wait(lambda: len(scene.captures) > capture_start, 3, "waypoint capture event")
             report["waypoint_capture_count"] = len(scene.captures)-capture_start
+            assert report["waypoint_capture_count"] == 1, report["waypoint_capture_count"]
         if args.scenario == "avoid":
             route = [s for s in samples if s["state"] == 2 and s["mode"]=="WAYPOINT"]
             assert route, "no executed avoidance references"
@@ -275,7 +277,7 @@ def main():
             wait(lambda: not controller.snapshot().armed, 5, "land status propagated")
         report["success"] = True
     except Exception as exc:
-        report["error"] = str(exc)
+        report["error"] = f"{type(exc).__name__}: {exc}"
         print("FAILED", str(exc), flush=True)
     finally:
         if controller.snapshot().armed:

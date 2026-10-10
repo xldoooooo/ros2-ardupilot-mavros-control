@@ -74,6 +74,9 @@ RULES = {
         "video",
     ),
     "src/onboard_control/src/fcu_reboot.cpp": ("flight",),
+    "src/onboard_control/src/avoidance_execution.cpp": ("flight", "waypoints"),
+    "src/onboard_control/include/onboard_control/avoidance_trajectory.hpp": ("flight", "waypoints"),
+    "src/onboard_control/test/test_avoidance_trajectory.cpp": ("flight", "waypoints"),
     "src/onboard_control/src/dob_controller.cpp": ("flight", "waypoints"),
     "src/onboard_control/include/onboard_control/dob_controller.hpp": ("flight", "waypoints"),
     "src/onboard_control/src/reference_generator.cpp": ("waypoints",),
@@ -118,7 +121,7 @@ for _group in GROUPS:
 IGNORED = ("*.md", "docs/*", "agent/*", ".gitignore")
 CPP_TESTS = {
     "flight": ("test_dob_controller",),
-    "waypoints": ("test_reference_generator", "test_waypoint_arrival_tracker"),
+    "waypoints": ("test_reference_generator", "test_waypoint_arrival_tracker", "test_avoidance_trajectory"),
 }
 
 

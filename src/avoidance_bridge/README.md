@@ -22,6 +22,15 @@ bash scripts/onboard/start_avoidance.sh
 SITL必须显式传 `coordinate_mode:=identity cloud:=/你的已注册map扫描 odom:=/对应map里程计`。
 规划器 `service_only=true` 禁用旧目标定时搜索，`cloud.map_mode=latest_observation` 接收桥的完整地图；
 点云盲区滤波关闭，避免把真实近身障碍隐式当作机体。输入超时1s，桥云计算最多2Hz。
+正式桥已提供持续观测地图；service-only规划器保持 `cloud.blind_radius=0.0`，不对累计地图
+再次按当前里程计作近身滤波，也不依赖规划器的独立 `/odom` 输入。
+
+独立台架入口 `ros2 launch path_planning odin.launch.py` 直接订阅Odin点云；启用半径时要求
+云和里程计具有相同frame/source时基，并满足配置的配对时差。
+其 `cloud.blind_radius` 先读取独立库的 `config/planner.yaml`，该参数缺失时使用节点默认值0m；
+默认YAML也为0m。`config:=/path/to/planner.yaml` 可选择其他配置，
+`blind_radius:=0.5` 可显式覆盖，`blind_radius:=0.0` 可显式关闭；未指定不覆盖YAML。
+半径内真实障碍也会被滤除，应按实际传感器配置设置；这项加载修复不更改正式桥的地图语义。
 
 回归验证使用项目自己的Python环境（先source两个install）：
 
@@ -30,10 +39,14 @@ ctest --test-dir build/avoidance_bridge --output-on-failure
 ROS_DOMAIN_ID=143 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python src/avoidance_bridge/test/test_bridge_ros.py
 AVOIDANCE_REAL_PLANNER=1 ROS_DOMAIN_ID=144 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python src/avoidance_bridge/test/test_bridge_ros.py
 AVOIDANCE_COORD_MODE=extnav ROS_DOMAIN_ID=145 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python src/avoidance_bridge/test/test_bridge_ros.py
+ROS_DOMAIN_ID=146 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python src/avoidance_bridge/test/test_launch_parameters.py
 ```
 
 三种ROS回归分别使用mock服务、真实独立规划器、mock extnav元数据；全部使用隔离域合成扫描，
 不能替代实机外参/覆盖和飞行验收。
+参数回归实际启动独立Odin规划launch源码，读取节点参数验证YAML优先、缺省回退及显式覆盖；
+不启动传感器或飞控、无扫描输入，不能据此宣称实际滤波/规划有效。
+日志留在 `agent/codex/new-1-path-delay/blind-radius/`。
 
 ## 坐标与时效
 
@@ -81,6 +94,11 @@ FCU中心可能处于前向扫描origin邻近后方的未观测格；严格unkno
 低加速度配合0.1m搜索hash格需 `max_tau=1s`，避免零速初始原语落回同格而被剪枝。
 
 ## 身份、可视化
+
+控制层收到完整轨迹后，在所有连续三次段上求到最新FCU位置的三维最近点，裁掉此前前缀，
+解析平移首段系数；新的零秒用于PD+DOB参考、剩余轨迹校验和RViz路径。等距时取较晚点，
+后续只按正时间执行。位置/速度接入容差改在最近点检查，超限仍制动等待；不平移整条空间
+路径、不通过回到旧起点补偿延迟。终点保持及原有包线、时效、会话身份检查继续生效。
 
 桥异步最多一个active请求与一个最新pending；超时0.8s，坐标变化或旧请求结果不会接受。
 若桥已收到新地图而规划器服务尚未消费该DDS样本，在原请求内间隔50ms重试：PLAN旧图成功
