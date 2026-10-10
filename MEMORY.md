@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-10。源码事实已核对；远端状态为最近一次部署记录，本次未连接飞机。
+维护日期：2026-10-10。源码事实已核对；部署状态为最近一次部署记录，10-10 另只读核查 refresh 的 Odin 驱动。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -95,6 +95,13 @@
 
 ## AprilTag / Odin 当前基线与风险
 
+- **Odin 近身拖点尚未解决，不能把接收端删点当成内部算法前过滤。** refresh 实际运行
+  驱动 0.14.0 / SoC 0.14.2 / SLAM 0.13.1；`cloud_slam` 由设备输出，公开驱动/SDK 未查到
+  算法输入最小距离或 FOV 裁剪参数。`cloud_raw_confidence_threshold` 只过滤主机发布的 raw 云。
+  驱动已有 `sendimagemask` / `image_mask_abs_path` 向设备上传 PNG 的接口，当前关闭；
+  是否作用于雷达算法、黑白定义及生效/清除条件未确认，不得按已验证的点云屏蔽使用。
+  厂商 FAQ 承认 0.4 m 内拖点，建议近距感知用 raw 云并避让结构遮挡；raw 云仍需实际对比，
+  不保证消除测距干扰。此次未改两机配置，详见 [驱动检查报告](agent/report/report-2026-10-10-odin-near-field-driver-audit.md)。
 - 链路：raw Odin IMU → 公共 SE(2) corrected Odin IMU → 杆臂转换后的 `/extnav/pose_fcu`
   与 `/mavros/vision_pose/pose` → `/mavros/local_position/pose`（最终 FCU EKF）。
   corrected 不是 FCU 中心，也不是 EKF final；有效分支已移除多余固定 `+T_xy`，z 仍保留局部约定。
