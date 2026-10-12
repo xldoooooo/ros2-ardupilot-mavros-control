@@ -52,8 +52,8 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task38 / 3.4、Odin XYZ输出保留；Task3 Python extnav按需corrected发布已同步原生构建，ARM/实际订阅进退通过 | 所有测试Odin/extnav/MAVROS已停止，三个unit inactive；下次Odin自动提供cloud_slam_down，不运行独立Python降采样。逐机标定、旧碰撞风险及20°安装角未改 |
-| new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 所有测试进程已停止；飞行unit仍为原failed、视频/修正inactive，完整链路未恢复。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
+| refresh | Task38 / 3.4、Odin仅down新版已安装并验证；Task3 Python extnav按需corrected发布已同步原生构建，ARM/实际订阅进退通过 | 所有测试Odin/extnav/MAVROS已停止，三个unit inactive；下次Odin自动提供cloud_slam_down，不运行独立Python降采样。逐机标定、旧碰撞风险及20°安装角未改 |
+| new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38、GUI 仿真避障入口及最近点接入，需同步源码及重建接口** |
 | 开发机 | 主工程3.4及最近点接入，恢复与169旧算法的兼容服务链并重建；执行层按需统一放慢轨迹时间 | 恢复版已重新验证真实SITL绕行、两种策略恢复和超时LAND；保留旧采样风险，实飞与长时负载仍未验收 |
 
@@ -140,10 +140,10 @@
 
 - **当前恢复版以169实际现场代码为准，未重新合入搜索/碰撞算法改写。** `path_searching`整个目录与169开始时快照一致；原语检查在当前参数下最多42次。YAML：safe_distance=0.25、horizon=100、resolution=0.1、voxel_size=0.1、max_vel/max_acc=2、max_tau=0.6、collision_step=0.05、search_budget=0.3、input_timeout=0.5。源YAML盲区0.3m，169实际Odin入口仍默认0m覆盖；运行下界[-50,-50,-2]，上界[50,50,10]。
 - 新增PlanMotion/service-only仅为接口适配，PLAN调用旧search/getSegments；CHECK_LINE/剩余曲线离散采样调用旧isSafe，不恢复连续距离算法。正式桥快照每次clearMap后setKdtree；独立Odin入口保留50帧双树累计及旧goal行为。核心19例18通过、旧CollisionBetweenPrimitiveEndpoints仍失败（0.09999036m<0.1m），不得改阈值或宣称全量通过。
-- `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，原始cloud_slam保持XYZRGB的16字节格式；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
+- `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，新版不创建或发布原始cloud_slam；内部临时XYZRGB转换保留；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
 - SDK已移除auto的1m距离启发式：auto/odom只用有效Odin里程计；缺少/非有限球心时只降采样，不猜原点，origin才显式使用(0,0,0)。有限正voxel、有限radius、合法模式在启动时严格检查；非法值仅关闭新增功能并报错。XYZ的NaN/Inf全部跳过；降采样不读取或保存RGB。球面删除、字节键排序及空结果不发布保持。GCC过滤函数局部禁FMA保留；负零符号位微小差异保留。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
-- 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。维护目录已由用户移至开发机`/home/nvidia/scq/projects/odin_ros_driver-modified`；私有远端`LostPatrol/odin_ros_driver-modified`已推送main `f869778`。仓库采用独立凭据，仓库级http.proxy为空以绕过本机不稳定代理。
-- new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复；本次补充修复后用户要求普通重连，实际Odin连接成功且有原始/down云，不能据此认定旧重连问题根因已消除。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。仅XYZ输出的当前证据见[RGB移除报告](agent/report/report-2026-10-13-task2-xyz-only.md)；校验与auto修复见[校验与auto修复报告](agent/report/report-2026-10-13-task2-cloud-validation-auto-fix.md)，首次迁移见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
+- 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。维护目录已由用户移至开发机`/home/nvidia/scq/projects/odin_ros_driver-modified`；私有远端`LostPatrol/odin_ros_driver-modified`已推送main `16735e8`。仓库采用独立凭据，仓库级http.proxy为空以绕过本机不稳定代理。
+- new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复；本次补充修复后用户要求普通重连，实际Odin连接成功且有原始/down云，不能据此认定旧重连问题根因已消除。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。仅down发布证据与new待生效状态见[关闭原始云报告](agent/report/report-2026-10-13-task2-down-only.md)；仅XYZ输出证据见[RGB移除报告](agent/report/report-2026-10-13-task2-xyz-only.md)；校验与auto修复见[校验与auto修复报告](agent/report/report-2026-10-13-task2-cloud-validation-auto-fix.md)，首次迁移见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
 
 - 独立算法工作区 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
   `LostPatrol/dyn_small_obs_avoidance-ros2`（GPLv3）；仅含 `path_searching/path_planning`。
