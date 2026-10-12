@@ -95,6 +95,40 @@ TEST(AvoidanceTrajectory, JoinRequiresActualPositionAndVelocity)
   EXPECT_FALSE(t.can_join(state, .08, .08));
 }
 
+TEST(AvoidanceTrajectory, LegacyPlanRetimingPreservesSpaceAndDerivativeScaling)
+{
+  auto s = segment();
+  // 同一空间路径在一秒内执行，原加速度为6 m/s²，超过现有控制包线。
+  s.duration = 1.0;
+  s.coefficients(0, 2) = 3.0;
+  s.coefficients(0, 3) = -2.0;
+  AvoidanceTrajectory t;
+  std::string reason;
+  EXPECT_FALSE(t.assign({s}, {1, 0, 1}, {}, reason));
+  ASSERT_TRUE(t.assign_retimed({s}, {1, 0, 1}, {}, reason)) << reason;
+  const double scale = t.duration();
+  ASSERT_GT(scale, 1.0);
+  for (double u : {0.0, 0.1, 0.3, 0.5, 0.9}) {
+    const auto original = s.sample(u), slowed = t.sample(scale * u);
+    EXPECT_NEAR((slowed.position - original.position).norm(), 0.0, 1e-12);
+    EXPECT_NEAR((slowed.velocity * scale - original.velocity).norm(), 0.0, 1e-12);
+    EXPECT_NEAR((slowed.acceleration * scale * scale - original.acceleration).norm(), 0.0, 1e-12);
+    EXPECT_LE(slowed.velocity.head<2>().norm(), 1.0);
+    EXPECT_LE(slowed.acceleration.head<2>().norm(), .35 + 1e-12);
+  }
+  // 时间缩放不能掩盖接入速度跳变、坏终点或超长曲线。
+  VehicleKinematics actual;
+  actual.position = {0, 0, 1}; actual.velocity = {0.1, 0, 0};
+  EXPECT_FALSE(t.can_join(actual, .08, .08));
+  EXPECT_FALSE(t.assign_retimed({s}, {2, 0, 1}, {}, reason));
+  AvoidanceLimits short_limit; short_limit.duration = 2.0;
+  EXPECT_FALSE(t.assign_retimed({s}, {1, 0, 1}, short_limit, reason));
+  auto second = s; second.coefficients(0, 0) = 1.1;
+  EXPECT_FALSE(t.assign_retimed({s, second}, {2.1, 0, 1}, {}, reason));
+  ASSERT_TRUE(t.assign_retimed({segment()}, {1, 0, 1}, {}, reason));
+  EXPECT_DOUBLE_EQ(t.duration(), 6.0);
+}
+
 TEST(AvoidanceTrajectory, DelayedStartKeepsExactRemainingPositionVelocityAcceleration)
 {
   AvoidanceTrajectory t;

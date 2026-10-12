@@ -69,7 +69,16 @@ class BridgeContract(unittest.TestCase):
                        '-p', 'odometry_topic:=/test/raw', '-p', 'input_timeout:=1.0']
         cls.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                        start_new_session=True)
-        cls.spin(2)
+        # Python launch startup and DDS discovery can exceed a fixed sleep during native builds.
+        # Wait for the real request subscriber before sending the first (volatile) request.
+        until = time.monotonic() + 15.
+        while cls.req.get_subscription_count() == 0 and time.monotonic() < until:
+            cls.spin(.05)
+            if cls.process.poll() is not None:
+                raise RuntimeError(cls.process.stderr.read().decode())
+        if cls.req.get_subscription_count() == 0:
+            raise RuntimeError('avoidance request subscriber was not discovered')
+        cls.spin(.2)
 
     @classmethod
     def spin(cls, duration):

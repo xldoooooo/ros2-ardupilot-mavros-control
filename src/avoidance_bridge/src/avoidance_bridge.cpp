@@ -157,7 +157,8 @@ private:
     last_cloud_source_=source_ns;
     if(c.width==0||c.height==0) {map_valid_=false;reason_="latest raw cloud empty (unknown)";return;}
     if(!coordinates()) {map_valid_=false;return;}
-    if(elapsed(cloud_time_)<.5 && map_valid_) return; // Idle map and preview cost are bounded to 2 Hz.
+    // Keep a full map usable inside the aircraft's 0.5s freshness window, including DDS latency.
+    if(elapsed(cloud_time_)<std::min(.5,timeout_*.5) && map_valid_) return;
     const double source=stamp(c.header.stamp);
     const Odom *origin=nullptr;double best=.100000001;
     for(const auto &entry:raw_) {
@@ -178,8 +179,10 @@ private:
     auto occupied=map_.occupied();auto output=make_cloud(occupied,frame_,cloud_stamp_,{0,0,0},occupied.size());
     cloud_pub_->publish(output);
     // Optional LAN visualization is generated only for actual subscribers, <=10000 XYZ points/2 Hz.
-    if(preview_&&preview_pub_->get_subscription_count()+preview_pub_->get_intra_process_subscription_count()>0)
-      preview_pub_->publish(make_cloud(occupied,"map",now(),translation(),10000));
+    if(preview_ && elapsed(preview_time_)>=.5 &&
+       preview_pub_->get_subscription_count()+preview_pub_->get_intra_process_subscription_count()>0) {
+      preview_pub_->publish(make_cloud(occupied,"map",now(),translation(),10000));preview_time_=Steady::now();
+    }
   }
   Cloud make_cloud(const std::vector<Vec> &points,const std::string &frame,const builtin_interfaces::msg::Time &time,
                    const Vec &offset,size_t cap) {
@@ -296,6 +299,7 @@ private:
     });active_id_=handle.request_id;
   }
   avoidance_bridge::ObservedMap map_;
+  Steady::time_point preview_time_{};  // Optional LAN preview remains bounded to 2 Hz.
   std::string mode_,frame_,session_,planner_session_,reason_="waiting for observations";
   double timeout_;int max_input_;bool preview_,map_valid_=false,raw_valid_=false;
   uint64_t coordinate_revision_=1,generation_=0,active_serial_=0;int64_t active_id_=0;

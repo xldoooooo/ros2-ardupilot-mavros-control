@@ -437,7 +437,7 @@ bash scripts/onboard/start_avoidance.sh
 `bash scripts/onboard/stop_avoidance.sh` 停止。尚未自动安装规划 systemd 服务。
 直线策略无需这两个进程；另外两种策略仅在规划组件及输入就绪时允许起飞和下发航点。
 
-默认接入 `/odin1/cloud_slam` 与 `/odin1/odometry_highfreq`，要求前者为单帧、已经在 `odom`
+默认接入169当前使用的 `/odin1/cloud_slam_down` 与 `/odin1/odometry_highfreq`，要求前者为单帧、已经在 `odom`
 注册的当前扫描，不接受累计地图伪装成观测射线。Tag 修正保持未应用；坐标校验读取 extnav
 同会话状态、杆臂和最终 FCU 位姿，不修改 Odin 仰角或原 Tag 外参。未知区域、断流、坐标变化
 或地图容量耗尽都进入等待，15 s 超时请求并持续确认 LAND。射线覆盖只判定离散中心线，
@@ -446,3 +446,9 @@ bash scripts/onboard/start_avoidance.sh
 RViz 的规划轨迹默认显示；点云默认关闭。需要限量预览时启动参数追加 `preview:=true`，
 然后勾选 RViz Obstacle Preview；输出最多 10000 点、2 Hz，只有订阅者存在时生成预览。
 实机检查始终保持未解锁，起飞和解锁只由用户手动完成。
+
+2026-10-12恢复版保留169旧规划核心及现场调参（0.25m净空、100m horizon、0.1m
+resolution/voxel_size、2m/s与2m/s²轴向搜索上限）。正式入口加载独立库YAML，
+不再使用Task38原硬编码搜索参数，也不恢复连续距离改写。服务适配层复用旧 `isSafe`；
+控制器只对超出原飞行包线的轨迹统一放慢时间，保持空间曲线、原PD+DOB与接入检查。
+完整说明见 `src/avoidance_bridge/README.md`；两工作区均需重建，不能只更新地面站UI。

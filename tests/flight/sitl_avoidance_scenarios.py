@@ -218,6 +218,9 @@ def main():
         snap = controller.snapshot()
         scene.pole = args.scenario != "straight"
         time.sleep(1.2)
+        if strategy is not Strategy.STRAIGHT:
+            # 插入障碍后等当前新扫描/地图就绪，避免用起飞前的旧ready下发新任务。
+            wait(lambda: controller.snapshot().avoidance_ready, 10, "current scan readiness")
         start = np.array([snap.x,snap.y,snap.z])
         target = (start[0]+3.0, start[1], 1.5, 0.0)
         capture_start = len(scene.captures)
@@ -300,6 +303,10 @@ def main():
         log.close()
         args.output.write_text(json.dumps(report,ensure_ascii=False,indent=2))
         args.output.with_suffix(".samples.json").write_text(json.dumps(samples,ensure_ascii=False))
+        # 保留异步服务拒绝和启动诊断，不能只由后续状态等待超时猜测原因。
+        args.output.with_suffix(".events.json").write_text(json.dumps(
+            [{"source": event.source, "message": event.message} for event in events.snapshot()],
+            ensure_ascii=False, indent=2))
         print(json.dumps(report,ensure_ascii=False,indent=2),flush=True)
     return 0 if report["success"] else 1
 

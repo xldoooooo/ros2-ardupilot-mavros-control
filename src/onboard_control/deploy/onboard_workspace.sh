@@ -224,6 +224,7 @@ build_workspace() {
       --base-paths src correction_service \
       --packages-select \
         guided_interfaces correction_interfaces onboard_control correction_service \
+      --cmake-force-configure \
       --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
         -DAMENT_CMAKE_SYMLINK_INSTALL=OFF

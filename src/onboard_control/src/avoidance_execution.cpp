@@ -193,7 +193,7 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
     }
   }
   if (message->mode == Request::PLAN && message->status == Result::REACH_END) {
-    candidate.assign(std::move(segments), target, avoidance_limits_, trajectory_error);
+    candidate.assign_retimed(std::move(segments), target, avoidance_limits_, trajectory_error);
   }
 
   std::lock_guard<std::recursive_mutex> lock(mutex_);

@@ -1,4 +1,4 @@
-"""Exercise real Odin planner parameter precedence on an isolated ROS domain, without scans."""
+"""Verify restored legacy Odin overrides and Task38 YAML tuning in isolated ROS launches."""
 import json
 import os
 from pathlib import Path
@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import unittest
+import yaml
 
 import rclpy
 from rclpy.parameter_client import AsyncParameterClient
@@ -43,11 +44,11 @@ class LaunchParameterTest(unittest.TestCase):
                           encoding='utf-8')
         cases = [
             ('default_yaml', [], 0.0, 10.0),
-            ('yaml_radius', [f'config:={configured}'], 0.63, 7.0),
+            ('yaml_radius', [f'config:={configured}'], 0.0, 7.0),
             ('missing_radius', [f'config:={missing}'], 0.0, 7.0),
             ('explicit_radius', [f'config:={configured}', 'blind_radius:=0.25'], 0.25, 7.0),
             ('explicit_zero', [f'config:={configured}', 'blind_radius:=0.0'], 0.0, 7.0),
-            ('nested_yaml', [f'config:={nested}'], 0.63, 7.0),
+            ('nested_yaml', [f'config:={nested}'], 0.0, 7.0),
         ]
         rclpy.init()
         results = []
@@ -93,6 +94,58 @@ class LaunchParameterTest(unittest.TestCase):
             rclpy.shutdown()
             (artifacts / 'results.json').write_text(json.dumps(results, indent=2) + '\n',
                                                   encoding='utf-8')
+
+    def test_task38_uses_aircraft_search_tuning(self):
+        """Read actual DDS parameters: old hardcoded Task38 search values must not return."""
+        project = Path(__file__).resolve().parents[3]
+        planner = Path(os.environ.get('AVOIDANCE_WORKSPACE', project.parent / 'dyn_small_obs_avoidance-ros2'))
+        artifacts = project / 'agent/codex/task38-restore-20261012/launch-parameters'
+        artifacts.mkdir(parents=True, exist_ok=True)
+        self.assertNotEqual(os.environ.get('ROS_DOMAIN_ID', '0'), '0')
+        self.assertEqual(os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE'), 'LOCALHOST')
+        original = yaml.safe_load((planner / 'path_planning/config/planner.yaml').read_text())
+        custom = yaml.safe_load(yaml.safe_dump(original))
+        custom['path_planning']['ros__parameters'].update({
+            'search.safe_distance': .37, 'search.max_tau': .7, 'search.horizon': 75.,
+            'search.resolution': .15, 'search.voxel_size': .12, 'search.max_vel': 1.7,
+            'search.max_acc': 1.6,
+        })
+        fixture = artifacts / 'custom.yaml'
+        fixture.write_text('# Isolated parameter fixture.\n' + yaml.safe_dump(custom))
+        rclpy.init()
+        try:
+            for label, config in [('aircraft', original), ('custom', custom)]:
+                expected = {k: v for k, v in config['path_planning']['ros__parameters'].items()
+                            if k.startswith('search.')}
+                expected['search.lower'] = [-50., -50., -2.]
+                arguments = [f'config:={fixture}'] if label == 'custom' else []
+                reader = rclpy.create_node('task38_parameter_reader')
+                with (artifacts / f'{label}.log').open('w') as stream:
+                    process = subprocess.Popen(
+                        ['ros2', 'launch', 'avoidance_bridge', 'avoidance.launch.py',
+                         'coordinate_mode:=identity', *arguments], stdout=stream,
+                        stderr=subprocess.STDOUT, start_new_session=True)
+                    try:
+                        client = AsyncParameterClient(reader, '/avoidance/path_planning')
+                        deadline = time.monotonic() + 15.
+                        while not client.wait_for_services(timeout_sec=.2):
+                            self.assertIsNone(process.poll())
+                            self.assertLess(time.monotonic(), deadline)
+                        names = list(expected) + ['service_only', 'cloud.map_mode', 'cloud.blind_radius']
+                        future = client.get_parameters(names)
+                        rclpy.spin_until_future_complete(reader, future, timeout_sec=5.)
+                        self.assertTrue(future.done())
+                        values = future.result().values
+                        from rclpy.parameter import parameter_value_to_python
+                        actual = [parameter_value_to_python(v) for v in values]
+                        self.assertEqual(actual[:-3], list(expected.values()))
+                        self.assertEqual(actual[-3:], [True, 'latest_observation', 0.0])
+                    finally:
+                        os.killpg(process.pid, signal.SIGINT)
+                        process.wait(timeout=8.)
+                        reader.destroy_node()
+        finally:
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

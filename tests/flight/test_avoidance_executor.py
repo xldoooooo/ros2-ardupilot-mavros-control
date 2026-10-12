@@ -50,6 +50,7 @@ def avoidance_node(tmp_path, monkeypatch):
         def __init__(self):
             self.status, self.results, self.requests, self.paths = [], [], [], []
             self.delayed_replies = []
+            self.last_bridge_heartbeat = 0.
             self.node, self.executor, self.mavros = node, executor, mavros
             self.pubs = {name: node.create_publisher(kind, mavros + "/" + name, 10)
                          for kind, name in [(State, "state"), (ExtendedState, "extended_state"),
@@ -87,8 +88,14 @@ def avoidance_node(tmp_path, monkeypatch):
             twist = TwistStamped()
             twist.twist.linear.x = self.velocity_x
             self.pubs["local_position/velocity_local"].publish(twist)
+            # Match the real bridge's 1 Hz heartbeat. The executor consumes depth=1:
+            # a heartbeat immediately after a reply would overwrite that reply in DDS.
+            now = time.monotonic()
+            if now - self.last_bridge_heartbeat >= 1.:
+                self.reply.publish(self.result())
+                self.last_bridge_heartbeat = now
             for deadline, result in list(self.delayed_replies):
-                if time.monotonic() >= deadline:
+                if now >= deadline:
                     self.reply.publish(result)
                     self.delayed_replies.remove((deadline, result))
             for name, value in [("GUID_OPTIONS", 8), ("MOT_THST_HOVER", .22)]:
@@ -105,7 +112,6 @@ def avoidance_node(tmp_path, monkeypatch):
                                              lease_duration_ms=3000)
                 heartbeat.header.stamp = node.get_clock().now().to_msg()
                 self.heartbeat.publish(heartbeat)
-            self.reply.publish(self.result())
 
         def result(self, request=None):
             result = AvoidanceResult(bridge_session="bridge-test", planner_session="planner-test",

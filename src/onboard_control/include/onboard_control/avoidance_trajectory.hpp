@@ -1,6 +1,6 @@
 /**
  * @file avoidance_trajectory.hpp
- * @brief 有界三次轨迹求值、最近点接入和校验；裁掉过期前缀，不改变空间曲线或 PD+DOB。
+ * @brief 三次轨迹统一放慢、最近点接入和包线校验；保持规划空间曲线及 PD+DOB。
  */
 #pragma once
 
@@ -45,6 +45,46 @@ struct AvoidanceLimits
 class AvoidanceTrajectory
 {
 public:
+  /** 旧规划器保留现场动力学参数；执行前统一放慢时间，空间路径与碰撞点不变。 */
+  bool assign_retimed(
+    std::vector<AvoidancePolynomial> segments, const Eigen::Vector3d & goal,
+    const AvoidanceLimits & limits, std::string & reason)
+  {
+    // 已符合包线的曲线保持原时间，避免改变正常飞行中的接入速度。
+    if (assign(segments, goal, limits, reason)) {return true;}
+    if (segments.empty() || segments.size() > 256) {return false;}
+    for (double value : {limits.velocity_xy, limits.velocity_z,
+        limits.acceleration_xy, limits.acceleration_z, limits.duration})
+    {
+      if (!std::isfinite(value) || value <= 0.0) {return false;}
+    }
+    double scale = 1.0;
+    for (const auto & s : segments) {
+      if (!std::isfinite(s.duration) || s.duration <= 0.0 || !s.coefficients.allFinite()) {
+        return false;
+      }
+      const auto first = s.sample(0.0), last = s.sample(s.duration);
+      // 二次速度的三个 Bezier 控制点给出整个连续区间的保守上界。
+      const Eigen::Vector3d middle = s.coefficients.col(1) + s.coefficients.col(2) * s.duration;
+      for (const auto & v : {first.velocity, middle, last.velocity}) {
+        scale = std::max({scale, v.head<2>().norm() / limits.velocity_xy,
+          std::abs(v.z()) / limits.velocity_z});
+      }
+      for (const auto & a : {first.acceleration, last.acceleration}) {
+        scale = std::max({scale, std::sqrt(a.head<2>().norm() / limits.acceleration_xy),
+          std::sqrt(std::abs(a.z()) / limits.acceleration_z)});
+      }
+    }
+    if (!std::isfinite(scale)) {return false;}
+    for (auto & s : segments) {
+      s.duration *= scale;
+      double power = scale;
+      for (int k = 1; k < 4; ++k, power *= scale) {s.coefficients.col(k) /= power;}
+    }
+    // 仍完整检查时长、C1、末点及飞行包线；实际 p/v 接入门槛由原入口检查。
+    return assign(std::move(segments), goal, limits, reason);
+  }
+
   bool assign(
     std::vector<AvoidancePolynomial> segments, const Eigen::Vector3d & goal,
     const AvoidanceLimits & limits, std::string & reason)
