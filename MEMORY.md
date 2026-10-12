@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-13。Task38 / 3.4基线保留；两机Odin host SDK已原生集成近点剔除与降采样，替代独立Python进程。独立规划器仍保留169搜索/碰撞核心及现场参数。
+维护日期：2026-10-13。Task38 / 3.4基线保留；两机Odin host SDK已原生集成近点剔除与降采样，并修复auto回退原点及非有限输入；替代独立Python进程。独立规划器仍保留169搜索/碰撞核心及现场参数。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -52,8 +52,8 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task38 / 3.4保留；2026-10-13 Odin SDK三文件已同步原生构建，真实100帧与Python逐字节一致 | 本次结束Odin及飞行unit均停止；下次启动Odin自动提供cloud_slam_down，不再运行独立Python降采样。逐机标定、旧碰撞采样漏检及20°安装角风险保留 |
-| new | Task38 / 3.4保留；2026-10-13 Odin SDK三文件已同步原生构建，真实100帧与Python逐字节一致 | 用户冷启动后飞行unit active，armed=false；正常启动链原始/down云各1发布者、调试关闭。避障未启动；同时运行两机时仍需隔离同名定位流 |
+| refresh | Task38 / 3.4保留；2026-10-13 Odin SDK补充严格配置/非有限XYZ校验，auto只用odom；ARM定向检查与100帧参考对照通过 | 结束Odin及飞行unit停止；下次启动Odin自动提供cloud_slam_down，不再运行独立Python降采样。逐机标定、旧碰撞采样漏检及20°安装角风险保留 |
+| new | Task38 / 3.4保留；2026-10-13同步原生构建SDK校验/auto修复版；ARM检查及普通重连点云通过，运行新版Build ID已核对 | 最新为独立Odin标准入口运行，原始/down各1发布者、debug关闭；验收开始时整套飞控unit已failed且无MAVROS，尚未恢复整套链路。再次启动整套服务前先停止独立Odin，避免重复入口 |
 | hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38、GUI 仿真避障入口及最近点接入，需同步源码及重建接口** |
 | 开发机 | 主工程3.4及最近点接入，恢复与169旧算法的兼容服务链并重建；执行层按需统一放慢轨迹时间 | 恢复版已重新验证真实SITL绕行、两种策略恢复和超时LAND；保留旧采样风险，实飞与长时负载仍未验收 |
 
@@ -74,7 +74,7 @@
 - 此前回退的186隔离smoke（历史）：interface=3.3、armed=false、setpoint_messages=0；控制单测通过。修正包5例中4通过、1失败：仓库Tag0=0.0465 m，而测试固定要求0.170 m；逐机活动配置未改，不能为过测覆盖标定。三个机载服务未启动，真实设备闭环未验收。
 - 交接最后再次核对逐机标定和 `/etc` 哈希全部匹配；现场随后已有独立Odin进程，静态启动检查因此拒绝重复启动。没有停止或接管该现场进程，不应把服务unit停止等同所有驱动均未运行。
 
-- **两机同名定位流仍须隔离**：同时运行domain0/SUBNET的Odin时会混合定位与点云。2026-10-13收尾refresh无Odin，new冷启动后原始/down云各1发布者；此前缺失down发布者已由SDK集成解决。正式实机避障闭环仍未验收。
+- **两机同名定位流仍须隔离**：同时运行domain0/SUBNET的Odin时会混合定位与点云。2026-10-13收尾refresh无Odin，new独立Odin普通连接后原始/down云各1发布者；此前缺失down发布者已由SDK集成解决。正式实机避障闭环仍未验收。
 - 两机源码Git已分别快进到主工程4e5d969、独立库621a2dc；核心及功能源码哈希核对一致（主工程73个文件、独立库23个文件），原相机/Tag现场改动留在工作区，同步前payload还保存在逐机Git stash和维护备份。后续仅文档提交不改变功能基线。
 
 ## 不能误改的业务语义
@@ -140,9 +140,9 @@
 - **当前恢复版以169实际现场代码为准，未重新合入搜索/碰撞算法改写。** `path_searching`整个目录与169开始时快照一致；原语检查在当前参数下最多42次。YAML：safe_distance=0.25、horizon=100、resolution=0.1、voxel_size=0.1、max_vel/max_acc=2、max_tau=0.6、collision_step=0.05、search_budget=0.3、input_timeout=0.5。源YAML盲区0.3m，169实际Odin入口仍默认0m覆盖；运行下界[-50,-50,-2]，上界[50,50,10]。
 - 新增PlanMotion/service-only仅为接口适配，PLAN调用旧search/getSegments；CHECK_LINE/剩余曲线离散采样调用旧isSafe，不恢复连续距离算法。正式桥快照每次clearMap后setKdtree；独立Odin入口保留50帧双树累计及旧goal行为。核心19例18通过、旧CollisionBetweenPrimitiveEndpoints仍失败（0.09999036m<0.1m），不得改阈值或宣称全量通过。
 - `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
-- SDK保留球面删除、auto的1m启发式、首点RGB、字节键排序及空结果不发布；GCC过滤函数局部禁FMA以匹配NumPy1.26舍入。两机原生构建、ARM边界重放和各100帧真实云逐字节对照通过；仅负零符号位微小差异。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
-- 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。修改文件映射与部署说明在开发机`/home/nvidia/scq/odin_ros_driver_modified/README.md`；本地main提交`f6c9e39`，私有远端`LostPatrol/odin_ros_driver_modified`仍待用户创建/授权（当前凭据仅public_repo）。
-- new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。证据见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
+- SDK已移除auto的1m距离启发式：auto/odom只用有效Odin里程计；缺少/非有限球心时只降采样，不猜原点，origin才显式使用(0,0,0)。有限正voxel、有限radius、合法模式在启动时严格检查；非法值仅关闭新增功能并报错。XYZ的NaN/Inf全部跳过，RGB保留原始颜色位；球面删除、首点RGB、字节键排序及空结果不发布保持。GCC过滤函数局部禁FMA保留；负零符号位微小差异保留。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
+- 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。维护目录已由用户移至开发机`/home/nvidia/scq/projects/odin_ros_driver-modified`；私有远端`LostPatrol/odin_ros_driver-modified`已推送main `8432ee7`。仓库采用独立凭据，仓库级http.proxy为空以绕过本机不稳定代理。
+- new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复；本次补充修复后用户要求普通重连，实际Odin连接成功且有原始/down云，不能据此认定旧重连问题根因已消除。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。当前修复证据见[校验与auto修复报告](agent/report/report-2026-10-13-task2-cloud-validation-auto-fix.md)，首次迁移见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
 
 - 独立算法工作区 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
   `LostPatrol/dyn_small_obs_avoidance-ros2`（GPLv3）；仅含 `path_searching/path_planning`。
