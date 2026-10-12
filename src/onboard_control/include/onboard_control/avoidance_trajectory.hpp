@@ -1,6 +1,6 @@
 /**
  * @file avoidance_trajectory.hpp
- * @brief 三次轨迹统一放慢、最近点接入和包线校验；保持规划空间曲线及 PD+DOB。
+ * @brief Native cubic references and exact closest-point trimming for PD+DOB tracking.
  */
 #pragma once
 
@@ -22,6 +22,7 @@ struct AvoidancePolynomial
   double duration{0.0};
   Eigen::Matrix<double, 3, 4> coefficients{Eigen::Matrix<double, 3, 4>::Zero()};
 
+  /** Evaluate a cubic segment and its first two time derivatives. */
   ControlReference sample(double t) const
   {
     t = std::clamp(t, 0.0, duration);
@@ -33,61 +34,14 @@ struct AvoidancePolynomial
   }
 };
 
-/** 与当前梯形航点参考一致的首版规划包线。 */
-struct AvoidanceLimits
-{
-  double velocity_xy{1.0}, velocity_z{0.20};  // m/s，水平采用合速度。
-  double acceleration_xy{0.35}, acceleration_z{0.15};  // m/s²。
-  double duration{60.0};  // 单条完整计划最大时长；超限拒绝，不截短。
-};
-
-/** 只消费完整 REACH_END 轨迹，末点静止保持不依赖不断重规划。 */
+/** Preserve native timing for complete and receding-horizon trajectories. */
 class AvoidanceTrajectory
 {
 public:
-  /** 旧规划器保留现场动力学参数；执行前统一放慢时间，空间路径与碰撞点不变。 */
-  bool assign_retimed(
-    std::vector<AvoidancePolynomial> segments, const Eigen::Vector3d & goal,
-    const AvoidanceLimits & limits, std::string & reason)
-  {
-    // 已符合包线的曲线保持原时间，避免改变正常飞行中的接入速度。
-    if (assign(segments, goal, limits, reason)) {return true;}
-    if (segments.empty() || segments.size() > 256) {return false;}
-    for (double value : {limits.velocity_xy, limits.velocity_z,
-        limits.acceleration_xy, limits.acceleration_z, limits.duration})
-    {
-      if (!std::isfinite(value) || value <= 0.0) {return false;}
-    }
-    double scale = 1.0;
-    for (const auto & s : segments) {
-      if (!std::isfinite(s.duration) || s.duration <= 0.0 || !s.coefficients.allFinite()) {
-        return false;
-      }
-      const auto first = s.sample(0.0), last = s.sample(s.duration);
-      // 二次速度的三个 Bezier 控制点给出整个连续区间的保守上界。
-      const Eigen::Vector3d middle = s.coefficients.col(1) + s.coefficients.col(2) * s.duration;
-      for (const auto & v : {first.velocity, middle, last.velocity}) {
-        scale = std::max({scale, v.head<2>().norm() / limits.velocity_xy,
-          std::abs(v.z()) / limits.velocity_z});
-      }
-      for (const auto & a : {first.acceleration, last.acceleration}) {
-        scale = std::max({scale, std::sqrt(a.head<2>().norm() / limits.acceleration_xy),
-          std::sqrt(std::abs(a.z()) / limits.acceleration_z)});
-      }
-    }
-    if (!std::isfinite(scale)) {return false;}
-    for (auto & s : segments) {
-      s.duration *= scale;
-      double power = scale;
-      for (int k = 1; k < 4; ++k, power *= scale) {s.coefficients.col(k) /= power;}
-    }
-    // 仍完整检查时长、C1、末点及飞行包线；实际 p/v 接入门槛由原入口检查。
-    return assign(std::move(segments), goal, limits, reason);
-  }
-
+  /** Validate numerical integrity; native planning owns velocity and acceleration limits. */
   bool assign(
     std::vector<AvoidancePolynomial> segments, const Eigen::Vector3d & goal,
-    const AvoidanceLimits & limits, std::string & reason)
+    bool reaches_goal, std::string & reason)
   {
     clear();
     if (segments.empty() || segments.size() > 256 || !goal.allFinite()) {
@@ -98,12 +52,19 @@ public:
     for (std::size_t i = 0; i < segments.size(); ++i) {
       const auto & s = segments[i];
       if (!std::isfinite(s.duration) || s.duration <= 0.0 ||
-        !s.coefficients.allFinite() || (duration += s.duration) > limits.duration)
+        !s.coefficients.allFinite() || !std::isfinite(duration += s.duration))
       {
         reason = "invalid coefficients or duration";
         return false;
       }
       const auto first = s.sample(0.0), last = s.sample(s.duration);
+      if (!first.position.allFinite() || !first.velocity.allFinite() ||
+        !first.acceleration.allFinite() || !last.position.allFinite() ||
+        !last.velocity.allFinite() || !last.acceleration.allFinite())
+      {
+        reason = "non-finite polynomial evaluation";
+        return false;
+      }
       if (i > 0) {
         const auto previous = segments[i - 1].sample(segments[i - 1].duration);
         if ((previous.position - first.position).norm() > 1e-5 ||
@@ -113,33 +74,19 @@ public:
           return false;
         }
       }
-      // Acceleration is linear: convex norms reach their maximum at an endpoint.
-      if (!within(first.acceleration, limits.acceleration_xy, limits.acceleration_z) ||
-        !within(last.acceleration, limits.acceleration_xy, limits.acceleration_z))
-      {
-        reason = "acceleration exceeds flight envelope";
-        return false;
-      }
-      // Quadratic velocity Bezier hulls enclose all velocities, including between samples.
-      const Eigen::Vector3d middle =
-        s.coefficients.col(1) + s.coefficients.col(2) * s.duration;
-      if (!velocity_hull(first.velocity, middle, last.velocity,
-          limits.velocity_xy, limits.velocity_z, 0))
-      {
-        reason = "velocity exceeds flight envelope";
-        return false;
-      }
     }
     const auto end = segments.back().sample(segments.back().duration);
-    if ((end.position - goal).norm() > 0.01 || end.velocity.norm() > 0.02) {
+    if (reaches_goal && ((end.position - goal).norm() > 0.01 || end.velocity.norm() > 0.02)) {
       reason = "trajectory has no stationary endpoint at requested waypoint";
       return false;
     }
     segments_ = std::move(segments);
     duration_ = duration;
+    reaches_goal_ = reaches_goal;
     return true;
   }
 
+  /** Check reference continuity against the latest actual vehicle state. */
   bool can_join(const VehicleKinematics & actual, double position_tolerance,
     double velocity_tolerance) const
   {
@@ -203,21 +150,21 @@ public:
     s.coefficients.col(2) += 3.0 * local * s.coefficients.col(3);
     s.duration = std::max(0.0, s.duration - local);
     duration_ = std::max(0.0, duration_ - elapsed);
-    // 已在终点时保持静止；后续 VALIDATE 请求仍需要一个合法的正时长常值段。
+    // Complete endpoint holds are stationary; horizon endpoints retain native derivatives.
     if (duration_ == 0.0) {
-      s.coefficients.rightCols<3>().setZero();
+      if (reaches_goal_) {s.coefficients.rightCols<3>().setZero();}
       s.duration = duration_ = 1e-6;  // 1 微秒终点保持，不引入新的空间路径。
     }
     return elapsed;
   }
 
+  /** Evaluate the exact native p/v/a reference, holding completed endpoints. */
   ControlReference sample(double elapsed) const
   {
     if (segments_.empty()) {return ControlReference{};}
     if (elapsed >= duration_) {
       auto end = segments_.back().sample(segments_.back().duration);
-      end.velocity.setZero();
-      end.acceleration.setZero();
+      if (reaches_goal_) {end.velocity.setZero(); end.acceleration.setZero();}
       return end;
     }
     elapsed = std::max(0.0, elapsed);
@@ -228,10 +175,16 @@ public:
     return segments_.back().sample(segments_.back().duration);
   }
 
+  /** Report whether any polynomial segments are available. */
   bool empty() const {return segments_.empty();}
+  /** Return the remaining native trajectory duration in seconds. */
   double duration() const {return duration_;}
+  /** Expose native segments for visualization and review. */
   const std::vector<AvoidancePolynomial> & segments() const {return segments_;}
-  void clear() {segments_.clear(); duration_ = 0.0;}
+  /** Revoke the current trajectory and endpoint classification. */
+  void clear() {segments_.clear(); duration_ = 0.0; reaches_goal_ = false;}
+  /** Distinguish a final goal trajectory from an intermediate native plan. */
+  bool reaches_goal() const {return reaches_goal_;}
 
 private:
   /** 导数根将多项式切为单调区间；二分求根并保留重根处的分区点，含降阶/常值段。 */
@@ -268,27 +221,8 @@ private:
     return roots;
   }
 
-  static bool within(const Eigen::Vector3d & vector, double xy, double z)
-  {
-    constexpr double epsilon = 1e-7;  // 仅浮点算术容差，不扩大物理规划上限。
-    return vector.allFinite() && vector.head<2>().norm() <= xy + epsilon &&
-      std::abs(vector.z()) <= z + epsilon;
-  }
-
-  static bool velocity_hull(
-    const Eigen::Vector3d & a, const Eigen::Vector3d & b, const Eigen::Vector3d & c,
-    double xy, double z, unsigned depth)
-  {
-    if (!within(a, xy, z) || !within(c, xy, z)) {return false;}
-    if (within(b, xy, z)) {return true;}
-    // De Casteljau subdivision tightens the enclosure; unresolved hulls fail conservatively.
-    if (depth >= 16) {return false;}
-    const Eigen::Vector3d ab = 0.5 * (a + b), bc = 0.5 * (b + c), mid = 0.5 * (ab + bc);
-    return velocity_hull(a, ab, mid, xy, z, depth + 1) &&
-      velocity_hull(mid, bc, c, xy, z, depth + 1);
-  }
-
   std::vector<AvoidancePolynomial> segments_;
   double duration_{0.0};
+  bool reaches_goal_{false};
 };
 }  // namespace onboard_control

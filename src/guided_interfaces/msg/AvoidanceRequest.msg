@@ -1,7 +1,8 @@
-# 控制器到规划桥的 map/ROS 时间请求；request_id=0 只请求能力与会话心跳。
+# Goal lifecycle and line checks in map; zero ID is a capability heartbeat.
 uint8 PLAN=1
 uint8 CHECK_LINE=2
 uint8 VALIDATE_TRAJECTORY=3
+uint8 CANCEL=4
 std_msgs/Header header
 string controller_session
 uint64 task_revision

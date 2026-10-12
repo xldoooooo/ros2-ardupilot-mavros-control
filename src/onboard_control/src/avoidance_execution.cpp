@@ -1,6 +1,6 @@
 /**
  * @file avoidance_execution.cpp
- * @brief 航点避障请求关联、暂停恢复和三次轨迹执行；不包含地图或第二套控制器。
+ * @brief Native goal lifecycle, streaming cubic tracking and existing hold/LAND recovery.
  */
 #include "onboard_control/onboard_control_node.hpp"
 
@@ -15,6 +15,7 @@ namespace
 using Request = guided_interfaces::msg::AvoidanceRequest;
 using Result = guided_interfaces::msg::AvoidanceResult;
 
+/** Convert an ENU vector to the wire position type. */
 geometry_msgs::msg::Point point(const Eigen::Vector3d & v)
 {
   geometry_msgs::msg::Point p;
@@ -23,6 +24,28 @@ geometry_msgs::msg::Point point(const Eigen::Vector3d & v)
 }
 }  // namespace
 
+/** Copy generator shaping while using one mode-specific motion envelope. */
+ReferenceGeneratorParameters OnboardControlNode::waypoint_reference_parameters() const
+{
+  auto parameters = reference_generator_parameters_;
+  if (waypoint_flight_strategy_ == 0) {return parameters;}
+  const auto apply = [this](auto & profile) {
+    profile.max_velocity_xy = avoidance_motion_limits_[0];
+    profile.max_velocity_z = avoidance_motion_limits_[1];
+    profile.max_acceleration_xy = avoidance_motion_limits_[2];
+    profile.max_acceleration_z = avoidance_motion_limits_[3];
+  };
+  apply(parameters.second_order);
+  apply(parameters.trapezoidal);
+  apply(parameters.s_curve);
+  parameters.trapezoidal.max_deceleration_xy = avoidance_motion_limits_[2];
+  parameters.trapezoidal.max_deceleration_z = avoidance_motion_limits_[3];
+  parameters.s_curve.max_deceleration_xy = avoidance_motion_limits_[2];
+  parameters.s_curve.max_deceleration_z = avoidance_motion_limits_[3];
+  return parameters;
+}
+
+/** Preserve the permitted strategy and tracking combinations. */
 bool OnboardControlNode::validate_waypoint_configuration(
   std::uint8_t strategy, std::uint8_t generator, std::uint8_t tracking,
   std::string & reason) const
@@ -42,6 +65,7 @@ bool OnboardControlNode::validate_waypoint_configuration(
   return true;
 }
 
+/** Capability heartbeats never grant permission to execute a trajectory. */
 bool OnboardControlNode::avoidance_ready(const SteadyTime & now) const
 {
   // Heartbeat is capability information only; it never grants a trajectory execution permit.
@@ -50,8 +74,18 @@ bool OnboardControlNode::avoidance_ready(const SteadyTime & now) const
     std::chrono::duration<double>(now - avoidance_heartbeat_time_).count() <= 2.0;
 }
 
+/** Cancel the old native goal before advancing the local task identity. */
 void OnboardControlNode::reset_avoidance()
 {
+  if (avoidance_goal_ && avoidance_request_publisher_) {
+    auto cancel = *avoidance_goal_;
+    cancel.header.stamp = get_clock()->now();
+    cancel.mode = Request::CANCEL;
+    avoidance_request_publisher_->publish(cancel);
+  }
+  avoidance_goal_.reset();
+  avoidance_goal_acknowledged_ = false;
+  avoidance_plan_sequence_ = 0;
   ++avoidance_task_revision_;
   avoidance_pending_.reset();
   avoidance_trajectory_.clear();
@@ -64,6 +98,7 @@ void OnboardControlNode::reset_avoidance()
   publish_avoidance_path();
 }
 
+/** Brake at the current position while retaining the waypoint and native goal. */
 void OnboardControlNode::begin_avoidance_wait(
   const SteadyTime & now, const std::string & reason)
 {
@@ -91,6 +126,7 @@ void OnboardControlNode::begin_avoidance_wait(
   publish_avoidance_path();
 }
 
+/** Deliver or retry goals; native timers and collisions own autonomous replanning. */
 void OnboardControlNode::avoidance_tick()
 {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -123,52 +159,46 @@ void OnboardControlNode::avoidance_tick()
   {
     return;
   }
+  if (!avoidance_ready(steady_now)) {return;}
+  if (waypoint_flight_strategy_ == 1 && avoidance_goal_acknowledged_) {return;}
   if (avoidance_pending_) {
     if (std::chrono::duration<double>(steady_now - avoidance_pending_->sent).count() <=
       avoidance_result_timeout_seconds_) {return;}
     avoidance_pending_.reset();
-    begin_avoidance_wait(steady_now, "规划请求超时或组件断流");
+    begin_avoidance_wait(steady_now, "目标投递超时或组件断流");
   }
   Request request;
+  if (waypoint_flight_strategy_ == 1 && avoidance_goal_) {
+    // A retry retains the same target token so SetGoal can acknowledge it idempotently.
+    request = *avoidance_goal_;
+  } else {
+    request.controller_session = avoidance_controller_session_;
+    request.task_revision = avoidance_task_revision_;
+    request.waypoint_index = static_cast<std::uint32_t>(waypoint_index_ + 1);
+    request.request_id = ++avoidance_request_sequence_;
+    request.mode = waypoint_flight_strategy_ == 2 ? Request::CHECK_LINE : Request::PLAN;
+  }
   request.header.stamp = get_clock()->now();
   request.header.frame_id = "map";
-  request.controller_session = avoidance_controller_session_;
-  request.task_revision = avoidance_task_revision_;
-  request.waypoint_index = static_cast<std::uint32_t>(waypoint_index_ + 1);
-  request.request_id = ++avoidance_request_sequence_;
-  request.mode = waypoint_flight_strategy_ == 2 ? Request::CHECK_LINE :
-    (avoidance_trajectory_started_ ? Request::VALIDATE_TRAJECTORY : Request::PLAN);
   request.start = point(vehicle_.position);
   request.velocity.x = vehicle_.velocity.x();
   request.velocity.y = vehicle_.velocity.y();
   request.velocity.z = vehicle_.velocity.z();
   request.goal = waypoints_[waypoint_index_].position;
-  if (request.mode == Request::VALIDATE_TRAJECTORY) {
-    request.trajectory_elapsed = std::min(avoidance_trajectory_.duration(),
-      std::chrono::duration<double>(steady_now - *avoidance_trajectory_started_).count());
-    request.segments.reserve(avoidance_trajectory_.segments().size());
-    for (const auto & segment : avoidance_trajectory_.segments()) {
-      guided_interfaces::msg::PolynomialSegment wire;
-      wire.duration = segment.duration;
-      for (std::size_t k = 0; k < 4; ++k) {
-        wire.x[k] = segment.coefficients(0, k);
-        wire.y[k] = segment.coefficients(1, k);
-        wire.z[k] = segment.coefficients(2, k);
-      }
-      request.segments.push_back(wire);
-    }
-  }
+  if (request.mode == Request::PLAN) {avoidance_goal_ = request;}
   avoidance_pending_ = AvoidancePending{request.request_id, request.mode, steady_now};
   avoidance_request_publisher_->publish(request);
 }
 
+/** Accept fresh, ordered native updates without requiring a pending PLAN request. */
 void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
 {
   // Polynomial validation occurs outside the control mutex; message work cannot hold a tick.
   AvoidanceTrajectory candidate;
   std::string trajectory_error;
   std::vector<AvoidancePolynomial> segments;
-  if (message->mode == Request::PLAN && message->status == Result::REACH_END) {
+  if (message->mode == Request::PLAN &&
+    (message->status == Result::REACH_END || message->status == Result::REACH_HORIZON)) {
     if (message->segments.size() <= 256) {
       segments.reserve(message->segments.size());
       for (const auto & wire : message->segments) {
@@ -183,7 +213,7 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
       }
     }
   }
-  // Read only the current target under the mutex, then check numerical envelope independently.
+  // Read the current target briefly, then validate polynomial integrity independently.
   Eigen::Vector3d target = Eigen::Vector3d::Zero();
   {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -192,40 +222,72 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
       target = {p.x, p.y, p.z};
     }
   }
-  if (message->mode == Request::PLAN && message->status == Result::REACH_END) {
-    candidate.assign_retimed(std::move(segments), target, avoidance_limits_, trajectory_error);
+  if (message->mode == Request::PLAN &&
+    (message->status == Result::REACH_END || message->status == Result::REACH_HORIZON)) {
+    candidate.assign(std::move(segments), target,
+      message->status == Result::REACH_END, trajectory_error);
   }
 
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const auto now = SteadyClock::now();
   if (message->request_id == 0) {
     if (message->bridge_session.empty() || message->header.frame_id != "map") {return;}
+    const std::array<double, 4> limits{message->max_velocity_xy, message->max_velocity_z,
+      message->max_acceleration_xy, message->max_acceleration_z};
+    const bool valid_limits = std::all_of(limits.begin(), limits.end(),
+      [](double value) {return std::isfinite(value) && value > 0.0;});
+    const bool limits_changed = valid_limits && limits != avoidance_motion_limits_;
     const bool changed = !avoidance_bridge_session_.empty() &&
       (avoidance_bridge_session_ != message->bridge_session ||
       avoidance_coordinate_revision_ != message->coordinate_revision ||
       (!avoidance_planner_session_.empty() && !message->planner_session.empty() &&
-      avoidance_planner_session_ != message->planner_session));
+      avoidance_planner_session_ != message->planner_session) || limits_changed);
     avoidance_bridge_session_ = message->bridge_session;
     avoidance_coordinate_revision_ = message->coordinate_revision;
     if (!message->planner_session.empty()) {avoidance_planner_session_ = message->planner_session;}
-    avoidance_component_ready_ = message->ready;
+    avoidance_component_ready_ = message->ready && valid_limits;
+    if (valid_limits) {avoidance_motion_limits_ = limits;}
     avoidance_heartbeat_time_ = now;
     if (changed && waypoint_flight_strategy_ != 0 && active_task_ == ActiveTask::kWaypoint) {
       avoidance_pending_.reset();
-      begin_avoidance_wait(now, "规划进程/坐标版本变化，撤销旧轨迹");
+      avoidance_goal_acknowledged_ = false;
+      avoidance_plan_sequence_ = 0;
+      begin_avoidance_wait(now, "规划进程/坐标/限额变化，撤销旧轨迹");
+      if (valid_limits && waypoint_flight_strategy_ == 2) {
+        reference_generator_ = make_reference_generator(
+          active_reference_generator_, waypoint_reference_parameters());
+      }
     }
     return;
   }
   if (active_task_ != ActiveTask::kWaypoint || waypoint_flight_strategy_ == 0 ||
-    avoidance_land_latched_ || !avoidance_pending_ ||
+    avoidance_land_latched_ ||
     message->controller_session != avoidance_controller_session_ ||
     message->task_revision != avoidance_task_revision_ ||
-    message->waypoint_index != waypoint_index_ + 1 ||
-    message->request_id != avoidance_pending_->id || message->mode != avoidance_pending_->mode)
+    message->waypoint_index != waypoint_index_ + 1)
   {
     return;
   }
-  const auto sent = avoidance_pending_->sent;
+  const bool native_plan = waypoint_flight_strategy_ == 1 && message->mode == Request::PLAN &&
+    avoidance_goal_ && message->request_id == avoidance_goal_->request_id;
+  const bool line_result = waypoint_flight_strategy_ == 2 && avoidance_pending_ &&
+    message->request_id == avoidance_pending_->id && message->mode == Request::CHECK_LINE;
+  if (!native_plan && !line_result) {return;}
+  const bool identity = message->bridge_session == avoidance_bridge_session_ &&
+    message->coordinate_revision == avoidance_coordinate_revision_ &&
+    message->header.frame_id == "map" && !message->planner_session.empty();
+  if (!identity) {return;}
+  if (native_plan) {
+    if (message->plan_sequence == 0) {
+      // A local adapter failure never acknowledges a goal that the native planner did not accept.
+      avoidance_goal_acknowledged_ = false;
+      begin_avoidance_wait(now, message->detail);
+      return;
+    }
+    if (message->plan_sequence <= avoidance_plan_sequence_) {return;}
+    avoidance_plan_sequence_ = message->plan_sequence;
+    avoidance_goal_acknowledged_ = true;
+  }
   avoidance_pending_.reset();
   // Result callbacks must honor the same deadline as the control tick; a late success
   // cannot clear the wait just before the next tick would otherwise latch LAND.
@@ -237,20 +299,21 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
     fail_active_task("避障等待超时，当前航点失败，锁存原地LAND", true);
     return;
   }
-  const bool fresh = std::chrono::duration<double>(now - sent).count() <=
-    avoidance_result_timeout_seconds_;
-  const bool identity = message->bridge_session == avoidance_bridge_session_ &&
-    message->coordinate_revision == avoidance_coordinate_revision_ &&
-    message->header.frame_id == "map" && !message->planner_session.empty();
-  if (!fresh || !identity || !message->ready || message->status != Result::REACH_END) {
-    begin_avoidance_wait(now, !fresh ? "规划结果超龄" :
-      (!identity ? "规划坐标或会话不匹配" : message->detail));
+  const double search_age = (get_clock()->now() - rclcpp::Time(message->header.stamp)).seconds();
+  const bool fresh = std::isfinite(search_age) && search_age >= -avoidance_result_timeout_seconds_ &&
+    search_age <= avoidance_result_timeout_seconds_;
+  const bool executable = message->status == Result::REACH_END ||
+    (native_plan && message->status == Result::REACH_HORIZON);
+  if (!fresh || !message->ready || !executable) {
+    begin_avoidance_wait(now, !fresh ? "规划结果超龄" : message->detail);
     return;
   }
   if (!avoidance_planner_session_.empty() &&
     avoidance_planner_session_ != message->planner_session)
   {
     avoidance_planner_session_ = message->planner_session;
+    avoidance_goal_acknowledged_ = false;
+    avoidance_plan_sequence_ = 0;
     begin_avoidance_wait(now, "规划器重启，等待重新接入");
     return;
   }
@@ -261,11 +324,20 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
     if (candidate.empty() || !candidate.can_join(vehicle_, avoidance_join_position_tolerance_,
       avoidance_join_velocity_tolerance_))
     {
-      begin_avoidance_wait(now, candidate.empty() ? trajectory_error : "规划最近点p/v无法平稳接入");
+      std::string reason = trajectory_error;
+      if (!candidate.empty()) {
+        const auto join = candidate.sample(0.0);
+        reason = "规划最近点p/v无法平稳接入，dp=" +
+          std::to_string((join.position - vehicle_.position).norm()) + " m, dv=" +
+          std::to_string((join.velocity - vehicle_.velocity).norm()) + " m/s";
+      }
+      begin_avoidance_wait(now, reason);
       return;
     }
   }
-  avoidance_last_valid_ = sent;
+  // Include solver age as well as the local receive interval when the stream stops.
+  avoidance_last_valid_ = now - std::chrono::duration_cast<SteadyClock::duration>(
+    std::chrono::duration<double>(std::max(0.0, search_age)));
   if (avoidance_wait_started_) {
     const bool stopped = vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_;
     if (!stopped) {avoidance_clear_since_.reset(); return;}
@@ -294,11 +366,15 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
   }
 }
 
+/** Evaluate native coefficients and hold before an unsupported horizon tail. */
 bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, double dt)
 {
-  if (!avoidance_ready(now) || !avoidance_last_valid_ ||
+  // Native replanning intentionally stops near the goal; an accepted finite curve remains valid
+  // until a native failure or capability loss. Straight-line permission still needs periodic checks.
+  const bool line_check_expired = waypoint_flight_strategy_ == 2 && avoidance_last_valid_ &&
     std::chrono::duration<double>(now - *avoidance_last_valid_).count() >
-    avoidance_result_timeout_seconds_)
+    avoidance_result_timeout_seconds_;
+  if (!avoidance_ready(now) || !avoidance_last_valid_ || line_check_expired)
   {
     // Repeated failures do not move the hover position or restart the waiting deadline.
     if (!avoidance_wait_started_ || avoidance_last_valid_) {
@@ -323,12 +399,26 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
     active_reference_phase_ = generated.phase;
   } else if (avoidance_trajectory_started_ && !avoidance_trajectory_.empty()) {
     const double elapsed = std::chrono::duration<double>(now - *avoidance_trajectory_started_).count();
+    if (!avoidance_trajectory_.reaches_goal()) {
+      const auto native = avoidance_trajectory_.sample(elapsed);
+      // Use the same avoidance acceleration envelope, with one result interval of reserve.
+      const double stop_time = std::max(
+        std::max(vehicle_.velocity.head<2>().norm(), native.velocity.head<2>().norm()) /
+        avoidance_motion_limits_[2],
+        std::max(std::abs(vehicle_.velocity.z()), std::abs(native.velocity.z())) /
+        avoidance_motion_limits_[3]) + avoidance_result_timeout_seconds_;
+      if (avoidance_trajectory_.duration() - elapsed <= stop_time) {
+        begin_avoidance_wait(now, "中间轨迹末段未续接，提前制动等待原生重规划");
+        return false;
+      }
+    }
     const double previous_yaw = reference_.yaw;
     reference_ = avoidance_trajectory_.sample(elapsed);
     const double difference = normalize_angle(waypoints_[waypoint_index_].yaw - previous_yaw);
     target_yaw_rate_ = std::clamp(difference / std::max(dt, 1e-6), -max_yaw_rate_, max_yaw_rate_);
     reference_.yaw = normalize_angle(previous_yaw + target_yaw_rate_ * dt);
-    active_reference_phase_ = elapsed >= avoidance_trajectory_.duration() ?
+    active_reference_phase_ = avoidance_trajectory_.reaches_goal() &&
+      elapsed >= avoidance_trajectory_.duration() ?
       ReferencePhase::kComplete : ReferencePhase::kCruising;
   } else {
     begin_avoidance_wait(now, "无完整可执行轨迹");
@@ -342,6 +432,7 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
   return true;
 }
 
+/** Publish the currently executable trajectory, explicitly clearing revoked plans. */
 void OnboardControlNode::publish_avoidance_path()
 {
   if (!avoidance_path_publisher_) {return;}

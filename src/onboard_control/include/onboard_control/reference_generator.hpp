@@ -42,7 +42,7 @@ enum class ReferencePhase : std::uint8_t
   kComplete = 6,
 };
 
-/** 二阶命令滤波器参数；每项均从 control.yaml 独立加载。 */
+/** 二阶滤波参数；直线限额继承公共组，避障限额继承原生规划器。 */
 struct SecondOrderFilterParameters
 {
   double wn_xy{0.8};
@@ -81,7 +81,7 @@ struct JerkLimitedSCurveParameters
   double max_jerk_z{0.08};
 };
 
-/** 所有参考方法的配置集合；方法间不共享可调运动学参数。 */
+/** 参考方法配置集合；各方法保留形状参数，运动限额按飞行策略选择。 */
 struct ReferenceGeneratorParameters
 {
   SecondOrderFilterParameters second_order;

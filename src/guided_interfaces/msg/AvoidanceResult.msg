@@ -1,4 +1,4 @@
-# 规划桥能力心跳和完整请求结果；只有 REACH_END 可携带已验证的执行轨迹。
+# Native planning stream and line-query replies; horizon segments are intermediate references.
 uint8 REACH_HORIZON=1
 uint8 REACH_END=2
 uint8 NO_PATH=3
@@ -14,11 +14,18 @@ string controller_session
 uint64 task_revision
 uint32 waypoint_index
 uint64 request_id
+# Monotonic native stream sequence; zero for heartbeats or local goal-delivery failures.
+uint64 plan_sequence
 uint8 mode
 string bridge_session
 string planner_session
 uint64 coordinate_revision
 bool ready
+# Resolved native limits: horizontal norm and absolute vertical component.
+float64 max_velocity_xy
+float64 max_velocity_z
+float64 max_acceleration_xy
+float64 max_acceleration_z
 uint8 status
 string detail
 guided_interfaces/PolynomialSegment[] segments

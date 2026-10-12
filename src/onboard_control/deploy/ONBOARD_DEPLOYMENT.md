@@ -437,18 +437,13 @@ bash scripts/onboard/start_avoidance.sh
 `bash scripts/onboard/stop_avoidance.sh` 停止。尚未自动安装规划 systemd 服务。
 直线策略无需这两个进程；另外两种策略仅在规划组件及输入就绪时允许起飞和下发航点。
 
-默认接入169当前使用的 `/odin1/cloud_slam_down` 与 `/odin1/odometry_highfreq`，要求前者为单帧、已经在 `odom`
-注册的当前扫描，不接受累计地图伪装成观测射线。Tag 修正保持未应用；坐标校验读取 extnav
-同会话状态、杆臂和最终 FCU 位姿，不修改 Odin 仰角或原 Tag 外参。未知区域、断流、坐标变化
-或地图容量耗尽都进入等待，15 s 超时请求并持续确认 LAND。射线覆盖只判定离散中心线，
-尚无完整机体扫掠覆盖和动态障碍预测，不能把服务就绪等同于实际环境的航线可执行。
+默认点云为 `/odin1/cloud_slam_down`，实际 FCU 状态为 `/mavros/local_position/odom`；桥只将状态/目标转换到 Odin 世界坐标并转发原生结果。Tag 修正保持未应用，沿用 extnav 权威杆臂，不修改 Odin 仰角或 Tag 外参。
 
-RViz 的规划轨迹默认显示；点云默认关闭。需要限量预览时启动参数追加 `preview:=true`，
-然后勾选 RViz Obstacle Preview；输出最多 10000 点、2 Hz，只有订阅者存在时生成预览。
+地图采用原生 dual_tree，目标、时间、位移和碰撞触发均由规划节点管理；未观测区域可通过检查。无可用轨迹或输入故障时等待，15 s 超时请求并持续确认 LAND。SetGoal 支持目标身份、幂等与取消，任务完成后停止该目标的规划但保留地图。
+
+RViz 轨迹默认显示；点云默认关闭。`preview:=true` 仅限量转发原生 filtered_cloud，最多 10000 XYZ 点/2 Hz，实际订阅时才生成。
+
+直线模式在control.yaml独立配置straight_max_velocity_xy/z=1.0/0.2、straight_max_acceleration_xy/z=0.35/0.15。自主避障和遇障悬停使用独立库search.max_vel_xy/z=1.0/0.2、search.max_acc_xy/z=2.0/2.0；原生结果发布实际解析后的四限额，控制节点直接采用，普通原语与末端曲线直接满足限额。PD+DOB输出4/4保留。控制器保留原段时间及 PD+DOB，只做最近点裁剪，不再保存重复包线或统一放慢曲线。构建脚本也重建 onboard 消费端，旧接口安装不能混用；原生 YAML 修改后需重新构建/重启。
+
 实机检查始终保持未解锁，起飞和解锁只由用户手动完成。
-
-2026-10-12恢复版保留169旧规划核心及现场调参（0.25m净空、100m horizon、0.1m
-resolution/voxel_size、2m/s与2m/s²轴向搜索上限）。正式入口加载独立库YAML，
-不再使用Task38原硬编码搜索参数，也不恢复连续距离改写。服务适配层复用旧 `isSafe`；
-控制器只对超出原飞行包线的轨迹统一放慢时间，保持空间曲线、原PD+DOB与接入检查。
 完整说明见 `src/avoidance_bridge/README.md`；两工作区均需重建，不能只更新地面站UI。

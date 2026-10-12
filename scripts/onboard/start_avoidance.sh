@@ -19,9 +19,12 @@ planner_install_version="$(runtime_package_manifest_version "${planner_root}/ins
 [[ "${planner_source_version}" == "${planner_install_version}" ]] || {
   echo 'Planner source/install version mismatch; rebuild the independent workspace.' >&2; exit 1;
 }
-# The preserved legacy package version alone cannot detect an install missing the restored service.
+# Manifest versions alone cannot detect an install missing the goal lifecycle interface.
 ros2 interface show path_planning/srv/PlanMotion >/dev/null || {
   echo 'Planner install lacks PlanMotion; rebuild the independent workspace.' >&2; exit 1;
+}
+ros2 interface show path_planning/srv/SetGoal >/dev/null || {
+  echo 'Planner install lacks SetGoal; rebuild the independent workspace.' >&2; exit 1;
 }
 if pgrep -f '(^|/)avoidance_bridge_node( |$)' >/dev/null; then
   echo 'Avoidance bridge is already running.' >&2; exit 1

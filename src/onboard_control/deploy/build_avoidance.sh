@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Independently build the planner and map adapter; never start hardware or change running services.
+# Build the native planner, adapter and consuming controller without starting hardware/services.
 set -Eeuo pipefail
 project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 planner_root="${AVOIDANCE_WORKSPACE:-${project_root%/*}/dyn_small_obs_avoidance-ros2}"
@@ -17,8 +17,8 @@ runtime_source_setup "$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")"
 runtime_source_setup "${planner_root}/install/setup.bash"
 (
   cd "${project_root}"
-  colcon build --base-paths src --packages-select guided_interfaces correction_interfaces avoidance_bridge \
+  colcon build --base-paths src --packages-select guided_interfaces correction_interfaces avoidance_bridge onboard_control guided_sim \
     --parallel-workers 2 --cmake-force-configure \
     --cmake-args -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 )
-echo 'Avoidance build complete. Flight controller package is built separately; no component was started.'
+echo 'Native avoidance and consuming controller build complete; no component was started.'

@@ -205,7 +205,7 @@ def main():
         if strategy is not Strategy.STRAIGHT:
             launch_env = os.environ.copy()
             planner_setup = shlex.quote(str(ROOT.parent / "dyn_small_obs_avoidance-ros2/install/setup.bash"))
-            command = f"source /opt/ros/jazzy/setup.bash && source {planner_setup} && source install/setup.bash && exec ros2 launch avoidance_bridge avoidance.launch.py coordinate_mode:=identity cloud:=/task38/scan odom:=/task38/scan_odom"
+            command = f"source /opt/ros/jazzy/setup.bash && source {planner_setup} && source install/setup.bash && exec ros2 launch avoidance_bridge avoidance.launch.py coordinate_mode:=identity cloud:=/task38/scan odom:=/mavros/local_position/odom"
             bridge = subprocess.Popen(["bash", "-c", command], cwd=ROOT, env=launch_env,
                                       stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             wait(lambda: controller.snapshot().avoidance_ready, 30, "planner readiness")

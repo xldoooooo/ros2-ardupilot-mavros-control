@@ -102,23 +102,15 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   avoidance_resume_seconds_ = declare_parameter<double>("avoidance_resume_seconds", 0.4);
   avoidance_join_position_tolerance_ = declare_parameter<double>("avoidance_join_position_tolerance", 0.08);
   avoidance_join_velocity_tolerance_ = declare_parameter<double>("avoidance_join_velocity_tolerance", 0.08);
-  avoidance_limits_.velocity_xy = declare_parameter<double>("avoidance_max_velocity_xy", 1.0);
-  avoidance_limits_.velocity_z = declare_parameter<double>("avoidance_max_velocity_z", 0.2);
-  avoidance_limits_.acceleration_xy = declare_parameter<double>("avoidance_max_acceleration_xy", 0.35);
-  avoidance_limits_.acceleration_z = declare_parameter<double>("avoidance_max_acceleration_z", 0.15);
   for (double value : {avoidance_wait_timeout_seconds_, avoidance_result_timeout_seconds_,
-    avoidance_resume_seconds_, avoidance_join_position_tolerance_, avoidance_join_velocity_tolerance_,
-    avoidance_limits_.velocity_xy, avoidance_limits_.velocity_z,
-    avoidance_limits_.acceleration_xy, avoidance_limits_.acceleration_z})
+    avoidance_resume_seconds_, avoidance_join_position_tolerance_, avoidance_join_velocity_tolerance_})
   {
     if (!std::isfinite(value) || value <= 0.0) {
-      throw std::invalid_argument("avoidance timing and flight limits must be positive and finite");
+      throw std::invalid_argument("avoidance timing and join limits must be positive and finite");
     }
   }
-  if (avoidance_limits_.velocity_xy > 1.0 ||
-    avoidance_wait_timeout_seconds_ <= avoidance_result_timeout_seconds_)
-  {
-    throw std::invalid_argument("avoidance speed must be <=1m/s and wait must exceed result timeout");
+  if (avoidance_wait_timeout_seconds_ <= avoidance_result_timeout_seconds_) {
+    throw std::invalid_argument("avoidance wait must exceed result timeout");
   }
   std::random_device random;
   avoidance_controller_session_ = std::to_string(random()) + "-" +
@@ -183,18 +175,23 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     declare_parameter<double>("trajectory_dob_L_z", 0.3);
 
   auto & filter = reference_generator_parameters_.second_order;
+  // Straight defaults are shared; legacy method overrides remain available for comparisons.
+  const double straight_velocity_xy = declare_parameter<double>("straight_max_velocity_xy", 1.0);
+  const double straight_velocity_z = declare_parameter<double>("straight_max_velocity_z", 0.2);
+  const double straight_acceleration_xy = declare_parameter<double>("straight_max_acceleration_xy", 0.35);
+  const double straight_acceleration_z = declare_parameter<double>("straight_max_acceleration_z", 0.15);
   filter.wn_xy = declare_parameter<double>("second_order_filter_wn_xy", 0.8);
   filter.zeta_xy = declare_parameter<double>("second_order_filter_zeta_xy", 1.1);
   filter.wn_z = declare_parameter<double>("second_order_filter_wn_z", 0.6);
   filter.zeta_z = declare_parameter<double>("second_order_filter_zeta_z", 1.1);
   filter.max_velocity_xy =
-    declare_parameter<double>("second_order_filter_max_velocity_xy", 0.30);
+    declare_parameter<double>("second_order_filter_max_velocity_xy", straight_velocity_xy);
   filter.max_velocity_z =
-    declare_parameter<double>("second_order_filter_max_velocity_z", 0.15);
+    declare_parameter<double>("second_order_filter_max_velocity_z", straight_velocity_z);
   filter.max_acceleration_xy =
-    declare_parameter<double>("second_order_filter_max_acceleration_xy", 0.18);
+    declare_parameter<double>("second_order_filter_max_acceleration_xy", straight_acceleration_xy);
   filter.max_acceleration_z =
-    declare_parameter<double>("second_order_filter_max_acceleration_z", 0.10);
+    declare_parameter<double>("second_order_filter_max_acceleration_z", straight_acceleration_z);
   filter.completion_position_tolerance =
     declare_parameter<double>("second_order_filter_completion_position_tolerance", 0.005);
   filter.completion_velocity_tolerance =
@@ -202,13 +199,13 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 
   auto & trapezoidal = reference_generator_parameters_.trapezoidal;
   trapezoidal.max_velocity_xy =
-    declare_parameter<double>("trapezoidal_max_velocity_xy", 0.30);
+    declare_parameter<double>("trapezoidal_max_velocity_xy", straight_velocity_xy);
   trapezoidal.max_velocity_z =
-    declare_parameter<double>("trapezoidal_max_velocity_z", 0.15);
+    declare_parameter<double>("trapezoidal_max_velocity_z", straight_velocity_z);
   trapezoidal.max_acceleration_xy =
-    declare_parameter<double>("trapezoidal_max_acceleration_xy", 0.18);
+    declare_parameter<double>("trapezoidal_max_acceleration_xy", straight_acceleration_xy);
   trapezoidal.max_acceleration_z =
-    declare_parameter<double>("trapezoidal_max_acceleration_z", 0.10);
+    declare_parameter<double>("trapezoidal_max_acceleration_z", straight_acceleration_z);
   trapezoidal.max_deceleration_xy =
     declare_parameter<double>("trapezoidal_max_deceleration_xy", 0.20);
   trapezoidal.max_deceleration_z =
@@ -216,13 +213,13 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 
   auto & s_curve = reference_generator_parameters_.s_curve;
   s_curve.max_velocity_xy =
-    declare_parameter<double>("s_curve_max_velocity_xy", 0.30);
+    declare_parameter<double>("s_curve_max_velocity_xy", straight_velocity_xy);
   s_curve.max_velocity_z =
-    declare_parameter<double>("s_curve_max_velocity_z", 0.15);
+    declare_parameter<double>("s_curve_max_velocity_z", straight_velocity_z);
   s_curve.max_acceleration_xy =
-    declare_parameter<double>("s_curve_max_acceleration_xy", 0.18);
+    declare_parameter<double>("s_curve_max_acceleration_xy", straight_acceleration_xy);
   s_curve.max_acceleration_z =
-    declare_parameter<double>("s_curve_max_acceleration_z", 0.10);
+    declare_parameter<double>("s_curve_max_acceleration_z", straight_acceleration_z);
   s_curve.max_deceleration_xy =
     declare_parameter<double>("s_curve_max_deceleration_xy", 0.20);
   s_curve.max_deceleration_z =
@@ -1204,7 +1201,7 @@ void OnboardControlNode::start_waypoint_task(
   active_reference_generator_ = reference_generator;
   active_tracking_controller_ = tracking_controller;
   reference_generator_ = make_reference_generator(
-    active_reference_generator_, reference_generator_parameters_);
+    active_reference_generator_, waypoint_reference_parameters());
   generator_waypoint_initialized_ = false;
   controller_engaged_ = true;
   clear_failsafe_locked();
@@ -2009,7 +2006,7 @@ void OnboardControlNode::update_waypoint_executor(
   } else {
     if (!update_avoidance_reference(now, dt_seconds)) {return;}
     reference_finished = waypoint_flight_strategy_ == 1 ?
-      (avoidance_trajectory_started_ &&
+      (avoidance_trajectory_.reaches_goal() && avoidance_trajectory_started_ &&
       std::chrono::duration<double>(now - *avoidance_trajectory_started_).count() >=
       avoidance_trajectory_.duration()) : active_reference_phase_ == ReferencePhase::kComplete;
   }

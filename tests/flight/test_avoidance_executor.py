@@ -1,4 +1,4 @@
-"""Real onboard executor regressions, including delayed-path joining, on localhost DDS doubles."""
+"""Real onboard executor regressions, including native-stream path joining, on localhost DDS doubles."""
 import os
 import subprocess
 import time
@@ -46,10 +46,14 @@ def avoidance_node(tmp_path, monkeypatch):
         height = 1.
         position_x = 0.
         velocity_x = 0.
+        motion_limits = (1., .2, 2., 2.)
 
         def __init__(self):
             self.status, self.results, self.requests, self.paths = [], [], [], []
             self.delayed_replies = []
+            self.active_plan = None
+            self.plan_sequences = {}
+            self.last_plan_result = 0.
             self.last_bridge_heartbeat = 0.
             self.node, self.executor, self.mavros = node, executor, mavros
             self.pubs = {name: node.create_publisher(kind, mavros + "/" + name, 10)
@@ -98,6 +102,9 @@ def avoidance_node(tmp_path, monkeypatch):
                 if now >= deadline:
                     self.reply.publish(result)
                     self.delayed_replies.remove((deadline, result))
+            if self.active_plan and now - self.last_plan_result >= .1:
+                self.emit_result(self.active_plan)
+                self.last_plan_result = now
             for name, value in [("GUID_OPTIONS", 8), ("MOT_THST_HOVER", .22)]:
                 event = ParamEvent(param_id=name)
                 event.value.type = 2 if isinstance(value, int) else 3
@@ -114,17 +121,34 @@ def avoidance_node(tmp_path, monkeypatch):
                 self.heartbeat.publish(heartbeat)
 
         def result(self, request=None):
-            result = AvoidanceResult(bridge_session="bridge-test", planner_session="planner-test",
+            result = AvoidanceResult(max_velocity_xy=self.motion_limits[0],
+                                     max_velocity_z=self.motion_limits[1],
+                                     max_acceleration_xy=self.motion_limits[2],
+                                     max_acceleration_z=self.motion_limits[3],
+                                     bridge_session="bridge-test", planner_session="planner-test",
                                      coordinate_revision=1, ready=True, status=AvoidanceResult.REACH_END)
             result.header.frame_id = "map"
             result.header.stamp = node.get_clock().now().to_msg()
             if request:
+                self.plan_sequences[request.request_id] = self.plan_sequences.get(request.request_id, 0) + 1
+                result.plan_sequence = self.plan_sequences[request.request_id]
                 for name in ("controller_session", "task_revision", "waypoint_index", "request_id", "mode"):
                     setattr(result, name, getattr(request, name))
             return result
 
         def plan(self, request):
+            """Keep PLAN active; CANCEL revokes it without creating a fictitious trajectory."""
             self.requests.append((time.monotonic(), request))
+            if request.mode == request.CANCEL:
+                if self.active_plan and request.request_id == self.active_plan.request_id:
+                    self.active_plan = None
+                return
+            if request.mode == request.PLAN:
+                self.active_plan = request
+            self.emit_result(request)
+
+        def emit_result(self, request):
+            """Emulate independent native results, preserving one request identity."""
             if self.policy == "silent":
                 return
             result = self.result(request)
@@ -136,13 +160,22 @@ def avoidance_node(tmp_path, monkeypatch):
                 result.request_id += 10000
             elif self.policy == "delayed_curve" and request.mode == request.PLAN:
                 from guided_interfaces.msg import PolynomialSegment
-                # 原规划从 x=0 开始；回包时飞机已向前0.24m，旧起点接入必须失败。
+                # The original prefix is behind the current measured position at delivery.
                 curve = PolynomialSegment(duration=10., x=[0., .12, -.006, 0.],
                                           y=[0., 0., 0., 0.], z=[1., 0., 0., 0.])
                 result.segments = [curve]
                 self.position_x, self.velocity_x = .24, .10
                 self.delayed_replies.append((time.monotonic() + .05, result))
                 return
+            elif request.mode == request.PLAN:
+                from guided_interfaces.msg import PolynomialSegment
+                speed = .05
+                duration = 2. * (request.goal.x - self.position_x) / speed
+                result.segments = [PolynomialSegment(
+                    duration=duration,
+                    x=[self.position_x, speed, -speed / (2. * duration), 0.],
+                    y=[0., 0., 0., 0.],
+                    z=[self.height, 0., 0., 0.])]
             self.reply.publish(result)
 
         def spin(self, seconds):
@@ -155,7 +188,10 @@ def avoidance_node(tmp_path, monkeypatch):
             while not predicate() and time.monotonic() < deadline:
                 executor.spin_once(timeout_sec=.005)
             assert predicate(), ([r.message for r in self.results[-8:]],
-                                 self.status[-1] if self.status else "no status")
+                                 {name: getattr(self.status[-1], name) for name in
+                                  ("avoidance_state", "avoidance_detail", "control_mode",
+                                   "reference_phase", "target_position", "position")}
+                                 if self.status else "no status")
 
         def request(self, kind):
             self.sequence += 1
@@ -212,49 +248,75 @@ def avoidance_node(tmp_path, monkeypatch):
             rclpy.shutdown(context=context)
 
 
-def test_delayed_curve_joins_current_position_and_validates_trimmed_remainder(avoidance_node):
-    """A stale geometric prefix cannot command reverse motion; timing/validation share the new origin."""
-    from guided_interfaces.msg import AvoidanceRequest, ControlStatus
+def test_native_stream_joins_current_position_and_replaces_moving_curve(avoidance_node):
+    """One PLAN streams new curves; trimming preserves native timing and rejects old sequences."""
+    from guided_interfaces.msg import AvoidanceRequest, ControlStatus, PolynomialSegment
     h = avoidance_node
     h.policy = "delayed_curve"
     assert h.execute(strategy=1, goal_x=.6).accepted
     h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
-    h.until(lambda: any(r.mode == AvoidanceRequest.VALIDATE_TRAJECTORY for _, r in h.requests))
     paths = [p for p in h.paths if p.poses]
     assert paths and abs(paths[0].poses[0].pose.position.x - .24) < 1e-8
+    assert len(paths[0].poses) == 79  # The trimmed native curve lasts about 7.746 seconds.
     assert all(p.poses[0].pose.position.x >= .24 - 1e-8 for p in paths)
-    validation = next(r for _, r in h.requests if r.mode == AvoidanceRequest.VALIDATE_TRAJECTORY)
-    assert len(validation.segments) == 1
-    segment = validation.segments[0]
-    assert abs(segment.x[0] - .24) < 1e-8
-    assert 7.7 < segment.duration < 7.8
-    assert 0. < validation.trajectory_elapsed < .5
     h.until(lambda: h.status[-1].target_position.x > .24 + .005)
     assert abs(h.status[-1].target_position.x - .24) < .08
+    plans = [r for _, r in h.requests if r.mode == AvoidanceRequest.PLAN]
+    assert len(plans) == 1
+    assert not any(r.mode == AvoidanceRequest.VALIDATE_TRAJECTORY for _, r in h.requests)
+
+    h.policy = "silent"
+    h.delayed_replies.clear()
+    request = plans[0]
+    old = h.result(request)
+    old.status = old.NO_PATH
+    replacement = h.result(request)
+    replacement.segments = [PolynomialSegment(
+        duration=3.6, x=[.24, .1, 1. / 36., -1. / 129.6], y=[0., 0., 0., 0.], z=[1., 0., 0., 0.])]
+    path_count = len(h.paths)
+    h.reply.publish(replacement)
+    h.until(lambda: any(p.poses and abs(p.poses[-1].pose.position.x - .6) < 1e-8
+                       and len(p.poses) == 37 for p in h.paths[path_count:]), .25)
+    h.reply.publish(old)
+    h.spin(.08)
+    assert h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING
+    assert len([r for _, r in h.requests if r.mode == AvoidanceRequest.PLAN]) == 1
+    h.spin(.5)  # Native goal proximity stops replanning while the bridge heartbeat continues.
+    assert h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING
+    assert h.status[-1].target_position.x > .29
+    h.position_x, h.velocity_x = .6, 0.
+    from guided_interfaces.msg import CommandResult
+    h.until(lambda: any(r.final and r.command == "waypoints" and
+                        r.status == CommandResult.STATUS_SUCCEEDED for r in h.results), 5.)
+    h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_HOVER)
+    assert h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_DISABLED
 
 
 def test_identity_recovery_and_late_success_after_cancel_or_hover(avoidance_node):
     """Incorrect identities cannot release waiting; cancellation revokes even valid late replies."""
-    from guided_interfaces.msg import ControlStatus
+    from guided_interfaces.msg import AvoidanceRequest, ControlStatus
     from guided_interfaces.srv import FlightCommand
     h = avoidance_node
     for bad_policy, command in [("wrong_task", FlightCommand.Request.COMMAND_CANCEL),
                                 ("wrong_request", FlightCommand.Request.COMMAND_HOVER)]:
         h.policy = bad_policy
         start = len(h.requests)
-        assert h.execute().accepted
+        assert h.execute(strategy=1).accepted
         h.until(lambda: len(h.requests) > start)
         h.spin(.35)
         assert h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_WAITING
         assert h.status[-1].waypoint_index == 1
         h.policy = "clear"
         h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
-        assert h.status[-1].active_reference_generator == 2
+        assert h.status[-1].active_reference_generator == ControlStatus.REFERENCE_PLANNER_TRAJECTORY
         assert h.status[-1].active_tracking_controller == 1
-        old_request = h.requests[-1][1]
+        old_request = next(r for _, r in reversed(h.requests) if r.mode != AvoidanceRequest.CANCEL)
         h.policy = "silent"
         assert h.command(command).accepted
         h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_HOVER)
+        h.until(lambda: any(r.mode == AvoidanceRequest.CANCEL and
+                            r.request_id == old_request.request_id for _, r in h.requests))
+        assert h.active_plan is None
         for _ in range(3):
             h.reply.publish(h.result(old_request))
             h.spin(.12)
@@ -268,7 +330,7 @@ def test_timeout_land_retries_pending_expiry_and_disarm_latch(avoidance_node):
     from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.task import Future
     from mavros_msgs.srv import SetMode
-    from guided_interfaces.msg import ControlStatus, CommandResult, MotionIntent
+    from guided_interfaces.msg import AvoidanceRequest, ControlStatus, CommandResult, MotionIntent
     from guided_interfaces.srv import FlightCommand
     h = avoidance_node
     h.policy = "blocked"
@@ -277,7 +339,8 @@ def test_timeout_land_retries_pending_expiry_and_disarm_latch(avoidance_node):
     first_request = h.requests[0][0]
     h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_LAND, 2.)
     assert 0.8 < time.monotonic() - first_request < 1.6
-    assert len(h.requests) >= 3  # Repeated NO_PATH did not postpone the original deadline.
+    checks = [r for _, r in h.requests if r.mode == AvoidanceRequest.CHECK_LINE]
+    assert len(checks) >= 3  # Repeated NO_PATH did not postpone the original deadline.
     assert any(r.final and r.status == CommandResult.STATUS_FAILED and r.command == "waypoints"
                for r in h.results)
     assert not h.command(FlightCommand.Request.COMMAND_HOVER).accepted
@@ -409,6 +472,10 @@ def test_takeoff_preserves_preflight_configuration_and_failure_unlocks(avoidance
         assert not response.accepted
         assert "禁止修改" in response.message
     h.policy = "clear"
+    h.motion_limits = (.6, .2, 1.7, 1.4)
+    h.spin(1.1)  # Native metadata overrides the obstacle-hover reference, independently of straight.
     assert h.execute(2, 2, 1).accepted
     h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
     assert h.status[-1].waypoint_configuration_locked
+    h.until(lambda: any(abs(s.target_acceleration.x - 1.7) < 1e-6 for s in h.status))
+    h.until(lambda: abs(h.status[-1].target_velocity.x - .6) < 1e-6)

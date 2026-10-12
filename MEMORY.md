@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-13。Task38 / 3.4基线保留；两机Odin host SDK已原生集成近点剔除与降采样，并修复auto回退原点及非有限输入；down输出仅XYZ、12字节/点，替代独立Python进程。独立规划器仍保留169搜索/碰撞核心及现场参数。
+维护日期：2026-10-13。Task38 / 3.4基线保留；两机Odin host SDK已原生集成近点剔除与降采样，并修复auto回退原点及非有限输入；down输出仅XYZ、12字节/点，替代独立Python进程。开发机避障已统一原生dual_tree与目标/时间/位移/碰撞重规划，直线与避障限额分组、避障规划与参考共享原生实际限额；两机仍待同步此版本。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -55,7 +55,7 @@
 | refresh | Task38 / 3.4、Odin仅down新版已安装并验证；Task3 Python extnav按需corrected发布已同步原生构建，ARM/实际订阅进退通过 | 所有测试Odin/extnav/MAVROS已停止，三个unit inactive；下次Odin自动提供cloud_slam_down，不运行独立Python降采样。逐机标定、旧碰撞风险及20°安装角未改 |
 | new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38、GUI 仿真避障入口及最近点接入，需同步源码及重建接口** |
-| 开发机 | 主工程3.4及最近点接入，恢复与169旧算法的兼容服务链并重建；执行层按需统一放慢轨迹时间 | 恢复版已重新验证真实SITL绕行、两种策略恢复和超时LAND；保留旧采样风险，实飞与长时负载仍未验收 |
+| 开发机 | 主工程3.4原生双树接入；SetGoal持久目标、流式精确p/v/a、方向动力学限额，已重建 | 桥地图/射线/unknown及执行retime已删除；DDS/核心通过，SITL严格净空指标及实飞仍未全面验收 |
 
 - **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
   new 使用 Wasintek 1920×1080@30 / Tag0 0.170 m，修正活动目录为
@@ -138,56 +138,55 @@
 
 ## 避障当前基线与验收边界
 
-- 独立规划器现行算法以其源码及 `MEMORY.md` 为准：普通恒加速度原语已含净空余量证书，
-  末端shot及CHECK_LINE/VALIDATE_TRAJECTORY仍为离散检查，不能宣称整条曲线连续净空。
-  公共YAML：safe_distance=0.25、horizon=100、resolution/voxel_size=0.1、max_vel/max_acc=2、
-  max_tau=0.6、collision_step=0.05、search_budget=0.3、input_timeout=0.5、盲区0、tree_period=20、
-  下界[-50,-50,-2]、上界[50,50,10]。两入口共享调参，独立入口默认0.2s时间重规划。
-- PlanMotion/service-only为机载请求接口；PLAN调用search/getSegments，正式桥快照每次clearMap后setKdtree；
-  独立Odin入口按search.tree_period交替累计双树并保留goal/时间/位移触发。旧恢复版的碰撞失败记录
-  不代表当前独立库已修复的普通原语；末端shot及几何服务的离散风险仍存在。
+- 开发机正式桥与独立手动入口共用原生 dual_tree、目标/时间/位移/旧路径碰撞触发，
+  保留 init=true、仅NO_PATH再init=false；service_only、latest_observation及桥专属规划profile已删除。
+  公共参数：safe_distance=0.25m、horizon=100m、resolution/voxel_size=0.1m、max_tau=0.6s、
+  init_max_tau=0.8s、collision_step=0.05m、search_budget=0.3s、input_timeout=0.5s、盲区0、tree_period=20，
+  下界[-50,-50,-2]、上界[50,50,10]；默认0.2s/1m重规划，实际发布不保证严格5Hz。
+- 直线模式control.yaml的straight_max_velocity_xy/z=1/.2、straight_max_acceleration_xy/z=.35/.15；
+  原方法参数可显式覆盖，默认继承公共直线组。自主避障与遇障悬停独立使用原生search组：
+  水平速度范数1m/s、垂直绝对0.2m/s，水平加速度范数2m/s²、垂直绝对2m/s²，
+  search.max_vel_xy/max_vel_z/max_acc_xy/max_acc_z在普通原语与shot的原时间内生效。
+  旧scalar CLI填未显式给出的方向值，方向CLI优先。PlanResult/AvoidanceResult携带最终解析限额；遇障悬停参考及HORIZON制动直接继承。
+  执行层重复包线和统一时间缩放已删除；用户确认PD+DOB输出限幅保持4/4用于纠偏。
+  高加速度/低垂直速度时原语五候选按可行区间采样，常规125候选数量与max_tau=.6保持。
+  普通原语已有净空证书；shot/几何服务仍离散，不能声称全曲线连续净空。
+- 首init短段留在起点cell时保留临时候选，不覆盖root空间hash；避免闭合root误裁剪短coast，
+  不改变20个初始时长、零初始加速度及调参。常规同cell异速仍沿用position-only hash，不能保证所有滚动情形。
+- **refresh/new均尚未同步本次两个仓库的原生接入与新接口。** 同步时同时重建独立库、guided_interfaces、
+  avoidance_bridge和onboard消费端，使用build_avoidance.sh；旧Task38服务/包线与新安装不能混用。
 - `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，新版不创建或发布原始cloud_slam，原9行发布/初始化/声明代码保留为注释，取消注释后重新构建即可恢复；内部临时XYZRGB转换保留；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
 - SDK已移除auto的1m距离启发式：auto/odom只用有效Odin里程计；缺少/非有限球心时只降采样，不猜原点，origin才显式使用(0,0,0)。有限正voxel、有限radius、合法模式在启动时严格检查；非法值仅关闭新增功能并报错。XYZ的NaN/Inf全部跳过；降采样不读取或保存RGB。球面删除、字节键排序及空结果不发布保持。GCC过滤函数局部禁FMA保留；负零符号位微小差异保留。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
 - 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。维护目录已由用户移至开发机`/home/nvidia/scq/projects/odin_ros_driver-modified`；私有远端`LostPatrol/odin_ros_driver-modified`已推送main `3ce35d8`。仓库采用独立凭据，仓库级http.proxy为空以绕过本机不稳定代理。
 - new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复；本次补充修复后用户要求普通重连，实际Odin连接成功且有原始/down云，不能据此认定旧重连问题根因已消除。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。仅down发布证据与new待生效状态见[关闭原始云报告](agent/report/report-2026-10-13-task2-down-only.md)；仅XYZ输出证据见[RGB移除报告](agent/report/report-2026-10-13-task2-xyz-only.md)；校验与auto修复见[校验与auto修复报告](agent/report/report-2026-10-13-task2-cloud-validation-auto-fix.md)，首次迁移见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
 
-- 配置入口统一：`planner.yaml`公共`path_planning`段保存调参；`/avoidance/path_planning`段仅选桥模式；
-  `avoidance_bridge`段保存桥的输入/地图配置，`odin_launch/planner_launch`段保存独立输入话题。
-  CLI优先（如`search.safe_distance:=0.3`），配置文件不可读/语法或段错误时告警并回退，非法值仍由节点校验。
-  修改源码YAML须更新安装目录并重启，或显式`config:=源码绝对路径`；实机参数加载不会热更新。
-  开发机及refresh源码/安装资产已同步验证；**new尚未同步本次launch/helper/YAML profile修改**，下次同步需补齐两个仓库。
-  refresh未重启生产组件；本次隔离参数及合成桥测试不能替代真实传感器/飞行验收。
-
-- 独立算法工作区 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
-  `LostPatrol/dyn_small_obs_avoidance-ros2`（GPLv3）；仅含 `path_searching/path_planning`。
-  `avoidance_bridge` 负责观测地图和规划请求，onboard 仍唯一执行控制。
-  直线策略不依赖规划器；两种避障策略不可用时拒绝接单，不能回退直线。
-- 遇障悬停检查实际 FCU 到下一个业务航点的完整直线；自主避障用多项式 p/v/a 复用原 PD+DOB；旧规划器超包线的曲线只做统一时间缩放，保持空间路径。
-  阻塞保留任务、停止推进/拍照，持续有效 0.4 秒恢复，连续等待 15 秒锁存 LAND。
-  响应关联控制会话、任务/航点、请求、桥/规划会话和坐标 revision，0.8 秒过期；不执行旧预览。
-- 新鲜完整规划按**接收时最新 FCU 位置到连续曲线的三维最近点**接入，裁掉旧前缀并解析平移
-  首段，参考/剩余校验/预览共用新零秒。等距取较晚点，位置/速度接入容差仍为 0.08 m / 0.08 m/s。
-  不改变原有停稳恢复、包线、PD+DOB 或空间曲线；最近点接入不能保证所有飞行误差均无反向运动。
-  正式任务完成后停止规划/验证请求并悬停，地图与服务继续运行；独立 `odin.launch.py` 默认仍持续
-  对保存的 goal 规划。两个入口现在都按显式CLI→同一planner.yaml→默认值读取；
-  公共参数之外，YAML的/avoidance/path_planning段选择service_only=true/latest_observation，正式桥默认关闭二次盲区滤波。
-- 实机当前只支持**未应用 Tag 的 extnav 基线**。世界障碍加权威杆臂 T 进入 map，
-  规划请求 p/goal 减 T、返回多项式常数项加 T；不能按 Odin 仰角另旋转世界点云。
-  raw/FCU 接收时间配对不代表采样同步；实际雷达测量中心外参及近身观测覆盖尚未验收。
-- 地图 0.1 m 体素、固定首帧原点半径 20 m；**未观测是 unknown，不是 free**。
-  无 TTL 消障，只用新射线穿越退役占用。自由证据依赖静态假设，覆盖检查仅离散中心线，
-  不保证整个机体扫掠体积、动态障碍预测或持续全视野覆盖。输入必须是当前注册扫描，不能冒用历史累计云。
-- 净空按169当前**体素质心距离0.25m，严格小于才拒绝，无体素/采样补偿**；
-  普通原语已有净空证书，但末端shot及几何服务仍离散检查，不保证完整连续曲线/每个原始点/真实表面包络。
-  水平/垂直执行参考上限1.0/0.2m/s、加速度0.35/0.15m/s²，通过统一时间缩放兼容旧搜索参数；实际PD+DOB可能超调。
-- 恢复版软件回归及真实ArduPilot SITL绕行、两种恢复、超时LAND已重验；两机仅隔离无FCU smoke和合成DDS验证，旧台架结果不代替本次真实设备闭环。
-  GUI 默认仿真入口也通过两种避障策略；扫描演示仅限隔离仿真，缺少依赖会提示原因。
-  **refresh 台架实际地面起点查询仍无可行轨迹/unknown，不能宣称实机航线可执行。**
-  实飞、长时 P99、热稳态、视频并行负载和实际速度严格上限仍未验收；Linux 平均 100 Hz
-  不等于硬实时，Odin 实时调度权限不足及启动窗口抖动需量化。
-  恢复版证据见 [恢复报告](agent/report/history/report-2026-10-12-task38-restore-169-planner.md)。历史证据见 [Task38 集成报告](agent/report/history/report-2026-10-09-task38-dyn-integration.md)及
-  [GUI 仿真报告](agent/report/history/report-2026-10-10-task38-gui-sitl-avoidance.md)，最近点接入与短时台架结果见
-  [路径延迟适配报告](agent/report/history/report-2026-10-10-new-1-path-delay.md)。
+- 三入口均CLI→公共planner.yaml→原生默认；缺失/坏YAML告警回退，启动时复制，修改须重建/重启。
+  正式点云直接来自/odin1/cloud_slam_down，桥默认将/mavros/local_position/odom中的实际FCU中心
+  转换至规划frame并转发/avoidance/odom。手动给同一节点/avoidance/goal，地面站经onboard投递持久目标；
+  独立odin.launch默认仍用Odin参考点，比较数值输出时须统一状态与目标坐标。
+- 桥只做坐标、目标与结果适配，不建占用/射线/自由证据地图，不逐格拒绝unknown、不做地图快照竞态重试。
+  双树按帧轮换；未观测区域可通过（用户接受），不存在动态预测或表面包络保证。
+  输入/schema/时效及碰撞检查由原生规划器负责。preview仅限量转发native filtered_cloud。
+- SetGoal支持target_id、幂等与active/cancel，单个业务航点设置一次；失败投递可同ID重试。
+  原生PlanResult有session/target_id/goal_revision/sequence，桥ACK确认原生revision后转发，旧目标/坐标结果拒绝。
+  plan_sequence=0是能力心跳或本地投递失败，不得当作目标已接受；原生失败结果仍是非零有序流。
+  原生idle/近目标每秒发布空target身份心跳，不搜索，用于单独重启后的session恢复。
+- onboard仍唯一执行权威。自主模式不周期PLAN/VALIDATE，精确多项式按原段尺度求p/v/a，
+  以接收时实际FCU三维最近点裁前缀，位置/速度接入0.08m/0.08m/s暂保留；成功新段可运动中更新。
+  REACH_HORIZON只作中间参考，无续段时按既有制动参数提前等待，不触发航点完成/拍照。
+  完整曲线接近终点可执行完并保持，不依赖持续新结果；原生输入失败和能力失联仍撤销。
+  输入故障恢复后原生允许一次实际状态规划，避免近目标0.3m门永久阻断恢复。
+- 遇障悬停仍查实际FCU到下一业务航点的完整直线，使用同一原生地图；直线策略不依赖规划器。
+  原等待恢复/15秒LAND及实际到点、低速停留、拍照/航点推进保持；完成/取消/换点撤销旧goal，地图保留。
+  桥单独重启后仍可从完整CANCEL身份撤销原目标。
+- 实机仍仅支持未应用Tag的extnav基线：FCU状态/目标减权威杆臂T，返回多项式常数项加T；
+  世界点云不按安装仰角另旋转。Tag有效分支、Odin20°安装角、真实雷达中心外参未在本次适配。
+- 净空仍是0.25m体素质心严格距离，无voxel/采样补偿；不保证每个原始点或真实表面包络。
+  最新分组限额SITL直线、遇障悬停恢复、自主恢复均通过；绕障完成航点/拍照/LAND，
+  但实际表面净空.27473m未过既有>.35m脚本，不能把原生质心.25m改称该脚本通过。
+  参考限额不保证实际硬上限；遇障悬停实测XY速度最大1.40721m/s，控制输出4/4按用户确认保留。
+  最终结果查[本次报告](agent/report/report-2026-10-13-native-avoidance-integration.md)。
+  真机新链路、长时尾部/热稳态/视频并行负载及实际速度硬上限仍未验收。
 
 ## 关键历史与资料索引
 

@@ -3,6 +3,7 @@
  * @brief 机载命令仲裁、任务执行、MAVROS 网关、租约与失联保护节点。
  */
 #pragma once
+#include <array>
 
 #include <chrono>
 #include <cstdint>
@@ -205,6 +206,8 @@ private:
   // 独立规划结果只能改变当前航点参考；所有飞控输出仍通过原 PD+DOB。
   void avoidance_tick();
   void on_avoidance_result(const guided_interfaces::msg::AvoidanceResult::SharedPtr message);
+  /** Select straight limits or the native avoidance profile for all reference methods. */
+  ReferenceGeneratorParameters waypoint_reference_parameters() const;
   bool update_avoidance_reference(const SteadyTime & now, double dt_seconds);
   void begin_avoidance_wait(const SteadyTime & now, const std::string & reason);
   void reset_avoidance();
@@ -274,6 +277,8 @@ private:
   ControllerParameters controller_parameters_;
   ControllerParameters trajectory_controller_parameters_;
   ReferenceGeneratorParameters reference_generator_parameters_;
+  // Avoidance and obstacle-hover share the native planner's resolved motion limits.
+  std::array<double, 4> avoidance_motion_limits_{};
   DobController controller_;
 
   // Latest MAVROS state and freshness markers.
@@ -349,7 +354,7 @@ private:
   std::optional<ReferenceGeneratorType> armed_reference_generator_lock_;
   std::optional<TrackingControllerType> armed_tracking_controller_lock_;
 
-  // 请求时序采用同机steady clock，ROS stamp只用于可视化；身份不可跨进程复用。
+  // Goal tokens survive native replans; ROS search stamps and steady receive times bound age.
   std::string avoidance_controller_session_;
   std::uint64_t avoidance_task_revision_{0}, avoidance_request_sequence_{0};
   std::string avoidance_bridge_session_, avoidance_planner_session_;
@@ -366,11 +371,13 @@ private:
   };
   std::optional<AvoidancePending> avoidance_pending_;
   AvoidanceTrajectory avoidance_trajectory_;
-  AvoidanceLimits avoidance_limits_;
+  std::optional<guided_interfaces::msg::AvoidanceRequest> avoidance_goal_;
+  bool avoidance_goal_acknowledged_{false};
+  std::uint64_t avoidance_plan_sequence_{0};
   std::uint8_t avoidance_state_{0};
   std::string avoidance_detail_;
   double avoidance_wait_timeout_seconds_{15.0};  // 含制动时间，不随失败结果重新计时。
-  double avoidance_result_timeout_seconds_{0.8};  // 请求发出至使用的最大稳态时间。
+  double avoidance_result_timeout_seconds_{0.8};  // Maximum native search age and stream receive interval.
   double avoidance_resume_seconds_{0.4};  // 稳定停止且持续获得有效结果才恢复。
   double avoidance_join_position_tolerance_{0.08}, avoidance_join_velocity_tolerance_{0.08};
   bool avoidance_land_latched_{false};  // 超时LAND只能在实际解除武装后清除。
