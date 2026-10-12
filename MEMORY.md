@@ -107,7 +107,7 @@
   驱动已有 `sendimagemask` / `image_mask_abs_path` 向设备上传 PNG 的接口，当前关闭；
   是否作用于雷达算法、黑白定义及生效/清除条件未确认，不得按已验证的点云屏蔽使用。
   厂商 FAQ 承认 0.4 m 内拖点，建议近距感知用 raw 云并避让结构遮挡；raw 云仍需实际对比，
-  不保证消除测距干扰。此次未改两机配置，详见 [驱动检查报告](agent/report/report-2026-10-10-odin-near-field-driver-audit.md)。
+  不保证消除测距干扰。此次未改两机配置，详见 [驱动检查报告](agent/report/history/report-2026-10-10-odin-near-field-driver-audit.md)。
 - 链路：raw Odin IMU → 公共 SE(2) corrected Odin IMU → 杆臂转换后的 `/extnav/pose_fcu`
   与 `/mavros/vision_pose/pose` → `/mavros/local_position/pose`（最终 FCU EKF）。
   corrected 不是 FCU 中心，也不是 EKF final；有效分支已移除多余固定 `+T_xy`，z 仍保留局部约定。
@@ -128,8 +128,8 @@
   实测约 −19.42°，最终 FCU EKF 约 +0.62°；EKF3 的外部姿态输入不直接融合 roll/pitch，
   GUI 近零不能证明 extnav 已补偿。需重新核对 IMU→FCU 姿态、杆臂位置/速度及应用跳变预测；
   仅改 `pitch_cam` 或放宽 tilt 门不能替代完整转换。new 的安装变化未检查。
-  证据见 [安装角分析](agent/report/report-2026-10-09-odin-20deg-coordinate-assessment.md)及
-  [EKF 倾角分析](agent/report/report-2026-10-09-extnav-ekf-pitch-difference.md)。
+  证据见 [安装角分析](agent/report/history/report-2026-10-09-odin-20deg-coordinate-assessment.md)及
+  [EKF 倾角分析](agent/report/history/report-2026-10-09-extnav-ekf-pitch-difference.md)。
 - **绝对定位/航向精度仍未验收。** 短时稳定、检测率提升、用户两点 apply 成功和 EKF 跟随
   不构成真值证明；10° tilt / 45°跳变门只是用户授权的地面实验门限。
   尚需精测 Tag 世界位姿、明确物理参考点、重标外参及跨位置/跨 session 独立验证。
@@ -168,9 +168,9 @@
   **refresh 台架实际地面起点查询仍无可行轨迹/unknown，不能宣称实机航线可执行。**
   实飞、长时 P99、热稳态、视频并行负载和实际速度严格上限仍未验收；Linux 平均 100 Hz
   不等于硬实时，Odin 实时调度权限不足及启动窗口抖动需量化。
-  恢复版证据见 [恢复报告](agent/report/report-2026-10-12-task38-restore-169-planner.md)。历史证据见 [Task38 集成报告](agent/report/report-2026-10-09-task38-dyn-integration.md)及
-  [GUI 仿真报告](agent/report/report-2026-10-10-task38-gui-sitl-avoidance.md)，最近点接入与短时台架结果见
-  [路径延迟适配报告](agent/report/report-2026-10-10-new-1-path-delay.md)。
+  恢复版证据见 [恢复报告](agent/report/history/report-2026-10-12-task38-restore-169-planner.md)。历史证据见 [Task38 集成报告](agent/report/history/report-2026-10-09-task38-dyn-integration.md)及
+  [GUI 仿真报告](agent/report/history/report-2026-10-10-task38-gui-sitl-avoidance.md)，最近点接入与短时台架结果见
+  [路径延迟适配报告](agent/report/history/report-2026-10-10-new-1-path-delay.md)。
 
 ## 关键历史与资料索引
 
@@ -180,6 +180,7 @@
   refresh 路径迁移及标定归档在 `/home/nvidia/ros2-ardupilot-maintenance/refresh-sparse-20260918-101142/`。
   其中现场标定不是可删除缓存；其他备份和哈希按对应报告查询。
 - 历史任务/报告集中在 `agent/task/history/`、`agent/report/history/`，近期报告在 `agent/report/`。
+  历史资料先查 [报告索引](agent/report/INDEX.md)，再按当前任务需要阅读相关报告，勿每次全量加载。
   报告保留当时结论，已撤销的首次重锚、180°外参补偿及旧协议测试数据不能当作当前基线。
   曾有包测试将 Tag0 固定断言为 0.170 m、与默认 0.099 m 冲突；遇到该失败须核对当前配置，
   不把旧通过数量当作本次测试结果。
