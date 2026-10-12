@@ -53,7 +53,7 @@
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
 | refresh | 2026-10-12恢复Task38 / 3.4并原生重建；独立规划核心与169现场快照一致，新增PlanMotion兼容服务；ARM64控制/桥/服务适配单测、参数继承和隔离smoke通过 | 逐机配置保留，飞行/视频/修正服务未启动；避障须独立启动并提供cloud_slam_down。旧碰撞采样漏检仍保留；历史修正Tag尺寸固定断言风险和20°安装角适配未解决 |
-| new | 2026-10-12作为算法/参数源恢复Task38 / 3.4并原生重建；原搜索核心保持，YAML现场参数纳入新基线；ARM64控制/桥/服务适配单测、参数继承和隔离smoke通过 | 现场Odin、独立降采样与旧目标规划进程未重启；新3.4组件为安装基线，原飞行unit未运行。逐机标定保留；真实FCU/摄像头和实飞验收另行处理 |
+| new | 2026-10-12作为算法/参数源恢复Task38 / 3.4并原生重建；原搜索核心保持，YAML现场参数纳入新基线；ARM64控制/桥/服务适配单测、参数继承和隔离smoke通过 | 用户在收尾时关机重启169，飞控/视频/修正unit自动active；被动状态3.4、armed=false、IDLE，avoidance_ready=false。当前down点云无发布者；同域两机Odin混流需先隔离，已停止实机联调 |
 | hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38、GUI 仿真避障入口及最近点接入，需同步源码及重建接口** |
 | 开发机 | 主工程3.4及最近点接入，恢复与169旧算法的兼容服务链并重建；执行层按需统一放慢轨迹时间 | 恢复版已重新验证真实SITL绕行、两种策略恢复和超时LAND；保留旧采样风险，实飞与长时负载仍未验收 |
 
@@ -70,9 +70,12 @@
 - 独立 USB Jetson（`192.168.55.1`、序列号 `1424324322770`）不是现役飞机，基础环境已构建，
   无外设、后续补丁未逐项同步。新机事项查 [检查清单](src/onboard_control/deploy/JETSON_NEW_MACHINE_CHECKLIST.md)；
   厂商 OpenCV 4.8 必须使用配套 cv_bridge overlay，避免与系统 4.6 在 Odin 同进程混用。
-- 2026-10-12同步前186完整备份：`/home/nvidia/ros2-ardupilot-maintenance/sync-from-169-20261012-1536/`。最初规划器源码、修改、build/install和额外标定目录均保存在其中。本任务与“回退并同步飞机代码版本”曾并发构建规划器；用户指定由后者接管，最后以其干净构建、测试及哈希核验为准。原主工程控制代码已同步并构建，本次交接仅补齐报告/记忆。
-- 186主工程隔离smoke：interface=3.3、armed=false、setpoint_messages=0；控制单测通过。修正包5例中4通过、1失败：仓库Tag0=0.0465 m，而测试固定要求0.170 m；逐机活动配置未改，不能为过测覆盖标定。三个机载服务未启动，真实设备闭环未验收。
+- **此前回退的历史记录（已被本次3.4恢复部署替代）**：2026-10-12同步前186完整备份：`/home/nvidia/ros2-ardupilot-maintenance/sync-from-169-20261012-1536/`。最初规划器源码、修改、build/install和额外标定目录均保存在其中。此前回退任务与“回退并同步飞机代码版本”曾并发构建规划器；用户指定由后者接管，最后以其干净构建、测试及哈希核验为准。原主工程控制代码已同步并构建，当时交接仅补齐报告/记忆。
+- 此前回退的186隔离smoke（历史）：interface=3.3、armed=false、setpoint_messages=0；控制单测通过。修正包5例中4通过、1失败：仓库Tag0=0.0465 m，而测试固定要求0.170 m；逐机活动配置未改，不能为过测覆盖标定。三个机载服务未启动，真实设备闭环未验收。
 - 交接最后再次核对逐机标定和 `/etc` 哈希全部匹配；现场随后已有独立Odin进程，静态启动检查因此拒绝重复启动。没有停止或接管该现场进程，不应把服务unit停止等同所有驱动均未运行。
+
+- **当前实机联调阻塞（2026-10-12用户重启169后实测）**：domain0/SUBNET内 `/odin1/cloud_slam` 和 `/odin1/odometry_highfreq` 各2个发布者，down点云0个；只有169的控制/MAVROS状态各1个。169三个unit自动active、armed=false/IDLE、avoidance_ready=false，186三个unitinactive但独立Odin仍运行。存在两机同名定位流混合风险，代理已停止实机联调，未启动正式避障/降采样链、未自行停用户进程或改域。后续必须先按用户指定目标隔离Odin/外部导航数据，再启动所选飞机的独立降采样与避障组件。
+- 两机源码Git已分别快进到主工程4e5d969、独立库621a2dc；核心及功能源码哈希核对一致（主工程73个文件、独立库23个文件），原相机/Tag现场改动留在工作区，同步前payload还保存在逐机Git stash和维护备份。后续仅文档提交不改变功能基线。
 
 ## 不能误改的业务语义
 
@@ -136,7 +139,7 @@
 
 - **当前恢复版以169实际现场代码为准，未重新合入搜索/碰撞算法改写。** `path_searching`整个目录与169开始时快照一致；原语检查在当前参数下最多42次。YAML：safe_distance=0.25、horizon=100、resolution=0.1、voxel_size=0.1、max_vel/max_acc=2、max_tau=0.6、collision_step=0.05、search_budget=0.3、input_timeout=0.5。源YAML盲区0.3m，169实际Odin入口仍默认0m覆盖；运行下界[-50,-50,-2]，上界[50,50,10]。
 - 新增PlanMotion/service-only仅为接口适配，PLAN调用旧search/getSegments；CHECK_LINE/剩余曲线离散采样调用旧isSafe，不恢复连续距离算法。正式桥快照每次clearMap后setKdtree；独立Odin入口保留50帧双树累计及旧goal行为。核心19例18通过、旧CollisionBetweenPrimitiveEndpoints仍失败（0.09999036m<0.1m），不得改阈值或宣称全量通过。
-- 默认输入`/odin1/cloud_slam_down`来自两机现有`/home/nvidia/down_samp_exe.py`；169当前0.1m降采样、0.4m球形剔除、auto球心。脚本不由桥自动启动，原169运行进程未动。上游剔除可能删掉真实近障，保留用户配置并关闭二次盲区；不能把源YAML0.3或正式桥0m当成整个链路无近身剔除。
+- 默认输入`/odin1/cloud_slam_down`来自两机现有`/home/nvidia/down_samp_exe.py`；169当前0.1m降采样、0.4m球形剔除、auto球心。脚本不由桥自动启动，代理未重启原进程；用户末尾重启169后该发布者已不在。上游剔除可能删掉真实近障，保留用户配置并关闭二次盲区；不能把源YAML0.3或正式桥0m当成整个链路无近身剔除。
 
 - 独立算法工作区 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
   `LostPatrol/dyn_small_obs_avoidance-ros2`（GPLv3）；仅含 `path_searching/path_planning`。
