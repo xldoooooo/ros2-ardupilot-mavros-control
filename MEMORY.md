@@ -52,8 +52,8 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task38 / 3.4保留；2026-10-13 Odin SDK输出精简为XYZ；两机ARM定向检查、refresh100帧XYZ对照通过 | 结束Odin及飞行unit停止；下次启动Odin自动提供cloud_slam_down，不再运行独立Python降采样。逐机标定、旧碰撞采样漏检及20°安装角风险保留 |
-| new | Task38 / 3.4保留；2026-10-13同步原生构建SDK仅XYZ输出；ARM检查、普通重连及12字节点格式通过，运行新版Build ID已核对 | 最新为独立Odin标准入口运行，原始/down各1发布者、debug关闭；验收开始时整套飞控unit已failed且无MAVROS，尚未恢复整套链路。再次启动整套服务前先停止独立Odin，避免重复入口 |
+| refresh | Task38 / 3.4、Odin XYZ输出保留；Task3 Python extnav按需corrected发布已同步原生构建，ARM/实际订阅进退通过 | 所有测试Odin/extnav/MAVROS已停止，三个unit inactive；下次Odin自动提供cloud_slam_down，不运行独立Python降采样。逐机标定、旧碰撞风险及20°安装角未改 |
+| new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 所有测试进程已停止；飞行unit仍为原failed、视频/修正inactive，完整链路未恢复。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38、GUI 仿真避障入口及最近点接入，需同步源码及重建接口** |
 | 开发机 | 主工程3.4及最近点接入，恢复与169旧算法的兼容服务链并重建；执行层按需统一放慢轨迹时间 | 恢复版已重新验证真实SITL绕行、两种策略恢复和超时LAND；保留旧采样风险，实飞与长时负载仍未验收 |
 
@@ -75,7 +75,7 @@
 - 交接最后再次核对逐机标定和 `/etc` 哈希全部匹配；现场随后已有独立Odin进程，静态启动检查因此拒绝重复启动。没有停止或接管该现场进程，不应把服务unit停止等同所有驱动均未运行。
 
 - **两机同名定位流仍须隔离**：同时运行domain0/SUBNET的Odin时会混合定位与点云。2026-10-13收尾refresh无Odin，new独立Odin普通连接后原始/down云各1发布者；此前缺失down发布者已由SDK集成解决。正式实机避障闭环仍未验收。
-- 两机源码Git已分别快进到主工程4e5d969、独立库621a2dc；核心及功能源码哈希核对一致（主工程73个文件、独立库23个文件），原相机/Tag现场改动留在工作区，同步前payload还保存在逐机Git stash和维护备份。后续仅文档提交不改变功能基线。
+- 两机主工程main已同步Task3功能提交2c3960e，独立库仍621a2dc；此前核心源码核对保持，extnav另核对canonical/生产/实际导入源一致。原相机/Tag现场改动留在工作区，旧同步payload保存在逐机Git stash和维护备份。后续文档提交不改变功能基线。
 
 ## 不能误改的业务语义
 
@@ -101,6 +101,7 @@
 
 ## AprilTag / Odin 当前基线与风险
 
+- extnav Python热路径已移除无读者corrected构造/发布，DDS匹配每0.1秒查询；raw保持全频处理，vision/control仍40/100Hz。raw_messages统计处理，corrected_messages仅统计publish，不能再要求相等；latest_msg移除，最终数值快照及CAS/session语义保持。两机已原生部署；同负载整节点CPU30%目标未达、时序尾部全面不退化未验收，C++隔离候选尚未实施，需用户决定。详见[Task3报告](agent/report/report-2026-10-13-extnav-performance-opt.md)。
 - **Odin 近身拖点尚未解决，不能把接收端删点当成内部算法前过滤。** refresh 实际运行
   驱动 0.14.0 / SoC 0.14.2 / SLAM 0.13.1；`cloud_slam` 由设备输出，公开驱动/SDK 未查到
   算法输入最小距离或 FOV 裁剪参数。`cloud_raw_confidence_threshold` 只过滤主机发布的 raw 云。
