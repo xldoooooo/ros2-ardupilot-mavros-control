@@ -21,26 +21,47 @@ bash scripts/onboard/start_avoidance.sh
 和 `stop_avoidance.sh`，不接管原机载总服务，也不启动硬件。默认 `coordinate_mode:=extnav`；
 SITL必须显式传 `coordinate_mode:=identity cloud:=/你的已注册map扫描 odom:=/对应map里程计`。
 规划器 `service_only=true` 禁用旧目标定时搜索，`cloud.map_mode=latest_observation` 接收桥的完整地图；
-点云盲区滤波关闭，与169当前运行入口一致。输入超时采用飞机YAML（当前0.5s），桥地图最多4Hz，可选预览仍最多2Hz。
-正式桥已提供持续观测地图；service-only规划器保持 `cloud.blind_radius=0.0`，不对累计地图
-再次按当前里程计作近身滤波，也不依赖规划器的独立 `/odom` 输入。
+公共YAML默认关闭点云二次盲区滤波。输入超时采用飞机YAML（当前0.5s），桥地图最多4Hz，可选预览仍最多2Hz。
+正式桥已提供持续观测地图；默认不再进行规划器近身过滤，也不依赖规划器独立 `/odom` 输入。
+桥模式若开启规划器盲区过滤，还需要为规划器另外提供同frame/source时钟的里程计；通常在上游完成过滤。
 
 独立台架入口 `ros2 launch path_planning odin.launch.py` 直接订阅Odin点云；启用半径时要求
 云和里程计具有相同frame/source时基，并满足配置的配对时差。
 旧版独立入口保留169现场行为：默认订阅 `/odin1/cloud_slam_down`，
-`blind_radius:=0.0` 默认覆盖YAML的0.3m；需要滤波时显式传参数。不要把原Task38的
-YAML优先修复或连续距离检测重新合入本次旧算法基线。
+盲区由公共YAML配置；显式传 `blind_radius` 时才覆盖。
 
-正式桥通过 `config:=/path/to/planner.yaml` 读取独立库配置，保留全部 `search.*` 调参，
-仅覆盖169运行入口已使用的地面边界 `search.lower=[-50,-50,-2]`、frame、receive时钟和
-关闭盲区。当前169源配置为净空0.25m、horizon100m、resolution/voxel_size0.1m、
-max_vel/max_acc2、max_tau0.6s、collision_step0.05m、预算0.3s。
+两个入口默认读取独立库安装目录同一份 `config/planner.yaml`。参数优先级为：显式启动参数 →
+YAML（节点专属段优先于公共段）→ launch/节点默认值。文件无法读取、YAML语法或段结构错误时，
+输出警告并回退；非法参数值仍由节点校验，不会被静默换成其他值。修改源码YAML后重新构建独立库，
+或者用 `config:=/绝对路径/planner.yaml` 直接读取源码；修改配置后须重启节点。
 
-`/odin1/cloud_slam_down` 是169现有 `/home/nvidia/down_samp_exe.py` 独立发布的点云，
-该脚本当前采用0.1m降采样、0.4m球形剔除与auto球心模式；两机均已有脚本。
-它不由避障桥自动启动。若未运行，先在飞机已加载ROS环境的终端用本项目Python启动
-`.venv/bin/python /home/nvidia/down_samp_exe.py`，已有发布者时不要重复启动。
-球内真实障碍也可能被删除，这沿用169现场设置；桥只关闭二次滤波，不撤销上游剔除。
+公共 `path_planning.ros__parameters` 保存搜索、时钟、frame、盲区等参数；
+`/avoidance/path_planning.ros__parameters` 仅指定 `service_only: true` 和
+`cloud.map_mode: latest_observation`。启动文件不再强制覆盖YAML的盲区、搜索下界或时钟。
+`avoidance_bridge.ros__parameters` 保存桥的坐标模式、输入话题、预览及地图参数；
+未单独填写桥的 `input_timeout` 时继承规划器值。`odin_launch`/`planner_launch` 保存独立入口话题。
+
+可显式覆盖任何规划器参数，例如：
+
+```bash
+bash scripts/onboard/start_avoidance.sh search.safe_distance:=0.3 'search.lower:=[-50,-50,-3]'
+ros2 launch path_planning odin.launch.py stamp_clock:=receive blind_radius:=0.0
+```
+
+`blind_radius`、`map_mode`、`search_lower` 是对应ROS参数的短名，同一次启动不要同时使用短名和完整名。
+桥专属参数使用 `bridge.<参数>:=值`，如 `bridge.map_radius:=25.0`；输入话题仍用 `cloud`/`odom`，
+预览用 `preview:=true`。显式 `coordinate_mode:=identity` 同时选择 `planning_frame=map`，
+可再用 `planning_frame` 显式覆盖；若在YAML选择identity，应同时将规划器frame配置为map。
+桥输出 `/avoidance/map` 与规划服务 `/avoidance/plan_motion` 是内部接口连接，不是搜索调参。
+
+`latest_observation` 每次替换的是桥提供的完整观测地图，并非最新一帧雷达；桥负责保存占用、
+射线清障及unknown检查。`dual_tree` 由规划器按 `search.tree_period` 交替累积和更换两棵KD树，
+按有效点云帧数淘汰历史。二者不可视为相同地图语义。`service_only=true` 禁用独立目标/定时重规划，
+保留云更新及PlanMotion服务；`latest_observation` 当前要求 `service_only=true`。
+
+`/odin1/cloud_slam_down` 由Odin host SDK直接提供，默认0.1m降采样及0.4m球形剔除，
+配置在驱动 `control_command.yaml` 的 `cloud_downsample` 段；不要再同时运行独立Python降采样脚本。
+上游剔除可能删除真实近障；规划器 `cloud.blind_radius=0` 仅表示不再进行第二次剔除。
 
 回归验证使用项目自己的Python环境（先source两个install）：
 
@@ -54,7 +75,7 @@ ROS_DOMAIN_ID=146 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST .venv/bin/python src/a
 
 三种ROS回归分别使用mock服务、真实独立规划器、mock extnav元数据；全部使用隔离域合成扫描，
 不能替代实机外参/覆盖和飞行验收。
-参数回归启动旧版Odin入口和Task38入口，验证独立盲区覆盖行为及正式桥完整继承搜索参数；
+参数回归启动独立入口和桥入口，验证CLI/YAML/默认值优先级、节点模式及错误文件回退；
 不启动传感器或飞控、无扫描输入，不能据此宣称实际滤波/规划有效。
 日志留在 `agent/codex/new-1-path-delay/blind-radius/`。
 
@@ -81,7 +102,7 @@ identity模式不依赖extnav或Odin安装姿态，但仍需与扫描源时钟�
 原始输入最多500000点。容量饱和变unknown而不擦除旧障碍，越界区域unknown，重启/坐标重置清图。
 最新原始云为0点、schema错误、无有限点、配对/时效失败均unknown，不发布伪造空闲地图。
 输入必须是**当前扫描的已注册世界点**；若上游cloud_slam实际包含历史累计点，不能把它的旧点
-当成当前射线量测，部署前需确认驱动输出语义。桥本身持有持续地图，服务模式每次替换完整快照；独立Odin入口仍保留50帧双树累计。
+当成当前射线量测，部署前需确认驱动输出语义。桥本身持有持续地图，服务模式每次替换完整快照；独立Odin入口按 `search.tree_period` 轮换双树，当前为20帧。
 
 XYZ必须各自唯一、FLOAT32/count=1且字节区域不重叠，data长度必须恰等于row_step×height。
 源Time要求sec非负、nanosec<10⁹；原始云/里程计源时标必须严格前进，重复不刷新接收年龄并
@@ -91,9 +112,9 @@ XYZ必须各自唯一、FLOAT32/count=1且字节区域不重叠，data长度必�
 CHECK_LINE要求整条中心线观测格明确自由；PLAN返回轨迹和VALIDATE剩余轨迹同样逐格检查，
 未知返回NO_MAP并交给控制器等待，不能把障碍点缺失当作路径clear。曲线以0.01s采样并对相邻点
 按半体素间距检查，最多100000样点；这是一项离散中心线观测假设，**不是整个机体扫掠体积、
-连续曲线净空或全视野覆盖证明**。稀疏雷达/遮挡可能导致无可执行路径。规划器保留169旧核心、0.25m质心阈值及
-离散碰撞采样。新增直线/剩余曲线服务只复用旧 `isSafe`，不承诺连续净空；旧采样漏检
-风险仍存在，不是每个原始点/真实障碍表面的包络保证。
+连续曲线净空或全视野覆盖证明**。稀疏雷达/遮挡可能导致无可执行路径。规划器使用独立库当前核心及0.25m质心阈值；普通原语已有净空证书，
+末端shot和直线/剩余曲线服务仍离散调用 `isSafe`，不承诺完整曲线连续净空或
+每个原始点/真实障碍表面的包络保证。
 
 自由证据同样按静态场景持久保存：后续没有扫描到的格可能已有新障碍，不能声称动态预测/全场景
 持续覆盖保证。扫描射线原点暂用raw IMU里程计中心，尚无经过验收的实际雷达测量中心外参。

@@ -138,12 +138,25 @@
 
 ## 避障当前基线与验收边界
 
-- **当前恢复版以169实际现场代码为准，未重新合入搜索/碰撞算法改写。** `path_searching`整个目录与169开始时快照一致；原语检查在当前参数下最多42次。YAML：safe_distance=0.25、horizon=100、resolution=0.1、voxel_size=0.1、max_vel/max_acc=2、max_tau=0.6、collision_step=0.05、search_budget=0.3、input_timeout=0.5。源YAML盲区0.3m，169实际Odin入口仍默认0m覆盖；运行下界[-50,-50,-2]，上界[50,50,10]。
-- 新增PlanMotion/service-only仅为接口适配，PLAN调用旧search/getSegments；CHECK_LINE/剩余曲线离散采样调用旧isSafe，不恢复连续距离算法。正式桥快照每次clearMap后setKdtree；独立Odin入口保留50帧双树累计及旧goal行为。核心19例18通过、旧CollisionBetweenPrimitiveEndpoints仍失败（0.09999036m<0.1m），不得改阈值或宣称全量通过。
+- 独立规划器现行算法以其源码及 `MEMORY.md` 为准：普通恒加速度原语已含净空余量证书，
+  末端shot及CHECK_LINE/VALIDATE_TRAJECTORY仍为离散检查，不能宣称整条曲线连续净空。
+  公共YAML：safe_distance=0.25、horizon=100、resolution/voxel_size=0.1、max_vel/max_acc=2、
+  max_tau=0.6、collision_step=0.05、search_budget=0.3、input_timeout=0.5、盲区0、tree_period=20、
+  下界[-50,-50,-2]、上界[50,50,10]。两入口共享调参，独立入口默认0.2s时间重规划。
+- PlanMotion/service-only为机载请求接口；PLAN调用search/getSegments，正式桥快照每次clearMap后setKdtree；
+  独立Odin入口按search.tree_period交替累计双树并保留goal/时间/位移触发。旧恢复版的碰撞失败记录
+  不代表当前独立库已修复的普通原语；末端shot及几何服务的离散风险仍存在。
 - `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，新版不创建或发布原始cloud_slam，原9行发布/初始化/声明代码保留为注释，取消注释后重新构建即可恢复；内部临时XYZRGB转换保留；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
 - SDK已移除auto的1m距离启发式：auto/odom只用有效Odin里程计；缺少/非有限球心时只降采样，不猜原点，origin才显式使用(0,0,0)。有限正voxel、有限radius、合法模式在启动时严格检查；非法值仅关闭新增功能并报错。XYZ的NaN/Inf全部跳过；降采样不读取或保存RGB。球面删除、字节键排序及空结果不发布保持。GCC过滤函数局部禁FMA保留；负零符号位微小差异保留。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
 - 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。维护目录已由用户移至开发机`/home/nvidia/scq/projects/odin_ros_driver-modified`；私有远端`LostPatrol/odin_ros_driver-modified`已推送main `3ce35d8`。仓库采用独立凭据，仓库级http.proxy为空以绕过本机不稳定代理。
 - new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复；本次补充修复后用户要求普通重连，实际Odin连接成功且有原始/down云，不能据此认定旧重连问题根因已消除。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。仅down发布证据与new待生效状态见[关闭原始云报告](agent/report/report-2026-10-13-task2-down-only.md)；仅XYZ输出证据见[RGB移除报告](agent/report/report-2026-10-13-task2-xyz-only.md)；校验与auto修复见[校验与auto修复报告](agent/report/report-2026-10-13-task2-cloud-validation-auto-fix.md)，首次迁移见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
+
+- 配置入口统一：`planner.yaml`公共`path_planning`段保存调参；`/avoidance/path_planning`段仅选桥模式；
+  `avoidance_bridge`段保存桥的输入/地图配置，`odin_launch/planner_launch`段保存独立输入话题。
+  CLI优先（如`search.safe_distance:=0.3`），配置文件不可读/语法或段错误时告警并回退，非法值仍由节点校验。
+  修改源码YAML须更新安装目录并重启，或显式`config:=源码绝对路径`；实机参数加载不会热更新。
+  开发机及refresh源码/安装资产已同步验证；**new尚未同步本次launch/helper/YAML profile修改**，下次同步需补齐两个仓库。
+  refresh未重启生产组件；本次隔离参数及合成桥测试不能替代真实传感器/飞行验收。
 
 - 独立算法工作区 `/home/nvidia/scq/projects/dyn_small_obs_avoidance-ros2`，远端
   `LostPatrol/dyn_small_obs_avoidance-ros2`（GPLv3）；仅含 `path_searching/path_planning`。
@@ -156,8 +169,8 @@
   首段，参考/剩余校验/预览共用新零秒。等距取较晚点，位置/速度接入容差仍为 0.08 m / 0.08 m/s。
   不改变原有停稳恢复、包线、PD+DOB 或空间曲线；最近点接入不能保证所有飞行误差均无反向运动。
   正式任务完成后停止规划/验证请求并悬停，地图与服务继续运行；独立 `odin.launch.py` 默认仍持续
-  对保存的 goal 规划。此前该 launch 的 YAML 优先修复已在2026-10-12回退，当前默认0.0覆盖YAML；
-  正式桥的累计地图仍关闭二次盲区滤波，两入口不能混淆。
+  对保存的 goal 规划。两个入口现在都按显式CLI→同一planner.yaml→默认值读取；
+  公共参数之外，YAML的/avoidance/path_planning段选择service_only=true/latest_observation，正式桥默认关闭二次盲区滤波。
 - 实机当前只支持**未应用 Tag 的 extnav 基线**。世界障碍加权威杆臂 T 进入 map，
   规划请求 p/goal 减 T、返回多项式常数项加 T；不能按 Odin 仰角另旋转世界点云。
   raw/FCU 接收时间配对不代表采样同步；实际雷达测量中心外参及近身观测覆盖尚未验收。
@@ -165,7 +178,7 @@
   无 TTL 消障，只用新射线穿越退役占用。自由证据依赖静态假设，覆盖检查仅离散中心线，
   不保证整个机体扫掠体积、动态障碍预测或持续全视野覆盖。输入必须是当前注册扫描，不能冒用历史累计云。
 - 净空按169当前**体素质心距离0.25m，严格小于才拒绝，无体素/采样补偿**；
-  保留旧核心浮点KD树比较与离散检查，存在采样间隙，不保证连续曲线/每个原始点/真实表面包络。
+  普通原语已有净空证书，但末端shot及几何服务仍离散检查，不保证完整连续曲线/每个原始点/真实表面包络。
   水平/垂直执行参考上限1.0/0.2m/s、加速度0.35/0.15m/s²，通过统一时间缩放兼容旧搜索参数；实际PD+DOB可能超调。
 - 恢复版软件回归及真实ArduPilot SITL绕行、两种恢复、超时LAND已重验；两机仅隔离无FCU smoke和合成DDS验证，旧台架结果不代替本次真实设备闭环。
   GUI 默认仿真入口也通过两种避障策略；扫描演示仅限隔离仿真，缺少依赖会提示原因。

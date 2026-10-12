@@ -1,4 +1,4 @@
-"""Verify restored legacy Odin overrides and Task38 YAML tuning in isolated ROS launches."""
+"""Verify CLI, YAML and default precedence through real isolated ROS parameter services."""
 import json
 import os
 from pathlib import Path
@@ -17,6 +17,7 @@ class LaunchParameterTest(unittest.TestCase):
     """No sensors or flight services are started; fixtures/logs stay in agent/codex."""
 
     def test_radius_precedence(self):
+        """Check both independent launches, including unreadable and malformed YAML fallback."""
         project = Path(__file__).resolve().parents[3]
         planner = Path(os.environ.get('AVOIDANCE_WORKSPACE',
                                      project.parent / 'dyn_small_obs_avoidance-ros2'))
@@ -27,6 +28,7 @@ class LaunchParameterTest(unittest.TestCase):
         self.assertEqual(os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE'), 'LOCALHOST')
         launches = [
             ('odin', planner / 'path_planning/launch/odin.launch.py', '/path_planning'),
+            ('generic', planner / 'path_planning/launch/planner.launch.py', '/path_planning'),
         ]
         configured = artifacts / 'radius.yaml'
         configured.write_text('# Parameter precedence fixture, not a hardware configuration.\n'
@@ -42,13 +44,18 @@ class LaunchParameterTest(unittest.TestCase):
                           'path_planning:\n  ros__parameters:\n'
                           '    cloud:\n      blind_radius: 0.63\n    planning_rate: 7.0\n',
                           encoding='utf-8')
+        malformed = artifacts / 'malformed.yaml'
+        malformed.write_text('path_planning: [invalid\n', encoding='utf-8')
         cases = [
             ('default_yaml', [], 0.0, 10.0),
-            ('yaml_radius', [f'config:={configured}'], 0.0, 7.0),
+            ('yaml_radius', [f'config:={configured}'], 0.63, 7.0),
             ('missing_radius', [f'config:={missing}'], 0.0, 7.0),
             ('explicit_radius', [f'config:={configured}', 'blind_radius:=0.25'], 0.25, 7.0),
             ('explicit_zero', [f'config:={configured}', 'blind_radius:=0.0'], 0.0, 7.0),
-            ('nested_yaml', [f'config:={nested}'], 0.0, 7.0),
+            ('nested_yaml', [f'config:={nested}'], 0.63, 7.0),
+            ('cli_rate', [f'config:={configured}', 'planning_rate:=13'], 0.63, 13.0),
+            ('unreadable', [f'config:={artifacts / "nonexistent.yaml"}'], 0.0, 10.0),
+            ('malformed', [f'config:={malformed}'], 0.0, 10.0),
         ]
         rclpy.init()
         results = []
@@ -109,21 +116,39 @@ class LaunchParameterTest(unittest.TestCase):
             'search.safe_distance': .37, 'search.max_tau': .7, 'search.horizon': 75.,
             'search.resolution': .15, 'search.voxel_size': .12, 'search.max_vel': 1.7,
             'search.max_acc': 1.6,
+            'search.lower': [-42., -41., -3.], 'cloud.blind_radius': .17,
+            'planning_frame': 'yaml_frame', 'stamp_clock': 'ros',
         })
         fixture = artifacts / 'custom.yaml'
         fixture.write_text('# Isolated parameter fixture.\n' + yaml.safe_dump(custom))
         rclpy.init()
         try:
-            for label, config in [('aircraft', original), ('custom', custom)]:
+            for label, config in [('aircraft', original), ('custom', custom), ('cli', custom),
+                                  ('mode', custom), ('fallback', {})]:
                 expected = {k: v for k, v in config['path_planning']['ros__parameters'].items()
-                            if k.startswith('search.')}
-                expected['search.lower'] = [-50., -50., -2.]
-                arguments = [f'config:={fixture}'] if label == 'custom' else []
+                            if k.startswith('search.')} if config else {'search.lower': [-50., -50., -2.]}
+                arguments = [f'config:={fixture}'] if label in ('custom', 'cli', 'mode') else []
+                radius = .17 if label in ('custom', 'cli', 'mode') else 0.0
+                map_mode = 'latest_observation'
+                service_only = True
+                frame, clock = ('yaml_frame', 'ros') if label in ('custom', 'cli', 'mode') else ('map', 'receive')
+                if label == 'cli':
+                    arguments += ['search.safe_distance:=0.41', 'search.lower:=[-31,-32,-4]',
+                                  'blind_radius:=0.0', 'map_mode:=dual_tree', 'bridge.map_radius:=23',
+                                  'planning_frame:=cli_frame', 'stamp_clock:=receive']
+                    expected.update({'search.safe_distance': .41, 'search.lower': [-31., -32., -4.]})
+                    radius, map_mode = 0., 'dual_tree'
+                    frame, clock = 'cli_frame', 'receive'
+                elif label == 'mode':
+                    arguments += ['service_only:=false', 'map_mode:=dual_tree', 'planning_frame:=yaml_frame']
+                    service_only, map_mode = False, 'dual_tree'
+                elif label == 'fallback':
+                    arguments = [f'config:={artifacts / "nonexistent.yaml"}']
                 reader = rclpy.create_node('task38_parameter_reader')
                 with (artifacts / f'{label}.log').open('w') as stream:
                     process = subprocess.Popen(
                         ['ros2', 'launch', 'avoidance_bridge', 'avoidance.launch.py',
-                         'coordinate_mode:=identity', *arguments], stdout=stream,
+                         *(['coordinate_mode:=identity'] if label != 'custom' else []), *arguments], stdout=stream,
                         stderr=subprocess.STDOUT, start_new_session=True)
                     try:
                         client = AsyncParameterClient(reader, '/avoidance/path_planning')
@@ -131,15 +156,22 @@ class LaunchParameterTest(unittest.TestCase):
                         while not client.wait_for_services(timeout_sec=.2):
                             self.assertIsNone(process.poll())
                             self.assertLess(time.monotonic(), deadline)
-                        names = list(expected) + ['service_only', 'cloud.map_mode', 'cloud.blind_radius']
+                        names = list(expected) + ['service_only', 'cloud.map_mode', 'cloud.blind_radius',
+                                                  'planning_frame', 'stamp_clock']
                         future = client.get_parameters(names)
                         rclpy.spin_until_future_complete(reader, future, timeout_sec=5.)
                         self.assertTrue(future.done())
                         values = future.result().values
                         from rclpy.parameter import parameter_value_to_python
                         actual = [parameter_value_to_python(v) for v in values]
-                        self.assertEqual(actual[:-3], list(expected.values()))
-                        self.assertEqual(actual[-3:], [True, 'latest_observation', 0.0])
+                        self.assertEqual(actual[:-5], list(expected.values()))
+                        self.assertEqual(actual[-5:], [service_only, map_mode, radius, frame, clock])
+                        if label == 'cli':
+                            bridge_client = AsyncParameterClient(reader, '/avoidance_bridge')
+                            self.assertTrue(bridge_client.wait_for_services(timeout_sec=5.))
+                            future = bridge_client.get_parameters(['map_radius'])
+                            rclpy.spin_until_future_complete(reader, future, timeout_sec=5.)
+                            self.assertEqual(parameter_value_to_python(future.result().values[0]), 23.)
                     finally:
                         os.killpg(process.pid, signal.SIGINT)
                         process.wait(timeout=8.)
