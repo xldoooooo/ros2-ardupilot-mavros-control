@@ -38,7 +38,10 @@ except ImportError:
     CORRECTION_API_AVAILABLE = False
 
 
+# Keep the deployed correction service/status contract unchanged.
 CORRECTION_INTERFACE_VERSION = "2.0"
+# Poll DDS outside the 400 Hz callback; newly discovered readers resume within one poll.
+CORRECTED_DISCOVERY_PERIOD_S = 0.1
 
 
 class _FcuOutputSnapshot:
@@ -90,11 +93,12 @@ def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple[float, ...
 
 def normalize_quaternion(quaternion: tuple[float, ...]) -> tuple[float, ...]:
     """规范化 xyzw 四元数并拒绝非有限或零范数输入。"""
-    values = np.asarray(quaternion, dtype=np.float64)
-    norm = float(np.linalg.norm(values))
-    if not np.isfinite(values).all() or norm < 1e-9:
+    if not all(math.isfinite(value) for value in quaternion):
         raise ValueError("invalid quaternion")
-    return tuple(float(value) for value in values / norm)
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    if not math.isfinite(norm) or norm < 1e-9:
+        raise ValueError("invalid quaternion")
+    return tuple(value / norm for value in quaternion)
 
 
 def multiply_quaternions(
@@ -113,7 +117,12 @@ def multiply_quaternions(
 
 def quaternion_to_rotation_matrix(q_xyzw: tuple[float, ...]) -> np.ndarray:
     """规范化四元数并转换为 3x3 旋转矩阵。"""
-    x, y, z, w = normalize_quaternion(q_xyzw)
+    return _normalized_rotation_matrix(normalize_quaternion(q_xyzw))
+
+
+def _normalized_rotation_matrix(q_xyzw: tuple[float, ...]) -> np.ndarray:
+    """Convert an already validated unit quaternion without repeating its norm."""
+    x, y, z, w = q_xyzw
     return np.array(
         [
             [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
@@ -140,42 +149,29 @@ def apply_planar_correction(
     correction_yaw_rad: float,
 ) -> Odometry:
     """左乘 C_world_odin；z 不平移，姿态和水平线速度按同一 yaw 旋转。"""
-    if not all(
-        math.isfinite(value)
-        for value in (correction_x_m, correction_y_m, correction_yaw_rad)
-    ):
-        raise ValueError("non-finite correction")
+    position, q_corrected, linear = _planar_components(
+        message, correction_x_m, correction_y_m, correction_yaw_rad
+    )
     corrected = copy.deepcopy(message)
     cosine, sine = math.cos(correction_yaw_rad), math.sin(correction_yaw_rad)
     rotation = np.array(((cosine, -sine, 0.0), (sine, cosine, 0.0), (0.0, 0.0, 1.0)))
-    position = message.pose.pose.position
-    corrected.pose.pose.position.x = (
-        cosine * position.x - sine * position.y + correction_x_m
-    )
-    corrected.pose.pose.position.y = (
-        sine * position.x + cosine * position.y + correction_y_m
-    )
-    corrected.pose.pose.position.z = position.z
-
-    orientation = message.pose.pose.orientation
-    raw_quaternion = (orientation.x, orientation.y, orientation.z, orientation.w)
-    yaw_quaternion = rpy_to_quaternion(0.0, 0.0, correction_yaw_rad)
-    q_corrected = normalize_quaternion(
-        multiply_quaternions(yaw_quaternion, normalize_quaternion(raw_quaternion))
-    )
+    (
+        corrected.pose.pose.position.x,
+        corrected.pose.pose.position.y,
+        corrected.pose.pose.position.z,
+    ) = position
     (
         corrected.pose.pose.orientation.x,
         corrected.pose.pose.orientation.y,
         corrected.pose.pose.orientation.z,
         corrected.pose.pose.orientation.w,
     ) = q_corrected
-
-    # 当前 Odin/extnav 生产链把 linear velocity 作为 odom/world 向量使用；
-    # angular velocity 仍是机体系量，不随世界坐标重建旋转。
-    linear = message.twist.twist.linear
-    corrected.twist.twist.linear.x = cosine * linear.x - sine * linear.y
-    corrected.twist.twist.linear.y = sine * linear.x + cosine * linear.y
-    corrected.twist.twist.linear.z = linear.z
+    (
+        corrected.twist.twist.linear.x,
+        corrected.twist.twist.linear.y,
+        corrected.twist.twist.linear.z,
+    ) = linear
+    # Angular velocity remains in the body frame; only world linear velocity rotates.
     pose_transform = np.zeros((6, 6), dtype=np.float64)
     pose_transform[:3, :3] = rotation
     pose_transform[3:, 3:] = rotation
@@ -188,6 +184,36 @@ def apply_planar_correction(
         message.twist.covariance, twist_transform
     )
     return corrected
+
+
+def _planar_components(message, correction_x_m, correction_y_m, correction_yaw_rad):
+    """Compute corrected pose/linear values without allocating a ROS message."""
+    if not all(
+        math.isfinite(value)
+        for value in (correction_x_m, correction_y_m, correction_yaw_rad)
+    ):
+        raise ValueError("non-finite correction")
+    cosine, sine = math.cos(correction_yaw_rad), math.sin(correction_yaw_rad)
+    position = message.pose.pose.position
+    corrected_position = (
+        cosine * position.x - sine * position.y + correction_x_m,
+        sine * position.x + cosine * position.y + correction_y_m,
+        position.z,
+    )
+
+    orientation = message.pose.pose.orientation
+    raw_quaternion = (orientation.x, orientation.y, orientation.z, orientation.w)
+    yaw_quaternion = rpy_to_quaternion(0.0, 0.0, correction_yaw_rad)
+    q_corrected = normalize_quaternion(
+        multiply_quaternions(yaw_quaternion, normalize_quaternion(raw_quaternion))
+    )
+    linear = message.twist.twist.linear
+    corrected_linear = (
+        cosine * linear.x - sine * linear.y,
+        sine * linear.x + cosine * linear.y,
+        linear.z,
+    )
+    return corrected_position, q_corrected, corrected_linear
 
 
 def compute_fcu_reference_position(
@@ -281,6 +307,8 @@ class OdometryBridge(Node):
         qx, qy, qz, qw = self.q_IO
         self.q_IO_conj = (-qx, -qy, -qz, qw)
         self.R_IO = quaternion_to_rotation_matrix(self.q_IO)
+        # Fixed installation/lever transform used by every angular-velocity sample.
+        self.imu_lever = self.R_IO.T @ self.T
         self.world_center_formula_supported = all(
             abs(value) <= 1e-9
             for value in (self.roll_cam, self.pitch_cam, self.yaw_cam)
@@ -306,7 +334,10 @@ class OdometryBridge(Node):
             Odometry, odom_topic, self._odom_cb, qos_profile_sensor_data
         )
 
-        self.latest_msg: Odometry | None = None
+        self.corrected_has_subscribers = False
+        self.corrected_discovery_timer = self.create_timer(
+            CORRECTED_DISCOVERY_PERIOD_S, self._refresh_corrected_subscribers
+        )
         self.latest_output: _FcuOutputSnapshot | None = None
         self.last_raw_monotonic = 0.0
         self.last_raw_stamp_ns = 0
@@ -375,7 +406,7 @@ class OdometryBridge(Node):
             )
 
     def _odom_cb(self, message: Odometry) -> None:
-        """识别 Odin session、应用当前快照，并无条件发布 corrected 话题。"""
+        """Process every raw sample and publish corrected only while readers exist."""
         now_monotonic = time.monotonic()
         stamp_ns = _stamp_nanoseconds(message)
         frame_pair = (message.header.frame_id, message.child_frame_id)
@@ -408,27 +439,28 @@ class OdometryBridge(Node):
         correction_valid = self.correction_valid
         correction_revision = self.revision
         correction_session = self.odin_session_id
+        correction_values = (self.correction_x_m, self.correction_y_m, self.correction_yaw_rad)
         try:
-            corrected = (
-                apply_planar_correction(
+            components = (
+                _planar_components(
                     message,
                     self.correction_x_m,
                     self.correction_y_m,
                     self.correction_yaw_rad,
                 )
                 if correction_valid
-                else copy.deepcopy(message)
+                else None
             )
         except Exception as exc:  # noqa: BLE001 - 畸形运行时消息必须触发 fail-safe identity
             self._invalidate(f"修正计算异常，退回 identity：{exc}")
-            corrected = copy.deepcopy(message)
+            components = None
             correction_valid = False
             correction_revision = self.revision
             correction_session = self.odin_session_id
         try:
             output = self._transform_sample(
                 message,
-                corrected,
+                components,
                 correction_valid=correction_valid,
                 correction_revision=correction_revision,
                 correction_session=correction_session,
@@ -436,10 +468,22 @@ class OdometryBridge(Node):
         except Exception as exc:  # noqa: BLE001 - 转换失败必须禁止重复发布旧世界样本
             self._invalidate(f"飞控中心转换异常，停止重复发布旧样本：{exc}")
             output = None
-        self.latest_msg = corrected
         self.latest_output = output
-        self.corrected_pub.publish(corrected)
-        self.corrected_messages += 1
+        if self.corrected_has_subscribers:
+            # Own the published message; neither correction nor later callbacks mutate raw.
+            corrected = (
+                apply_planar_correction(
+                    message, *correction_values,
+                )
+                if components is not None
+                else copy.deepcopy(message)
+            )
+            self.corrected_pub.publish(corrected)
+            self.corrected_messages += 1
+
+    def _refresh_corrected_subscribers(self) -> None:
+        """Cache matched reader presence without querying DDS on every raw callback."""
+        self.corrected_has_subscribers = self.corrected_pub.get_subscription_count() > 0
 
     def _begin_odin_session(self, message: Odometry, reason: str) -> None:
         """新建不可跨重启复用的 session，并先使旧修正失效。"""
@@ -658,7 +702,7 @@ class OdometryBridge(Node):
     def _transform_sample(
         self,
         raw_message: Odometry,
-        corrected_message: Odometry,
+        corrected_components,
         *,
         correction_valid: bool,
         correction_revision: int,
@@ -666,23 +710,27 @@ class OdometryBridge(Node):
     ) -> _FcuOutputSnapshot:
         """在单个 raw 回调内原子生成 corrected 对应的最终中心结果。"""
         raw_pose = raw_message.pose.pose
-        pose = corrected_message.pose.pose
-        twist = corrected_message.twist.twist
+        pose = raw_pose
+        twist = raw_message.twist.twist
         quaternion = pose.orientation
         linear = twist.linear
         angular = twist.angular
-        q_odom = normalize_quaternion(
-            (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
-        )
         p_raw = np.array(
             (raw_pose.position.x, raw_pose.position.y, raw_pose.position.z)
         )
-        p_corrected = np.array((pose.position.x, pose.position.y, pose.position.z))
+        p_corrected = p_raw
         v_odom = np.array((linear.x, linear.y, linear.z))
-        w_odom = np.array((angular.x, angular.y, angular.z))
+        if corrected_components is not None:
+            position, q_odom, velocity = corrected_components
+            p_corrected = np.array(position)
+            v_odom = np.array(velocity)
+        else:
+            q_odom = normalize_quaternion(
+                (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
+            )
         q_imu = multiply_quaternions(self.q_IO, q_odom)
         q_imu = normalize_quaternion(multiply_quaternions(q_imu, self.q_IO_conj))
-        rotation_imu = quaternion_to_rotation_matrix(q_imu)
+        rotation_imu = _normalized_rotation_matrix(q_imu)
         p_imu, reference_mode = compute_fcu_reference_position(
             p_raw,
             p_corrected,
@@ -690,9 +738,10 @@ class OdometryBridge(Node):
             self.T,
             correction_valid,
         )
-        v_imu = v_odom - rotation_imu @ self.R_IO @ np.cross(
-            w_odom, self.R_IO.T @ self.T
-        )
+        wx, wy, wz = angular.x, angular.y, angular.z
+        tx, ty, tz = self.imu_lever
+        cross = np.array((wy * tz - wz * ty, wz * tx - wx * tz, wx * ty - wy * tx))
+        v_imu = v_odom - rotation_imu @ (self.R_IO @ cross)
         return _FcuOutputSnapshot(
             position=p_imu,
             velocity=v_imu,
@@ -712,7 +761,7 @@ class OdometryBridge(Node):
         raw.twist.twist.angular = copy.deepcopy(angular)
         output = self._transform_sample(
             raw,
-            raw,
+            None,
             correction_valid=False,
             correction_revision=self.revision,
             correction_session=self.odin_session_id,

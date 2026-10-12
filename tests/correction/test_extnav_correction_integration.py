@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import numpy as np
 
+# Canonical deployment source lives in this project, outside the aircraft overlay.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -44,7 +46,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
     rclpy = pytest.importorskip("rclpy")
     correction_messages = pytest.importorskip("correction_interfaces.msg")
     correction_services = pytest.importorskip("correction_interfaces.srv")
-    from geometry_msgs.msg import PoseStamped
+    from geometry_msgs.msg import PoseStamped, TwistStamped
     from nav_msgs.msg import Odometry
     from rclpy.context import Context
     from rclpy.executors import MultiThreadedExecutor
@@ -78,14 +80,16 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
     corrected: list[Odometry] = []
     pose_fcu: list[PoseStamped] = []
     vision_pose: list[PoseStamped] = []
+    velocity_fcu: list[TwistStamped] = []
     statuses: list[Any] = []
-    tester.create_subscription(
+    corrected_subscription = tester.create_subscription(
         Odometry,
         "/odin1/odometry_highfreq_corrected",
         corrected.append,
         qos_profile_sensor_data,
     )
     tester.create_subscription(PoseStamped, "/extnav/pose_fcu", pose_fcu.append, 10)
+    tester.create_subscription(TwistStamped, "/extnav/velocity_fcu", velocity_fcu.append, 10)
     tester.create_subscription(
         PoseStamped, "/mavros/vision_pose/pose", vision_pose.append, 10
     )
@@ -110,6 +114,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
     spin_thread.start()
 
     try:
+        _wait_for(lambda: bridge.corrected_has_subscribers)
         raw = Odometry()
         raw.header.stamp.sec = 100
         raw.header.frame_id = "odin"
@@ -118,6 +123,11 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         raw.pose.pose.position.y = 2.0
         raw.pose.pose.position.z = 0.7
         raw.pose.pose.orientation.w = 1.0
+        raw.twist.twist.linear.x = 0.4
+        raw.twist.twist.linear.y = -0.2
+        raw.twist.twist.linear.z = 0.1
+        raw.twist.twist.angular.z = 0.5
+        raw.pose.covariance = np.diag([1., 2., 3., 4., 5., 6.]).reshape(-1).tolist()
         for _ in range(5):
             publisher.publish(raw)
             time.sleep(0.04)
@@ -133,6 +143,12 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         )
         assert corrected[-1].pose.pose.position.x == raw.pose.pose.position.x
         assert corrected[-1].pose.pose.position.y == raw.pose.pose.position.y
+        compatible = bridge._apply_transform(
+            raw.pose.pose.position, raw.pose.pose.orientation,
+            raw.twist.twist.linear, raw.twist.twist.angular,
+        )
+        np.testing.assert_allclose(compatible[0], (1., 2., .7), rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(compatible[1], (.385, -.23, .1), rtol=1e-12, atol=1e-12)
         # invalid 分支保留旧局部零点；R=I 时杆臂平移相消，最终仍等于 raw。
         assert math.isclose(pose_fcu[-1].pose.position.x, 1.0, abs_tol=1e-9)
         assert math.isclose(pose_fcu[-1].pose.position.y, 2.0, abs_tol=1e-9)
@@ -176,6 +192,11 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         )
         assert math.isclose(corrected[-1].pose.pose.position.y, -2.0, abs_tol=1e-9)
         assert corrected[-1].pose.pose.position.z == 0.7
+        np.testing.assert_allclose(
+            np.asarray(corrected[-1].pose.covariance).reshape(6, 6),
+            np.diag([2., 1., 3., 5., 4., 6.]), rtol=1e-12, atol=1e-12,
+        )
+        assert corrected[-1].twist.twist.angular.z == raw.twist.twist.angular.z
         # Q=Rz(90deg)，Q*T=(0.03,0.06,0.05)：有效分支不得保留额外 +T_xy。
         expected_fcu = (7.97, -2.06, 0.7)
         _wait_for(
@@ -194,6 +215,9 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
             assert math.isclose(output.pose.position.x, expected_fcu[0], abs_tol=1e-9)
             assert math.isclose(output.pose.position.y, expected_fcu[1], abs_tol=1e-9)
             assert math.isclose(output.pose.position.z, expected_fcu[2], abs_tol=1e-9)
+        _wait_for(lambda: velocity_fcu and math.isclose(velocity_fcu[-1].twist.linear.x, 0.23, abs_tol=1e-12))
+        assert math.isclose(velocity_fcu[-1].twist.linear.y, 0.385, abs_tol=1e-12)
+        assert velocity_fcu[-1].twist.linear.z == 0.1
         _wait_for(
             lambda: (
                 statuses[-1].correction_valid
@@ -206,9 +230,10 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         assert statuses[-1].applied_job_id == "integration-job"
 
         # 没有 correction_service 节点参与，继续发布仍使用 extnav 自己保存的修正。
+        published_before = bridge.corrected_messages
         raw.header.stamp.nanosec = 200_000_000
         publisher.publish(raw)
-        _wait_for(lambda: statuses[-1].corrected_messages >= 7)
+        _wait_for(lambda: statuses[-1].corrected_messages > published_before)
         assert math.isclose(corrected[-1].pose.pose.position.x, 8.0, abs_tol=1e-9)
 
         # 超过 session gap 后旧修正必须先失效，随后新样本 identity 透传。
@@ -254,6 +279,84 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         assert statuses[-1].final_sample_reference_mode == "local_identity_origin"
         assert statuses[-1].revision == invalidated_revision
         assert statuses[-1].raw_messages == statuses[-1].corrected_messages
+
+        # Reader churn must leave raw processing and frozen control output running.
+        tester.destroy_subscription(corrected_subscription)
+        _wait_for(lambda: not bridge.corrected_has_subscribers)
+        published_before = bridge.corrected_messages
+        processed_before = bridge.raw_messages
+        for index in range(8):
+            raw.header.stamp.nanosec = index * 2_500_000
+            publisher.publish(raw)
+            time.sleep(0.0025)
+        _wait_for(lambda: bridge.raw_messages == processed_before + 8)
+        assert bridge.corrected_messages == published_before
+        assert bridge.latest_output is not None
+        corrected_subscription = tester.create_subscription(
+            Odometry, "/odin1/odometry_highfreq_corrected", corrected.append,
+            qos_profile_sensor_data,
+        )
+        _wait_for(lambda: bridge.corrected_pub.get_subscription_count() == 1)
+        discovered_at = time.monotonic()
+        _wait_for(lambda: bridge.corrected_has_subscribers, timeout=0.5)
+        assert time.monotonic() - discovered_at < 0.5
+        publisher.publish(raw)
+        _wait_for(lambda: bridge.corrected_messages > published_before)
+
+        # Apply/clear cannot relabel the old sample; duplicate apply and CAS stay atomic.
+        request.odin_session_id = bridge.odin_session_id
+        request.expected_revision = bridge.revision
+        response = client.call_async(request)
+        _wait_for(response.done)
+        assert response.result().accepted
+        assert bridge.latest_output is None
+        response = client.call_async(request)
+        _wait_for(response.done)
+        assert response.result().accepted
+        revision = bridge.revision
+        request.job_id = "conflicting-job"
+        response = client.call_async(request)
+        _wait_for(response.done)
+        assert not response.result().accepted and bridge.revision == revision
+        publisher.publish(raw)
+        _wait_for(lambda: bridge.latest_output is not None)
+        assert bridge.latest_output.correction_revision == revision
+        clear = correction_services.SetCorrection.Request()
+        clear.odin_session_id = bridge.odin_session_id
+        clear.expected_revision = revision
+        response = client.call_async(clear)
+        _wait_for(response.done)
+        assert response.result().accepted and bridge.latest_output is None
+        publisher.publish(raw)
+        _wait_for(lambda: bridge.latest_output is not None)
+        assert not bridge.latest_output.correction_valid
+
+        # Source changes rebuild the session; malformed input must erase the old output.
+        for change in ("stamp", "frame", "quaternion", "nan_quaternion", "inf_quaternion", "position"):
+            previous_session = bridge.odin_session_id
+            processed_before = bridge.raw_messages
+            if change == "stamp":
+                raw.header.stamp.sec = 10
+            elif change == "frame":
+                raw.header.frame_id = "restarted_odin"
+            elif change == "quaternion":
+                raw.pose.pose.orientation.w = 0.0
+            elif change == "nan_quaternion":
+                raw.pose.pose.orientation.w = math.nan
+            elif change == "inf_quaternion":
+                raw.pose.pose.orientation.w = math.inf
+            else:
+                raw.pose.pose.orientation.w = 1.0
+                raw.pose.pose.position.x = math.nan
+            publisher.publish(raw)
+            _wait_for(lambda: bridge.raw_messages > processed_before)
+            if change in ("stamp", "frame"):
+                assert bridge.odin_session_id != previous_session
+            else:
+                assert bridge.latest_output is None
+        raw.pose.pose.position.x = 1.0
+        publisher.publish(raw)
+        _wait_for(lambda: bridge.latest_output is not None)
     finally:
         executor.shutdown(timeout_sec=2.0)
         spin_thread.join(timeout=2.0)
