@@ -49,7 +49,9 @@ bool DobController::set_hover_throttle(const double hover_throttle) noexcept
   return true;
 }
 
-bool DobController::set_gain_profile(const ControllerParameters & profile) noexcept
+/** Re-express d=q+L*v only for an explicit continuous switch; other callers retain reset behavior. */
+bool DobController::set_gain_profile(const ControllerParameters & profile,
+  const Eigen::Vector3d * preserve_velocity) noexcept
 {
   const bool valid = std::isfinite(profile.wn_xy) && profile.wn_xy > 0.0 &&
     std::isfinite(profile.zeta_xy) && profile.zeta_xy > 0.0 &&
@@ -57,7 +59,7 @@ bool DobController::set_gain_profile(const ControllerParameters & profile) noexc
     std::isfinite(profile.zeta_z) && profile.zeta_z > 0.0 &&
     std::isfinite(profile.observer_xy) && profile.observer_xy >= 0.0 &&
     std::isfinite(profile.observer_z) && profile.observer_z >= 0.0;
-  if (!valid) {
+  if (!valid || (preserve_velocity && !preserve_velocity->allFinite())) {
     return false;
   }
   parameters_.wn_xy = profile.wn_xy;
@@ -66,7 +68,13 @@ bool DobController::set_gain_profile(const ControllerParameters & profile) noexc
   parameters_.zeta_z = profile.zeta_z;
   parameters_.observer_xy = profile.observer_xy;
   parameters_.observer_z = profile.observer_z;
-  reset();
+  if (preserve_velocity) {
+    const Eigen::Vector3d gain(parameters_.observer_xy, parameters_.observer_xy, parameters_.observer_z);
+    observer_state_ = disturbance_ - gain.cwiseProduct(*preserve_velocity);
+    // The observer's next update still needs the acceleration applied before this switch.
+  } else {
+    reset();
+  }
   return true;
 }
 

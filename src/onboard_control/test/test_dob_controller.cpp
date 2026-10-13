@@ -88,12 +88,46 @@ TEST(DobController, GainProfileSwitchPreservesHoverThrottleAndRejectsInvalidValu
   low_bandwidth.wn_xy = 1.2;
   low_bandwidth.zeta_xy = 1.1;
   low_bandwidth.observer_xy = 0.5;
+  VehicleKinematics moving;
+  moving.velocity = Eigen::Vector3d(0.4, -0.2, 0.3);
+  controller.compute(moving, ControlReference{}, 0.01);
+  EXPECT_GT(controller.disturbance().norm(), 0.0);
   EXPECT_TRUE(controller.set_gain_profile(low_bandwidth));
+  EXPECT_DOUBLE_EQ(controller.disturbance().norm(), 0.0);
   EXPECT_DOUBLE_EQ(controller.hover_throttle(), 0.42);
 
   low_bandwidth.wn_xy = -1.0;
   EXPECT_FALSE(controller.set_gain_profile(low_bandwidth));
   EXPECT_DOUBLE_EQ(controller.hover_throttle(), 0.42);
+}
+
+TEST(DobController, ContinuousGainSwitchPreservesDisturbanceAndPreviousInputWhileMoving)
+{
+  DobController controller(ControllerParameters{});
+  VehicleKinematics moving;
+  moving.velocity = Eigen::Vector3d(0.4, -0.2, 0.3);
+  ControlReference reference;
+  reference.velocity = moving.velocity;
+  controller.compute(moving, reference, 0.01);
+  controller.compute(moving, reference, 0.01);
+  const Eigen::Vector3d disturbance = controller.disturbance();
+  ASSERT_GT(disturbance.norm(), 0.0);
+
+  ControllerParameters next;
+  next.wn_xy = next.wn_z = 1.2;
+  next.zeta_xy = next.zeta_z = 1.1;
+  next.observer_xy = 0.2;
+  next.observer_z = 0.9;
+  // Repeat activation as waypoint preparation and actual execution do.
+  for (int activation = 0; activation < 2; ++activation) {
+    ASSERT_TRUE(controller.set_gain_profile(next, &moving.velocity));
+    EXPECT_LT((controller.disturbance() - disturbance).norm(), 1e-12);
+    const auto output = controller.compute(moving, reference, 0.01, true);
+    ASSERT_TRUE(output.valid);
+    // With zero nominal input, preserving previous_input keeps the next estimate continuous too.
+    EXPECT_LT((output.disturbance - disturbance).norm(), 1e-12);
+    EXPECT_LT((output.acceleration + disturbance).norm(), 1e-12);
+  }
 }
 
 }  // namespace onboard_control

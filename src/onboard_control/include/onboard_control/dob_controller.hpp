@@ -61,14 +61,15 @@ class DobController
 public:
   explicit DobController(const ControllerParameters & parameters);
 
-  /** 清空观测器状态，必须在控制权或飞行模式边界切换时调用。 */
+  /** Clear observer history when releasing control or making a discontinuous control transition. */
   void reset();
 
   /** 用飞控已标定的 MOT_THST_HOVER 更新推力映射；非法值不会生效。 */
   bool set_hover_throttle(double hover_throttle) noexcept;
 
-  /** 只切换反馈与 DOB 增益，保留已校准推力映射和统一安全限幅。 */
-  bool set_gain_profile(const ControllerParameters & profile) noexcept;
+  /** Switch gains without changing thrust calibration; optionally preserve the disturbance estimate. */
+  bool set_gain_profile(const ControllerParameters & profile,
+    const Eigen::Vector3d * preserve_velocity = nullptr) noexcept;
 
   /** 返回当前实际用于推力映射的悬停油门。 */
   double hover_throttle() const noexcept {return parameters_.hover_throttle;}

@@ -319,10 +319,18 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
   }
   avoidance_planner_session_ = message->planner_session;
   if (message->mode == Request::PLAN) {
-    // 用接收时最新 FCU 位置投影到连续曲线，裁掉求解/DDS 延迟期间已越过的前缀。
-    candidate.start_at_closest(vehicle_.position);
-    if (candidate.empty() || !candidate.can_join(vehicle_, avoidance_join_position_tolerance_,
-      avoidance_join_velocity_tolerance_))
+    const double delay = std::max(0.0, search_age);
+    // Allow phase variation during delayed acceleration, without jumping to a future return leg.
+    const double projection_window = 2.0 * delay + 1.0 / control_frequency_hz_;
+    const double phase = candidate.start_at_closest(
+      vehicle_.position, projection_window, &vehicle_.velocity);
+    // Both actual motion and the new curve evolve from the measured planning state during delay.
+    const double acceleration = std::hypot(avoidance_motion_limits_[2], avoidance_motion_limits_[3]);
+    const double position_tolerance = avoidance_join_position_tolerance_ +
+      0.5 * acceleration * (delay * delay + phase * phase);
+    const double velocity_tolerance = avoidance_join_velocity_tolerance_ +
+      acceleration * (delay + phase);
+    if (candidate.empty() || !candidate.can_join(vehicle_, position_tolerance, velocity_tolerance))
     {
       std::string reason = trajectory_error;
       if (!candidate.empty()) {
@@ -339,11 +347,14 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
   avoidance_last_valid_ = now - std::chrono::duration_cast<SteadyClock::duration>(
     std::chrono::duration<double>(std::max(0.0, search_age)));
   if (avoidance_wait_started_) {
-    const bool stopped = vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_;
-    if (!stopped) {avoidance_clear_since_.reset(); return;}
-    if (!avoidance_clear_since_) {avoidance_clear_since_ = now; return;}
-    if (std::chrono::duration<double>(now - *avoidance_clear_since_).count() <
-      avoidance_resume_seconds_) {return;}
+    // A joinable PLAN already contains braking/turning dynamics; near-goal plans may publish once.
+    if (!native_plan) {
+      const bool stopped = vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_;
+      if (!stopped) {avoidance_clear_since_.reset(); return;}
+      if (!avoidance_clear_since_) {avoidance_clear_since_ = now; return;}
+      if (std::chrono::duration<double>(now - *avoidance_clear_since_).count() <
+        avoidance_resume_seconds_) {return;}
+    }
     if (message->mode == Request::PLAN) {
       avoidance_trajectory_ = std::move(candidate);
       avoidance_trajectory_started_ = now;  // 裁剪后的最近点是零秒，所有消费者共享此时间原点。

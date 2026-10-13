@@ -46,6 +46,7 @@ class BridgeContract(unittest.TestCase):
         cls.shift = (.06, -.03, .05) if cls.extnav else (0., 0., 0.)
         cls.frame = 'odom' if cls.extnav else 'map'
         cls.tag_corrected = False
+        cls.status_enabled = True
         cls.status_revision = 7
         cls.artifacts = Path(__file__).resolve().parents[3] / 'agent/codex/native-avoidance-refine'
         cls.artifacts.mkdir(parents=True, exist_ok=True)
@@ -111,7 +112,7 @@ class BridgeContract(unittest.TestCase):
     def publish_inputs(cls):
         """Keep real native map inputs fresh; one distant obstacle leaves the goal unobserved."""
         now = cls.node.get_clock().now().to_msg()
-        if cls.extnav:
+        if cls.extnav and cls.status_enabled:
             status = ExtnavCorrectionStatus()
             status.header.stamp = now
             status.interface_version = '2.0'
@@ -223,6 +224,17 @@ class BridgeContract(unittest.TestCase):
                 for axis, shift in zip(('x', 'y', 'z'), self.shift):
                     self.assertAlmostEqual(getattr(forwarded, axis)[0], getattr(source, axis)[0] + shift)
                     self.assertEqual(list(getattr(forwarded, axis)[1:]), list(getattr(source, axis)[1:]))
+
+        if self.extnav:
+            # A 2 Hz coordinate heartbeat may jitter beyond one period without losing FCU inputs.
+            type(self).status_enabled = False
+            before_gap = len(self.results)
+            self.spin(.8)
+            during_gap = [r for r in self.results[before_gap:] if r.request_id == 10]
+            self.assertTrue(during_gap)
+            self.assertTrue(all(r.ready and r.segments for r in during_gap))
+            type(self).status_enabled = True
+            self.spin(.1)
 
         old_native = copy.deepcopy(native)
         self.request(11, AvoidanceRequest.PLAN, (1., -.6, 0.))

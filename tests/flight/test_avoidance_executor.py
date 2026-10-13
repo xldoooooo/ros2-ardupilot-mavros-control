@@ -161,7 +161,7 @@ def avoidance_node(tmp_path, monkeypatch):
             elif self.policy == "delayed_curve" and request.mode == request.PLAN:
                 from guided_interfaces.msg import PolynomialSegment
                 # The original prefix is behind the current measured position at delivery.
-                curve = PolynomialSegment(duration=10., x=[0., .12, -.006, 0.],
+                curve = PolynomialSegment(duration=6.1, x=[.234, .12, -.12 / 12.2, 0.],
                                           y=[0., 0., 0., 0.], z=[1., 0., 0., 0.])
                 result.segments = [curve]
                 self.position_x, self.velocity_x = .24, .10
@@ -257,7 +257,7 @@ def test_native_stream_joins_current_position_and_replaces_moving_curve(avoidanc
     h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
     paths = [p for p in h.paths if p.poses]
     assert paths and abs(paths[0].poses[0].pose.position.x - .24) < 1e-8
-    assert len(paths[0].poses) == 79  # The trimmed native curve lasts about 7.746 seconds.
+    assert len(paths[0].poses) == 62  # The physically delayed prefix is about 0.05 seconds long.
     assert all(p.poses[0].pose.position.x >= .24 - 1e-8 for p in paths)
     h.until(lambda: h.status[-1].target_position.x > .24 + .005)
     assert abs(h.status[-1].target_position.x - .24) < .08
@@ -290,6 +290,29 @@ def test_native_stream_joins_current_position_and_replaces_moving_curve(avoidanc
                         r.status == CommandResult.STATUS_SUCCEEDED for r in h.results), 5.)
     h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_HOVER)
     assert h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_DISABLED
+
+
+def test_single_delayed_plan_resumes_without_another_success_or_full_stop(avoidance_node):
+    """A near-goal one-shot curve joins moving state despite normal delay-induced velocity error."""
+    from rclpy.duration import Duration
+    from guided_interfaces.msg import AvoidanceRequest, ControlStatus, PolynomialSegment
+    h = avoidance_node
+    h.position_x, h.velocity_x = .024, .12
+    h.spin(.15)
+    assert h.execute(strategy=1, goal_x=.12 + .5 - 1.12 / 3.).accepted
+    h.until(lambda: any(r.mode == AvoidanceRequest.PLAN for _, r in h.requests))
+    request = next(r for _, r in h.requests if r.mode == AvoidanceRequest.PLAN)
+    result = h.result(request)
+    result.header.stamp = (h.node.get_clock().now() - Duration(seconds=.2)).to_msg()
+    result.segments = [PolynomialSegment(
+        duration=1., x=[0., .12, .5, -1.12 / 3.],
+        y=[0., 0., 0., 0.], z=[1., 0., 0., 0.])]
+    h.reply.publish(result)
+    h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING, .5)
+    assert any(p.poses and abs(p.poses[0].pose.position.x - .024) < 1e-7 for p in h.paths)
+    h.spin(1.3)  # The native planner may send only identity heartbeats after this success.
+    assert h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING
+    assert len([r for _, r in h.requests if r.mode == AvoidanceRequest.PLAN]) == 1
 
 
 def test_identity_recovery_and_late_success_after_cancel_or_hover(avoidance_node):

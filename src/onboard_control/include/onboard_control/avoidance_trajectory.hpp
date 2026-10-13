@@ -97,13 +97,18 @@ public:
       (actual.velocity - first.velocity).norm() <= velocity_tolerance;
   }
 
-  /** 全部连续段的三维最近点；等距时选择较晚时刻，避免重走已越过的重合路径。 */
-  double closest_time(const Eigen::Vector3d & position) const
+  /** Project onto a bounded prefix; measured velocity disambiguates returning branches. */
+  double closest_time(const Eigen::Vector3d & position,
+    double maximum_time = std::numeric_limits<double>::infinity(),
+    const Eigen::Vector3d * velocity = nullptr) const
   {
     if (empty() || !position.allFinite()) {return 0.0;}
+    maximum_time = std::clamp(maximum_time, 0.0, duration_);
     double best_time = 0.0, best_distance = (sample(0.0).position - position).squaredNorm();
+    double best_velocity_error = velocity ? (sample(0.0).velocity - *velocity).squaredNorm() : 0.0;
     double offset = 0.0;
     for (const auto & s : segments_) {
+      if (offset > maximum_time) {break;}
       // 在 u=t/duration 的 [0,1] 上求 (p(u)-actual)·p'(u)=0，最高五次。
       auto c = s.coefficients;
       double scale = 1.0;
@@ -114,17 +119,24 @@ public:
         for (int j = 1; j < 4; ++j) {derivative[i + j - 1] += j * c.col(i).dot(c.col(j));}
       }
       auto times = unit_interval_roots(std::move(derivative));
-      times.push_back(0.0); times.push_back(1.0);
+      const double last_u = std::min(1.0, (maximum_time - offset) / s.duration);
+      times.push_back(0.0); times.push_back(last_u);
       for (double u : times) {
+        if (u > last_u) {continue;}
         const double t = offset + u * s.duration;
-        const double distance = (s.sample(u * s.duration).position - position).squaredNorm();
+        const auto state = s.sample(u * s.duration);
+        const double distance = (state.position - position).squaredNorm();
+        const double velocity_error = velocity ? (state.velocity - *velocity).squaredNorm() : 0.0;
         // ARM 的 FMA 与 x86 在重合点可差几个 ulp；仅用浮点距离容差判定等距。
         const double epsilon = 64.0 * std::numeric_limits<double>::epsilon() *
           std::max({1.0, distance, best_distance});
+        const bool preferred_tie = velocity ?
+          velocity_error < best_velocity_error ||
+          (velocity_error == best_velocity_error && t < best_time) : t > best_time;
         if (distance < best_distance - epsilon ||
-          (std::abs(distance - best_distance) <= epsilon && t > best_time))
+          (std::abs(distance - best_distance) <= epsilon && preferred_tie))
         {
-          best_distance = distance; best_time = t;
+          best_distance = distance; best_time = t; best_velocity_error = velocity_error;
         }
       }
       offset += s.duration;
@@ -133,9 +145,11 @@ public:
   }
 
   /** 将最近点设为新的零秒；解析平移首段系数，保留 p/v/a 和后续段的原始时间尺度。 */
-  double start_at_closest(const Eigen::Vector3d & position)
+  double start_at_closest(const Eigen::Vector3d & position,
+    double maximum_time = std::numeric_limits<double>::infinity(),
+    const Eigen::Vector3d * velocity = nullptr)
   {
-    const double elapsed = closest_time(position);
+    const double elapsed = closest_time(position, maximum_time, velocity);
     if (empty() || elapsed <= 0.0) {return elapsed;}
     double local = elapsed;
     std::size_t first = 0;

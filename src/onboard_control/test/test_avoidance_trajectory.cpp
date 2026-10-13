@@ -189,3 +189,27 @@ TEST(AvoidanceTrajectory, MultipleMinimaAndConstantSegmentsChooseLatestEqualPoin
   EXPECT_NEAR(t.duration(), 6.0, 1e-12);
   EXPECT_DOUBLE_EQ(t.closest_time({std::numeric_limits<double>::quiet_NaN(), 0, 1}), 0.0);
 }
+
+TEST(AvoidanceTrajectory, DelayPrefixAndVelocityPreventJumpToReturningBranch)
+{
+  AvoidancePolynomial loop;
+  loop.duration = 2.0;
+  loop.coefficients.row(0) << 0.0, 1.0, -1.0, 0.0;
+  loop.coefficients(2, 0) = 1.0;
+  AvoidanceTrajectory t;
+  std::string reason;
+  ASSERT_TRUE(t.assign({loop}, {-2, 0, 1}, false, reason));
+  const Eigen::Vector3d forward{1, 0, 0}, returning{-1, 0, 0};
+  EXPECT_DOUBLE_EQ(t.closest_time({0, 0, 1}, 2.0, &forward), 0.0);
+  EXPECT_NEAR(t.closest_time({0, 0, 1}, 2.0, &returning), 1.0, 1e-12);
+  EXPECT_DOUBLE_EQ(t.closest_time({0, 0, 1}, 0.2, &returning), 0.0);
+  EXPECT_DOUBLE_EQ(t.closest_time({0.2, 0, 1}, 0.0, &forward), 0.0);
+  EXPECT_NEAR(t.closest_time({0.2, 0, 1}, 0.1, &forward), 0.1, 1e-12);
+
+  ASSERT_TRUE(t.assign({segment()}, {1, 0, 1}, true, reason));
+  const Eigen::Vector3d stopped = Eigen::Vector3d::Zero();
+  EXPECT_DOUBLE_EQ(t.start_at_closest({1, 0, 1}, t.duration(), &stopped), 6.0);
+  EXPECT_GT(t.duration(), 0.0);
+  EXPECT_EQ(t.sample(0.0).velocity.norm(), 0.0);
+  EXPECT_EQ(t.sample(0.0).acceleration.norm(), 0.0);
+}

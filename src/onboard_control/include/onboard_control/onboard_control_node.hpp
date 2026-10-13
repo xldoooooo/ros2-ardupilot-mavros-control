@@ -215,7 +215,8 @@ private:
   bool validate_waypoint_configuration(std::uint8_t strategy, std::uint8_t generator,
     std::uint8_t tracking, std::string & reason) const;
   void publish_avoidance_path();
-  void activate_tracking_controller(TrackingControllerType type);
+  /** Select gains and optionally retain learned disturbance during autonomous planner entry. */
+  void activate_tracking_controller(TrackingControllerType type, bool preserve_observer = false);
   void reset_waypoint_reference_state();
   bool waypoint_configuration_change_locked(
     std::uint8_t flight_strategy,
@@ -378,7 +379,7 @@ private:
   std::string avoidance_detail_;
   double avoidance_wait_timeout_seconds_{15.0};  // 含制动时间，不随失败结果重新计时。
   double avoidance_result_timeout_seconds_{0.8};  // Maximum native search age and stream receive interval.
-  double avoidance_resume_seconds_{0.4};  // 稳定停止且持续获得有效结果才恢复。
+  double avoidance_resume_seconds_{0.4};  // CHECK_LINE stopped/clear window; PLAN joins immediately.
   double avoidance_join_position_tolerance_{0.08}, avoidance_join_velocity_tolerance_{0.08};
   bool avoidance_land_latched_{false};  // 超时LAND只能在实际解除武装后清除。
   SteadyTime avoidance_last_land_attempt_{};

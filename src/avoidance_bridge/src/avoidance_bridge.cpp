@@ -25,6 +25,9 @@ using Status = correction_interfaces::msg::ExtnavCorrectionStatus;
 using Cloud = sensor_msgs::msg::PointCloud2;
 using Odom = nav_msgs::msg::Odometry;
 
+// Extnav publishes coordinate identity at 2 Hz; allow scheduling jitter independently of FCU age.
+constexpr double kCoordinateStatusTimeoutSeconds = 2.0;
+
 // Return the local reception age independently of device clocks.
 static double age(Steady::time_point time) {
   return std::chrono::duration<double>(Steady::now() - time).count();
@@ -120,7 +123,8 @@ private:
       if (state_->header.frame_id != frame_) { reason_ = "odometry frame mismatch"; return false; }
       return true;
     }
-    if (state_->header.frame_id != "map" || !status_ || age(status_time_) > timeout_ ||
+    if (state_->header.frame_id != "map" || !status_ ||
+        age(status_time_) > kCoordinateStatusTimeoutSeconds ||
         !status_->service_available || !status_->odin_available || status_->interface_version != "2.0" ||
         status_->odin_session_id.empty() || status_->correction_valid ||
         !status_->final_sample_available || status_->final_sample_correction_valid ||
