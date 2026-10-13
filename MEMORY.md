@@ -54,7 +54,7 @@
 | --- | --- | --- |
 | refresh | Task38 / 3.4、Odin仅down新版已安装并验证；Task3 Python extnav按需corrected发布已同步原生构建，ARM/实际订阅进退通过 | 所有测试Odin/extnav/MAVROS已停止，三个unit inactive；下次Odin自动提供cloud_slam_down，不运行独立Python降采样。逐机标定、旧碰撞风险及20°安装角未改 |
 | new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
-| hp-desktop | 2026-09-18 重建修正接口 2.0，已解决旧 install 缺少 `ApplySavedCorrection` | **尚未同步 Task38、GUI 仿真避障入口及最近点接入，需同步源码及重建接口** |
+| hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | 主工程3.4原生双树接入；SetGoal持久目标、流式精确p/v/a、方向动力学限额，已重建 | 桥地图/射线/unknown及执行retime已删除；DDS/核心通过，SITL严格净空指标及实飞仍未全面验收 |
 
 - **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
