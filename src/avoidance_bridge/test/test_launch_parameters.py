@@ -45,6 +45,7 @@ class LaunchParameterTest(unittest.TestCase):
             'search.resolution': .15, 'search.voxel_size': .12, 'search.max_vel': 1.7,
             'search.max_acc': 1.6, 'search.max_vel_xy': 1.3, 'search.max_vel_z': .4,
             'search.max_acc_xy': .8, 'search.max_acc_z': .3,
+            'search.vertical_distance_weight': 17.0,
             'search.lower': [-42., -41., -3.], 'cloud.blind_radius': .17,
             'planning_frame': 'yaml_frame', 'stamp_clock': 'ros', 'planning_rate': 7.,
         })
@@ -63,6 +64,7 @@ class LaunchParameterTest(unittest.TestCase):
                                    'cloud.blind_radius': 0., 'planning_frame': 'cli_frame',
                                    'stamp_clock': 'receive'})
         fallback = dict(defaults)
+        fallback['search.vertical_distance_weight'] = 0.0  # Bare core keeps legacy behavior.
         scalar_args = [f'config:={fixture}', 'search.max_vel:=2.1', 'search.max_acc:=1.4']
         cases = [
             ('shared_yaml', [], defaults),

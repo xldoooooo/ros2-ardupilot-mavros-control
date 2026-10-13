@@ -146,6 +146,8 @@
 
 ## 避障当前基线与验收边界
 
+- 原生规划新增 `search.vertical_distance_weight`：公共YAML默认10、裸core默认0；额外惩罚累计上下路程，普通原语、启发式及终端shot候选均计入。权重0恢复旧搜索选择，速度/净空/执行控制不变。开发机和refresh已原生构建安装，refresh现场边界 `[-20,-20,0.2]..[20,20,2]` 保留，安装权重10已隔离读回；生产避障当前未运行，下次正常启动生效。**new与hp-desktop待同步该项**。加权搜索/位置hash保留，部分场景仍可能增加竖直路程，不能承诺单调变平。用户报告实飞避障成功但RViz出现拱形，起点/速度偏差疑点尚未由同时间同坐标数据核验，本项不代表修复拱形根因。
+
 - 开发机正式桥与独立手动入口共用原生 dual_tree、目标/时间/位移/旧路径碰撞触发，
   保留 init=true、仅NO_PATH再init=false；service_only、latest_observation及桥专属规划profile已删除。
   公共参数：safe_distance=0.25m、horizon=100m、resolution/voxel_size=0.1m、max_tau=0.6s、
