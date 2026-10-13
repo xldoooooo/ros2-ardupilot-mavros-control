@@ -363,6 +363,8 @@ private:
   bool avoidance_component_ready_{false};
   SteadyTime avoidance_heartbeat_time_{};
   std::optional<SteadyTime> avoidance_wait_started_, avoidance_clear_since_;
+  ControlReference avoidance_brake_start_;  // Measured obstacle-hover state at the first blocked reply.
+  Eigen::Vector3d avoidance_brake_acceleration_{Eigen::Vector3d::Zero()};  // Native braking limits, m/s².
   std::optional<SteadyTime> avoidance_last_valid_, avoidance_trajectory_started_;
   struct AvoidancePending
   {

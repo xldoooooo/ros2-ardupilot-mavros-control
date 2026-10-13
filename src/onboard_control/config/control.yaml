@@ -64,7 +64,7 @@
     trajectory_dob_L_xy: 0.5  # 轨迹跟踪水平扰动观测器带宽系数，单位：1/秒。
     trajectory_dob_L_z: 0.3  # 轨迹跟踪垂直扰动观测器带宽系数，单位：1/秒。
 
-    # Straight flight limits; avoidance/obstacle-hover inherit the native search.* limits.
+    # Straight and clear obstacle-hover flight share these limits; obstacle braking uses search.*.
     straight_max_velocity_xy: 1.0  # Horizontal speed norm, m/s.
     straight_max_velocity_z: 0.2  # Absolute vertical speed, m/s.
     straight_max_acceleration_xy: 0.35  # Horizontal acceleration norm, m/s².

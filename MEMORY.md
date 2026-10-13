@@ -155,10 +155,15 @@
   init_max_tau=0.8s、collision_step=0.05m、search_budget=0.3s、input_timeout=0.5s、盲区0、tree_period=20，
   下界[-50,-50,-2]、上界[50,50,10]；默认0.2s/1m重规划，实际发布不保证严格5Hz。
 - 直线模式control.yaml的straight_max_velocity_xy/z=1/.2、straight_max_acceleration_xy/z=.35/.15；
-  原方法参数可显式覆盖，默认继承公共直线组。自主避障与遇障悬停独立使用原生search组：
+  原方法参数可显式覆盖，默认继承公共直线组；遇障悬停正常飞行及正常到点复用同组参数（梯形减速XY/Z=.40/.18）。自主避障独立使用原生search组：
   水平速度范数1m/s、垂直绝对0.2m/s，水平加速度范数2m/s²、垂直绝对2m/s²，
   search.max_vel_xy/max_vel_z/max_acc_xy/max_acc_z在普通原语与shot的原时间内生效。
-  旧scalar CLI填未显式给出的方向值，方向CLI优先。PlanResult/AvoidanceResult携带最终解析限额；遇障悬停参考及HORIZON制动直接继承。
+  旧scalar CLI填未显式给出的方向值，方向CLI优先。PlanResult/AvoidanceResult携带最终解析限额；遇障悬停仅紧急制动继承原生加速度，HORIZON制动预留仍使用原生限额。
+  遇障悬停从首次等待时的实际p/v生成恒减速度参考，零速后保持预计停点；重复阻挡不移动起点或重置等待计时。
+  该适配目前仅开发机源码/安装更新；refresh、hp-desktop、new均待同步并原生重建onboard_control。
+  开发机SITL无障碍遇障悬停/普通直线实际XY峰值1.06359/1.06372m/s；正常参考一致，仍非实际硬限速。
+  运动中遇障制动参考2m/s²，约.604s降至实际XY<.15m/s；阻挡无拍照，移障可恢复。
+  设计与验证见[遇障悬停直线参数适配](agent/report/report-2026-10-13-hover-straight-shaping.md)。
   执行层重复包线和统一时间缩放已删除；用户确认PD+DOB输出限幅保持4/4用于纠偏。
   高加速度/低垂直速度时按可行区间采样，常规125候选保持；窄Z分支补精确停速候选，最多150，max_tau=.6保持。
   实际起点超速时允许有界减速首段，保留真实初速并检查位置/碰撞/加速度；后续仍满足正常速度包线。
@@ -208,7 +213,7 @@
   加权搜索仍可能次优，真实表面/机体净空、长期负载和实飞闭环未验收。
   refresh现场权重30及Z[.6,1.4]已运行回读；静态测试结束飞控栈/规划器均停止。21项配置哈希保持。
   两机备份分别在refresh的`/home/nvidia/ros2-ardupilot-maintenance/task5-avoidance-20261013/`和hp的`/home/scq/backups/task5-avoidance-20261013/`。
-  参考限额不保证实际硬上限；遇障悬停本次实测XY最大1.4054m/s，控制输出4/4按用户确认保留。
+  参考限额不保证实际硬上限；旧遇障悬停参考加速2m/s²曾实测XY最大1.4054m/s，现正常参考改为直线组。控制输出4/4保持用于纠偏；恒减速是参考限额，不能当作实测加速度硬限幅。
   用户确认当天没有直线对照；bag缺FCU实际输入/执行参考/控制输出，不能完整还原历史闭环或同状态复核原69条失败。
   一键RViz使用Odin输入，其参考点与原FCU适配不同，不是上述107条同输入对照，也不能据此展示DOB修复后的实际响应。
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，

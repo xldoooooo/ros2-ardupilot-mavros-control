@@ -136,7 +136,7 @@ class ScanScene:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", choices=["straight", "hover_recover", "avoid", "avoid_recover", "timeout", "fault_cancel"], required=True)
+    parser.add_argument("--scenario", choices=["straight", "hover_clear", "hover_brake", "hover_recover", "avoid", "avoid_recover", "timeout", "fault_cancel"], required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     os.environ.update(QT_QPA_PLATFORM="offscreen", ROS_DOMAIN_ID="231",
@@ -216,7 +216,7 @@ def main():
         # Observe the whole future region before inserting the moving obstacle; no hidden free-space fixture.
         time.sleep(2)
         snap = controller.snapshot()
-        scene.pole = args.scenario != "straight"
+        scene.pole = args.scenario not in ("straight", "hover_clear", "hover_brake")
         time.sleep(1.2)
         if strategy is not Strategy.STRAIGHT:
             # 插入障碍后等当前新扫描/地图就绪，避免用起飞前的旧ready下发新任务。
@@ -226,15 +226,36 @@ def main():
         capture_start = len(scene.captures)
         ticket = controller.request_waypoints((target,), strategy,
             reference_generator=Generator.TRAPEZOIDAL_PROFILE, tracking_controller=Tracking.TRAJECTORY_PD_DOB)
-        if args.scenario in ("hover_recover", "avoid_recover", "timeout", "fault_cancel"):
+        blocked_origin = start[:2]
+        if args.scenario == "hover_brake":
+            # Insert a visible obstacle only after the aircraft is moving, with stopping room ahead.
+            wait(lambda: controller.snapshot().avoidance_state == 2 and
+                 math.hypot(controller.snapshot().vx, controller.snapshot().vy) > .8,
+                 15, "moving before obstacle insertion")
+            moving = controller.snapshot()
+            scene.pole_center = np.array([moving.x + 1.2, moving.y])
+            scene.pole = True
+            report["obstacle_insert_speed_m_s"] = math.hypot(moving.vx, moving.vy)
+        if args.scenario in ("hover_brake", "hover_recover", "avoid_recover", "timeout", "fault_cancel"):
             wait(lambda: controller.snapshot().avoidance_state in (1,3) and
                  controller.snapshot().waypoint_count==1, 10, "blocked waiting")
-            time.sleep(2)
-            report["blocked_drift_m"] = math.hypot(controller.snapshot().x-start[0],controller.snapshot().y-start[1])
+            if args.scenario == "hover_brake":
+                blocked = controller.snapshot()
+                blocked_origin = np.array([blocked.x, blocked.y])
+                brake_started = time.monotonic()
+                wait(lambda: math.hypot(controller.snapshot().vx, controller.snapshot().vy) < .15,
+                     3, "actual obstacle braking")
+                report["braking_seconds"] = time.monotonic() - brake_started
+                report["braking_reference_acceleration_m_s2"] = max(
+                    math.hypot(s["tax"], s["tay"]) for s in samples if s["state"] == 3)
+                assert math.isclose(report["braking_reference_acceleration_m_s2"], 2., abs_tol=1e-6)
+            hold_started = time.monotonic()
+            wait(lambda: time.monotonic() - hold_started >= 2., 3, "blocked hold observation")
+            report["blocked_drift_m"] = math.hypot(controller.snapshot().x-blocked_origin[0],controller.snapshot().y-blocked_origin[1])
             report["blocked_capture_count"] = len(scene.captures)-capture_start
             assert report["blocked_capture_count"] == 0
-            assert report["blocked_drift_m"] < .25
-            if args.scenario in ("hover_recover", "avoid_recover"):
+            assert report["blocked_drift_m"] < (.8 if args.scenario == "hover_brake" else .25)
+            if args.scenario in ("hover_brake", "hover_recover", "avoid_recover"):
                 scene.pole = False
                 removed = time.monotonic()
                 wait(lambda: controller.snapshot().avoidance_state==2, 6, "obstacle removed recovery")

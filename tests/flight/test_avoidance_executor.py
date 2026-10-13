@@ -46,6 +46,7 @@ def avoidance_node(tmp_path, monkeypatch):
         height = 1.
         position_x = 0.
         velocity_x = 0.
+        velocity_z = 0.
         motion_limits = (1., .2, 2., 2.)
 
         def __init__(self):
@@ -91,6 +92,7 @@ def avoidance_node(tmp_path, monkeypatch):
             self.pubs["local_position/pose"].publish(pose)
             twist = TwistStamped()
             twist.twist.linear.x = self.velocity_x
+            twist.twist.linear.z = self.velocity_z
             self.pubs["local_position/velocity_local"].publish(twist)
             # Match the real bridge's 1 Hz heartbeat. The executor consumes depth=1:
             # a heartbeat immediately after a reply would overwrite that reply in DDS.
@@ -496,9 +498,34 @@ def test_takeoff_preserves_preflight_configuration_and_failure_unlocks(avoidance
         assert "禁止修改" in response.message
     h.policy = "clear"
     h.motion_limits = (.6, .2, 1.7, 1.4)
-    h.spin(1.1)  # Native metadata overrides the obstacle-hover reference, independently of straight.
+    h.spin(1.1)  # Different native limits must not override clear obstacle-hover flight shaping.
+    h.height = 1.
+    h.spin(.1)
     assert h.execute(2, 2, 1).accepted
     h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
     assert h.status[-1].waypoint_configuration_locked
-    h.until(lambda: any(abs(s.target_acceleration.x - 1.7) < 1e-6 for s in h.status))
-    h.until(lambda: abs(h.status[-1].target_velocity.x - .6) < 1e-6)
+    h.until(lambda: any(abs(s.target_acceleration.x - .35) < 1e-6 for s in h.status))
+    # Publish plausible progress so the existing large tracking-error gate does not stop the test.
+    deadline = time.monotonic() + 5.
+    while time.monotonic() < deadline and h.status[-1].target_velocity.x < 1. - 1e-6:
+        h.position_x = h.status[-1].target_position.x
+        h.velocity_x = h.status[-1].target_velocity.x
+        h.spin(.025)
+    assert h.status[-1].target_velocity.x == pytest.approx(1., abs=1e-6)
+    h.velocity_x = .7
+    h.velocity_z = .3
+    h.spin(.075)
+    h.policy = "blocked"
+    first = len(h.status)
+    h.until(lambda: any(s.avoidance_state == ControlStatus.AVOIDANCE_BRAKING and
+                       abs(s.target_acceleration.x + 1.7) < 1e-6 for s in h.status[first:]))
+    braking = next(s for s in h.status[first:] if abs(s.target_acceleration.x + 1.7) < 1e-6)
+    stop_x = braking.target_position.x + braking.target_velocity.x ** 2 / (2. * 1.7)
+    assert braking.target_acceleration.z == pytest.approx(-1.4, abs=1e-6)
+    stop_z = h.height + h.velocity_z ** 2 / (2. * 1.4)
+    h.until(lambda: abs(h.status[-1].target_velocity.x) < 1e-6 and
+            abs(h.status[-1].target_acceleration.x) < 1e-6)
+    assert h.status[-1].target_position.x == pytest.approx(stop_x, abs=1e-6)
+    assert h.status[-1].target_position.z == pytest.approx(stop_z, abs=1e-6)
+    h.spin(.2)
+    assert h.status[-1].target_position.x == pytest.approx(stop_x, abs=1e-6)

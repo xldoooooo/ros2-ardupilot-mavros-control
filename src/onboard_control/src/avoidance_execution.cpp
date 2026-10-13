@@ -24,11 +24,11 @@ geometry_msgs::msg::Point point(const Eigen::Vector3d & v)
 }
 }  // namespace
 
-/** Copy generator shaping while using one mode-specific motion envelope. */
+/** Obstacle-hover uses straight-flight shaping; autonomous references retain native limits. */
 ReferenceGeneratorParameters OnboardControlNode::waypoint_reference_parameters() const
 {
   auto parameters = reference_generator_parameters_;
-  if (waypoint_flight_strategy_ == 0) {return parameters;}
+  if (waypoint_flight_strategy_ != 1) {return parameters;}
   const auto apply = [this](auto & profile) {
     profile.max_velocity_xy = avoidance_motion_limits_[0];
     profile.max_velocity_z = avoidance_motion_limits_[1];
@@ -98,7 +98,7 @@ void OnboardControlNode::reset_avoidance()
   publish_avoidance_path();
 }
 
-/** Brake at the current position while retaining the waypoint and native goal. */
+/** Capture one braking initial state while retaining the waypoint and native goal. */
 void OnboardControlNode::begin_avoidance_wait(
   const SteadyTime & now, const std::string & reason)
 {
@@ -108,6 +108,25 @@ void OnboardControlNode::begin_avoidance_wait(
     reference_.position = vehicle_.position;
     reference_.velocity.setZero();
     reference_.acceleration.setZero();
+    avoidance_brake_start_ = reference_;
+    avoidance_brake_acceleration_.setZero();
+    if (waypoint_flight_strategy_ == 2) {
+      // Start from measured velocity, never from a reference the aircraft is still chasing.
+      const double speed_xy = vehicle_.velocity.head<2>().norm();
+      if (speed_xy > 0.0 && avoidance_motion_limits_[2] > 0.0) {
+        avoidance_brake_start_.velocity.head<2>() = vehicle_.velocity.head<2>();
+        avoidance_brake_acceleration_.head<2>() =
+          -vehicle_.velocity.head<2>() * (avoidance_motion_limits_[2] / speed_xy);
+      }
+      if (std::abs(vehicle_.velocity.z()) > 0.0 && avoidance_motion_limits_[3] > 0.0) {
+        avoidance_brake_start_.velocity.z() = vehicle_.velocity.z();
+        avoidance_brake_acceleration_.z() =
+          -std::copysign(avoidance_motion_limits_[3], vehicle_.velocity.z());
+      }
+      // Tracking-error waits can publish this control cycle before the next braking update.
+      reference_ = avoidance_brake_start_;
+      reference_.acceleration = avoidance_brake_acceleration_;
+    }
     target_yaw_rate_ = 0.0;
     waypoint_arrival_tracker_.reset();
     set_status_message("避障制动等待：" + reason, StatusLogLevel::kWarn);
@@ -393,6 +412,32 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
     }
   }
   if (avoidance_wait_started_) {
+    if (waypoint_flight_strategy_ == 2) {
+      // Integrate each braking axis only until zero speed, then hold its stopping position.
+      // Repeated blocked replies must not restart braking or move this initial state.
+      const double elapsed = std::chrono::duration<double>(now - *avoidance_wait_started_).count();
+      reference_ = avoidance_brake_start_;
+      const double acceleration_xy = avoidance_brake_acceleration_.head<2>().norm();
+      if (acceleration_xy > 0.0) {
+        const double stop_time = avoidance_brake_start_.velocity.head<2>().norm() / acceleration_xy;
+        const double time = std::min(elapsed, stop_time);
+        reference_.position.head<2>() += avoidance_brake_start_.velocity.head<2>() * time +
+          0.5 * avoidance_brake_acceleration_.head<2>() * time * time;
+        reference_.velocity.head<2>() += avoidance_brake_acceleration_.head<2>() * time;
+        if (elapsed < stop_time) {
+          reference_.acceleration.head<2>() = avoidance_brake_acceleration_.head<2>();
+        }
+      }
+      if (std::abs(avoidance_brake_acceleration_.z()) > 0.0) {
+        const double stop_time = std::abs(
+          avoidance_brake_start_.velocity.z() / avoidance_brake_acceleration_.z());
+        const double time = std::min(elapsed, stop_time);
+        reference_.position.z() += avoidance_brake_start_.velocity.z() * time +
+          0.5 * avoidance_brake_acceleration_.z() * time * time;
+        reference_.velocity.z() += avoidance_brake_acceleration_.z() * time;
+        reference_.acceleration.z() = elapsed < stop_time ? avoidance_brake_acceleration_.z() : 0.0;
+      }
+    }
     if (std::chrono::duration<double>(now - *avoidance_wait_started_).count() >=
       avoidance_wait_timeout_seconds_)
     {
