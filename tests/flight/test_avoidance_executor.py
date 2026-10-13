@@ -250,6 +250,35 @@ def avoidance_node(tmp_path, monkeypatch):
             rclpy.shutdown(context=context)
 
 
+@pytest.mark.parametrize("strategy", [0, 2, 1])
+def test_tracking_error_stop_is_only_for_autonomous_flight(avoidance_node, strategy):
+    """Clear straight/obstacle-hover references advance past 0.8 m; native curves still stop."""
+    from guided_interfaces.msg import ControlStatus
+    h = avoidance_node
+    h.policy = "delayed_curve" if strategy == 1 else "clear"
+    assert h.execute(strategy=strategy, goal_x=.6 if strategy == 1 else 4.).accepted
+    if strategy == 1:
+        h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
+        h.policy = "silent"
+        h.active_plan = None
+        h.delayed_replies.clear()
+        h.position_x = 1.5
+        h.until(lambda: "轨迹跟踪误差" in h.status[-1].avoidance_detail)
+        assert h.status[-1].avoidance_state in (
+            ControlStatus.AVOIDANCE_BRAKING, ControlStatus.AVOIDANCE_WAITING)
+    else:
+        # Keep measured state stationary to exercise reference lag beyond the former threshold.
+        h.until(lambda: h.status[-1].target_position.x > 1., 5.)
+        h.spin(.3)
+        status = h.status[-1]
+        assert status.target_position.x - status.position.x > 1.
+        assert status.target_velocity.x > 0.
+        assert status.control_mode == ControlStatus.MODE_WAYPOINT
+        assert status.avoidance_state == (
+            ControlStatus.AVOIDANCE_EXECUTING if strategy == 2 else ControlStatus.AVOIDANCE_DISABLED)
+        assert not any(r.final and r.command == "waypoints" for r in h.results)
+
+
 def test_native_stream_joins_current_position_and_replaces_moving_curve(avoidance_node):
     """One PLAN streams new curves; trimming preserves native timing and rejects old sequences."""
     from guided_interfaces.msg import AvoidanceRequest, ControlStatus, PolynomialSegment

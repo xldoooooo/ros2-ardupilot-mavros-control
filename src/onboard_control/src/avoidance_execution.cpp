@@ -480,8 +480,10 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
     begin_avoidance_wait(now, "无完整可执行轨迹");
     return false;
   }
-  // 大跟踪误差使原规划从实际位置脱离，必须制动而非继续追逐曲线。
-  if ((vehicle_.position - reference_.position).norm() > max_reference_error_xy_) {
+  // Only autonomous trajectories need this deviation guard; obstacle-hover follows straight flight.
+  if (waypoint_flight_strategy_ == 1 &&
+    (vehicle_.position - reference_.position).norm() > max_reference_error_xy_)
+  {
     begin_avoidance_wait(now, "轨迹跟踪误差超过现有参考误差上限");
     return false;
   }
