@@ -19,7 +19,7 @@
 - 完整旧Git历史、跟踪源码、现场diff及两个仓库原有build/install/log归档在`/home/scq/backups/code-sync-20261013/`；主工程现场改动另保存在Git stash `laptop-pre-sync-20261013`。
 - 保留笔记本修正服务测试中取消固定Tag尺寸断言的修改；没有覆盖相机标定、运行环境、导出文件或实验日志。
 - 旧避障launch曾将safe_distance从0.45改为0.35；该文件已归档，新入口使用公共planner.yaml，当前默认safe_distance=0.25。没有将旧桥profile重新带入新版规划器。
-- 开发机无关的任务目录整理和TODO改动未纳入此次代码同步。
+- 未修改或实现TODO条目，未提交的任务目录整理不纳入此次代码同步；main历史中的既有文档提交随仓库同步。
 
 ## 验证
 
