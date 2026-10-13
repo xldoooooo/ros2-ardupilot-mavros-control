@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-13。Task38 / 3.4基线保留；两机Odin host SDK已原生集成近点剔除与降采样，并修复auto回退原点及非有限输入；down输出仅XYZ、12字节/点，替代独立Python进程。开发机避障已统一原生dual_tree与目标/时间/位移/碰撞重规划，直线与避障限额分组、避障规划与参考共享原生实际限额；两机仍待同步此版本。
+维护日期：2026-10-13。Task38 / 3.4基线保留；两机Odin host SDK已原生集成近点剔除与降采样，并修复auto回退原点及非有限输入；down输出仅XYZ、12字节/点，替代独立Python进程。原生dual_tree、持久目标及方向限额已部署开发机、refresh和地面笔记本，new仍待同步；refresh已改用含参数加载与重试修复的MAVROS 2.16.0 overlay，地面验证通过，未进行实飞验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -52,7 +52,7 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task38 / 3.4、Odin仅down新版已安装并验证；Task3 Python extnav按需corrected发布已同步原生构建，ARM/实际订阅进退通过 | 所有测试Odin/extnav/MAVROS已停止，三个unit inactive；下次Odin自动提供cloud_slam_down，不运行独立Python降采样。逐机标定、旧碰撞风险及20°安装角未改 |
+| refresh | Task38 / 3.4，已同步主工程62ce78e原生接入及独立库d79ca43并原生重建；MAVROS 2.16.0含参数加载与重试修复 | 手动机载/避障进程已恢复，未解锁待机；25秒采样避障始终ready、姿态输出0。Tag标定、插件裁剪和20°安装角保持；未实飞验收 |
 | new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | 主工程3.4原生双树接入；SetGoal持久目标、流式精确p/v/a、方向动力学限额，已重建 | 桥地图/射线/unknown及执行retime已删除；DDS/核心通过，SITL严格净空指标及实飞仍未全面验收 |
@@ -61,9 +61,15 @@
   new 使用 Wasintek 1920×1080@30 / Tag0 0.170 m，修正活动目录为
   `/etc/ros2-ardupilot/correction-config`，由 `correction.env` 的 `CORRECTION_CONFIG_DIR` 选择。
   仓库根 `correction_service/config/` 默认属于 refresh；命名相机档案不会自动切换运行配置。
-- refresh MAVROS **2.15.1** 使用 `/home/nvidia/mavros_param_fix_ws` 的固定版本参数重试补丁，
-  通过 `onboard.env` 的 `MAVROS_OVERLAY_SETUP` 加载，系统安装未覆盖。
-  new 系统为 **2.14.0**，不能启用该补丁；系统升级后需重新检查补丁与 ABI。
+- refresh 系统与活动 MAVROS overlay 均为 **2.16.0**，活动路径为
+  `/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup.bash`，由 `onboard.env` 选择；
+  保留项目参数重试修复和原插件裁剪。旧 `mavros_param_fix_ws` 已退出生产，不能再加载。
+  new 最近确认系统为 **2.14.0**，本次未连接；下次同步先实查版本，不复制refresh的overlay或环境文件。
+- **MAVROS参数加载回归已在refresh修复**：上游 `63f7392` 禁止全局节点重命名时也屏蔽了YAML，
+  `thrust_scaling=NaN`会丢弃姿态目标；系统10月10日升级2.16.0后仍被旧overlay覆盖。
+  当前使用2.16.0内置官方修复，保留命名/所有权修复；实读推力缩放1.0，隔离UDP姿态输出与重试测试通过。
+  安装器按2.15.1/2.16.0 ABI选择源码与独立缓存，2.15.1额外回移官方参数修复。
+  下次升级必须核对活动库与实际参数，起飞成功不等于姿态输出有效。详见[修复报告](agent/report/report-2026-10-13-refresh-native-mavros-fix.md)。
 - 飞控环境为 `/etc/ros2-ardupilot/onboard.env`，视频优先使用同目录 `camera.conf/lens.conf`。
   串口和 overlay 按目标机核对，不照搬历史 `/dev/ttyTHS*`。systemd 不依赖外网校时；
   `network-online.target` 未必已有 Wi-Fi IPv4，视频入口保留 DDS 创建前的本地路由等待。
@@ -75,7 +81,9 @@
 - 交接最后再次核对逐机标定和 `/etc` 哈希全部匹配；现场随后已有独立Odin进程，静态启动检查因此拒绝重复启动。没有停止或接管该现场进程，不应把服务unit停止等同所有驱动均未运行。
 
 - **两机同名定位流仍须隔离**：同时运行domain0/SUBNET的Odin时会混合定位与点云。2026-10-13收尾refresh无Odin，new独立Odin普通连接后原始/down云各1发布者；此前缺失down发布者已由SDK集成解决。正式实机避障闭环仍未验收。
-- 两机主工程main已同步Task3功能提交2c3960e，独立库仍621a2dc；此前核心源码核对保持，extnav另核对canonical/生产/实际导入源一致。原相机/Tag现场改动留在工作区，旧同步payload保存在逐机Git stash和维护备份。后续文档提交不改变功能基线。
+- 两机已具备Task3 extnav；refresh已推进到原生避障，new仍待同步此后的原生接入与接口。
+  refresh本次旧源码、逐机配置和可恢复安装备份在`/home/nvidia/ros2-ardupilot-maintenance/refresh-native-mavros-20261013/`，
+  两仓库现场改动另保存在命名Git stash，Tag CSV和无关现场文件已恢复；勿将stash里的旧避障代码重新覆盖生产。
 
 ## 不能误改的业务语义
 
@@ -153,7 +161,7 @@
   普通原语已有净空证书；shot/几何服务仍离散，不能声称全曲线连续净空。
 - 首init短段留在起点cell时保留临时候选，不覆盖root空间hash；避免闭合root误裁剪短coast，
   不改变20个初始时长、零初始加速度及调参。常规同cell异速仍沿用position-only hash，不能保证所有滚动情形。
-- **refresh/new均尚未同步本次两个仓库的原生接入与新接口。** 同步时同时重建独立库、guided_interfaces、
+- **refresh已同步并重建；new仍待同步两个仓库的原生接入与新接口。** 同步时同时重建独立库、guided_interfaces、
   avoidance_bridge和onboard消费端，使用build_avoidance.sh；旧Task38服务/包线与新安装不能混用。
 - `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，新版不创建或发布原始cloud_slam，原9行发布/初始化/声明代码保留为注释，取消注释后重新构建即可恢复；内部临时XYZRGB转换保留；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
 - SDK已移除auto的1m距离启发式：auto/odom只用有效Odin里程计；缺少/非有限球心时只降采样，不猜原点，origin才显式使用(0,0,0)。有限正voxel、有限radius、合法模式在启动时严格检查；非法值仅关闭新增功能并报错。XYZ的NaN/Inf全部跳过；降采样不读取或保存RGB。球面删除、字节键排序及空结果不发布保持。GCC过滤函数局部禁FMA保留；负零符号位微小差异保留。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
