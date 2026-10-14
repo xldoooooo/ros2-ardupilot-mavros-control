@@ -222,7 +222,7 @@
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
-- **共用控制输出限jerk已在开发机实现并原生构建**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，但制动回拉略增，名义速度仍非实际硬限速，实机肉眼消抖未验收。refresh/new/hp-desktop均待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+- **共用控制输出限jerk已在开发机和refresh原生部署**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，但制动回拉略增，名义速度仍非实际硬限速，实机肉眼消抖未验收。refresh已同步代码2c9b99f并原生重建onboard_control，33项测试及隔离8/3参数回读通过，原控制参数和38项其他配置保持；机载服务保持停止，下次启动加载新版本。new/hp-desktop仍待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)、[refresh同步](agent/report/report-2026-10-15-refresh-common-jerk-sync.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
 
 ## 关键历史与资料索引
 
