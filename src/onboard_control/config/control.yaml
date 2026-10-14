@@ -94,6 +94,8 @@
     gravity: 9.8  # 控制器使用的重力加速度，单位：米/秒²。
     max_acceleration_xy: 4.0  # 控制器允许输出的最大水平合加速度，单位：米/秒²。
     max_acceleration_z: 4.0  # 控制器允许输出的最大垂直加速度绝对值，单位：米/秒²。
+    max_jerk_xy: 8.0  # Shared horizontal output slew, m/s³; 0 disables. Hard limits take priority.
+    max_jerk_z: 3.0  # Shared vertical output slew, m/s³; 0 disables. Applies to every tracking mode.
     max_disturbance: 3.0  # 扰动观测器各轴估计值的绝对限幅，单位：米/秒²。
     max_tilt_degrees: 25.0  # 姿态指令允许的最大倾角，单位：度。
     min_total_acceleration_z: 2.0  # 加入重力补偿后要求的最小竖直加速度，单位：米/秒²。

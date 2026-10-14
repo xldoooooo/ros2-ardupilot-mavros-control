@@ -1,6 +1,6 @@
 /**
  * @file dob_controller.hpp
- * @brief 与 ROS/GUI 无关的三轴位置 PD 与一阶扰动观测器接口。
+ * @brief Three-axis PD+DOB with shared acceleration-output slew limits.
  */
 #pragma once
 
@@ -24,6 +24,8 @@ struct ControllerParameters
   double gravity{9.8};
   double max_acceleration_xy{4.0};
   double max_acceleration_z{4.0};
+  double max_jerk_xy{0.0};  // Horizontal output slew in m/s^3; zero disables it.
+  double max_jerk_z{0.0};  // Vertical output slew in m/s^3; zero disables it.
   double max_disturbance{3.0};
   double max_tilt_rad{0.4363323129985824};  // 25 degrees.
   double min_total_acceleration_z{2.0};
@@ -67,7 +69,7 @@ public:
   /** 用飞控已标定的 MOT_THST_HOVER 更新推力映射；非法值不会生效。 */
   bool set_hover_throttle(double hover_throttle) noexcept;
 
-  /** Switch gains without changing thrust calibration; optionally preserve the disturbance estimate. */
+  /** Switch gains, retaining output slew history; optionally preserve the disturbance estimate. */
   bool set_gain_profile(const ControllerParameters & profile,
     const Eigen::Vector3d * preserve_velocity = nullptr) noexcept;
 

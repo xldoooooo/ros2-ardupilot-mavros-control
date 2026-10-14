@@ -152,6 +152,15 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     declare_parameter<double>("max_acceleration_xy", 4.0);
   controller_parameters_.max_acceleration_z =
     declare_parameter<double>("max_acceleration_z", 4.0);
+  // A bad optional slew setting disables that axis without blocking the flight stack.
+  const auto jerk_limit = [this](const char * name, double fallback) {
+    const double value = declare_parameter<double>(name, fallback);
+    if (std::isfinite(value) && value >= 0.0) {return value;}
+    RCLCPP_WARN(get_logger(), "%s must be finite and nonnegative; output slew disabled", name);
+    return 0.0;
+  };
+  controller_parameters_.max_jerk_xy = jerk_limit("max_jerk_xy", 8.0);
+  controller_parameters_.max_jerk_z = jerk_limit("max_jerk_z", 3.0);
   controller_parameters_.max_disturbance =
     declare_parameter<double>("max_disturbance", 3.0);
   const double max_tilt_degrees = declare_parameter<double>("max_tilt_degrees", 25.0);
@@ -442,6 +451,7 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
     reset_waypoint_reference_state();
     activate_tracking_controller(TrackingControllerType::kPositionPdDob);
+    controller_.reset();  // Disarming ends the output ramp, unlike a gain-only switch.
     clear_waypoint_configuration_lock();
     link_loss_started_.reset();
     failsafe_land_requested_ = false;
@@ -953,6 +963,7 @@ void OnboardControlNode::on_flight_command(
       } else {
         control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
         controller_engaged_ = false;
+        controller_.reset();  // Cancellation stopped attitude control instead of entering hover.
       }
       clear_failsafe_locked();
       publish_result(
@@ -1472,6 +1483,7 @@ void OnboardControlNode::fail_active_task(const std::string & reason, const bool
   } else {
     control_mode_ = guided_interfaces::msg::ControlStatus::MODE_IDLE;
     controller_engaged_ = false;
+    controller_.reset();  // Failed tasks without hover recovery leave no active output history.
   }
 }
 
@@ -2134,6 +2146,7 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     waypoints_.clear();
     reset_waypoint_reference_state();
     activate_tracking_controller(TrackingControllerType::kPositionPdDob);
+    controller_.reset();  // An external mode change stops attitude control entirely.
     failsafe_reason_ = "飞控模式被外部切换，机载服务已停止发送 setpoint";
     set_status_message(failsafe_reason_, StatusLogLevel::kError);
     return;

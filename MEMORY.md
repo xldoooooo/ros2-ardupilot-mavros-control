@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-14。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
+维护日期：2026-10-15。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -222,7 +222,7 @@
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
-- **正常自主避障轻微抖动仍待修复**：原生恒加速度段仅C1，执行层直接前馈a；同一轨迹换段及终点a清零会产生姿态指令阶跃，关闭强制重规划不能消除。新轨迹只按实际p/v接入，未保证与旧控制参考p/v/a连续，替换也会叠加跳变；成功结果接入不reset DOB。两种机制已在截图参数的方柱SITL复现，生产控制代码未改，不能当作实机消抖验收。用户确认旧odometry造成的快速制动已通过highfreq切换解决，应与后期轻微抖动分开分析；今天旧bag缺执行参考/控制输出和highfreq，不能完整还原现场闭环。详见[抖动排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+- **共用控制输出限jerk已在开发机实现并原生构建**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，但制动回拉略增，名义速度仍非实际硬限速，实机肉眼消抖未验收。refresh/new/hp-desktop均待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
 
 ## 关键历史与资料索引
 

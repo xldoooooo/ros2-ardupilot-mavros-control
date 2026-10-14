@@ -1,6 +1,6 @@
 /**
  * @file dob_controller.cpp
- * @brief 三轴位置 PD、一阶 DOB、姿态生成和推力安全映射实现。
+ * @brief Shared PD+DOB, acceleration slew limiting and attitude/thrust mapping.
  */
 #include "onboard_control/dob_controller.hpp"
 
@@ -12,7 +12,7 @@ namespace onboard_control
 namespace
 {
 
-constexpr double kEpsilon = 1.0e-8;
+constexpr double kEpsilon = 1.0e-8;  // Small vector norm guard for normalization.
 
 /** 按向量模长限幅，避免改变未饱和方向。 */
 Eigen::Vector2d clamp_norm(const Eigen::Vector2d & value, const double maximum)
@@ -26,12 +26,14 @@ Eigen::Vector2d clamp_norm(const Eigen::Vector2d & value, const double maximum)
 
 }  // namespace
 
+/** Initialize observer and output history before the first control cycle. */
 DobController::DobController(const ControllerParameters & parameters)
 : parameters_(parameters)
 {
   reset();
 }
 
+/** Clear observer and issued acceleration when attitude control stops. */
 void DobController::reset()
 {
   observer_state_.setZero();
@@ -49,7 +51,7 @@ bool DobController::set_hover_throttle(const double hover_throttle) noexcept
   return true;
 }
 
-/** Re-express d=q+L*v only for an explicit continuous switch; other callers retain reset behavior. */
+/** Re-express d=q+L*v for continuous switches; otherwise reset only the observer when slew is active. */
 bool DobController::set_gain_profile(const ControllerParameters & profile,
   const Eigen::Vector3d * preserve_velocity) noexcept
 {
@@ -73,11 +75,17 @@ bool DobController::set_gain_profile(const ControllerParameters & profile,
     observer_state_ = disturbance_ - gain.cwiseProduct(*preserve_velocity);
     // The observer's next update still needs the acceleration applied before this switch.
   } else {
+    // Gain changes reset the observer, but must not restart an active output ramp.
+    const Eigen::Vector3d previous_output = previous_input_;
     reset();
+    if (parameters_.max_jerk_xy > 0.0 || parameters_.max_jerk_z > 0.0) {
+      previous_input_ = previous_output;
+    }
   }
   return true;
 }
 
+/** Compute PD+DOB and slew the shared output before attitude/thrust mapping. */
 ControlOutput DobController::compute(
   const VehicleKinematics & state,
   const ControlReference & reference,
@@ -136,6 +144,17 @@ ControlOutput DobController::compute(
     -parameters_.max_acceleration_z,
     parameters_.max_acceleration_z);
 
+  // All tracking modes share one ramp, including reference and gain changes.
+  if (parameters_.max_jerk_xy > 0.0) {
+    motion_acceleration.head<2>() = previous_input_.head<2>() + clamp_norm(
+      motion_acceleration.head<2>() - previous_input_.head<2>(), parameters_.max_jerk_xy * dt);
+  }
+  if (parameters_.max_jerk_z > 0.0) {
+    const double step = parameters_.max_jerk_z * dt;
+    motion_acceleration.z() = previous_input_.z() + std::clamp(
+      motion_acceleration.z() - previous_input_.z(), -step, step);
+  }
+
   // 推力方向需包含重力补偿；最小竖直分量和倾角约束防止翻转命令。
   Eigen::Vector3d total_acceleration = motion_acceleration;
   total_acceleration.z() += parameters_.gravity;
@@ -147,6 +166,11 @@ ControlOutput DobController::compute(
     std::min(parameters_.max_acceleration_xy, tilt_limited_xy));
   total_acceleration.x() = attitude_xy.x();
   total_acceleration.y() = attitude_xy.y();
+  if (parameters_.max_jerk_xy > 0.0 || parameters_.max_jerk_z > 0.0) {
+    // Hard attitude limits take priority; DOB and the next ramp use the issued acceleration.
+    motion_acceleration = total_acceleration;
+    motion_acceleration.z() -= parameters_.gravity;
+  }
 
   const double acceleration_norm = total_acceleration.norm();
   if (acceleration_norm < kEpsilon || !std::isfinite(acceleration_norm)) {
