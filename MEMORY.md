@@ -222,6 +222,8 @@
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
+- **正常自主避障轻微抖动仍待修复**：原生恒加速度段仅C1，执行层直接前馈a；同一轨迹换段及终点a清零会产生姿态指令阶跃，关闭强制重规划不能消除。新轨迹只按实际p/v接入，未保证与旧控制参考p/v/a连续，替换也会叠加跳变；成功结果接入不reset DOB。两种机制已在截图参数的方柱SITL复现，生产控制代码未改，不能当作实机消抖验收。用户确认旧odometry造成的快速制动已通过highfreq切换解决，应与后期轻微抖动分开分析；今天旧bag缺执行参考/控制输出和highfreq，不能完整还原现场闭环。详见[抖动排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+
 ## 关键历史与资料索引
 
 - 2026-08-20 曾经用户授权改写 Git 历史以移除大视频/二进制，旧提交 ID 已失效；完整改写前备份
