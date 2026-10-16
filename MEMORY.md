@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-15。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
+维护日期：2026-10-16。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -16,6 +16,10 @@
 
 ## 当前架构与入口
 
+- 独立 map 系位姿诊断脚本源码在 `dev/odom_pose_in_map.py`；new 另有根目录副本
+  `/home/nvidia/ros2-ardupilot-mavros-control/odom_pose_in_map.py`（与原始版本一致）。
+  只订阅 `/tf` 和 `/odin1/odometry_highfreq`，输出 map 下 Odin IMU 位姿，不是 FCU 中心或最终 EKF 位姿；无输入时不输出数值。
+  该工具未加入自动启动；refresh 本次未核对或部署，需要时从开发机 `dev/` 单独复制即可。
 - 开发机及两架现役飞机均为 Ubuntu 24.04 / ROS 2 Jazzy；机载为 Jetson Orin NX / ARM64。
   Python 使用项目 `.venv`。旧 Ubuntu 22.04/Humble 台架数据不再代表现役环境。
 - 开发机及两机飞行协议 **3.4**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.4.0**；Task38共享接口已同步重建，不能混用旧3.3客户端/安装产物。
