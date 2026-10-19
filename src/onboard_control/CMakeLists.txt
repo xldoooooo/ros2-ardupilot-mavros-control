@@ -9,6 +9,8 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(ament_cmake REQUIRED)
+find_package(correction_interfaces REQUIRED)
+find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geographic_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -20,6 +22,8 @@ find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_library(dob_controller
   src/dob_controller.cpp
@@ -37,9 +41,11 @@ add_executable(onboard_control_node
   src/onboard_control_node.cpp
   src/fcu_reboot.cpp
   src/avoidance_execution.cpp
+  src/navigation_frame.cpp
 )
 target_include_directories(onboard_control_node PRIVATE include ${EIGEN3_INCLUDE_DIRS})
 ament_target_dependencies(onboard_control_node
+  correction_interfaces
   geographic_msgs
   geometry_msgs
   guided_interfaces
@@ -50,8 +56,10 @@ ament_target_dependencies(onboard_control_node
   sensor_msgs
   tf2
   tf2_geometry_msgs
+  tf2_msgs
+  std_msgs
 )
-target_link_libraries(onboard_control_node dob_controller Eigen3::Eigen)
+target_link_libraries(onboard_control_node dob_controller Eigen3::Eigen nlohmann_json::nlohmann_json)
 
 install(TARGETS dob_controller onboard_control_node
   EXPORT export_onboard_control
@@ -64,6 +72,11 @@ install(DIRECTORY config launch deploy DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_navigation_frame test/test_navigation_frame.cpp)
+  if(TARGET test_navigation_frame)
+    target_include_directories(test_navigation_frame PRIVATE include ${EIGEN3_INCLUDE_DIRS})
+    target_link_libraries(test_navigation_frame dob_controller Eigen3::Eigen)
+  endif()
   ament_add_gtest(test_dob_controller test/test_dob_controller.cpp)
   if(TARGET test_dob_controller)
     target_include_directories(test_dob_controller PRIVATE include ${EIGEN3_INCLUDE_DIRS})

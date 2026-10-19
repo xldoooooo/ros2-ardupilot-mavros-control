@@ -85,6 +85,7 @@ git sparse-checkout set \
   '/src/correction_interfaces/' \
   '/src/onboard_control/' \
   '/drivers/' \
+  '/config/' \
   '/correction_service/' \
   '/scripts/onboard/start_onboard_correction.sh' \
   '/scripts/onboard/stop_onboard_correction.sh' \
@@ -95,6 +96,7 @@ git sparse-checkout set \
   '/scripts/lib/' \
   '/scripts/onboard/start_onboard_control.sh' \
   '/scripts/onboard/stop_onboard_control.sh' \
+  '/scripts/onboard/switch_navigation_mode.sh' \
   '/scripts/onboard/reboot_fcu.sh'
 git checkout main
 ```
@@ -131,7 +133,7 @@ src/onboard_control/scripts/reboot_fcu_client.py
 已有 sparse checkout 须在拉取前纳入新目录，否则旧更新脚本的清单不会检出这些文件：
 
 ```bash
-git sparse-checkout add '/scripts/onboard/' '/scripts/lib/' '/drivers/'
+git sparse-checkout add '/scripts/onboard/' '/scripts/lib/' '/drivers/' '/config/'
 git pull --ff-only origin main
 ```
 
@@ -350,7 +352,7 @@ MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> \
 
 Odin 始终使用 `drivers/odin/install` 的项目驱动，旧 `ODIN_OVERLAY_SETUP` 不再选择驱动。
 Jetson 厂商 OpenCV 4.8 须通过 `ODIN_CV_BRIDGE_SETUP` 指定匹配的 cv_bridge；构建和启动均读取
-该配置，详见 [OpenCV overlay 说明](JETSON_OPENCV_OVERLAY.md)。Odin 默认配置为 `odom`，
+该配置，详见 [OpenCV overlay 说明](JETSON_OPENCV_OVERLAY.md)。Odin 首次默认配置为 `odom`，
 可在独立入口指定预设或 YAML 路径：
 
 ```bash
@@ -361,8 +363,42 @@ bash scripts/onboard/components/start_odin.sh -c original
 bash scripts/onboard/components/start_odin.sh -c /absolute/path/custom.yaml
 ```
 
-省略 `-c` 使用 `odom`；自定义配置使用绝对路径。预设保存在项目驱动的 `config/` 中，
+省略 `-c` 读取 `/etc/ros2-ardupilot/navigation.env` 的 `NAVIGATION_MODE=odom|map`，
+文件缺失时使用 `odom`，`map` 选择 `reloc.yaml`。独立入口、完整机载入口和 systemd 使用同一规则。
+显式 `-c` 优先；自定义配置使用绝对路径。预设保存在项目驱动的 `config/` 中，
 `original` 保留引入时的厂家配置，按机体修改配置前先保留现场标定。
+
+### 地面 odom/map 切换
+
+先在 `drivers/odin/src/odin_ros_driver/config/reloc.yaml` 设置已录制地图的绝对 `.bin` 路径。
+reloc 启动前验证文件存在、可读且非空；地图不入 Git。切换脚本使用项目 `.venv/bin/python`
+和现有 PyYAML/rclpy；若逐机虚拟环境位置不同，在 `onboard.env` 设置 `ONBOARD_PYTHON`。
+
+```bash
+bash scripts/onboard/switch_navigation_mode.sh map
+bash scripts/onboard/switch_navigation_mode.sh odom
+```
+
+切换前必须收到机载状态证明 FCU 已连接、未解锁、已落地、无控制/航点任务，且无活动 Tag 任务。
+脚本记录飞控、避障原运行方式，完全停止后重启原运行组件；原本未运行的避障不会启动。
+飞控原为 systemd 时恢复原 unit，手动启动时使用后台独立 session；视频和修正 unit 不参与重启。
+默认避障 unit 名为 `ros2-ardupilot-avoidance.service`，若已自行部署其他名字，在 `onboard.env`
+设置 `AVOIDANCE_SYSTEMD_SERVICE`。手动避障也支持恢复。
+
+机载用户需要对现有启停/安装命令及 `systemd-run` 具备无交互 `sudo -n` 权限；权限不足明确失败。
+从飞控 unit 调用时，脚本先把重启事务迁入独立临时 unit，避免停止飞控时连带终止重启事务。
+`navigation.env` 只替换 `NAVIGATION_MODE`，保留其他逐机配置；异常不自动回滚，需查看
+`/tmp/ros2_ardupilot_onboard/navigation-switch/` 日志和对应 journal 后处理。
+停止旧服务之前的失败会写入 `/tmp/ros2_ardupilot_navigation_switch.result`，原机载节点读取后
+清除“正在切换”状态并显示原因；`NAVIGATION_SWITCH_RESULT_FILE` 可覆盖此路径，须给节点和脚本一致的环境。
+
+`/odin1/navigation_status` 是可靠、transient-local 的实际驱动模式状态（约 2 Hz），包含
+`mode`、`map_path`、`session_id`、`connected`、`localized`、`tf_age_seconds`。
+模式由设备确认成功的 `map_mode` 命令确定；命令未获 ACK 时报告 `unsupported` 并警告。
+SLAM 建图模式标为 `unsupported`，不可当成重定位飞行。`localized` 只表示本次连接收到过
+设备原生 odom→map TF；控制器还须检查 TF 年龄和定位质量，保存的配置不能代替运行事实。
+`navigation_switch_script` launch 参数仅接收切换脚本绝对路径，完整启动器自动传入；单独
+`control.launch.py` 默认关闭脚本执行入口。切换完成后地面站等待重连，航点数值保持不变。
 
 分步入口现集中在 `scripts/onboard/components/`，包含 `start_link.sh`、`start_mavros.sh`、
 `start_odin.sh` 和 `start_extnav.sh`。两个硬件脚本会自动读取
@@ -430,7 +466,7 @@ python3 -m venv --system-site-packages .venv
 ```
 
 变更了 `ControlStatus` 的落地和重启状态字段，必须同步构建 `guided_interfaces` 和
-`onboard_control`（当前版本 3.4.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
+`onboard_control`（当前版本 3.5.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
 位于 `src/onboard_control/src/fcu_reboot.cpp`，Python 脚本客户端位于 `src/onboard_control/scripts/reboot_fcu_client.py`。
 构建不会使正在运行的旧进程自动升级；部署后在确认未解锁、落地且无任务时重启机载服务。
 

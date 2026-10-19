@@ -24,8 +24,8 @@ namespace onboard_control
 namespace
 {
 
-// 3.4 adds independent avoidance, waiting state and pre-takeoff configuration lock.
-constexpr char kInterfaceVersion[] = "3.4";
+// 3.5 adds map task coordinates, localization state and ground-only mode restarts.
+constexpr char kInterfaceVersion[] = "3.5";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -344,6 +344,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
       std::placeholders::_1, std::placeholders::_2));
 
   initialize_reboot();
+  initialize_navigation();
   set_mode_client_ = create_client<mavros_msgs::srv::SetMode>(mavros_prefix_ + "/set_mode");
   arming_client_ = create_client<mavros_msgs::srv::CommandBool>(mavros_prefix_ + "/cmd/arming");
   takeoff_client_ = create_client<mavros_msgs::srv::CommandTOL>(mavros_prefix_ + "/cmd/takeoff");
@@ -392,6 +393,9 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
   armed_ = message->armed;
   autopilot_mode_ = message->mode;
   last_state_time_ = SteadyClock::now();
+  if (!was_armed && armed_) {
+    armed_navigation_identity_ = navigation_frame_ + "\n" + navigation_map_ + "\n" + navigation_session_;
+  }
   if (!fcu_connected_) {
     if (was_connected) {++session_generation_;}
     on_ground_ = false;
@@ -432,6 +436,10 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
   }
 
   if (was_armed && !armed_) {
+    armed_navigation_identity_.reset();
+    navigation_hold_started_.reset();
+    navigation_fault_.clear();
+    task_waypoints_.clear();
     avoidance_land_latched_ = false;
     if (avoidance_land_service_request_) {
       set_mode_client_->remove_pending_request(*avoidance_land_service_request_);
@@ -884,6 +892,10 @@ void OnboardControlNode::on_flight_command(
       break;
     case FlightCommand::Request::COMMAND_TAKEOFF:
       command.name = "takeoff";
+      if (!navigation_ready(SteadyClock::now(), reason)) {
+        response->message = "拒绝起飞：" + reason;
+        return;
+      }
       if (!fcu_connected_ || !pose_valid_) {
         response->message = "飞控或本地位置尚未就绪";
         return;
@@ -1053,12 +1065,28 @@ void OnboardControlNode::on_execute_waypoints(
     response->message = "航点数量必须在 1 到 256 之间";
     return;
   }
+  if (!navigation_ready(SteadyClock::now(), reason)) {
+    response->message = "拒绝航点任务：" + reason;
+    return;
+  }
+  if (!request->coordinate_frame.empty() && request->coordinate_frame != navigation_frame_) {
+    response->message = "航点坐标系与飞机当前任务坐标系不一致，请重新读取状态";
+    return;
+  }
+  std::vector<guided_interfaces::msg::Waypoint> local_waypoints;
+  // local_coordinates is explicit for local return; it never bypasses localization readiness.
+  const bool previous_local_coordinates = waypoint_coordinates_local_;
+  waypoint_coordinates_local_ = request->local_coordinates;
   for (const auto & waypoint : request->waypoints) {
-    if (!finite_waypoint(waypoint) || waypoint.position.z < 0.1 || waypoint.position.z > 50.0) {
-      response->message = "航点包含非法数值，Z 必须在 [0.1, 50] 米范围内";
+    const auto local = local_waypoint(waypoint);
+    if (!finite_waypoint(waypoint) || !finite_waypoint(local) || local.position.z < 0.1 || local.position.z > 50.0) {
+      waypoint_coordinates_local_ = previous_local_coordinates;
+      response->message = "航点包含非法数值，转换后的本地 Z 必须在 [0.1, 50] 米范围内";
       return;
     }
+    local_waypoints.push_back(local);
   }
+  waypoint_coordinates_local_ = previous_local_coordinates;
 
   if (request->reference_generator > ExecuteWaypoints::Request::REFERENCE_JERK_LIMITED_S_CURVE) {
     response->message = "未知命令生成方式";
@@ -1100,8 +1128,10 @@ void OnboardControlNode::on_execute_waypoints(
     request->flight_strategy,
     requested_reference_generator,
     requested_tracking_controller);
+  task_waypoints_ = request->waypoints;
+  waypoint_coordinates_local_ = request->local_coordinates;
   start_waypoint_task(
-    command, request->waypoints,
+    command, local_waypoints,
     requested_reference_generator,
     requested_tracking_controller);
   response->accepted = true;
@@ -1372,6 +1402,7 @@ void OnboardControlNode::activate_tracking_controller(
 
 void OnboardControlNode::reset_waypoint_reference_state()
 {
+  navigation_reference_join_.clear();
   reset_avoidance();
   reference_generator_.reset();
   generator_waypoint_initialized_ = false;
@@ -1426,6 +1457,11 @@ void OnboardControlNode::initialize_waypoint_segment()
   const auto & waypoint = waypoints_[waypoint_index_];
   const Eigen::Vector3d target(
     waypoint.position.x, waypoint.position.y, waypoint.position.z);
+  navigation_segment_target_ = target;
+  navigation_last_goal_ = target;
+  navigation_segment_yaw_ = waypoint.yaw;
+  navigation_last_goal_yaw_ = waypoint.yaw;
+  navigation_reference_join_.clear();
   reference_generator_->reset(
     reference_.position, reference_.yaw, target, normalize_angle(waypoint.yaw));
   const GeneratedReference generated = reference_generator_->sample();
@@ -1445,6 +1481,7 @@ void OnboardControlNode::initialize_waypoint_segment()
 
 void OnboardControlNode::cancel_active_task(const std::string & reason)
 {
+  task_waypoints_.clear();
   if (active_task_ == ActiveTask::kTakeoff || active_task_ == ActiveTask::kWaypoint) {
     publish_result(
       active_command_, guided_interfaces::msg::CommandResult::STATUS_CANCELLED, true,
@@ -1507,6 +1544,11 @@ void OnboardControlNode::ensure_guided_and_armed(
   if (!active_task_matches(command)) {
     return;
   }
+  std::string navigation_reason;
+  if (!navigation_ready(SteadyClock::now(), navigation_reason)) {
+    fail_active_task("定位未就绪：" + navigation_reason, false);
+    return;
+  }
   if (autopilot_mode_ == "GUIDED") {
     ensure_armed(command, on_ready);
     return;
@@ -1546,6 +1588,11 @@ void OnboardControlNode::ensure_armed(
   if (!active_task_matches(command)) {
     return;
   }
+  std::string navigation_reason;
+  if (!navigation_ready(SteadyClock::now(), navigation_reason)) {
+    fail_active_task("定位未就绪：" + navigation_reason, false);
+    return;
+  }
   if (armed_) {
     on_ready();
     return;
@@ -1581,6 +1628,11 @@ void OnboardControlNode::ensure_armed(
 void OnboardControlNode::send_takeoff_request(const CommandIdentity & command)
 {
   if (!active_task_matches(command)) {
+    return;
+  }
+  std::string navigation_reason;
+  if (!navigation_ready(SteadyClock::now(), navigation_reason)) {
+    fail_active_task("定位未就绪：" + navigation_reason, armed_);
     return;
   }
   if (!takeoff_client_->service_is_ready()) {
@@ -1924,6 +1976,7 @@ void OnboardControlNode::control_tick()
   }
   last_control_tick_ = now;
 
+  navigation_tick(now, dt_seconds);
   enforce_safety(now);
 
   if (active_task_ == ActiveTask::kTakeoff) {
@@ -2016,7 +2069,8 @@ void OnboardControlNode::update_waypoint_executor(
   bool reference_finished = false;
   if (waypoint_flight_strategy_ == 0) {
     // 原直线数值路径保持原样，不依赖规划器、点云、结果年龄或等待状态。
-    const GeneratedReference generated = reference_generator_->update(dt_seconds);
+    const GeneratedReference generated = navigation_reference_join_.update(
+      reference_generator_->update(dt_seconds), dt_seconds);
     reference_ = generated.control;
     target_yaw_rate_ = generated.yaw_rate;
     active_reference_phase_ = generated.phase;
@@ -2288,6 +2342,7 @@ void OnboardControlNode::status_tick()
   guided_interfaces::msg::ControlStatus message;
   message.header.stamp = get_clock()->now();
   message.interface_version = kInterfaceVersion;
+  fill_navigation_status(message, now);
   message.fcu_connected = fcu_connected_ && last_state_time_ != SteadyTime{} &&
     std::chrono::duration<double>(now - last_state_time_).count() <= state_timeout_seconds_;
   message.armed = armed_;

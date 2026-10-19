@@ -32,12 +32,7 @@ else
 fi
 
 exec ros2 run extnav_bridge extnav_to_vision_pose --ros-args \
+  --params-file "${ODIN_EXTRINSICS_FILE:-${project_root}/config/odin_extrinsics.yaml}" \
   -p vision_rate_hz:=40.0 \
   -p ctrl_rate_hz:=100.0 \
-  -p odom_topic:=/odin1/odometry_highfreq \
-  -p roll_cam:=0.0 \
-  -p pitch_cam:=0.0 \
-  -p yaw_cam:=0.0 \
-  -p odin_x:=0.06 \
-  -p odin_y:=-0.03 \
-  -p odin_z:=0.05
+  -p odom_topic:=/odin1/odometry_highfreq

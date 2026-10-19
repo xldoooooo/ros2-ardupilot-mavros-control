@@ -52,6 +52,48 @@ def set_tooltip_if_changed(widget: QWidget, text: str) -> bool:
     return True
 
 
+class NavigationModeSwitch(QPushButton):
+    """Compact animated switch; the checked position represents map mode."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Build a two-position switch whose value follows onboard status."""
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(110, 30)
+        self.setAccessibleName("任务坐标系：odom / map")
+        self._offset = 0.0
+        self._animation = QVariantAnimation(self)
+        self._animation.setDuration(150)
+        self._animation.valueChanged.connect(self._animate)
+        self.toggled.connect(self._slide)
+
+    def _slide(self, checked: bool) -> None:
+        """Move the thumb between odom and map without changing mission values."""
+        self._animation.stop()
+        self._animation.setStartValue(self._offset)
+        self._animation.setEndValue(1.0 if checked else 0.0)
+        self._animation.start()
+
+    def _animate(self, value) -> None:
+        """Refresh the painted thumb for the current animation step."""
+        self._offset = float(value)
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt API
+        """Draw readable labels and a sliding selection on a rounded track."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setOpacity(1.0 if self.isEnabled() else 0.6)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#dce7ed"))
+        painter.drawRoundedRect(QRectF(0, 0, 110, 30), 15, 15)
+        painter.setBrush(QColor("#167ab5" if self.isChecked() else "#526b7c"))
+        painter.drawRoundedRect(QRectF(2 + 54*self._offset, 2, 52, 26), 13, 13)
+        for checked, text in ((False, "odom"), (True, "map")):
+            painter.setPen(QColor("white" if checked == self.isChecked() else "#344d5c"))
+            painter.drawText(QRectF(55 if checked else 0, 0, 55, 30), Qt.AlignmentFlag.AlignCenter, text)
+
+
 class ShadowMessageBox(QMessageBox):
     """带自绘标题、完整边框和透明留边阴影的统一消息框。"""
 

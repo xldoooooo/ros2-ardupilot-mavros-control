@@ -45,9 +45,11 @@ limitations under the License.
 // #include <yaml-cpp/yaml.h>
 #include <iomanip>
 #include <sstream>
+#include <locale>
 #ifdef ROS2
     #include <ament_index_cpp/get_package_share_directory.hpp>
     #include <rclcpp/rclcpp.hpp>
+    #include <std_msgs/msg/string.hpp>
     // AE/AWB debug services (custom .srv generated from this package).
     #include "odin_ros_driver/srv/get_ae.hpp"
     #include "odin_ros_driver/srv/get_awb.hpp"
@@ -173,6 +175,68 @@ FILE* dev_status_csv_file = nullptr;
 std::filesystem::path map_root_dir_;
 
 char driver_start_time[32];
+
+#ifdef ROS2
+// Navigation evidence belongs to one driver process and one hardware connection.
+static std::mutex navigation_mutex;
+static uint64_t navigation_connection = 0;
+// Only a successful device map_mode command can establish a supported runtime mode.
+static std::atomic<int> navigation_device_mode{-1};
+static std::chrono::steady_clock::time_point navigation_last_tf{};
+static const std::string navigation_process_id = std::to_string(getpid()) + "-" +
+    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+
+// Encode operator map paths without producing invalid JSON escapes.
+static std::string navigation_json_string(const std::string& value) {
+    std::ostringstream output;
+    output << '"';
+    for (unsigned char character : value) {
+        if (character == '"' || character == '\\') {
+            output << '\\' << character;
+        } else if (character < 0x20) {
+            output << "\\u00" << std::hex << std::setw(2) << std::setfill('0')
+                   << static_cast<unsigned int>(character) << std::dec;
+        } else {
+            output << character;
+        }
+    }
+    output << '"';
+    return output.str();
+}
+
+// A reconnect invalidates previous localization evidence even in the same process.
+static void reset_navigation_connection() {
+    std::lock_guard<std::mutex> lock(navigation_mutex);
+    ++navigation_connection;
+    navigation_last_tf = {};
+    navigation_device_mode.store(-1);
+    g_relocalization_success_msg_printed = false;
+}
+
+// Report the selected device mode and actual receipt of the native odom->map TF.
+static std_msgs::msg::String navigation_status_message() {
+    std::lock_guard<std::mutex> lock(navigation_mutex);
+    const int device_mode = navigation_device_mode.load();
+    const bool localized = device_mode == 2 &&
+        navigation_last_tf != std::chrono::steady_clock::time_point{};
+    const double age = localized ? std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - navigation_last_tf).count() : -1.0;
+    const char* mode = device_mode == 0 ? "odom" :
+                       device_mode == 2 ? "map" : "unsupported";
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << "{\"mode\":" << navigation_json_string(mode)
+           << ",\"map_path\":" << navigation_json_string(g_relocalization_map_abs_path)
+           << ",\"session_id\":" << navigation_json_string(
+                  navigation_process_id + "-" + std::to_string(navigation_connection))
+           << ",\"connected\":" << (deviceConnected.load() ? "true" : "false")
+           << ",\"localized\":" << (localized ? "true" : "false")
+           << ",\"tf_age_seconds\":" << age << '}';
+    std_msgs::msg::String message;
+    message.data = output.str();
+    return message;
+}
+#endif
 
 typedef struct  {
     struct timespec start = {0, 0};
@@ -1201,6 +1265,12 @@ static void lidar_data_callback(const lidar_data_t *data, void *user_data)
             case LIDAR_DT_SLAM_ODOMETRY_TF:
             {
                 if (g_custom_map_mode == 2) {
+                    #ifdef ROS2
+                    {
+                        std::lock_guard<std::mutex> lock(navigation_mutex);
+                        navigation_last_tf = std::chrono::steady_clock::now();
+                    }
+                    #endif
                     g_ros_object->publishOdometry((capture_Image_List_t *)&data->stream, OdometryType::TRANSFORM, false, false);
                     if (!g_relocalization_success_msg_printed) {
                     #ifdef ROS2
@@ -1276,6 +1346,9 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
     static bool software_connect_timing = false; 
     
     if(attach == true) {
+        #ifdef ROS2
+        reset_navigation_connection();
+        #endif
         #ifdef ROS2
             RCLCPP_INFO(rclcpp::get_logger("device_cb"), "Hardware connected, starting software connection...");
         #else
@@ -1683,13 +1756,21 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
         }
 
         // Apply custom parameters after setting mode
-        if (g_parser && !g_parser->applyCustomParameters(odinDevice)) {
+        int applied_map_mode = -1;
+        if (g_parser && !g_parser->applyCustomParameters(odinDevice, &applied_map_mode)) {
             #ifdef ROS2
                 RCLCPP_WARN(rclcpp::get_logger("device_cb"), "Some custom parameters failed to apply");
             #else
                 ROS_WARN("Some custom parameters failed to apply");
             #endif
         }
+        #ifdef ROS2
+        navigation_device_mode.store(applied_map_mode);
+        if (applied_map_mode < 0) {
+            RCLCPP_WARN(rclcpp::get_logger("device_cb"),
+                        "Device did not acknowledge map_mode; navigation mode is unsupported");
+        }
+        #endif
 
         #ifdef ROS2
             RCLCPP_INFO(rclcpp::get_logger("device_cb"), "Custom map mode: %d", g_custom_map_mode);
@@ -1960,6 +2041,9 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
 
         deviceConnected = false;
         deviceDisconnected = true;
+        #ifdef ROS2
+        reset_navigation_connection();
+        #endif
         
         // Stop IMU dedicated thread
         stop_imu_thread();
@@ -1993,6 +2077,13 @@ int main(int argc, char *argv[])
     rclcpp::init(argc, argv);
     auto node = std::make_shared<rclcpp::Node>("lydros_node");
     g_ros_object = std::make_shared<MultiSensorPublisher>(node);
+    // Reliable latched status lets late ground clients discover the actual driver mode.
+    auto navigation_publisher = node->create_publisher<std_msgs::msg::String>(
+        "/odin1/navigation_status", rclcpp::QoS(1).reliable().transient_local());
+    auto navigation_timer = node->create_wall_timer(std::chrono::milliseconds(500),
+        [navigation_publisher]() {
+            navigation_publisher->publish(navigation_status_message());
+        });
 
     // -----------------------------------------------------------------
     // AE/AWB debug services (ROS2). Allow a side terminal to tune the

@@ -3,7 +3,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>onboard_control</name>
-  <version>3.4.0</version>
+  <version>3.5.0</version>
   <description>Onboard command arbitration, waypoint execution, failsafe and C++ PD+DOB control.</description>
   <maintainer email="xld@todo.todo">xld</maintainer>
   <license>Apache-2.0</license>
@@ -14,6 +14,10 @@
   <depend>geographic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>guided_interfaces</depend>
+  <depend>correction_interfaces</depend>
+  <depend>nlohmann_json</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2_msgs</depend>
   <depend>mavros_msgs</depend>
   <depend>libmavconn</depend>
   <depend>rclcpp</depend>

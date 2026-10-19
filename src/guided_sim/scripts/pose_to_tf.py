@@ -9,7 +9,7 @@ from tf2_ros import TransformBroadcaster
 
 
 class PoseToTF(Node):
-    """把本地预览位姿转换为 map → ground_station_preview/base_link TF。"""
+    """Bridge local preview poses while retaining the map-mode FCU frame alias."""
 
     def __init__(self):
         """创建可配置的位姿订阅与 TF broadcaster。"""
@@ -50,7 +50,10 @@ class PoseToTF(Node):
         t = TransformStamped()
 
         t.header.stamp = msg.header.stamp
-        t.header.frame_id = self.parent_frame
+        # Odin owns map in relocation mode; FCU-local poses use a separate alias.
+        t.header.frame_id = (
+            msg.header.frame_id if msg.header.frame_id == 'fcu_local' else self.parent_frame
+        )
         t.child_frame_id = self.child_frame
 
         t.transform.translation.x = msg.pose.position.x

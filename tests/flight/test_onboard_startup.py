@@ -226,7 +226,11 @@ def test_cancel_launcher_stops_readiness_subscriber_and_components(tmp_path):
     (odin_install / "local_setup.bash").touch()
     odin_config = workspace / "drivers/odin/src/odin_ros_driver/config/odom.yaml"
     odin_config.parent.mkdir(parents=True)
-    odin_config.touch()
+    odin_config.write_text("register_keys:\n  custom_map_mode: 0\n")
+    # Production startup now checks repository-owned aircraft configuration paths.
+    (workspace / "config/mavros").mkdir(parents=True)
+    for filename in ("aircraft.launch.xml", "aircraft_plugins.yaml"):
+        (workspace / "config/mavros" / filename).touch()
     shutil.copy2(ROOT / "scripts/lib/odin_runtime.bash", workspace / "scripts/lib")
     helper = workspace / "scripts/lib/runtime_common.bash"
     helper.write_text('''# Isolated discovery stubs: no hardware or ROS runtime.

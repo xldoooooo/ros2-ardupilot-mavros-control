@@ -373,15 +373,16 @@ class UpstreamStatusProjector:
                 if math.isfinite(voltage) and voltage > 0.0:
                     self._send("0A", {"uavPower": round(voltage, 2)})
                     low_power = voltage < self.HARDWARE_LOW_VOLTAGE
-        if snapshot.local_position_valid and all(
-            math.isfinite(value) for value in (snapshot.x, snapshot.y, snapshot.z)
+        x, y, z, _ = snapshot.task_pose
+        if snapshot.local_position_valid and snapshot.navigation_ready and all(
+            math.isfinite(value) for value in (x, y, z)
         ):
             self._send(
                 "0B",
                 {
-                    "X": round(snapshot.x, 3),
-                    "Y": round(snapshot.y, 3),
-                    "Z": round(snapshot.z, 3),
+                    "X": round(x, 3),
+                    "Y": round(y, 3),
+                    "Z": round(z, 3),
                 },
             )
         if low_power is True and not self._low_power_reported and self._send("0C"):

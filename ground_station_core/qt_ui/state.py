@@ -77,6 +77,8 @@ def derive_availability(
         reason = "机载服务尚未连接飞控"
     elif not snapshot.control_authority:
         reason = "当前地面站没有控制权"
+    elif not snapshot.navigation_ready:
+        reason = f"{snapshot.navigation_frame} 定位未就绪：{snapshot.navigation_detail or '等待重定位'}"
     elif not snapshot.local_position_valid:
         reason = "本地位置尚未就绪"
     elif not snapshot.thrust_mode_verified:
@@ -105,6 +107,7 @@ def derive_availability(
     control_ready = (
         command_link
         and snapshot.local_position_valid
+        and snapshot.navigation_ready
         and snapshot.thrust_mode_verified
         and not snapshot.setpoint_conflict
     )
@@ -157,6 +160,7 @@ def derive_availability(
             and environment_active
             and mode in {"simulation", "hardware"}
             and waypoint_count > 0
+            and snapshot.navigation_ready
         ),
         # 无环境会话时禁止编辑/操作任何航点组件；任务运行中同样锁定编辑。
         waypoint_edit=(

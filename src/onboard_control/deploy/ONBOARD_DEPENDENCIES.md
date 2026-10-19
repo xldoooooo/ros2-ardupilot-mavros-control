@@ -18,6 +18,7 @@ extnav 仍为独立工作区，运行集成安装器前须按该飞机的部署�
 ## 项目 Odin 构建
 
 默认依赖包括 OpenCV、PCL、yaml-cpp、OpenSSL、libusb 开发包和 Odin 所需 ROS 包。
+飞行接口 3.5 的 Odin 运行状态解析另需 `nlohmann-json3-dev`，依赖脚本一并安装。
 旧命令中的 `--with-odin-deps` 仍可使用，已无需显式追加。
 完整机载构建每次都会增量构建项目 Odin，首次部署不再依赖外部 `catkin_ws` 安装产物：
 

@@ -52,6 +52,8 @@ def test_all_flight_inputs_share_monotonic_sequence() -> None:
         "reference_generator": 0,
         "tracking_controller": 0,
         "photo_nos": (),
+        "coordinate_frame": "odom",
+        "local_coordinates": False,
     }
     assert takeoff < motion < waypoint
 
@@ -282,7 +284,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "3.4"
+    assert INTERFACE_VERSION == "3.5"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

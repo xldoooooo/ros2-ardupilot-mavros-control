@@ -64,6 +64,38 @@ def test_pose_bridge_selects_local_sim_or_aggregated_hardware_pose() -> None:
     assert "<exec_depend>visualization_msgs</exec_depend>" in package
 
 
+def test_pose_bridge_keeps_fcu_local_alias_in_emitted_transform() -> None:
+    """The emitted TF must match map-mode FCU pose headers without moving values."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    from geometry_msgs.msg import PoseStamped
+
+    spec = importlib.util.spec_from_file_location(
+        "pose_to_tf", PROJECT_ROOT / "src/guided_sim/scripts/pose_to_tf.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = []
+    bridge = SimpleNamespace(
+        parent_frame="map", child_frame="ground_station_preview/base_link",
+        tf_broadcaster=SimpleNamespace(sendTransform=output.append),
+    )
+    for frame in ("map", "fcu_local"):
+        pose = PoseStamped()
+        pose.header.frame_id = frame
+        pose.header.stamp.sec = 123
+        pose.pose.position.x = 4.0
+        pose.pose.orientation.w = 1.0
+        module.PoseToTF.pose_callback(bridge, pose)
+        transform = output[-1]
+        assert transform.header.frame_id == frame
+        assert transform.header.stamp == pose.header.stamp
+        assert transform.child_frame_id == bridge.child_frame
+        assert transform.transform.translation.x == 4.0
+        assert transform.transform.rotation == pose.pose.orientation
+
+
 def test_avoidance_rviz_layers_share_map_and_limit_optional_cloud_subscription() -> None:
     """规划轨迹默认可见；点云默认关闭且订阅 QoS 不积压可靠重传。"""
     config = yaml.safe_load((

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -13,12 +16,20 @@ def generate_launch_description() -> LaunchDescription:
     parameter_file = f"{package_share}/config/control.yaml"
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "navigation_switch_script", default_value="",
+                description="Absolute ground-only navigation restart script; empty disables switching.",
+            ),
             Node(
                 package="onboard_control",
                 executable="onboard_control_node",
                 name="onboard_control_node",
                 output="screen",
-                parameters=[parameter_file],
+                parameters=[parameter_file, {
+                    "navigation_switch_script": ParameterValue(
+                        LaunchConfiguration("navigation_switch_script"), value_type=str,
+                    ),
+                }],
             )
         ]
     )

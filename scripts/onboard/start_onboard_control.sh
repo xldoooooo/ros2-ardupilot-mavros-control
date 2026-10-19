@@ -20,7 +20,7 @@ source "${project_root}/scripts/lib/odin_runtime.bash"
 odin_parse_options "$@" || exit $?
 if ((odin_help)); then
   echo "Usage: bash scripts/onboard/start_onboard_control.sh [-c odom|slam|reloc|original|/path/config.yaml] [--check]"
-  echo "Default Odin configuration: odom. --check validates the complete stack without starting components."
+  echo "Default: navigation.env mode (odom when absent). --check validates without starting components."
   exit 0
 fi
 
@@ -33,6 +33,7 @@ fi
 if [[ -r "${onboard_environment_file}" ]]; then
   runtime_source_setup "${onboard_environment_file}"
 fi
+odin_default_selection
 
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
@@ -91,6 +92,7 @@ fi
 odin_source_project_overlay "${project_root}"
 odin_config_file="$(odin_resolve_config "${project_root}" "${odin_config_selection}")" || exit $?
 readonly odin_config_file
+odin_validate_map_config "${project_root}" "${odin_config_file}"
 
 # Duplicate MAVROS or control nodes can contend for the serial port or setpoint topic.
 readonly process_pattern='mavros_node|odin1_ros2.launch.py|odin.launch.py|extnav_to_vision_pose|onboard_control_node'
@@ -212,12 +214,12 @@ launch_component "odin" \
   ros2 launch odin_ros_driver odin1_ros2.launch.py "config_file:=${odin_config_file}"
 launch_component "extnav" \
   ros2 run extnav_bridge extnav_to_vision_pose --ros-args \
-  -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq \
-  -p roll_cam:=0.0 -p pitch_cam:=0.0 -p yaw_cam:=0.0 \
-  -p odin_x:=0.06 -p odin_y:=-0.03 -p odin_z:=0.05
+  --params-file "${ODIN_EXTRINSICS_FILE:-${project_root}/config/odin_extrinsics.yaml}" \
+  -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq
 launch_component "onboard" \
   bash --noprofile --norc -c 'cd -- "$1"; shift; exec "$@"' onboard \
-  "${project_root}" ros2 launch onboard_control control.launch.py
+  "${project_root}" ros2 launch onboard_control control.launch.py \
+  "navigation_switch_script:=${project_root}/scripts/onboard/switch_navigation_mode.sh"
 
 echo "[startup] all components launched on ROS domain ${ROS_DOMAIN_ID}"
 runtime_ensure_mavros_timesync

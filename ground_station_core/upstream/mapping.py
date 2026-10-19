@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import UpstreamAction, UpstreamCommand
-from ..config import MAX_WAYPOINT_COUNT, WAYPOINT_HORIZONTAL_LIMIT_METERS
+from ..config import (MAX_WAYPOINT_COUNT, WAYPOINT_HORIZONTAL_LIMIT_METERS,
+                      WAYPOINT_Z_MIN_METERS, WAYPOINT_Z_MAX_METERS)
 
 
 class UpstreamProtocolError(ValueError):
@@ -65,7 +66,7 @@ _REQUIRED_POINT_FIELDS = (
 
 
 def parse_command(
-    payload: Mapping[str, Any], expected_client_no: str
+    payload: Mapping[str, Any], expected_client_no: str, coordinate_frame: str = "odom"
 ) -> UpstreamCommand:
     """校验业务 JSON，并把角度制航向转换为本地弧度制航点。"""
     if not isinstance(payload, Mapping):
@@ -86,7 +87,7 @@ def parse_command(
     ignored = False
     if command_no == "02":
         waypoints, point_indexes, photo_nos = _parse_task_points(
-            payload.get("taskPoints")
+            payload.get("taskPoints"), coordinate_frame
         )
         ignored = True
     return UpstreamCommand(
@@ -103,7 +104,7 @@ def parse_command(
 
 
 def _parse_task_points(
-    value: Any,
+    value: Any, coordinate_frame: str = "odom",
 ) -> tuple[
     tuple[tuple[float, float, float, float], ...],
     tuple[int, ...],
@@ -143,10 +144,12 @@ def _parse_task_points(
             WAYPOINT_HORIZONTAL_LIMIT_METERS
         ):
             raise UpstreamProtocolError(f"taskPoints[{position}] 的 X/Y 超出地面站范围")
-        # 机载 ExecuteWaypoints 服务的既有边界是 [0.1, 50] m。
-        if not 0.1 <= z <= 50.0:
+        # Map altitude may be negative; the aircraft checks transformed local Z.
+        low, high = ((WAYPOINT_Z_MIN_METERS, WAYPOINT_Z_MAX_METERS)
+                     if coordinate_frame == "map" else (0.1, 50.0))
+        if not low <= z <= high:
             raise UpstreamProtocolError(
-                f"taskPoints[{position}].z 必须在 [0.1, 50] m 范围内"
+                f"taskPoints[{position}].z 必须在 [{low:g}, {high:g}] m 范围内（{coordinate_frame}）"
             )
         normalized_angle = ((angle + 180.0) % 360.0) - 180.0
         normalized.append((x, y, z, math.radians(normalized_angle)))

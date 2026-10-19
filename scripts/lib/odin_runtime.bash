@@ -3,7 +3,7 @@
 
 # Parse the options shared by standalone Odin and the complete onboard launcher.
 odin_parse_options() {
-  odin_config_selection=odom
+  odin_config_selection=""
   odin_check=0
   odin_help=0
   while (($#)); do
@@ -21,6 +21,54 @@ odin_parse_options() {
       *) runtime_die "unknown option: $1 (use --help)"; return 2 ;;
     esac
   done
+}
+
+# Persisted ground switches apply to both manual starts and the systemd service.
+odin_default_selection() {
+  [[ -z "${odin_config_selection}" ]] || return 0
+  local navigation_env="${NAVIGATION_ENV_FILE:-/etc/ros2-ardupilot/navigation.env}"
+  if [[ -e "${navigation_env}" ]]; then
+    runtime_source_environment_file "${navigation_env}" || return 1
+  fi
+  case "${NAVIGATION_MODE:-odom}" in
+    odom) odin_config_selection=odom ;;
+    map) odin_config_selection=reloc ;;
+    *) runtime_die "NAVIGATION_MODE must be odom or map"; return 1 ;;
+  esac
+}
+
+# Check relocalization input before stopping or starting any hardware component.
+odin_validate_map_config() {
+  local odin_validation_root="$1"
+  local odin_validation_config="$2"
+  # Explicit non-relocation modes retain the existing Python-free startup path.
+  local odin_validation_mode
+  odin_validation_mode="$(sed -nE 's/^[[:space:]]*custom_map_mode:[[:space:]]*([01])[[:space:]]*(#.*)?$/\1/p' "${odin_validation_config}")"
+  if [[ "${odin_validation_mode}" == 0 || "${odin_validation_mode}" == 1 ]]; then
+    return 0
+  fi
+  local odin_validation_python="${ONBOARD_PYTHON:-${odin_validation_root}/.venv/bin/python}"
+  [[ -x "${odin_validation_python}" ]] || {
+    runtime_die "project Python is missing: ${odin_validation_python}; create .venv or set ONBOARD_PYTHON"
+    return 1
+  }
+  "${odin_validation_python}" - "${odin_validation_config}" <<'PY'
+"""Validate a relocation map without loading the Odin device SDK."""
+import pathlib
+import sys
+import yaml
+
+settings = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
+registers = settings.get("register_keys", {})
+if int(registers.get("custom_map_mode", 2)) == 2:
+    map_path = pathlib.Path(registers.get("relocalization_map_abs_path", ""))
+    if not map_path.is_absolute() or not map_path.is_file() or map_path.stat().st_size == 0:
+        sys.exit(f"[odin] Relocalization requires an existing nonempty map .bin: {map_path}")
+    if map_path.suffix.lower() != ".bin":
+        sys.exit(f"[odin] Relocalization map must be a .bin file: {map_path}")
+    with map_path.open("rb"):
+        pass
+PY
 }
 
 # Resolve a named project configuration or a readable operator-supplied YAML file.

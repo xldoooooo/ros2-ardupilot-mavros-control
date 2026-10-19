@@ -73,6 +73,7 @@ from .upstream_panel import UpstreamCommunicationPanel
 from .waypoint_panel import WaypointPanel
 from .widgets import (
     ActivityBanner,
+    NavigationModeSwitch,
     ShadowMessageBox,
     StatusBadge,
     repolish,
@@ -117,6 +118,8 @@ class GroundStationWindow(QMainWindow):
 
     _REFRESH_INTERVAL_MS = 100
     _SHADOW_MARGIN = 14
+    # Odin startup and map loading can take over a minute on the onboard computer.
+    _NAVIGATION_RESTART_TIMEOUT_SECONDS = 120.0
 
     def __init__(
         self,
@@ -148,6 +151,9 @@ class GroundStationWindow(QMainWindow):
         self._pending_environment_mode = "none"
         self._workflow_busy = False
         self._communication_busy = False
+        self._navigation_switch_target: str | None = None
+        self._navigation_switch_started = 0.0
+        self._last_navigation_notice: object = None
         self._communication_cancel_pending = False
         self._waypoint_running = False
         self._waypoint_preview_active = False
@@ -401,6 +407,15 @@ class GroundStationWindow(QMainWindow):
             self.control_badge,
         ):
             status_row.addWidget(badge, 1)
+        navigation_box = QVBoxLayout()
+        navigation_box.setSpacing(1)
+        self.navigation_switch = NavigationModeSwitch()
+        self.navigation_switch.clicked.connect(self._switch_navigation_mode)
+        self.navigation_label = QLabel("odom · 等待连接")
+        self.navigation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        navigation_box.addWidget(self.navigation_switch)
+        navigation_box.addWidget(self.navigation_label)
+        status_row.addLayout(navigation_box)
         self.activity_banner = ActivityBanner()
         status_row.addWidget(self.activity_banner, 2)
         root.addLayout(status_row)
@@ -620,6 +635,12 @@ class GroundStationWindow(QMainWindow):
 
     def _open_correction_panel(self) -> None:
         """分离启动修正面板，不把相机任务或 extnav 修正纳入 GUI 清理链。"""
+        # TODO(map-tag): Keep Tag-Odin correction unavailable in map mode.
+        if self._ros.snapshot().navigation_frame != "odom" or self._navigation_switch_target:
+            message = "map 重定位模式暂不支持 Odin-Tag 修正"
+            self._events.warn("navigation", message)
+            self.activity_banner.set_message(message, LogLevel.WARN)
+            return
         panel_script = PROJECT_ROOT / "correction_service" / "correction_panel.py"
         if not panel_script.is_file():
             message = f"未找到 Tag-Odin 修正面板：{panel_script}"
@@ -962,6 +983,8 @@ class GroundStationWindow(QMainWindow):
         self._environment_active = False
         self._connection_mode = "none"
         self._pending_environment_mode = "none"
+        self._navigation_switch_target = None
+        self._pending_commands.discard("navigation_mode")
         self._upstream_sequence = None
         self._abnormal_return_latched = False
         self._hardware_low_power_notice_latched = False
@@ -1287,6 +1310,7 @@ class GroundStationWindow(QMainWindow):
             sequence.photo_nos,
             allow_running_override=sequence.kind != "inspection",
             refresh_after_queue=False,
+            local_coordinates=sequence.kind != "inspection",
         )
         if ticket is None:
             self._abort_upstream_sequence("航点阶段未进入本地发送队列")
@@ -1300,7 +1324,7 @@ class GroundStationWindow(QMainWindow):
             )
         except Exception as exc:
             self._events.warn("upstream", f"任务状态关联失败：{exc}")
-        if sequence.kind != "inspection":
+        if sequence.kind != "inspection" and self._ros.snapshot().navigation_frame == "odom":
             # 新航点请求由机载端原子覆盖旧任务；GUI 同步显示真实返航点。
             self.waypoints.replace_waypoints(
                 sequence.waypoints, "上位机返航组合"
@@ -1470,6 +1494,95 @@ class GroundStationWindow(QMainWindow):
             "operator", f"手动操纵坐标系切换为「{label}」：{detail}"
         )
 
+    def _switch_navigation_mode(self) -> None:
+        """Confirm a ground-only onboard restart while preserving waypoint numbers."""
+        snapshot = self._ros.snapshot()
+        target = "map" if self.navigation_switch.isChecked() else "odom"
+        self.navigation_switch.setChecked(snapshot.navigation_frame == "map")
+        if not self._can_switch_navigation(snapshot):
+            return
+        if not self._confirm_action(
+            "切换任务坐标系",
+            f"确认切换到 {target}？\n\n机载控制服务、Odin 和正在运行的避障节点将退出后重启。"
+            "请等待连接恢复并重新取得控制权。航点数值保持不变，"
+            f"恢复后按 {target} 原点解释。map 模式要求已有重定位地图。",
+        ):
+            return
+        if not self._can_switch_navigation(self._ros.snapshot()):
+            return
+        self._navigation_switch_target = target
+        self._navigation_switch_started = time.monotonic()
+        self._pending_commands.add("navigation_mode")
+        message = f"正在切换到 {target}：等待机载退出、重启和控制权恢复…"
+        self._events.warn("navigation", message)
+        self.activity_banner.set_message(message, LogLevel.WARN, state="busy")
+        self._ros.request_navigation_mode(target)
+        self._refresh()
+
+    def _can_switch_navigation(self, snapshot: VehicleSnapshot) -> bool:
+        """Allow switching only for an idle, disarmed hardware session on ground."""
+        return bool(
+            self._connection_mode == "hardware" and self._availability.reboot_fcu
+            and not self._pending_commands and self._navigation_switch_target is None
+            and snapshot.on_ground and not snapshot.armed and not snapshot.controller_active
+        )
+
+    def _refresh_navigation(self, snapshot: VehicleSnapshot) -> None:
+        """Follow the actual frame and wait for restart plus lease recovery."""
+        target = self._navigation_switch_target
+        if target is not None:
+            elapsed = time.monotonic() - self._navigation_switch_started
+            if elapsed > 1.0 and snapshot.status_message.startswith("定位切换失败："):
+                self._navigation_switch_target = None
+                self._pending_commands.discard("navigation_mode")
+                self._events.warn("navigation", snapshot.status_message)
+                self.activity_banner.set_message(snapshot.status_message, LogLevel.WARN)
+            elif (elapsed > 1.0 and snapshot.onboard_available
+                    and snapshot.navigation_frame == target and snapshot.control_authority):
+                self._navigation_switch_target = None
+                self._pending_commands.discard("navigation_mode")
+                message = f"已恢复 {target} 机载连接与控制权；航点数值保持不变"
+                self._events.info("navigation", message)
+                self.activity_banner.set_message(message, LogLevel.INFO, state="success")
+            elif elapsed > self._NAVIGATION_RESTART_TIMEOUT_SECONDS:
+                self._navigation_switch_target = None
+                self._pending_commands.discard("navigation_mode")
+                message = "等待导航模式切换恢复超时，请检查机载服务；当前界面继续按真实状态显示"
+                self._events.warn("navigation", message)
+                self.activity_banner.set_message(message, LogLevel.WARN)
+        self.navigation_switch.setChecked(snapshot.navigation_frame == "map")
+        self.navigation_switch.setEnabled(self._can_switch_navigation(snapshot))
+        detail = snapshot.navigation_detail or ("定位已就绪" if snapshot.navigation_ready else "定位未就绪")
+        label = (f"{snapshot.navigation_frame} · {'就绪' if snapshot.navigation_ready else '未就绪'}"
+                 if snapshot.onboard_available else "坐标系 · 等待连接")
+        if self._navigation_switch_target:
+            label = f"切换 {self._navigation_switch_target}…"
+        set_text_if_changed(self.navigation_label, label)
+        tip = f"任务坐标系：{snapshot.navigation_frame}\n{detail}"
+        if snapshot.navigation_map:
+            tip += f"\n地图：{snapshot.navigation_map}"
+        tip += "\n仅实机落地、解除武装且空闲时可切换；原航点数值保持不变。"
+        set_tooltip_if_changed(self.navigation_switch, tip)
+        set_tooltip_if_changed(self.navigation_label, tip)
+        # TODO(map-tag): Odin-Tag correction is not supported in map navigation.
+        tag_supported = snapshot.navigation_frame == "odom" and not self._navigation_switch_target
+        self.correction_panel_button.setEnabled(tag_supported)
+        set_tooltip_if_changed(self.correction_panel_button,
+            "打开独立 AprilTag-Odin 校准、质量与数据链对照面板" if tag_supported
+            else "map 重定位模式暂不支持 Odin-Tag 修正"
+        )
+        notice = (snapshot.navigation_frame, snapshot.navigation_ready, snapshot.navigation_detail)
+        if snapshot.onboard_available and not self._navigation_switch_target:
+            if not snapshot.navigation_ready:
+                message = f"任务坐标系 {snapshot.navigation_frame} · {detail}"
+                self.activity_banner.set_message(message, LogLevel.WARN)
+            elif (self._last_navigation_notice is not None
+                  and not self._last_navigation_notice[1]):
+                self.activity_banner.set_message(
+                    f"任务坐标系 {snapshot.navigation_frame} · {detail}", LogLevel.INFO
+                )
+            self._last_navigation_notice = notice
+
     def _reboot_fcu(self) -> None:
         """默认取消的危险操作确认；确认期间状态变化必须重新门控。"""
         self._refresh()
@@ -1586,6 +1699,7 @@ class GroundStationWindow(QMainWindow):
         *,
         allow_running_override: bool = False,
         refresh_after_queue: bool = True,
+        local_coordinates: bool = False,
     ) -> int | None:
         """确认组合语义后原子上传航点与三项飞行前锁定配置。"""
         from ..models import WaypointFlightStrategy
@@ -1661,7 +1775,7 @@ class GroundStationWindow(QMainWindow):
         if not simulation:
             if not self._confirm_action(
                 "确认执行航点任务",
-                f"即将上传并执行 {len(values)} 个本地 ENU 航点。\n"
+                f"即将上传并执行 {len(values)} 个 {'FCU local' if local_coordinates else self._ros.snapshot().navigation_frame} 航点。\n"
                 f"飞行策略：{flight_strategy.label}\n"
                 f"命令生成：{generator_label}\n"
                 f"跟踪控制：{controller.label}\n"
@@ -1688,12 +1802,14 @@ class GroundStationWindow(QMainWindow):
         # 新任务先清掉上一任务的完成进度；同一任务后续 RUNNING 回报不会重置。
         self.waypoints.reset_progress()
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
+        coordinate_options = {"local_coordinates": True} if local_coordinates and self._ros.snapshot().navigation_frame == "map" else {}
         ticket = self._ros.request_waypoints(
             values,
             flight_strategy,
             generator,
             controller,
             tuple(photo_nos) if photo_nos is not None else (),
+            **coordinate_options,
         )
         self.activity_banner.set_message(
             "航点已排队，等待机载服务接收…", LogLevel.INFO, state="busy"
@@ -1804,11 +1920,13 @@ class GroundStationWindow(QMainWindow):
 
         existing_count = len(self.waypoints.waypoints)
         source_label = path.name or str(path)
+        frame = self._ros.snapshot().navigation_frame
+        coordinate_description = "绝对本地 ENU" if frame == "odom" else "地图全局"
         if not self._confirm_action(
             "从文件导入航点",
             f"已从 {source_label} 读取 {len(imported)} 个航点"
             f"（单次上限 {MAX_WAYPOINT_COUNT} 个）。\n"
-            "X/Y/Z 将按绝对本地 ENU 坐标（米）导入，Yaw 按角度读取。\n\n"
+            f"X/Y/Z 将按 {frame} 任务坐标（{coordinate_description}，米）导入，Yaw 按角度读取。\n\n"
             f"继续将清空并替换当前列表中的 {existing_count} 个航点。"
             "该操作不会取消已发送到机载端的任务。",
         ):
@@ -1824,7 +1942,7 @@ class GroundStationWindow(QMainWindow):
         self.waypoints.replace_waypoints(imported, source_label)
         self._events.info(
             "waypoint-import",
-            f"已从 {source_label} 导入 {len(imported)} 个绝对 ENU 航点，"
+            f"已从 {source_label} 导入 {len(imported)} 个 {self._ros.snapshot().navigation_frame} 航点，"
             f"替换原列表 {existing_count} 个航点",
         )
         self.activity_banner.set_message(
@@ -1897,6 +2015,7 @@ class GroundStationWindow(QMainWindow):
         )
         busy = (
             self._workflow_busy
+            or self._navigation_switch_target is not None
             or self._communication_busy
             or cleanup_active
             or bool(getattr(self._environment, "busy", False))
@@ -1942,6 +2061,7 @@ class GroundStationWindow(QMainWindow):
                 self.operations.takeoff_button.setEnabled(False)
             self._last_availability_render_key = render_key
 
+        self._refresh_navigation(snapshot)
         self._drive_upstream_sequence(snapshot)
         self._handle_vehicle_abnormal(
             snapshot, upstream_connected=upstream_connected
@@ -2008,11 +2128,14 @@ class GroundStationWindow(QMainWindow):
             )
             if result.final and not stale_waypoint_result:
                 self._pending_commands.discard(result.command)
+            if result.command == "navigation_mode" and not result.success:
+                self._navigation_switch_target = None
             level = LogLevel.INFO if result.success else LogLevel.ERROR
             if not stale_waypoint_result:
                 self.activity_banner.set_message(
                     result.message, level,
                     state=("error" if not result.success else
+                           "busy" if result.command == "navigation_mode" else
                            "success" if result.final else "busy"),
                 )
             try:
@@ -2120,6 +2243,10 @@ class GroundStationWindow(QMainWindow):
 
         if snapshot.setpoint_conflict:
             self.control_badge.set_status("SETPOINT CONFLICT", "bad")
+        elif snapshot.onboard_available and not snapshot.navigation_ready:
+            self.control_badge.set_status(
+                f"{snapshot.navigation_frame} 定位未就绪", "warn", snapshot.navigation_detail
+            )
         elif snapshot.controller_active:
             self.control_badge.set_status(
                 f"{snapshot.control_rate_hz:.1f} Hz",

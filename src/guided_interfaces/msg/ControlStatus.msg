@@ -36,6 +36,15 @@ uint8 AVOIDANCE_LAND=4
 
 std_msgs/Header header
 string interface_version
+# Task coordinates are independent of MAVROS's historically named local "map" frame.
+string navigation_frame
+bool navigation_ready
+string navigation_detail
+string navigation_map
+geometry_msgs/Transform task_to_local
+geometry_msgs/Point task_position
+geometry_msgs/Vector3 task_velocity
+float64 task_yaw
 bool fcu_connected
 bool armed
 # 新鲜落地证据和机载重启事务状态；用于 GUI 门控。

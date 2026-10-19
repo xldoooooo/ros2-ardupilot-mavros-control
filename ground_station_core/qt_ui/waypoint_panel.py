@@ -1,4 +1,4 @@
-"""本地 ENU 航点编辑、排序、进度与上传面板。"""
+"""odom/map 任务坐标航点编辑、排序、进度与上传面板。"""
 
 from __future__ import annotations
 
@@ -123,9 +123,10 @@ class WaypointPanel(QWidget):
         """创建航点输入与可伸缩表格：仅中间列表随面板高度变长。"""
         card = Card(
             "航点任务",
-            "坐标系为本地 ENU；上传的是列表副本，\n"
+            "航点按当前 odom/map 任务坐标系解释；上传的是列表副本，\n"
             "到达判定与推进由机载服务完成。",
         )
+        self.editor_card = card
         card.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
         )
@@ -202,7 +203,7 @@ class WaypointPanel(QWidget):
         self.table.setToolTip("可将一个 CSV 航点文件直接拖入此列表")
         self.table.setProperty("baseToolTip", self.table.toolTip())
         self.table.setAccessibleDescription(
-            "本地 ENU 航点列表；支持拖入一个 CSV 文件并在确认后替换列表"
+            "当前 odom/map 坐标系航点列表；支持拖入一个 CSV 文件并在确认后替换列表"
         )
         # 取消固定最大高度，使中间列表成为唯一纵向伸缩区。
         self.table.setSizePolicy(
@@ -274,7 +275,7 @@ class WaypointPanel(QWidget):
         )
         self.import_button.setProperty("compact", True)
         self.import_button.setToolTip(
-            "从单个 CSV 文件导入绝对本地 ENU 航点，并替换当前列表"
+            "从单个 CSV 文件导入当前 odom/map 任务坐标系航点，并替换当前列表"
         )
         self.import_button.setProperty("baseToolTip", self.import_button.toolTip())
         self.import_button.setAccessibleName("从文件导入航点")
@@ -520,10 +521,13 @@ class WaypointPanel(QWidget):
 
     def update_current_pose(self, snapshot: VehicleSnapshot) -> None:
         """缓存与主 GUI 实际位姿同一帧的原始 ENU 坐标和弧度偏航。"""
-        pose = (snapshot.x, snapshot.y, snapshot.z, snapshot.yaw)
+        set_text_if_changed(self.editor_card.title_label, f"航点任务 · {snapshot.navigation_frame}")
+        pose = snapshot.task_pose
+        set_tooltip_if_changed(self.add_current_button, f"采集 {snapshot.navigation_frame} 坐标系当前位置")
         self._current_pose = (
             pose if snapshot.onboard_available and snapshot.connected
-            and snapshot.local_position_valid and all(math.isfinite(v) for v in pose)
+            and snapshot.local_position_valid and snapshot.navigation_ready
+            and all(math.isfinite(v) for v in pose)
             else None
         )
         self.add_current_button.setEnabled(

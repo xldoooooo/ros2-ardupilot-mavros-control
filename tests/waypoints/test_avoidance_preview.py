@@ -59,15 +59,18 @@ def executing_status():
     return status
 
 
-def test_preview_requires_fresh_execution_status_and_preserves_source_path(preview):
+@pytest.mark.parametrize('frame', ['map', 'fcu_local'])
+def test_preview_requires_fresh_execution_status_and_preserves_source_path(preview, frame):
     node, output, clock = preview
     path = trajectory()
+    path.header.frame_id = frame
     node.path_callback(path)
     assert not output[-1].poses
     node.status_callback(executing_status())
     node.path_callback(path)
     assert output[-1] is path
     assert output[-1].header.stamp.sec == 123
+    assert output[-1].header.frame_id == frame
     assert node.path_subscription.qos_profile.reliability == ReliabilityPolicy.RELIABLE
     assert node.path_subscription.qos_profile.durability == DurabilityPolicy.VOLATILE
     assert node.status_subscription.qos_profile.reliability == ReliabilityPolicy.BEST_EFFORT
@@ -82,17 +85,20 @@ def test_preview_requires_fresh_execution_status_and_preserves_source_path(previ
     assert output[-1].poses
 
 
-def test_preview_path_timeout_clears_even_while_status_remains_fresh(preview):
+@pytest.mark.parametrize('frame', ['map', 'fcu_local'])
+def test_preview_path_timeout_clears_even_while_status_remains_fresh(preview, frame):
     node, output, clock = preview
     node.status_callback(executing_status())
-    node.path_callback(trajectory())
+    path = trajectory()
+    path.header.frame_id = frame
+    node.path_callback(path)
     clock[0] += 0.8
     node.status_callback(executing_status())
     node.expire()
     assert output[-1].poses
     clock[0] += 0.001
     node.expire()
-    assert output[-1].header.frame_id == 'map'
+    assert output[-1].header.frame_id == frame
     assert not output[-1].poses
 
 

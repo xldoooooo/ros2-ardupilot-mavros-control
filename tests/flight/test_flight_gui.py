@@ -340,7 +340,7 @@ def test_manual_tooltips_and_detailed_increment_state() -> None:
             "控制周期",
             "安全门控",
         ]
-        assert panel.actual_velocity_value.text() == ("Vx +0.30  Vy +0.40  Vz +0.00")
+        assert panel.actual_velocity_value.text() == ("[odom] Vx +0.30  Vy +0.40  Vz +0.00")
         right_labels = {
             label.text()
             for label in panel.engineering_increment_panel.findChildren(QLabel)

@@ -8,6 +8,15 @@
 本模块不修正世界高度，不发送解锁、起飞、模式或轨迹命令。任何 ACK 只说明 extnav
 接受了坐标变换，不代表 MAVROS EKF 已稳定，更不构成实飞许可。
 
+extnav 的机体安装外参独立维护于项目 `config/odin_extrinsics.yaml`，两种机载启动入口
+均使用它；设置 `ODIN_EXTRINSICS_FILE=/etc/ros2-ardupilot/odin_extrinsics.yaml` 可覆盖逐机配置。
+RPY 单位 rad，定义 `R_FI` 将 Odin IMU 轴变换到 FCU FLU 轴，采用标准 ZYX；上仰约 22°
+对应 `pitch_cam=-0.3839724354`，应以实际测量为准。`odin_xyz` 为 FCU→Odin IMU 在 FCU
+FLU 系中的米制向量。姿态使用 `R_OF=R_OI R_IF`，局部位置使用 `p_LF=p_OI+T-R_OF T`，
+速度使用 `v_LF=v_OI-R_OF(omega_F×T)`；Odin 世界点云已经重力对齐，不再整体旋转。
+仓库默认安装角零以保持旧配置；TODO(task6-tag)：新安装角只用于正常外部导航，Tag 标定、
+应用跳变预测与非零安装角尚未联合验证，继续拒绝此组合。
+
 ## 数据链和中心语义
 
 ```text

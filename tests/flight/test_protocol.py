@@ -18,6 +18,6 @@ def test_protocol_version_is_synchronized_across_deployments() -> None:
         for package in ("guided_interfaces", "onboard_control", "guided_sim")
     }
 
-    assert INTERFACE_VERSION == "3.4"
-    assert 'kInterfaceVersion[] = "3.4"' in onboard_source
-    assert package_versions == {"3.4.0"}
+    assert INTERFACE_VERSION == "3.5"
+    assert 'kInterfaceVersion[] = "3.5"' in onboard_source
+    assert package_versions == {"3.5.0"}

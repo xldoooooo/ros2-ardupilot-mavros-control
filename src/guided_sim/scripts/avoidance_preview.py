@@ -37,6 +37,7 @@ class AvoidancePreview(Node):
             AvoidanceResult, '/onboard_control/avoidance_result', self.session_callback, qos,
         )
         self.last_path_at = None
+        self.frame_id = 'map'
         self.last_status_at = None
         self.executing = False
         self.visible = False
@@ -45,19 +46,22 @@ class AvoidancePreview(Node):
         self.clear(force=True)
 
     def clear(self, *, force=False):
-        """用 map 空 Path 覆盖 RViz 缓存；不重复发送已撤销的预览。"""
+        """Clear RViz in the latest accepted display frame without changing coordinates."""
         self.last_path_at = None
         if self.visible or force:
             empty = Path()
-            empty.header.frame_id = 'map'
+            empty.header.frame_id = self.frame_id
             empty.header.stamp = self.get_clock().now().to_msg()
             self.publisher.publish(empty)
         self.visible = False
 
     def path_callback(self, message):
-        """原样转发 map 轨迹，状态未就绪或源端清空时立即撤销。"""
+        """Forward map or FCU-local paths with their original coordinates and header."""
         now = time.monotonic()
-        if (not message.poses or message.header.frame_id != 'map'
+        accepted_frame = message.header.frame_id in {'map', 'fcu_local'}
+        if accepted_frame:
+            self.frame_id = message.header.frame_id
+        if (not message.poses or not accepted_frame
                 or not self.executing or self.last_status_at is None
                 or now - self.last_status_at > self.TIMEOUT_SECONDS):
             self.clear(force=True)

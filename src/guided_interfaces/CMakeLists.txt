@@ -26,6 +26,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ExecuteWaypoints.srv"
   "srv/FlightCommand.srv"
   "srv/SetGpsOrigin.srv"
+  "srv/SetNavigationMode.srv"
   "srv/SetVideoState.srv"
   DEPENDENCIES
     builtin_interfaces

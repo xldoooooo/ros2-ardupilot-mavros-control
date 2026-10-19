@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-19。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。项目Odin驱动已迁入drivers/odin并在refresh原生构建、未解锁全链验证；new与hp-desktop待同步此迁移。refresh MAVROS2.16.0修复overlay保持。
+维护日期：2026-10-19。开发机与refresh已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；new与hp-desktop仍为3.4，待同步接口、客户端及消费包并原生重建。项目Odin驱动和机载MAVROS九插件配置已在开发机/refresh落地，refresh保留MAVROS2.16.0修复overlay。Task5与共用输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -16,13 +16,13 @@
 
 ## 当前架构与入口
 
-- 独立 map 系位姿诊断脚本源码在 `dev/odom_pose_in_map.py`；new 另有根目录副本
+- 独立 map 系位姿诊断脚本源码在 `dev/odom2map/odom_pose_in_map.py`；new 另有根目录副本
   `/home/nvidia/ros2-ardupilot-mavros-control/odom_pose_in_map.py`（与原始版本一致）。
   只订阅 `/tf` 和 `/odin1/odometry_highfreq`，输出 map 下 Odin IMU 位姿，不是 FCU 中心或最终 EKF 位姿；无输入时不输出数值。
   该工具未加入自动启动；refresh 本次未核对或部署，需要时从开发机 `dev/` 单独复制即可。
 - 开发机及两架现役飞机均为 Ubuntu 24.04 / ROS 2 Jazzy；机载为 Jetson Orin NX / ARM64。
   Python 使用项目 `.venv`。旧 Ubuntu 22.04/Humble 台架数据不再代表现役环境。
-- 开发机及两机飞行协议 **3.4**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.4.0**；Task38共享接口已同步重建，不能混用旧3.3客户端/安装产物。
+- 开发机及refresh飞行协议 **3.5**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.5.0**；new/hp-desktop仍为3.4，不能混用新旧接口及安装产物。
   独立视频协议 **3.2**，AprilTag 修正协议 **2.0**。地面与机载共享接口必须同步重建。
 - PySide6 地面站是薄客户端；`src/onboard_control` 是唯一飞行控制权威，负责租约、安全状态机、
   航点推进及 100 Hz PD+DOB。唯一生产输出为 `/mavros/setpoint_raw/attitude`；GUI、规划器、
@@ -37,7 +37,13 @@
   单独及集成启动均用 `-c odom|slam|reloc|original|/absolute/custom.yaml`，默认 odom，强制选择项目 overlay。
   四份 YAML 在 `drivers/odin/src/odin_ros_driver/config/`；`control_command.yaml` 仅链接 odom。
   reloc 的地图绝对路径由用户手动维护，`drivers/odin/maps/` 地图及运行/构建产物不入 Git。
-  外部 `catkin_ws` 原驱动保留，干净终端只 source 它仍使用原驱动；本次没有实现 map/odom 飞控转换或运行中模式切换。
+  外部 `catkin_ws` 原驱动保留，干净终端只 source 它仍使用原驱动；省略 `-c` 读取`/etc/ros2-ardupilot/navigation.env`的`NAVIGATION_MODE`，缺省odom。
+- odom/map保持“地图任务、本地控制”：原生TF为`odom ← map`，`p_local=R_OM p_map+t_OM+b`，`b`为既有extnav原点偏移；任务与采点以FCU中心为准。
+  `ControlStatus`区分实际local值和task值；map预览用`fcu_local`避免MAVROS历史`map`命名冲突，点云不另做安装角旋转。
+  三策略接受地图航点，普通小重定位用连续偏移/重新投递/重新查线；失效或大跳变撤销任务、本地制动悬停，默认15秒后LAND，不自动恢复旧任务。
+  实际模式来自`/odin1/navigation_status`的设备ACK/session及原生TF；未定位禁止起飞。地面切换须未解锁、落地且无任务，重启原运行的飞控/避障，保留航点数值。
+  安装外参入口`config/odin_extrinsics.yaml`，逐机以`ODIN_EXTRINSICS_FILE`覆盖；仓库零角默认保留。**TODO：map与Odin-Tag组合未适配，非零安装角Tag apply继续拒绝。**
+  设计与维护入口见[导航说明](docs/odom-map.md)，验证及限制见[Task6报告](agent/report/report-2026-10-19-task6-odom-map.md)。
 - 机载性能配置在开发机/refresh已落实：`config/mavros/aircraft.launch.xml`及9插件白名单由独立/整栈机载入口使用，
   复用已选MAVROS安装的apm参数，不再依赖手改系统插件文件；`gps_status`不在白名单。直连FCU遥控器手飞不依赖ROS的rc_io/manual_control；未改RC/模式参数。
   开发机SITL保持原配置。项目Odin的odom/reloc关闭raw DTOF、诊断CSV和传感器展示TF，slam保留展示TF，original不变；地图TF独立保留。
@@ -69,15 +75,15 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task38 / 3.4；主工程541b8b4含遇障悬停直线参数和误差制动分离，onboard_control已原生重建；MAVROS 2.16.0修复overlay保持 | 机上隔离DDS8/8；源码与开发机一致，21项配置/标定哈希保持。生产飞控栈停止，下次正常启动加载新版；未实飞验收 |
+| refresh | Task6 / 3.5；项目Odin、extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 四次实际未解锁往返切换通过，避障按原运行状态恢复；最终默认odom、服务停止，生产domain0保留。地图在项目`drivers/odin/maps/map_20261019_155047.bin`；逐机外参由onboard.env指定`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，64份任务源码哈希和3.5实际接口为准，勿reset/clean；未实飞验收 |
 | new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
-| 开发机 | 主工程3.4原生双树接入；SetGoal持久目标、流式精确p/v/a、方向动力学限额，已重建 | 桥地图/射线/unknown及执行retime已删除；DDS/核心通过，SITL严格净空指标及实飞仍未全面验收 |
+| 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成，自主末端收敛波动仍有风险，严格净空及实飞未验收 |
 
 - Odin迁移：开发机及refresh已完成独立/完整机载构建，refresh隔离domain230全链READY且armed=false，测试后全部停止。
   refresh的`ODIN_CV_BRIDGE_SETUP`指向项目`drivers/odin/cv_bridge_ws/install/local_setup.bash`，OpenCV仅4.8；
   旧`ODIN_OVERLAY_SETUP`字段已不参与项目驱动选择。new及hp-desktop待同步驱动源码并原生构建，勿复制refresh安装产物或逐机环境。
-  重定位设备实测及地图定位验收未做，详见[迁移报告](agent/report/report-2026-10-19-project-odin-driver-migration.md)。
+  后续Task6已完成真实重定位静态核对，绝对定位精度和实飞仍未验收；最初迁移见[迁移报告](agent/report/report-2026-10-19-project-odin-driver-migration.md)。
 
 - **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
   new 使用 Wasintek 1920×1080@30 / Tag0 0.170 m，修正活动目录为
@@ -115,7 +121,7 @@
 - 原始姿态控制必须确认 `GUID_OPTIONS` bit 3 的归一化推力语义；`hover_throttle=0.22`
   仅为回退值，运行时用 `MOT_THST_HOVER`。消息频率 ACK 不等于实测达到 100 Hz；
   必须请求 `EXTENDED_SYS_STATE(245)` 才能可靠检测其他来源的起降边沿。
-- 航点是绝对本地 ENU；CSV 为 `index,x,y,z,yaw`，文件 yaw 用角度、GUI 内部用弧度。
+- 航点是当前任务系（odom/map）的绝对ENU，上传时锁定；起飞高度、手动速度及返航仍为FCU local。CSV 为 `index,x,y,z,yaw`，文件 yaw 用角度、GUI 内部用弧度。
   默认“梯形速度 + 轨迹 PD+DOB”；策略、参考生成器、跟踪器在同一武装周期锁定。
   LAND 在持权且可靠连接时允许幂等重发，不能被普通 GUI busy 或诊断异常锁死。
 - FCU 热重启只允许未解锁、落地、待机且无任务；必须观察启动时钟回退，恢复原点、
@@ -155,12 +161,9 @@
   状态仍 `calibrated_pending_independent_validation`。外参是机械近似
   `t=(0.04657,0.02897,-0.06726)m`，尚未独立标定验收。现场 Tag0 `(0,0)`、Tag1 `(0,1.8)`
   同向、边长 0.099 m；部署保留用户 CSV，不复用旧内外参下的窗口。
-- **refresh Odin 已改为仰角 20°，生产转换仍是零安装角，尚未适配。** raw/extnav pitch
-  实测约 −19.42°，最终 FCU EKF 约 +0.62°；EKF3 的外部姿态输入不直接融合 roll/pitch，
-  GUI 近零不能证明 extnav 已补偿。需重新核对 IMU→FCU 姿态、杆臂位置/速度及应用跳变预测；
-  仅改 `pitch_cam` 或放宽 tilt 门不能替代完整转换。new 的安装变化未检查。
-  证据见 [安装角分析](agent/report/history/report-2026-10-09-odin-20deg-coordinate-assessment.md)及
-  [EKF 倾角分析](agent/report/history/report-2026-10-09-extnav-ekf-pitch-difference.md)。
+- **refresh安装角已补偿，精密标定仍未完成。** 使用逐机`pitch_cam=-0.3839724354`（约-22°）与既有杆臂，extnav以完整姿态及角速度转换FCU中心。
+  当前静态raw pitch约-24.70°，补偿后extnav约-2.70°，FCU EKF约+0.60°，残差约3.30°；不能把任务给出的22°估计宣称为精密标定。
+  EKF外部姿态不直接融合roll/pitch，GUI近零不证明extnav准确；new安装状态未检查。旧20°分析仅作历史参考。
 - **绝对定位/航向精度仍未验收。** 短时稳定、检测率提升、用户两点 apply 成功和 EKF 跟随
   不构成真值证明；10° tilt / 45°跳变门只是用户授权的地面实验门限。
   尚需精测 Tag 世界位姿、明确物理参考点、重标外参及跨位置/跨 session 独立验证。
@@ -226,7 +229,7 @@
   2026-10-14删除遇障悬停误差制动，开发机/refresh DDS均8/8，SITL运动中遇障恢复通过；部署见[同步报告](agent/report/report-2026-10-14-hover-no-error-stop-sync.md)。
   桥单独重启后仍可从完整CANCEL身份撤销原目标。
 - 实机仍仅支持未应用Tag的extnav基线：FCU状态/目标减权威杆臂T，返回多项式常数项加T；
-  世界点云不按安装仰角另旋转；本次bag地面拟合倾角仅0.122°。Tag有效分支、Odin20°安装角、前移约2cm及真实雷达中心外参仍未适配。
+  世界点云不按安装仰角另旋转；本次bag地面拟合倾角仅0.122°。Task6已接入无Tag时的可配置安装姿态；Tag有效分支、前移约2cm及真实雷达中心精密外参仍未适配。
   extnav身份2Hz发布使用独立2s接收超时；FCU时效不变，主动失效或身份变化仍立即处理。
 - 净空仍是0.25m体素质心严格距离，无voxel/采样补偿；不保证每个原始点或真实表面包络。
   Task5最终lambda1的两次自主绕障均26/26规划成功、约7秒完成航点/拍照/LAND，上升约5.6cm；
@@ -245,6 +248,9 @@
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
 - **共用控制输出限jerk已在开发机和refresh原生部署**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，用户实飞反馈已消抖但绕障后偏离参考；名义速度仍非实际硬限速，实飞跟踪与净空未验收。refresh已同步代码2c9b99f并原生重建onboard_control，33项测试及隔离8/3参数回读通过，原控制参数和38项其他配置保持；机载服务保持停止，下次启动加载新版本。new/hp-desktop仍待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)、[refresh同步](agent/report/report-2026-10-15-refresh-common-jerk-sync.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+
+- Task6三策略map SITL均实际到点/拍照/LAND，未放宽到点条件；自主末端仍出现10次入点失败/异常警告，约34.16秒后才稳定。
+  odom固定等价终点也复现同类10次报警后收敛（约11.95秒），但起始高度、TF重投和历史不同，不是严格单变量，不能把耗时差归因于map。参考限速不等于实际硬限速，见[Task6报告](agent/report/report-2026-10-19-task6-odom-map.md)。
 
 - **输出限jerk与原生避障的跟踪可行性仍有缺口**：当前原生仅C1且未约束jerk，PD+DOB前馈及反馈一起经过8/3输出斜率限制；SITL已证实制动请求与实际下发控制量反向滞后，激进aXY=2时可大幅偏离、进入虚拟障碍几何或触发0.8m跟踪保护。提高WNxy不是已验证修复；关闭jerk又恢复姿态跳变。参考时钟照常推进，跟踪保护仅等待，未专门要求原生立即重规划；100s/100m强制触发设置下可能等待超时LAND。不得仅按任务完成判定净空合格。
   总加速度模长推力与ArduPilot Guided归一化推力入口的angle_boost存在重复倾斜补偿，SITL对照支持其造成部分高度偏高；真实飞控参数及视频约30cm高度差尚未完整验证。ROS原生入口会将旧scalar限额抬高至显式方向限额最大值，不应将scalar=1、方向=2理解为实际上限1。正式算法/配置未因本次排查修改，翻新机现场读取按用户要求延期。复现条件、限制和证据见[偏轨SITL报告](agent/report/report-2026-10-19-post-obstacle-tracking-sitl.md)。

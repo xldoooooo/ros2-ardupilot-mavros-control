@@ -10,6 +10,17 @@
     control_frequency: 100.0  # 机载主控制循环频率，单位：Hz。
     status_frequency: 10.0  # 聚合控制状态发布频率，单位：Hz。
 
+    # Map tasks use Odin's live odom<-map TF; local control and point clouds stay continuous.
+    navigation_status_timeout_seconds: 3.0  # Driver identity reception timeout.
+    navigation_tf_timeout_seconds: 5.0  # Maximum map TF age, including device status age.
+    navigation_max_jump_m: 2.0  # Reject one correction that moves the current world pose this far.
+    navigation_max_jump_degrees: 45.0  # Reject one large rotational correction.
+    navigation_hold_timeout_seconds: 15.0  # Local brake/hold duration before LAND.
+    navigation_retarget_distance_m: 0.05  # Accumulate ordinary TF noise before retargeting.
+    navigation_retarget_degrees: 2.0  # Accumulated heading change before retargeting.
+    navigation_retarget_interval_seconds: 1.0  # Minimum interval between target updates.
+    navigation_retarget_blend_seconds: 1.0  # Smooth small straight-flight endpoint corrections.
+
     # 遥测新鲜度、失联处理与命令时效安全阈值
     pose_timeout_seconds: 0.30  # 位姿或速度遥测最大允许断流时间，单位：秒。
     state_timeout_seconds: 2.0  # 飞控连接状态最大允许断流时间，单位：秒。

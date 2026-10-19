@@ -77,6 +77,7 @@ bool OnboardControlNode::avoidance_ready(const SteadyTime & now) const
 /** Cancel the old native goal before advancing the local task identity. */
 void OnboardControlNode::reset_avoidance()
 {
+  navigation_line_retarget_pending_ = false;
   if (avoidance_goal_ && avoidance_request_publisher_) {
     auto cancel = *avoidance_goal_;
     cancel.header.stamp = get_clock()->now();
@@ -365,6 +366,12 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
   // Include solver age as well as the local receive interval when the stream stops.
   avoidance_last_valid_ = now - std::chrono::duration_cast<SteadyClock::duration>(
     std::chrono::duration<double>(std::max(0.0, search_age)));
+  if (line_result && navigation_line_retarget_pending_ && !avoidance_wait_started_) {
+    navigation_reference_join_.retarget(target - navigation_segment_target_,
+      normalize_angle(waypoints_[waypoint_index_].yaw - navigation_segment_yaw_),
+      navigation_retarget_blend_);
+    navigation_line_retarget_pending_ = false;
+  }
   if (avoidance_wait_started_) {
     // A joinable PLAN already contains braking/turning dynamics; near-goal plans may publish once.
     if (!native_plan) {
@@ -380,6 +387,12 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
     } else {
       reference_generator_->reset(vehicle_.position, reference_.yaw, target,
         normalize_angle(waypoints_[waypoint_index_].yaw));
+      navigation_segment_target_ = target;
+      navigation_last_goal_ = target;
+      navigation_segment_yaw_ = waypoints_[waypoint_index_].yaw;
+      navigation_last_goal_yaw_ = navigation_segment_yaw_;
+      navigation_reference_join_.clear();
+      navigation_line_retarget_pending_ = false;
     }
     avoidance_wait_started_.reset();
     avoidance_clear_since_.reset();
@@ -449,7 +462,7 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
     return false;
   }
   if (waypoint_flight_strategy_ == 2) {
-    const auto generated = reference_generator_->update(dt);
+    const auto generated = navigation_reference_join_.update(reference_generator_->update(dt), dt);
     reference_ = generated.control;
     target_yaw_rate_ = generated.yaw_rate;
     active_reference_phase_ = generated.phase;
@@ -495,7 +508,7 @@ void OnboardControlNode::publish_avoidance_path()
 {
   if (!avoidance_path_publisher_) {return;}
   nav_msgs::msg::Path path;
-  path.header.frame_id = "map";
+  path.header.frame_id = navigation_frame_ == "map" ? "fcu_local" : "map";
   path.header.stamp = get_clock()->now();
   if (avoidance_state_ == 2 && !avoidance_trajectory_.empty()) {
     constexpr double sample_step = 0.1;  // RViz only; the controller evaluates exact coefficients.

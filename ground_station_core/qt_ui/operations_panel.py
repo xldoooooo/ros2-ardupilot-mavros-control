@@ -54,6 +54,7 @@ from .widgets import (
     NoWheelDoubleSpinBox,
     repolish,
     set_text_if_changed,
+    set_tooltip_if_changed,
 )
 
 
@@ -1098,15 +1099,20 @@ class OperationsPanel(QWidget):
         connection_mode: str = "none",
     ) -> None:
         """刷新摘要、常驻状态与默认折叠的机载工程诊断。"""
+        x, y, z, task_yaw = snapshot.task_pose
+        vx, vy, vz = snapshot.task_velocity_values
+        task_pose_ready = snapshot.navigation_frame == "odom" or snapshot.navigation_ready
         self._latest_yaw = snapshot.yaw
-        set_text_if_changed(self.altitude_summary_value, f"{snapshot.z:+.2f}")
+        set_tooltip_if_changed(self.altitude_summary_value, f"{snapshot.navigation_frame} 坐标系 Z（m）")
+        set_tooltip_if_changed(self.heading_summary_value, f"{snapshot.navigation_frame} 坐标系航向（°）")
+        set_text_if_changed(self.altitude_summary_value, f"{z:+.2f}" if task_pose_ready else "--")
         set_text_if_changed(
             self.actual_speed_summary_value,
-            f"{math.hypot(snapshot.vx, snapshot.vy, snapshot.vz):.2f}",
+            f"{math.hypot(vx, vy, vz):.2f}" if task_pose_ready else "--",
         )
         set_text_if_changed(
             self.heading_summary_value,
-            f"{math.degrees(snapshot.yaw):+.1f}",
+            f"{math.degrees(task_yaw):+.1f}" if task_pose_ready else "--",
         )
         set_text_if_changed(
             self.horizontal_summary_value,
@@ -1166,23 +1172,24 @@ class OperationsPanel(QWidget):
 
         set_text_if_changed(
             self.position_value,
-            f"X {snapshot.x:+.2f}  Y {snapshot.y:+.2f}  Z {snapshot.z:+.2f}  "
-            f"ψ {math.degrees(snapshot.yaw):+.1f}°",
+            f"[{snapshot.navigation_frame}] X {x:+.2f}  Y {y:+.2f}  Z {z:+.2f}  "
+            f"ψ {math.degrees(task_yaw):+.1f}°" if task_pose_ready else
+            f"[{snapshot.navigation_frame}] 等待有效定位",
         )
         set_text_if_changed(
             self.target_value,
-            f"X {snapshot.target_x:+.2f}  Y {snapshot.target_y:+.2f}  "
+            f"[FCU local] X {snapshot.target_x:+.2f}  Y {snapshot.target_y:+.2f}  "
             f"Z {snapshot.target_z:+.2f}  "
             f"ψ {math.degrees(snapshot.target_yaw):+.1f}°",
         )
         set_text_if_changed(
             self.actual_velocity_value,
-            f"Vx {snapshot.vx:+.2f}  Vy {snapshot.vy:+.2f}  "
-            f"Vz {snapshot.vz:+.2f}",
+            f"[{snapshot.navigation_frame}] Vx {vx:+.2f}  Vy {vy:+.2f}  "
+            f"Vz {vz:+.2f}" if task_pose_ready else f"[{snapshot.navigation_frame}] --",
         )
         set_text_if_changed(
             self.velocity_value,
-            f"Vx {snapshot.target_vx:+.2f}  Vy {snapshot.target_vy:+.2f}  "
+            f"[FCU local] Vx {snapshot.target_vx:+.2f}  Vy {snapshot.target_vy:+.2f}  "
             f"Vz {snapshot.target_vz:+.2f}  ωz {snapshot.target_yaw_rate:+.2f}",
         )
         set_text_if_changed(

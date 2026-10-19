@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import time
 from types import SimpleNamespace
+
+import pytest
 from ground_station_core.config import INTERFACE_VERSION
 from ground_station_core.models import VehicleSnapshot
 from ground_station_core.ros_controller import (
@@ -56,6 +58,8 @@ def test_waypoint_request_preserves_three_independent_gui_choices() -> None:
         "reference_generator": 3,
         "tracking_controller": 1,
         "photo_nos": (),
+        "coordinate_frame": "odom",
+        "local_coordinates": False,
     }
 
 
@@ -150,7 +154,8 @@ def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
     assert waypoint.photo_no == "客户/A-7"
 
 
-def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
+@pytest.mark.parametrize("navigation_frame", ["odom", "map"])
+def test_waypoint_preview_builds_retained_markers_path_and_live_pose(navigation_frame) -> None:
     """预览生成球/编号/直线路径，且不进入飞行命令或租约序号通道。"""
     from builtin_interfaces.msg import Time
     from rclpy.qos import DurabilityPolicy
@@ -194,6 +199,11 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
     controller = GroundStationRosController(source_id="gcs-preview-message")
     controller._ready = True
     controller._active_domain_id = 231
+    controller._state._snapshot = VehicleSnapshot(
+        navigation_frame=navigation_frame,
+        task_to_local=(10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    expected_frame = "fcu_local" if navigation_frame == "map" else PREVIEW_FRAME_ID
     node = FakeNode()
     entities: dict[str, object] = {"node": node}
     waypoints = (
@@ -216,14 +226,18 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
     assert marker_array.markers[0].action == Marker.DELETEALL
     assert [marker_array.markers[index].text for index in (2, 4)] == ["1", "2"]
     path = path_publisher.messages[-1]
-    assert path.header.frame_id == PREVIEW_FRAME_ID
+    assert path.header.frame_id == expected_frame
+    assert all(marker.header.frame_id == expected_frame for marker in marker_array.markers)
+    assert all(pose.header.frame_id == expected_frame for pose in path.poses)
     assert len(path.poses) == 2
-    assert path.poses[0].pose.position.x == 1.0
+    assert path.poses[0].pose.position.x == (11.0 if navigation_frame == "map" else 1.0)
     assert math.isclose(path.poses[1].pose.orientation.z, math.sqrt(0.5))
     assert math.isclose(path.poses[1].pose.orientation.w, math.sqrt(0.5))
 
     status = SimpleNamespace(
         local_position_valid=True,
+        navigation_frame=navigation_frame,
+        navigation_ready=True,
         position=SimpleNamespace(x=7.0, y=8.0, z=9.0),
         roll=0.0,
         pitch=0.0,
@@ -231,7 +245,7 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose() -> None:
     )
     controller._publish_vehicle_preview_pose(entities, status)
     pose = pose_publisher.messages[-1]
-    assert pose.header.frame_id == PREVIEW_FRAME_ID
+    assert pose.header.frame_id == expected_frame
     assert (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z) == (
         7.0,
         8.0,

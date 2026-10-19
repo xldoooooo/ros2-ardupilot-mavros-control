@@ -5,6 +5,10 @@ string source_id
 uint64 sequence
 uint32 ttl_ms
 guided_interfaces/Waypoint[] waypoints
+# Empty selects the current aircraft task frame; explicit mismatches are rejected.
+string coordinate_frame
+# Reserved for explicitly local return/hold tasks; map readiness still applies.
+bool local_coordinates false
 # 航点飞行策略；起飞后必须与 FlightCommand 锁定的策略一致。
 uint8 STRATEGY_STRAIGHT=0
 uint8 STRATEGY_AVOID=1

@@ -106,6 +106,15 @@ class VehicleSnapshot:
     on_ground: bool = False
     reboot_in_progress: bool = False
     autopilot_mode: str = ""
+    navigation_frame: str = "odom"
+    navigation_ready: bool = True
+    navigation_detail: str = ""
+    navigation_map: str = ""
+    task_position: tuple[float, float, float] | None = None
+    task_velocity: tuple[float, float, float] | None = None
+    task_yaw: float | None = None
+    # Translation and quaternion map task coordinates into the FCU local frame.
+    task_to_local: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
@@ -169,6 +178,19 @@ class VehicleSnapshot:
     control_rate_hz: float = 0.0
     max_jitter_ms: float = 0.0
     deadline_miss_count: int = 0
+
+
+    @property
+    def task_pose(self) -> tuple[float, float, float, float]:
+        """Return task coordinates, retaining local odom defaults for older callers."""
+        position = self.task_position or (self.x, self.y, self.z)
+        yaw = self.yaw if self.task_yaw is None else self.task_yaw
+        return (*position, yaw)
+
+    @property
+    def task_velocity_values(self) -> tuple[float, float, float]:
+        """Return task velocity or the equivalent local odom velocity."""
+        return self.task_velocity or (self.vx, self.vy, self.vz)
 
 
 @dataclass(frozen=True)

@@ -51,7 +51,9 @@ PlanResult 带进程 session、target_id、sequence 和原搜索时间；桥回�
 
 REACH_HORIZON 只表示中间段，不能触发航点完成或拍照；没有后续结果时在段尾前按避障加速度限额预留时间并等待。到点、低速、停留、拍照和推进航点仍由 onboard 判断。轨迹 yaw 沿现有航点语义管理，规划器只提供平移参考。
 
-extnav 模式沿用未应用 Tag 的 local-identity 基线：根据权威杆臂 T 将 FCU 位置/目标减 T，返回多项式常数项加 T；世界障碍点不另旋转。extnav session/revision/杆臂等变化撤销旧目标与结果。Tag 有效分支和 Odin 安装角适配仍不在本次范围。
+extnav 模式使用未应用 Tag 的 local-identity 基线。外参唯一入口为项目 `config/odin_extrinsics.yaml`，逐机配置可由 `ODIN_EXTRINSICS_FILE` 指定；默认零安装角保持旧机配置。`R_FI=Rz(yaw_cam)Ry(pitch_cam)Rx(roll_cam)` 将 Odin IMU 轴映射到 FCU FLU 轴，角度单位 rad，向上仰装约 22°对应 `pitch_cam=-0.3839724354`。`T=(odin_x,odin_y,odin_z)` 是 FCU 中心到 Odin IMU 的向量，以 FCU FLU 表达，单位 m。
+
+extnav 对原始 Odin 位姿使用 `R_OF=R_OI R_IF`、`p_LF=p_OI+b-R_OF T`，对速度减去 `R_OF(omega_F×T)`；`b=T` 是保留旧本地原点约定的常量。桥的输入已经是实际 FCU 中心，因此只需从 FCU 本地系减 `b` 映射到 Odin 世界，目标也减 `b`，返回多项式常数项加 `b`。这里减去的不是实时杆臂，不应再次按姿态旋转。MAVROS 的 FCU body twist 和姿态保持不变；Odin 已重力对齐的世界点云不另按安装 pitch 旋转。extnav session/revision/外参变化撤销旧目标与结果。TODO(task6-tag)：Tag 有效分支仍拒绝接入，非零安装角的 Tag 跳变预测尚未适配。
 
 FCU 状态沿用输入超时；2 Hz 的 extnav 坐标身份消息使用独立 2 s 接收超时，避免一个发布周期的普通抖动撤销整个规划输入。消息主动报告失效或身份变化时立即处理。
 

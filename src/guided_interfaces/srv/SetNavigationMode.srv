@@ -1,0 +1,9 @@
+# Restart the existing onboard stack in a ground-only navigation mode transaction.
+builtin_interfaces/Time stamp
+string source_id
+uint64 sequence
+uint32 ttl_ms
+string mode
+---
+bool accepted
+string message

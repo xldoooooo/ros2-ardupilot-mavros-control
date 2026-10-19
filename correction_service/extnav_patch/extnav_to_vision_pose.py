@@ -223,7 +223,7 @@ def compute_fcu_reference_position(
     lever_arm_m: np.ndarray,
     correction_valid: bool,
 ) -> tuple[np.ndarray, str]:
-    """按 task29 分支转换飞控中心；有效分支移除旧的固定 +T_xy。"""
+    """Use FCU orientation and FCU-frame lever; local b=T preserves the legacy origin."""
     raw = np.asarray(raw_position, dtype=np.float64).reshape(3)
     corrected = np.asarray(corrected_position, dtype=np.float64).reshape(3)
     rotation = np.asarray(corrected_rotation, dtype=np.float64).reshape(3, 3)
@@ -298,17 +298,15 @@ class OdometryBridge(Node):
             ],
             dtype=np.float64,
         )
-        q_x = rpy_to_quaternion(self.roll_cam, 0.0, 0.0)
-        q_y = rpy_to_quaternion(0.0, self.pitch_cam, 0.0)
-        q_z = rpy_to_quaternion(0.0, 0.0, self.yaw_cam)
-        self.q_IO = normalize_quaternion(
-            multiply_quaternions(multiply_quaternions(q_x, q_y), q_z)
+        # R_FI maps Odin IMU axes I to FCU FLU axes F; T is FCU->IMU in F.
+        self.q_FI = normalize_quaternion(
+            rpy_to_quaternion(self.roll_cam, self.pitch_cam, self.yaw_cam)
         )
-        qx, qy, qz, qw = self.q_IO
-        self.q_IO_conj = (-qx, -qy, -qz, qw)
-        self.R_IO = quaternion_to_rotation_matrix(self.q_IO)
-        # Fixed installation/lever transform used by every angular-velocity sample.
-        self.imu_lever = self.R_IO.T @ self.T
+        qx, qy, qz, qw = self.q_FI
+        self.q_IF = (-qx, -qy, -qz, qw)
+        self.R_FI = quaternion_to_rotation_matrix(self.q_FI)
+        if not np.isfinite(self.T).all():
+            raise ValueError("non-finite Odin lever arm")
         self.world_center_formula_supported = all(
             abs(value) <= 1e-9
             for value in (self.roll_cam, self.pitch_cam, self.yaw_cam)
@@ -401,8 +399,9 @@ class OdometryBridge(Node):
             "无法携带 MAVLink estimator reset_counter；本节点仅在修正状态中递增计数。"
         )
         if not self.world_center_formula_supported:
-            self.get_logger().error(
-                "task29 世界中心有效分支仅对零安装角完成推导；将拒绝 SetCorrection"
+            # TODO(task6-tag): independently validate Tag jump prediction with nonzero R_FI.
+            self.get_logger().warning(
+                "Odin installation rotation active; Tag SetCorrection remains unsupported"
             )
 
     def _odom_cb(self, message: Odometry) -> None:
@@ -728,8 +727,8 @@ class OdometryBridge(Node):
             q_odom = normalize_quaternion(
                 (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
             )
-        q_imu = multiply_quaternions(self.q_IO, q_odom)
-        q_imu = normalize_quaternion(multiply_quaternions(q_imu, self.q_IO_conj))
+        # Only change the child axes: R_OF = R_OI R_IF. Odin's world is gravity aligned.
+        q_imu = normalize_quaternion(multiply_quaternions(q_odom, self.q_IF))
         rotation_imu = _normalized_rotation_matrix(q_imu)
         p_imu, reference_mode = compute_fcu_reference_position(
             p_raw,
@@ -738,10 +737,9 @@ class OdometryBridge(Node):
             self.T,
             correction_valid,
         )
-        wx, wy, wz = angular.x, angular.y, angular.z
-        tx, ty, tz = self.imu_lever
-        cross = np.array((wy * tz - wz * ty, wz * tx - wx * tz, wx * ty - wy * tx))
-        v_imu = v_odom - rotation_imu @ (self.R_IO @ cross)
+        # Odin linear velocity is in O, angular velocity is in its IMU body I.
+        omega_fcu = self.R_FI @ np.array((angular.x, angular.y, angular.z))
+        v_imu = v_odom - rotation_imu @ np.cross(omega_fcu, self.T)
         return _FcuOutputSnapshot(
             position=p_imu,
             velocity=v_imu,

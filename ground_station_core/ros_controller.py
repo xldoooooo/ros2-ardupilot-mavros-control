@@ -62,11 +62,44 @@ WAYPOINT_MARKERS_TOPIC = "/ground_station/waypoint_markers"
 WAYPOINT_PATH_TOPIC = "/ground_station/waypoint_path"
 VEHICLE_POSE_TOPIC = "/ground_station/vehicle_pose"
 PREVIEW_FRAME_ID = "map"
+# Map navigation keeps FCU coordinates in a distinct display frame from Odin map.
+MAP_PREVIEW_FRAME_ID = "fcu_local"
 
 # 航点球、编号文字与文字抬升量使用米制，适配当前小型四旋翼模型。
 _WAYPOINT_MARKER_DIAMETER_METERS = 0.32
 _WAYPOINT_LABEL_HEIGHT_METERS = 0.24
 _WAYPOINT_LABEL_OFFSET_METERS = 0.30
+
+
+def task_waypoint_to_local(
+    waypoint, snapshot: VehicleSnapshot
+) -> tuple[float, float, float, float]:
+    """Transform task positions and heading into the FCU frame used by RViz."""
+    if snapshot.navigation_frame == "odom":
+        return tuple(waypoint)
+    if not snapshot.navigation_ready or snapshot.navigation_frame != "map":
+        raise ValueError(snapshot.navigation_detail or "地图定位未就绪，不能预览航点")
+    tx, ty, tz, qx, qy, qz, qw = snapshot.task_to_local
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm < 1e-8 or not math.isfinite(norm):
+        raise ValueError("地图到飞控坐标变换无效")
+    qx, qy, qz, qw = (v / norm for v in (qx, qy, qz, qw))
+
+    def rotate(x, y, z):
+        """Apply a normalized quaternion to one vector."""
+        ux = 2.0 * (qy * z - qz * y)
+        uy = 2.0 * (qz * x - qx * z)
+        uz = 2.0 * (qx * y - qy * x)
+        return (
+            x + qw * ux + qy * uz - qz * uy,
+            y + qw * uy + qz * ux - qx * uz,
+            z + qw * uz + qx * uy - qy * ux,
+        )
+
+    x, y, z, yaw = waypoint
+    x, y, z = rotate(x, y, z)
+    hx, hy, _ = rotate(math.cos(yaw), math.sin(yaw), 0.0)
+    return x + tx, y + ty, z + tz, math.atan2(hy, hx)
 
 
 class _VehicleStateStore:
@@ -90,6 +123,8 @@ class _VehicleStateStore:
         mode = _REMOTE_MODE_MAP.get(int(message.control_mode), FlightMode.IDLE)
         with self._lock:
             endpoint_conflict = self._endpoint_conflict
+        task_position = getattr(message, "task_position", message.position)
+        task_velocity = getattr(message, "task_velocity", message.velocity)
         snapshot = VehicleSnapshot(
             onboard_available=True,
             interface_version=message.interface_version,
@@ -98,6 +133,14 @@ class _VehicleStateStore:
             on_ground=bool(getattr(message, "on_ground", False)),
             reboot_in_progress=bool(getattr(message, "reboot_in_progress", False)),
             autopilot_mode=message.autopilot_mode,
+            navigation_frame=str(getattr(message, "navigation_frame", "odom")),
+            navigation_ready=bool(getattr(message, "navigation_ready", True)),
+            navigation_detail=str(getattr(message, "navigation_detail", "")),
+            navigation_map=str(getattr(message, "navigation_map", "")),
+            task_position=tuple(float(getattr(task_position, axis)) for axis in ("x", "y", "z")),
+            task_velocity=tuple(float(getattr(task_velocity, axis)) for axis in ("x", "y", "z")),
+            task_yaw=float(getattr(message, "task_yaw", message.yaw)),
+            task_to_local=self._task_transform(message),
             x=message.position.x,
             y=message.position.y,
             z=message.position.z,
@@ -181,6 +224,20 @@ class _VehicleStateStore:
             self._status_count += 1
             self._status_times.append(received_at)
 
+    @staticmethod
+    def _task_transform(message) -> tuple[float, ...]:
+        """Copy the ROS transform without retaining mutable message objects."""
+        transform = getattr(message, "task_to_local", None)
+        if transform is None:
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+        translation = tuple(
+            float(getattr(transform.translation, axis)) for axis in ("x", "y", "z")
+        )
+        rotation = tuple(
+            float(getattr(transform.rotation, axis)) for axis in ("x", "y", "z", "w")
+        )
+        return translation + rotation
+
     def mark_disconnected(self) -> None:
         """本地仿真清理后立即清除旧机载/飞控连接状态。"""
         with self._lock:
@@ -242,6 +299,7 @@ class _VehicleStateStore:
                 lease_active=False,
                 control_authority=False,
                 avoidance_ready=False,
+                navigation_ready=False,
             )
         return snapshot
 
@@ -277,6 +335,8 @@ class GroundStationRosController:
         # 预览是本地显示请求，不进入安全关键命令序号/租约通道；只保留最新快照。
         self._waypoint_preview_queue: queue.Queue[tuple] = queue.Queue(maxsize=1)
         self._waypoint_preview_enabled = threading.Event()
+        self._last_preview_waypoints: tuple = ()
+        self._last_preview_transform: tuple = ()
         self._ticket_lock = threading.Lock()
         self._next_ticket = 1
         # source_id 在一个 GUI 进程内稳定，因此租约序号也必须跨 ROS context
@@ -607,6 +667,12 @@ class GroundStationRosController:
         """请求机载未解锁重启事务；服务端复核落地和待机条件。"""
         return self._enqueue("reboot_fcu")
 
+    def request_navigation_mode(self, mode: str) -> int:
+        """Request an onboard ground-only restart into odom or map mode."""
+        if mode not in {"odom", "map"}:
+            raise ValueError("导航模式必须是 odom 或 map")
+        return self._enqueue("navigation_mode", mode)
+
     def request_land(self) -> int:
         """请求机载端切换 LAND。"""
         return self._enqueue("land")
@@ -626,6 +692,8 @@ class GroundStationRosController:
         reference_generator: int | object = 0,
         tracking_controller: int | object = 0,
         photo_nos: object = (),
+        *,
+        local_coordinates: bool = False,
     ) -> int:
         """上传航点和起飞时锁定的三项配置，由机载端复核一致性。"""
         strategy_value = int(WaypointFlightStrategy(int(strategy)))
@@ -645,6 +713,8 @@ class GroundStationRosController:
                 "reference_generator": generator_value,
                 "tracking_controller": controller_value,
                 "photo_nos": photo_no_values,
+                "coordinate_frame": self.snapshot().navigation_frame,
+                "local_coordinates": bool(local_coordinates),
             },
         )
 
@@ -671,6 +741,7 @@ class GroundStationRosController:
             self._events.warn("visualization", "ROS 2 客户端未就绪，无法发布航点预览")
             return False
 
+        self._last_preview_waypoints = normalized
         # 队列满时丢弃旧快照，确保快速编辑后只渲染最后一次完整列表。
         while True:
             try:
@@ -843,6 +914,7 @@ class GroundStationRosController:
                 ExecuteWaypoints,
                 FlightCommand,
                 SetGpsOrigin,
+                SetNavigationMode,
             )
             from rcl_interfaces.msg import Log as RosLog
             from rclpy.executors import SingleThreadedExecutor
@@ -869,6 +941,9 @@ class GroundStationRosController:
             # 预览发布者按首次点击懒创建；纯 Wi-Fi 通讯检测保持零可视化数据发送。
             visualization_entities: dict[str, object] = {"node": node}
             clients = {
+                "navigation_mode": node.create_client(
+                    SetNavigationMode, f"{INTERFACE_PREFIX}/set_navigation_mode"
+                ),
                 "lease": node.create_client(
                     AcquireControl, f"{INTERFACE_PREFIX}/acquire_control"
                 ),
@@ -885,6 +960,11 @@ class GroundStationRosController:
 
             def status_callback(message: ControlStatus) -> None:
                 self._state.update(message)
+                snapshot = self.snapshot()
+                transform_key = (snapshot.navigation_frame, snapshot.navigation_ready, snapshot.task_to_local)
+                if self._waypoint_preview_enabled.is_set() and transform_key != self._last_preview_transform:
+                    self._last_preview_transform = transform_key
+                    self.publish_waypoint_preview(self._last_preview_waypoints)
                 # 仿真直接复用同域 MAVROS 位姿；只有实机预览需要地面聚合位姿。
                 if (
                     self._active_domain_id == HARDWARE_DOMAIN_ID
@@ -975,6 +1055,7 @@ class GroundStationRosController:
                 "FlightCommand": FlightCommand,
                 "ExecuteWaypoints": ExecuteWaypoints,
                 "SetGpsOrigin": SetGpsOrigin,
+                "SetNavigationMode": SetNavigationMode,
                 "subscriptions": subscriptions,
             }
             pending_services: dict[int, tuple] = {}
@@ -1111,19 +1192,29 @@ class GroundStationRosController:
             path = entities["Path"]()
             pose_type = entities["PoseStamped"]
             stamp = node.get_clock().now().to_msg()
+            snapshot = self.snapshot()
+            frame_id = (
+                MAP_PREVIEW_FRAME_ID if snapshot.navigation_frame == "map" else PREVIEW_FRAME_ID
+            )
 
             # DELETEALL 与新 ADD 放在同一有序 MarkerArray，缩短列表时不会残留旧编号。
             clear_marker = marker_type()
-            clear_marker.header.frame_id = PREVIEW_FRAME_ID
+            clear_marker.header.frame_id = frame_id
             clear_marker.header.stamp = stamp
             clear_marker.action = marker_type.DELETEALL
             marker_array.markers.append(clear_marker)
 
-            path.header.frame_id = PREVIEW_FRAME_ID
+            path.header.frame_id = frame_id
             path.header.stamp = stamp
-            for index, (x, y, z, yaw) in enumerate(waypoints):
+            self._last_preview_waypoints = waypoints
+            # Map-mode local values use an alias, never Odin's real map frame.
+            local_waypoints = (
+                tuple(task_waypoint_to_local(point, snapshot) for point in waypoints)
+                if snapshot.navigation_ready else ()
+            )
+            for index, (x, y, z, yaw) in enumerate(local_waypoints):
                 sphere = marker_type()
-                sphere.header.frame_id = PREVIEW_FRAME_ID
+                sphere.header.frame_id = frame_id
                 sphere.header.stamp = stamp
                 sphere.ns = "ground_station_waypoints"
                 sphere.id = index
@@ -1143,7 +1234,7 @@ class GroundStationRosController:
                 marker_array.markers.append(sphere)
 
                 label = marker_type()
-                label.header.frame_id = PREVIEW_FRAME_ID
+                label.header.frame_id = frame_id
                 label.header.stamp = stamp
                 label.ns = "ground_station_waypoint_labels"
                 label.id = index
@@ -1162,7 +1253,7 @@ class GroundStationRosController:
                 marker_array.markers.append(label)
 
                 pose = pose_type()
-                pose.header.frame_id = PREVIEW_FRAME_ID
+                pose.header.frame_id = frame_id
                 pose.header.stamp = stamp
                 pose.pose.position.x = x
                 pose.pose.position.y = y
@@ -1193,6 +1284,9 @@ class GroundStationRosController:
             return
         if not bool(getattr(status_message, "local_position_valid", False)):
             return
+        if (getattr(status_message, "navigation_frame", "odom") == "map"
+                and not bool(getattr(status_message, "navigation_ready", False))):
+            return
 
         position = getattr(status_message, "position")
         roll = float(getattr(status_message, "roll"))
@@ -1217,7 +1311,11 @@ class GroundStationRosController:
         cy, sy = math.cos(half_yaw), math.sin(half_yaw)
 
         pose = pose_type()
-        pose.header.frame_id = PREVIEW_FRAME_ID
+        pose.header.frame_id = (
+            MAP_PREVIEW_FRAME_ID
+            if getattr(status_message, "navigation_frame", "odom") == "map"
+            else PREVIEW_FRAME_ID
+        )
         pose.header.stamp = entities["node"].get_clock().now().to_msg()
         (
             pose.pose.position.x,
@@ -1271,6 +1369,16 @@ class GroundStationRosController:
                 )
             else:
                 self._events.info("ros", "机载状态发布者冲突已解除")
+        if current.onboard_available and (
+            not previous.onboard_available
+            or (previous.navigation_frame, previous.navigation_ready, previous.navigation_detail)
+            != (current.navigation_frame, current.navigation_ready, current.navigation_detail)
+        ):
+            message = f"任务坐标系 {current.navigation_frame} · {current.navigation_detail or ('定位已就绪' if current.navigation_ready else '定位未就绪')}"
+            if current.navigation_ready:
+                self._events.info("navigation", message)
+            else:
+                self._events.warn("navigation", message)
         if previous.armed != current.armed:
             if current.armed:
                 self._events.warn("flight-controller", "飞行器已武装")
@@ -1529,7 +1637,18 @@ class GroundStationRosController:
                 )
                 return
 
-            if command.name == "waypoints":
+            if command.name == "navigation_mode":
+                client = clients["navigation_mode"]
+                if not client.service_is_ready():
+                    raise RuntimeError("机载导航切换服务不可用")
+                request = ros_entities["SetNavigationMode"].Request()
+                request.stamp = node.get_clock().now().to_msg()
+                request.source_id = self._source_id
+                request.sequence = command.ticket
+                request.ttl_ms = COMMAND_TTL_MS
+                request.mode = str(command.argument)
+                future = client.call_async(request)
+            elif command.name == "waypoints":
                 client = clients["waypoints"]
                 if not client.service_is_ready():
                     raise RuntimeError("机载航点服务不可用")
@@ -1555,6 +1674,12 @@ class GroundStationRosController:
                 request.flight_strategy = strategy_value
                 request.reference_generator = generator_value
                 request.tracking_controller = tracking_value
+                request.coordinate_frame = (
+                    str(payload.get("coordinate_frame", "")) if isinstance(payload, dict) else ""
+                )
+                request.local_coordinates = (
+                    bool(payload.get("local_coordinates", False)) if isinstance(payload, dict) else False
+                )
                 for position, values in enumerate(waypoint_values):
                     waypoint = ros_entities["Waypoint"]()
                     waypoint.position.x = float(values[0])
@@ -1636,6 +1761,8 @@ class GroundStationRosController:
                 try:
                     response = future.result()
                     accepted = bool(response and response.accepted)
+                    if accepted and command.name == "navigation_mode":
+                        self._emit_result(ticket, command.name, True, response.message, final=True)
                     if not accepted:
                         message = response.message if response else "机载服务无响应"
                         self._emit_result(

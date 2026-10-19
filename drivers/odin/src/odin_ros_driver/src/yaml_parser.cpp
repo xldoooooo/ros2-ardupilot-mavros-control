@@ -1,3 +1,4 @@
+// Load Odin YAML settings and apply custom device parameters with per-mode acknowledgement.
 /*
 Copyright 2025 Manifold Tech Ltd.(www.manifoldtech.com.co)
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -214,8 +215,12 @@ void YamlParser::printConfig() const {
     }
 }
 
-bool YamlParser::applyCustomParameters(device_handle device) {
+// Apply device settings and retain map_mode acknowledgement independently of other keys.
+bool YamlParser::applyCustomParameters(device_handle device, int* applied_map_mode) {
     bool success = true;
+    if (applied_map_mode) {
+        *applied_map_mode = -1;
+    }
 
     for (const auto& [param_name, param_value] : custom_parameters_) {
         std::cerr << "Setting custom parameter: " << param_name << " (size=" << param_value.getSize() << " bytes)" << std::endl;
@@ -226,6 +231,10 @@ bool YamlParser::applyCustomParameters(device_handle device) {
             success = false;
         } else {
             std::cerr << "Successfully set custom parameter " << param_name << std::endl;
+            if (applied_map_mode && param_name == "map_mode" &&
+                param_value.type == DataType::INT_TYPE && param_value.getSize() == sizeof(int)) {
+                *applied_map_mode = *static_cast<const int*>(param_value.getData());
+            }
         }
     }
 
@@ -243,4 +252,4 @@ int YamlParser::getCustomParameterInt(const std::string& param_name, int default
     return default_value;
 }
 
-} 
+}

@@ -1,3 +1,4 @@
+// Parse Odin register/custom settings and expose acknowledged navigation mode.
 /*
 Copyright 2025 Manifold Tech Ltd.(www.manifoldtech.com.co)
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -68,7 +69,8 @@ public:
     const std::map<std::string, std::string>& getRegisterKeysStrVal() const;
     const std::map<std::string, ParameterValue>& getCustomParameters() const;
     void printConfig() const;
-    bool applyCustomParameters(device_handle device);
+    // Optionally expose the map mode acknowledged by the device, or -1 on failure.
+    bool applyCustomParameters(device_handle device, int* applied_map_mode = nullptr);
     int getCustomParameterInt(const std::string& param_name, int default_value) const;
 
     int getCustomMapMode(int default_value) const {

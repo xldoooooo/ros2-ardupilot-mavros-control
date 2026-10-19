@@ -8,6 +8,7 @@ import textwrap
 from xml.etree import ElementTree
 
 import pytest
+import yaml
 
 from ground_station_core.config import PROJECT_ROOT
 
@@ -508,11 +509,15 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
         "MAVROS_FCU_BAUD:-460800",
         "vision_rate_hz:=40.0",
         "ctrl_rate_hz:=100.0",
-        "odin_x:=0.06",
-        "odin_y:=-0.03",
-        "odin_z:=0.05",
+        '--params-file "${ODIN_EXTRINSICS_FILE:-${project_root}/config/odin_extrinsics.yaml}"',
     ):
         assert parameter in script
+
+    extrinsics = yaml.safe_load((PROJECT_ROOT / "config/odin_extrinsics.yaml").read_text())
+    assert extrinsics["/extnav_to_vision_pose"]["ros__parameters"] == {
+        "roll_cam": 0.0, "pitch_cam": 0.0, "yaw_cam": 0.0,
+        "odin_x": 0.06, "odin_y": -0.03, "odin_z": 0.05,
+    }
 
     assert 'export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"' in script
     assert "runtime_detect_ros_setup" in script
@@ -561,7 +566,7 @@ def test_integrated_stop_cleans_managed_and_manual_flight_stack_processes() -> N
         "systemctl stop",
         "start_onboard_control\\.sh",
         "mavros_node",
-        "odin1_ros2",
+        "ros2 launch odin_ros_driver",
         "host_sdk_sample",
         "extnav_to_vision_pose",
         "onboard_control_node",

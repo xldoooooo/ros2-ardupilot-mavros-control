@@ -4,8 +4,17 @@
 set -Eeuo pipefail
 
 readonly service_name="ros2-ardupilot-onboard.service"
-# Match the aircraft ROS stack and Odin/RViz processes that can conflict with a restart.
-readonly process_pattern='start_onboard_control\.sh|ros2 launch mavros|/mavros_node([[:space:]]|$)|odin1_ros2\.launch\.py|/odin_ros_driver/|host_sdk_sample|image_overlay_node|extnav_to_vision_pose|ros2 launch onboard_control|/onboard_control_node([[:space:]]|$)|/rviz2([[:space:]]|$)'
+# Match Odin launchers/nodes rather than their directory, which also appears in config editors.
+readonly process_pattern='start_onboard_control\.sh|ros2 launch mavros|/mavros_node([[:space:]]|$)|ros2 launch odin_ros_driver|(^|/)(host_sdk_sample|image_overlay_node)([[:space:]]|$)|extnav_to_vision_pose|ros2 launch onboard_control|/onboard_control_node([[:space:]]|$)|/rviz2([[:space:]]|$)'
+
+# The switch worker has already stopped the unit with noninteractive sudo.
+skip_service=0
+case "${1:-}" in
+  '') ;;
+  --skip-service) skip_service=1 ;;
+  *) echo 'Usage: stop_onboard_control.sh [--skip-service]' >&2; exit 2 ;;
+esac
+(( $# <= 1 )) || exit 2
 
 declare -A target_pids=()
 
@@ -60,7 +69,7 @@ wait_for_exit() {
 }
 
 echo "[stop] stopping ${service_name}..."
-sudo systemctl stop "${service_name}"
+if ((!skip_service)); then sudo systemctl stop "${service_name}"; fi
 
 collect_targets
 if ((${#target_pids[@]} > 0)); then

@@ -114,6 +114,7 @@ class UpstreamCommunicationService:
         self._on_command = on_command
         self._journal = RawFrameJournal()
         self._state_lock = threading.RLock()
+        self._coordinate_frame = "odom"
         self._url = configured_url.strip()
         self._client_no = configured_client.strip()
         self._desired_connected = bool(auto_connect)
@@ -300,6 +301,8 @@ class UpstreamCommunicationService:
         can_takeoff: bool = False,
     ) -> bool:
         """投影权威快照；仅在 WebSocket 在线时开放低电量动作触发。"""
+        with self._state_lock:
+            self._coordinate_frame = snapshot.navigation_frame
         low_power_return_required = self._projector.observe_vehicle(
             snapshot, connection_mode, can_takeoff=can_takeoff
         )
@@ -550,7 +553,9 @@ class UpstreamCommunicationService:
                     if envelope.get("topic") != command_topic(client_no):
                         continue
                     data = envelope.get("data")
-                    command = parse_command(data, client_no)
+                    with self._state_lock:
+                        coordinate_frame = self._coordinate_frame
+                    command = parse_command(data, client_no, coordinate_frame)
                     self._queue_outbound(
                         publish_envelope(
                             client_no,

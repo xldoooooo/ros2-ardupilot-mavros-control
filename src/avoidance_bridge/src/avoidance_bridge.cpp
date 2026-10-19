@@ -2,6 +2,7 @@
 #include <correction_interfaces/msg/extnav_correction_status.hpp>
 #include <guided_interfaces/msg/avoidance_request.hpp>
 #include <guided_interfaces/msg/avoidance_result.hpp>
+#include <guided_interfaces/msg/control_status.hpp>
 #include <path_planning/msg/plan_result.hpp>
 #include <path_planning/srv/plan_motion.hpp>
 #include <path_planning/srv/set_goal.hpp>
@@ -60,6 +61,12 @@ public:
       [this](Request::SharedPtr message) { request(*message); });
     native_sub_ = create_subscription<NativeResult>("/avoidance/plan_result", rclcpp::QoS(10),
       [this](NativeResult::SharedPtr message) { native_result(*message); });
+    control_status_sub_ = create_subscription<guided_interfaces::msg::ControlStatus>(
+      "/onboard_control/status", rclcpp::SensorDataQoS(),
+      [this](guided_interfaces::msg::ControlStatus::SharedPtr message) {
+        // Display coordinates remain local; Odin's real map must not share their TF name.
+        preview_frame_ = message->navigation_frame == "map" ? "fcu_local" : "map";
+      });
     odom_sub_ = create_subscription<Odom>(declare_parameter("odometry_topic",
         std::string("/mavros/local_position/odom")), rclcpp::SensorDataQoS(),
       [this](Odom::SharedPtr message) {
@@ -68,7 +75,7 @@ public:
         if (!coordinates()) { return; }
         Odom output = *message;
         output.header.frame_id = frame_;
-        const auto t = translation();
+        const auto t = local_origin_offset();
         output.pose.pose.position.x -= t[0];
         output.pose.pose.position.y -= t[1];
         output.pose.pose.position.z -= t[2];
@@ -107,8 +114,9 @@ public:
   }
 
 private:
-  // Translate between the existing local-identity FCU frame and Odin's registered world.
-  std::array<double, 3> translation() const {
+  // b=T is a fixed origin offset, not the current rotated FCU->IMU lever arm.
+  // Extnav already publishes the actual FCU center: p_LF=p_OI+b-R_OF*T.
+  std::array<double, 3> local_origin_offset() const {
     if (mode_ == "identity" || !status_) { return {0., 0., 0.}; }
     return {status_->lever_arm_x_m, status_->lever_arm_y_m, status_->lever_arm_z_m};
   }
@@ -134,7 +142,8 @@ private:
       reason_ = "extnav local-identity coordinates unavailable (tag correction unsupported)";
       return false;
     }
-    for (double value : translation()) {
+    // TODO(task6-tag): Tag coordinates use a different origin and remain unsupported.
+    for (double value : local_origin_offset()) {
       if (!std::isfinite(value)) { reason_ = "invalid extnav translation"; return false; }
     }
     return true;
@@ -235,7 +244,7 @@ private:
       return;
     }
     if (!ready()) { fail(message, Result::WAITING_FOR_INPUT, reason_); return; }
-    const auto t = translation();
+    const auto t = local_origin_offset();
     if (message.mode == Request::PLAN) {
       active_ = message;
       goal_confirmed_ = false;
@@ -328,7 +337,7 @@ private:
     result.detail = message.detail;
     if (result.ready && (message.status == NativeResult::REACH_END ||
         message.status == NativeResult::REACH_HORIZON)) {
-      const auto t = translation();
+      const auto t = local_origin_offset();
       for (const auto &segment : message.segments) {
         guided_interfaces::msg::PolynomialSegment output;
         output.duration = segment.duration;
@@ -366,7 +375,7 @@ private:
     const size_t total = size_t(message.width) * message.height;
     const size_t count = std::min(total, max_points);
     Cloud output;
-    output.header.stamp = now(); output.header.frame_id = "map";
+    output.header.stamp = now(); output.header.frame_id = preview_frame_;
     output.height = 1; output.width = count; output.point_step = 12; output.row_step = count * 12;
     output.is_dense = true;
     for (size_t axis = 0; axis < 3; ++axis) {
@@ -377,7 +386,7 @@ private:
       output.fields.push_back(field);
     }
     output.data.resize(output.row_step);
-    const auto t = translation();
+    const auto t = local_origin_offset();
     for (size_t point = 0; point < count; ++point) {
       const size_t source = point * total / count;
       const size_t base = source / message.width * message.row_step + source % message.width * message.point_step;
@@ -393,6 +402,8 @@ private:
   }
 
   std::string mode_, frame_, session_, planner_session_, reason_;
+  std::string preview_frame_{"map"};  // Preserve legacy display frame until map is selected.
+  rclcpp::Subscription<guided_interfaces::msg::ControlStatus>::SharedPtr control_status_sub_;
   double timeout_{};
   std::array<double, 4> motion_limits_{};  // Native metadata is the only avoidance limit source.
   bool preview_{}, goal_confirmed_{};

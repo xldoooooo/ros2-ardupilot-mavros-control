@@ -19,6 +19,9 @@ readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 # Odin owns its separate build/install tree beneath the project drivers directory.
 readonly DRIVERS_SPARSE_PATH="/drivers/"
+# Shared hardware geometry and the ground-only navigation restart entry.
+readonly CONFIG_SPARSE_PATH="/config/"
+readonly NAVIGATION_SWITCH_SPARSE_PATH="/scripts/onboard/switch_navigation_mode.sh"
 readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
 readonly CORRECTION_START_SPARSE_PATH="/scripts/onboard/start_onboard_correction.sh"
 readonly CORRECTION_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_correction.sh"
@@ -165,6 +168,7 @@ update_checkout() {
     "${GITIGNORE_SPARSE_PATH}" \
     "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
     "${ONBOARD_SPARSE_PATH}" "${DRIVERS_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
+    "${CONFIG_SPARSE_PATH}" "${NAVIGATION_SWITCH_SPARSE_PATH}" \
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
@@ -221,6 +225,8 @@ check_dependencies() {
     die "Odin development libraries are missing; run setup_onboard_dependencies.sh"
   [[ -f /usr/include/eigen3/Eigen/Core ]] ||
     die "Eigen3 headers are missing: /usr/include/eigen3/Eigen/Core"
+  [[ -f /usr/include/nlohmann/json.hpp ]] ||
+    die "JSON headers are missing; install nlohmann-json3-dev"
   for package in "${ros_packages[@]}"; do
     ros2 pkg prefix "${package}" >/dev/null 2>&1 ||
       die "required ROS package is missing: ${package}"
@@ -342,8 +348,8 @@ smoke_test() {
     die "isolated status topic was not received"
   }
 
-  grep -Eq "^interface_version: ['\"]?3\\.4['\"]?$" "${status_log}" ||
-    die "smoke status did not report interface version 3.4"
+  grep -Eq "^interface_version: ['\"]?3\\.5['\"]?$" "${status_log}" ||
+    die "smoke status did not report interface version 3.5"
   grep -q '^fcu_connected: false$' "${status_log}" ||
     die "smoke node unexpectedly reported an FCU connection"
   grep -q '^armed: false$' "${status_log}" ||
@@ -359,7 +365,7 @@ smoke_test() {
   [[ ${echo_status} -eq 124 ]] ||
     die "smoke node emitted an attitude setpoint or the no-output check failed (${echo_status})"
 
-  log "smoke passed: interface=3.4, fcu_connected=false, armed=false, setpoint_messages=0"
+  log "smoke passed: interface=3.5, fcu_connected=false, armed=false, setpoint_messages=0"
   cleanup_smoke
   trap - EXIT INT TERM
 }
