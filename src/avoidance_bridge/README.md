@@ -14,6 +14,8 @@ bash scripts/onboard/start_avoidance.sh
 bash scripts/onboard/stop_avoidance.sh
 ```
 
+停止脚本清理本机所有 domain/工作区中的避障启动器、`path_planning_node`、`avoidance_bridge_node` 及已捕获的后代进程，包括孤儿节点；逐级发送 SIGINT、SIGTERM、SIGKILL，确认无活动残留后才成功返回。不会停止 MAVROS、Odin 或 onboard_control；若最终仍有活动进程则返回非零并列出残留。
+
 构建脚本先构建独立库，再重建共享接口、桥、onboard 和仿真入口；不启动硬件或服务。独立库默认位于主工程同级目录，可通过 `AVOIDANCE_WORKSPACE` 指定。旧安装缺少 SetGoal 或新的结果身份字段时必须重新构建，不能只更新 Python/launch。
 
 默认输入为 `/odin1/cloud_slam_down` 与 `/mavros/local_position/odom`。桥将 FCU 实际里程计转换到规划 frame 并转发 `/avoidance/odom`；MAVROS 的 twist 属于机体系，公共 `odometry_twist_in_body=true` 将其转回世界系。独立 `odin.launch.py` 默认使用 Odin 已在世界系的线速度，因此该入口默认为 false；更换里程计来源时须对应设置。SITL 使用 `coordinate_mode:=identity`、map 点云及真实模拟 FCU odom；纯隔离台架可显式提供同 frame 的 odom 输入。

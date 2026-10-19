@@ -33,6 +33,9 @@
 - 三个机载 unit 独立：`ros2-ardupilot-onboard.service`（MAVROS/Odin/extnav/onboard）、
   `video-service.service`、`odin-correction.service`。视频和修正不能绑定飞控共同启停/故障域；
   地面正式连接不启动或停止远端服务。避障另行启停，目前没有规划自启 unit。
+- 避障停止脚本已在开发机、refresh 更新：清理本机全部 domain/工作区的避障启动器、规划器/桥及已捕获的后代，
+  保留孤儿身份，逐级 INT/TERM/KILL，复核无活动残留才返回成功；不停止飞控栈。脚本更新无需重建。
+  new、hp-desktop 尚待同步此停止脚本；隔离验证与范围见[修复报告](agent/report/report-2026-10-19-stop-avoidance-fix-refresh.md)。
 
 | 用途 | 当前入口 / 说明 |
 | --- | --- |
