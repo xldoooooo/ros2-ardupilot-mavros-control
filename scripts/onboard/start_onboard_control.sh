@@ -12,6 +12,15 @@ readonly onboard_setup="${project_root}/install/setup.bash"
 }
 # shellcheck disable=SC1090
 source "${runtime_helpers}"
+# shellcheck disable=SC1090
+source "${project_root}/scripts/lib/odin_runtime.bash"
+
+odin_parse_options "$@" || exit $?
+if ((odin_help)); then
+  echo "Usage: bash scripts/onboard/start_onboard_control.sh [-c odom|slam|reloc|original|/path/config.yaml] [--check]"
+  echo "Default Odin configuration: odom. --check validates the complete stack without starting components."
+  exit 0
+fi
 
 # Per-aircraft hardware choices stay outside Git and are shared by systemd/manual starts.
 readonly onboard_environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
@@ -68,16 +77,19 @@ done
 runtime_source_setup "${onboard_setup}"
 
 runtime_ensure_package mavros
-runtime_ensure_package odin_ros_driver "${ODIN_OVERLAY_SETUP:-}"
 runtime_ensure_package extnav_bridge "${EXTNAV_OVERLAY_SETUP:-}"
 
-# Apply the explicitly selected MAVROS fix last so other overlays cannot shadow it.
+# Apply the explicitly selected MAVROS fix after generic package discovery.
 if [[ -n "${MAVROS_OVERLAY_SETUP:-}" ]]; then
   runtime_source_setup "${MAVROS_OVERLAY_SETUP}"
 fi
+# Source Odin last so pre-existing external workspaces cannot select the old driver.
+odin_source_project_overlay "${project_root}"
+odin_config_file="$(odin_resolve_config "${project_root}" "${odin_config_selection}")" || exit $?
+readonly odin_config_file
 
 # Duplicate MAVROS or control nodes can contend for the serial port or setpoint topic.
-readonly process_pattern='mavros_node|odin1_ros2.launch.py|extnav_to_vision_pose|onboard_control_node'
+readonly process_pattern='mavros_node|odin1_ros2.launch.py|odin.launch.py|extnav_to_vision_pose|onboard_control_node'
 existing_processes="$(pgrep -af "${process_pattern}" || true)"
 if [[ -n "${existing_processes}" ]]; then
   echo "[startup] refusing to create duplicate flight-stack processes:" >&2
@@ -89,14 +101,12 @@ echo "[startup] auto-discovered ROS=${ROS_DISTRO:-unknown}"
 echo "[startup] workspace=${project_root}"
 echo "[startup] FCU=${fcu_device}:${fcu_baud}"
 echo "[startup] odin=$(runtime_package_prefix odin_ros_driver)"
+echo "[startup] odin config=${odin_config_file}"
 echo "[startup] extnav=$(runtime_package_prefix extnav_bridge)"
 
-if [[ "${1:-}" == "--check" ]]; then
+if ((odin_check)); then
   echo "[startup] discovery check passed; no component was started"
   exit 0
-elif [[ -n "${1:-}" ]]; then
-  echo "Usage: bash scripts/onboard/start_onboard_control.sh [--check]" >&2
-  exit 2
 fi
 
 readonly run_stamp="$(date '+%Y%m%d-%H%M%S')"
@@ -108,13 +118,14 @@ declare -a component_pids=()
 cleanup_started=0
 readiness_pid=""
 
+# Start a component in its own session while preserving each command argument.
 launch_component() {
   local name="$1"
-  local command="$2"
+  shift
   local log_file="${run_directory}/${name}.log"
 
   # A separate session lets Ctrl+C stop each ros2 launch tree, including child nodes.
-  setsid bash --noprofile --norc -c "${command}" \
+  setsid "$@" \
     > >(stdbuf -oL sed -u "s/^/[${name}] /" | tee -a "${log_file}") 2>&1 &
   local pid=$!
   component_names+=("${name}")
@@ -122,6 +133,7 @@ launch_component() {
   echo "[startup] ${name} started: pid=${pid}, log=${log_file}"
 }
 
+# Return whether every launched component is still running.
 children_alive() {
   local pid
   for pid in "${component_pids[@]}"; do
@@ -132,6 +144,7 @@ children_alive() {
   return 0
 }
 
+# Return whether cleanup still has a live component to stop.
 any_child_alive() {
   local pid
   for pid in "${component_pids[@]}"; do
@@ -142,6 +155,7 @@ any_child_alive() {
   return 1
 }
 
+# Stop only the process sessions created by this launcher.
 cleanup() {
   local exit_code=$?
   local pid
@@ -188,13 +202,17 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 launch_component "mavros" \
-  "exec ros2 launch mavros apm.launch fcu_url:='${fcu_device}:${fcu_baud}'"
+  ros2 launch mavros apm.launch "fcu_url:=${fcu_device}:${fcu_baud}"
 launch_component "odin" \
-  "exec ros2 launch odin_ros_driver odin1_ros2.launch.py"
+  ros2 launch odin_ros_driver odin1_ros2.launch.py "config_file:=${odin_config_file}"
 launch_component "extnav" \
-  "exec ros2 run extnav_bridge extnav_to_vision_pose --ros-args -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq -p roll_cam:=0.0 -p pitch_cam:=0.0 -p yaw_cam:=0.0 -p odin_x:=0.06 -p odin_y:=-0.03 -p odin_z:=0.05"
+  ros2 run extnav_bridge extnav_to_vision_pose --ros-args \
+  -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq \
+  -p roll_cam:=0.0 -p pitch_cam:=0.0 -p yaw_cam:=0.0 \
+  -p odin_x:=0.06 -p odin_y:=-0.03 -p odin_z:=0.05
 launch_component "onboard" \
-  "cd '${project_root}'; exec ros2 launch onboard_control control.launch.py"
+  bash --noprofile --norc -c 'cd -- "$1"; shift; exec "$@"' onboard \
+  "${project_root}" ros2 launch onboard_control control.launch.py
 
 echo "[startup] all components launched on ROS domain ${ROS_DOMAIN_ID}"
 runtime_ensure_mavros_timesync

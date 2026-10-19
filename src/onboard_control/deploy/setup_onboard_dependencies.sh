@@ -13,7 +13,6 @@ readonly ROS_APT_MIRROR="${ROS_APT_MIRROR:-http://packages.ros.org/ros2/ubuntu}"
 
 skip_mediamtx=false
 skip_geographiclib=false
-with_odin_deps=false
 with_camera_deps=false
 
 usage() {
@@ -24,9 +23,9 @@ Usage: setup_onboard_dependencies.sh [--skip-mediamtx] [--skip-geographiclib]
 Install the ROS 2 Jazzy build/runtime, MAVROS, correction/video dependencies,
 GeographicLib datasets and architecture-matched MediaMTX v1.20.0 on Ubuntu
 24.04 amd64 or arm64. The script does not enable or start any service and does
-not install Odin or extnav, which are aircraft-specific external drivers.
---with-odin-deps adds the public build/runtime dependencies for the authorized
-Odin source package; it does not download or build that external source.
+not build project Odin or install the external extnav workspace.
+Odin public build/runtime dependencies are included by default;
+--with-odin-deps remains accepted for existing deployment commands.
 --with-camera-deps adds the public GStreamer build/runtime dependencies for the
 Jetson camera source; NVIDIA hardware plugins must already match the platform.
 EOF
@@ -49,7 +48,7 @@ while (( $# )); do
   case "$1" in
     --skip-mediamtx) skip_mediamtx=true ;;
     --skip-geographiclib) skip_geographiclib=true ;;
-    --with-odin-deps) with_odin_deps=true ;;
+    --with-odin-deps) : ;;
     --with-camera-deps) with_camera_deps=true ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -139,18 +138,17 @@ if [[ "${onboard_user}" != root ]]; then
   run_root usermod -aG dialout,video,plugdev "${onboard_user}"
 fi
 
-if ${with_odin_deps}; then
-  run_root apt-get install -y \
-    libopencv-dev libpcl-dev libssl-dev libusb-1.0-0-dev libyaml-cpp-dev pkg-config \
-    "ros-${ROS_DISTRO}-ament-index-cpp" \
-    "ros-${ROS_DISTRO}-cv-bridge" \
-    "ros-${ROS_DISTRO}-image-transport" \
-    "ros-${ROS_DISTRO}-message-filters" \
-    "ros-${ROS_DISTRO}-pcl-conversions" \
-    "ros-${ROS_DISTRO}-rviz2" \
-    "ros-${ROS_DISTRO}-tf2-ros" \
-    "ros-${ROS_DISTRO}-visualization-msgs"
-fi
+# A complete onboard build also compiles the project-contained Odin driver.
+run_root apt-get install -y \
+  libopencv-dev libpcl-dev libssl-dev libusb-1.0-0-dev libyaml-cpp-dev pkg-config \
+  "ros-${ROS_DISTRO}-ament-index-cpp" \
+  "ros-${ROS_DISTRO}-cv-bridge" \
+  "ros-${ROS_DISTRO}-image-transport" \
+  "ros-${ROS_DISTRO}-message-filters" \
+  "ros-${ROS_DISTRO}-pcl-conversions" \
+  "ros-${ROS_DISTRO}-rviz2" \
+  "ros-${ROS_DISTRO}-tf2-ros" \
+  "ros-${ROS_DISTRO}-visualization-msgs"
 
 if ${with_camera_deps}; then
   run_root apt-get install -y \
@@ -191,4 +189,4 @@ fi
 
 printf '[onboard-deps] Dependencies installed for Ubuntu 24.04/%s.\n' "${architecture}"
 printf '[onboard-deps] No service was enabled or started; no arm/takeoff command was sent.\n'
-printf '[onboard-deps] Odin and extnav remain external, aircraft-specific prerequisites.\n'
+printf '[onboard-deps] Build project Odin with build_onboard_control.sh; extnav remains a separate prerequisite.\n'

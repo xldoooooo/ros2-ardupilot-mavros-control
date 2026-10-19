@@ -4,9 +4,9 @@
 本文档用于把飞行包、独立 `video_service` 和独立 AprilTag-Odin 修正服务部署到伴随计算机。
 
 全新 Ubuntu 24.04 Jetson 请先按 [新机操作清单](JETSON_NEW_MACHINE_CHECKLIST.md)
-配置系统，并用 [前置依赖安装器](ONBOARD_DEPENDENCIES.md) 补齐 ROS、MAVROS、视频及可选驱动依赖。
+配置系统，并用 [前置依赖安装器](ONBOARD_DEPENDENCIES.md) 补齐 ROS、MAVROS、项目 Odin 和视频依赖。
 硬件尚未接齐时，`install_onboard_service.sh --install-only` 仍完成构建、测试和隔离 smoke，
-但只安装配置与 unit，不启用或启动飞控服务；硬件路径和外部驱动需随后独立验收。
+但只安装配置与 unit，不启用或启动飞控服务；硬件路径和独立 extnav 需随后验收。
 当前实机目标为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64；旧
 Ubuntu 22.04/Humble 飞机只作为兼容历史，不代表当前运行基线。
 
@@ -84,6 +84,7 @@ git sparse-checkout set \
   '/src/guided_interfaces/' \
   '/src/correction_interfaces/' \
   '/src/onboard_control/' \
+  '/drivers/' \
   '/correction_service/' \
   '/scripts/onboard/start_onboard_correction.sh' \
   '/scripts/onboard/stop_onboard_correction.sh' \
@@ -105,6 +106,7 @@ git checkout main
 src/guided_interfaces/
 src/correction_interfaces/
 src/onboard_control/
+drivers/
 correction_service/
 scripts/onboard/start_onboard_correction.sh
 scripts/onboard/stop_onboard_correction.sh
@@ -129,7 +131,7 @@ src/onboard_control/scripts/reboot_fcu_client.py
 已有 sparse checkout 须在拉取前纳入新目录，否则旧更新脚本的清单不会检出这些文件：
 
 ```bash
-git sparse-checkout add '/scripts/onboard/' '/scripts/lib/'
+git sparse-checkout add '/scripts/onboard/' '/scripts/lib/' '/drivers/'
 git pull --ff-only origin main
 ```
 
@@ -173,7 +175,9 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 ./src/onboard_control/deploy/build_onboard_control.sh
 ```
 
-默认以 Release 模式重建飞行包和独立修正接口/节点。修正节点构建不启动相机或飞控。若需同时执行依赖检查、
+默认以 Release 模式增量构建项目 Odin、飞行包和独立修正接口/节点；首次构建会编译 Odin。
+驱动位于 `drivers/odin/src/odin_ros_driver`，构建与安装均留在 `drivers/odin/`，不写入旧
+`catkin_ws`。可用 `./drivers/odin/build.sh` 单独重建。构建不启动设备。若需同时执行依赖检查、
 单元测试和隔离 smoke：
 
 ```bash
@@ -217,7 +221,7 @@ setpoint_messages=0
 ```
 
 `update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护飞行 ROS 包、
-`correction_interfaces`、独立 `correction_service/` 与 `video_service/`、
+`correction_interfaces`、项目 `drivers/`、独立 `correction_service/` 与 `video_service/`、
 机载修正服务启停入口、
 机载视频启停入口、`scripts/onboard/components/` 分步入口、`scripts/onboard/start_onboard_control.sh` 一键入口、
 `scripts/onboard/stop_onboard_control.sh` 飞控彻底停止入口和部署目录 `src/onboard_control/deploy/build_onboard_control.sh`。更新使用
@@ -273,7 +277,7 @@ Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jaz
 
 ### systemd 一键部署
 
-确认 ROS 2 Jazzy、MAVROS、Odin 和 extnav 已安装，源码完成 sparse checkout 后，以普通机载用户
+确认 ROS 2 Jazzy、MAVROS 和独立 extnav 已安装，源码完成 sparse checkout 后，以普通机载用户
 执行：
 
 ```bash
@@ -285,7 +289,7 @@ Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jaz
 后执行 `enable --now`。已有 `onboard.env` 不会被覆盖。若飞控服务已经 active，安装器会拒绝更新，
 必须由人工确认飞机未解锁并进入维护窗口后先停止服务；安装器绝不自行停止运行中的飞控链。
 
-首次自动发现存在多个串口、多个 Odin/extnav overlay 或缺少硬件包时，`--check` 会明确失败。此时
+首次自动发现存在多个串口、多个 extnav overlay 或缺少硬件包时，`--check` 会明确失败。此时
 应人工核对并编辑 `/etc/ros2-ardupilot/onboard.env`，不能为了“一键”而猜测飞控设备。
 
 机载工作区`scripts/onboard/start_onboard_control.sh` 自动发现并统一启动四个组件：
@@ -344,9 +348,21 @@ MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> \
   bash scripts/onboard/start_onboard_control.sh --check
 ```
 
-Odin 的现有 launch 文件同时启动 RViz。在无图形环境的纯 SSH 会话中，RViz 会因没有
-`DISPLAY` 而退出，但 Odin 驱动、外部定位桥和其余飞行数据链仍可运行；需要 RViz 时应从
-真机桌面终端启动。该无显示告警不影响其余三条数据链是否达到 `READY`，但仍应单独记录和处理。
+Odin 始终使用 `drivers/odin/install` 的项目驱动，旧 `ODIN_OVERLAY_SETUP` 不再选择驱动。
+Jetson 厂商 OpenCV 4.8 须通过 `ODIN_CV_BRIDGE_SETUP` 指定匹配的 cv_bridge；构建和启动均读取
+该配置，详见 [OpenCV overlay 说明](JETSON_OPENCV_OVERLAY.md)。Odin 默认配置为 `odom`，
+可在独立入口指定预设或 YAML 路径：
+
+```bash
+bash scripts/onboard/components/start_odin.sh -c odom
+bash scripts/onboard/components/start_odin.sh -c slam
+bash scripts/onboard/components/start_odin.sh -c reloc
+bash scripts/onboard/components/start_odin.sh -c original
+bash scripts/onboard/components/start_odin.sh -c /absolute/path/custom.yaml
+```
+
+省略 `-c` 使用 `odom`；自定义配置使用绝对路径。预设保存在项目驱动的 `config/` 中，
+`original` 保留引入时的厂家配置，按机体修改配置前先保留现场标定。
 
 分步入口现集中在 `scripts/onboard/components/`，包含 `start_link.sh`、`start_mavros.sh`、
 `start_odin.sh` 和 `start_extnav.sh`。两个硬件脚本会自动读取

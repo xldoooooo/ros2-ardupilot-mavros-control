@@ -1,0 +1,15 @@
+# Only source, configuration templates, and required vendor libraries are versioned.
+build/
+install/
+log/
+recorddata/
+cv_bridge_ws/
+maps/*
+!maps/.gitkeep
+src/odin_ros_driver/config/calib.yaml
+src/odin_ros_driver/map/
+src/odin_ros_driver/recorddata/
+src/odin_ros_driver/log/
+src/odin_ros_driver/launch_ROS2/image/
+!src/odin_ros_driver/lib/liblydHostApi_amd.a
+!src/odin_ros_driver/lib/liblydHostApi_arm.a

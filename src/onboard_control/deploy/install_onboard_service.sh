@@ -19,10 +19,10 @@ unit, then enable and start it. Existing /etc onboard configuration is kept.
 
 --install-only still builds, tests, runs the hardware-isolated smoke test and
 installs the environment/unit, but skips the hardware check and does not enable
-or start the unit. Use it while Odin, extnav or aircraft hardware is incomplete.
+or start the unit. Use it while extnav or aircraft hardware is incomplete.
 
-Run as the normal onboard user after ROS 2 Jazzy, MAVROS, Odin and extnav are
-installed. The script may ask for sudo once. It sends no arm/takeoff command.
+Project Odin is built automatically. Run as the normal onboard user after
+ROS 2 Jazzy, MAVROS and extnav are installed. The script may ask for sudo once. It sends no arm/takeoff command.
 For safety it refuses to update an already active flight service.
 EOF
 }
@@ -98,7 +98,7 @@ run_root systemctl daemon-reload
 if ${install_only}; then
   printf '[onboard-install] Installed %s for %s; it was not enabled or started.\n' \
     "${SERVICE_NAME}" "${onboard_user}"
-  printf '[onboard-install] Install Odin/extnav, connect and verify the aircraft hardware, then rerun this installer without --install-only.\n'
+  printf '[onboard-install] Install extnav, connect and verify the aircraft hardware, then rerun this installer without --install-only.\n'
   printf '[onboard-install] No hardware check, arm or takeoff command was sent.\n'
   exit 0
 fi

@@ -1,63 +1,45 @@
-<!-- 本文记录 Jetson 上为 Odin 隔离 OpenCV ABI 的可复现 cv_bridge overlay 构建步骤。 -->
+<!-- Keep vendor OpenCV and cv_bridge ABI consistent for project Odin. -->
+# Jetson Odin OpenCV 4.8 与 cv_bridge
 
-# Jetson Odin OpenCV 4.8 与 cv_bridge 隔离构建
+Jetson 厂商 OpenCV 4.8 与 Ubuntu 的 OpenCV 4.6 不能在 Odin 进程混用。系统
+`ros-jazzy-cv-bridge 4.1.0` 链接 4.6；厂商 OpenCV 主机必须准备同版本源码构建的 cv_bridge。
+不要替换或降级 Jetson 系统 OpenCV，也不要在旧 `catkin_ws` 中重新构建。
 
-适用环境为 Jetson Linux 39.2.1、ROS 2 Jazzy，以及系统厂商 OpenCV 4.8。系统安装的
-`ros-jazzy-cv-bridge 4.1.0` 链接 Ubuntu OpenCV 4.6；Odin 同时链接厂商 OpenCV 4.8，导致一个
-进程加载 `.406` 和 `.408` 两套库。
-
-不要替换或降级 Jetson 的系统 OpenCV。先在 Odin 的独立 overlay 中编译同版本 `cv_bridge`：
+已有兼容 overlay 可直接只读引用。新建时，在项目根目录执行：
 
 ```bash
-cd /home/nvidia/catkin_ws/src
+mkdir -p drivers/odin/cv_bridge_ws/src
 git clone --depth 1 --branch 4.1.0 \
-  https://github.com/ros-perception/vision_opencv.git
-
-cd /home/nvidia/catkin_ws
+  https://github.com/ros-perception/vision_opencv.git \
+  drivers/odin/cv_bridge_ws/src/vision_opencv
 source /opt/ros/jazzy/setup.bash
-export CMAKE_BUILD_PARALLEL_LEVEL=2
-colcon build --symlink-install --packages-select cv_bridge
+(cd drivers/odin/cv_bridge_ws && \
+  CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --packages-select cv_bridge \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=OFF)
 ```
 
-已验证官方标签 `4.1.0` 对应提交：
-
-```text
-f5b738d9694f0cee5904440d03912fc249943f8a
-```
-
-重建 Odin 前必须 source 这层 overlay。Odin 的 CMake ROS 版本检测正则没有包含 `jazzy`，清空
-CMake 缓存后会错误进入 ROS 1 分支，因此必须显式传入厂家构建脚本使用的开关：
+标签 `4.1.0` 的已验证提交为 `f5b738d9694f0cee5904440d03912fc249943f8a`。
+CMake 应选择厂商 OpenCV 4.8；非默认安装位置可显式传入 `-DOpenCV_DIR=<vendor-config-dir>`。
+在 `/etc/ros2-ardupilot/onboard.env` 配置真实路径：
 
 ```bash
-cd /home/nvidia/catkin_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-export CMAKE_BUILD_PARALLEL_LEVEL=2
-colcon build --symlink-install \
-  --packages-select odin_ros_driver \
-  --cmake-args -DBUILD_SYSTEM=ROS2
+ODIN_CV_BRIDGE_SETUP=/home/nvidia/ros2-ardupilot-mavros-control/drivers/odin/cv_bridge_ws/install/local_setup.bash
 ```
 
-若由旧的非 symlink 构建切换到 `--symlink-install` 时出现
-`existing path cannot be removed: Is a directory`，只清理 Odin 包自己的构建目录后重试：
+首次尚无该文件时，可在当前终端 `export ODIN_CV_BRIDGE_SETUP=...`。
+`./drivers/odin/build.sh` 与 Odin 启动入口加载该 cv_bridge 后，使用项目驱动安装目录。
+它们不构建或修改外部 overlay。完整机载构建也会调用项目 Odin 构建器。
+
+构建后在项目根目录只读验证：
 
 ```bash
-rm -rf /home/nvidia/catkin_ws/build/odin_ros_driver
-```
-
-验证命令：
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source /home/nvidia/catkin_ws/install/setup.bash
-
-ros2 pkg prefix cv_bridge
-grep -E '^(OpenCV_DIR|cv_bridge_DIR):' \
-  /home/nvidia/catkin_ws/build/odin_ros_driver/CMakeCache.txt
-ldd /home/nvidia/catkin_ws/install/odin_ros_driver/lib/odin_ros_driver/host_sdk_sample \
+grep -E '^(OpenCV_DIR|cv_bridge_DIR):' drivers/odin/build/odin_ros_driver/CMakeCache.txt
+# Use the same cv_bridge overlay selected for Odin startup.
+source drivers/odin/cv_bridge_ws/install/local_setup.bash
+ldd drivers/odin/install/odin_ros_driver/lib/odin_ros_driver/host_sdk_sample \
   | grep -E 'cv_bridge|opencv|not found'
 ```
 
-验收标准：`libcv_bridge.so` 来自 `/home/nvidia/catkin_ws/install/cv_bridge`，OpenCV 库只包含
-`.408`，且没有 `not found`。验证过程中不要运行 `host_sdk_sample`；没有连接外设时，这只证明
-链接关系正确，不代表 Odin 硬件已经就绪。
+`libcv_bridge.so` 应来自已指定的 overlay；OpenCV 仅包含 `.408`，且无 `not found`。
+系统 OpenCV 4.6 主机可使用系统 cv_bridge，不必配置此变量。链接检查不启动 Odin，
+也不能代替设备数据与定位验收。

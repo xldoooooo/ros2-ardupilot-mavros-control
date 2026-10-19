@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild the shared interfaces and onboard controller on either workstation or aircraft.
+# Build project Odin, shared interfaces, and onboard services natively.
 
 set -Eeuo pipefail
 
@@ -10,8 +10,8 @@ usage() {
   cat <<'EOF'
 Usage: ./src/onboard_control/deploy/build_onboard_control.sh [--verify]
 
-Without arguments, rebuild flight packages plus the independent correction
-interfaces/service in Release mode.
+Without arguments, incrementally build project Odin, flight packages and the
+independent correction interfaces/service in Release mode.
 
 Options:
   --verify  Check dependencies, rebuild, run unit tests, and run the isolated smoke test.

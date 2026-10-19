@@ -3,10 +3,11 @@
 `setup_onboard_dependencies.sh` 用于全新 Ubuntu 24.04 amd64 或 arm64 主机。它配置带
 `signed-by` 限定的 ROS 官方 apt 源，安装 ROS 2 Jazzy、MAVROS、编译工具、修正服务与视频工具，
 下载 MAVROS 必需的 GeographicLib 数据集，并按 CPU 架构安装固定的 MediaMTX v1.20.0。
+Odin 的公开编译依赖默认一并安装，驱动源码位于项目 `drivers/odin/src/odin_ros_driver`。
 
 脚本不安装桌面环境，不启用或启动 systemd 服务，不访问飞控串口，也不发送模式、解锁或起飞命令。
-Odin 和 extnav 是机型与厂商相关的外部驱动，仓库无法从 Ubuntu/ROS 公共源自动补齐；运行集成安装器
-前仍须按该飞机的驱动包和 overlay 文档安装它们。
+extnav 仍为独立工作区，运行集成安装器前须按该飞机的部署配置安装。Jetson 厂商 OpenCV
+需要匹配的 `cv_bridge`，参见 [OpenCV overlay 说明](JETSON_OPENCV_OVERLAY.md)。
 
 在仓库根目录以普通用户执行：
 
@@ -14,31 +15,23 @@ Odin 和 extnav 是机型与厂商相关的外部驱动，仓库无法从 Ubuntu
 ./src/onboard_control/deploy/setup_onboard_dependencies.sh
 ```
 
-## 可选 Odin 源码依赖
+## 项目 Odin 构建
 
-取得该飞机获授权的 Odin 驱动源码包后，可在基础依赖安装时追加公开的编译与运行依赖：
-
-```bash
-./src/onboard_control/deploy/setup_onboard_dependencies.sh --with-odin-deps
-```
-
-该选项依据当前授权源码的 `package.xml`、`CMakeLists.txt` 和 launch 文件，额外安装 OpenCV、PCL、
-yaml-cpp、OpenSSL、libusb 开发包，以及 `cv_bridge`、`image_transport`、`pcl_conversions`、
-`message_filters`、`visualization_msgs`、`tf2_ros`、`ament_index_cpp` 和 launch 文件直接启动的
-`rviz2`。基础 ROS、消息、TF、Eigen 和生成器依赖沿用主安装清单，不重复列出。
-
-该选项不会下载、解压或构建外部驱动。把获授权的源码包放入目标机独立 ROS 工作区的 `src/` 后，
-以普通用户针对 ARM64 本机原生构建；当前源码的发行版自动判断不包含 Jazzy，因此必须显式指定
-ROS 2 构建系统，例如：
+默认依赖包括 OpenCV、PCL、yaml-cpp、OpenSSL、libusb 开发包和 Odin 所需 ROS 包。
+旧命令中的 `--with-odin-deps` 仍可使用，已无需显式追加。
+完整机载构建每次都会增量构建项目 Odin，首次部署不再依赖外部 `catkin_ws` 安装产物：
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-cd ~/odin_ws
-colcon build --packages-select odin_ros_driver \
-  --cmake-args -DBUILD_SYSTEM=ROS2 -DCMAKE_BUILD_TYPE=Release
+./src/onboard_control/deploy/build_onboard_control.sh --verify
+# 只重建 Odin，不启动设备：
+./drivers/odin/build.sh
 ```
 
-驱动源码中的预编译 ARM 库、设备标定文件和授权内容仍由该源码包提供，公共 apt 依赖不能替代它们。
+Odin 的 `build/`、`install/`、`log/` 均位于 `drivers/odin/`，与主工作区和旧 `catkin_ws`
+相互独立。启动入口固定使用项目安装产物；`ODIN_OVERLAY_SETUP` 不再用于选择 Odin。
+Jetson 使用厂商 OpenCV 4.8 时，在 `onboard.env` 设置匹配的 `ODIN_CV_BRIDGE_SETUP`，
+构建和启动加载同一 overlay，避免进程混用系统 OpenCV 4.6。已有兼容 overlay 可只读引用；
+不在外部驱动工作区重新构建。
 
 ## 可选 Jetson 相机源码依赖
 
@@ -96,7 +89,7 @@ python3 -m venv --system-site-packages .venv
 跳过项不是完整生产环境。MAVROS 缺少 GeographicLib geoid 数据时会退出；视频服务要求
 `/usr/local/bin/mediamtx` 恰为 v1.20.0。
 
-全新主机的 Odin、extnav 或飞控硬件尚未接齐时，可先完成原生构建、单测、隔离 smoke、环境文件和
+全新主机的 extnav 或飞控硬件尚未接齐时，可先完成原生构建、单测、隔离 smoke、环境文件和
 systemd unit 安装：
 
 ```bash
@@ -104,7 +97,7 @@ systemd unit 安装：
 ```
 
 `--install-only` 会执行完整的软件验证和 `daemon-reload`，但跳过硬件 `--check`，不会启用或启动
-飞控 unit。外部驱动和硬件路径全部安装、连接并人工核对后，再在确认的安全维护窗口执行正常模式：
+飞控 unit。extnav 和硬件路径全部安装、连接并人工核对后，再在确认的安全维护窗口执行正常模式：
 
 ```bash
 ./src/onboard_control/deploy/install_onboard_service.sh

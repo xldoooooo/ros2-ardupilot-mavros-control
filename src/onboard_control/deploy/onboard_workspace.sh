@@ -17,6 +17,8 @@ readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 readonly GITIGNORE_SPARSE_PATH="/.gitignore"
 readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
+# Odin owns its separate build/install tree beneath the project drivers directory.
+readonly DRIVERS_SPARSE_PATH="/drivers/"
 readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
 readonly CORRECTION_START_SPARSE_PATH="/scripts/onboard/start_onboard_correction.sh"
 readonly CORRECTION_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_correction.sh"
@@ -54,7 +56,7 @@ Commands:
   show-config  Show the resolved workspace, ROS distribution, and Git revision.
   update       Fast-forward the onboard packages and launchers sparse checkout.
   deps-check   Check ROS packages and toolchain without changing the OS.
-  build        Build flight packages plus independent correction interfaces/service.
+  build        Build project Odin, flight packages, and correction interfaces/service.
   test         Run package tests and report all colcon test results.
   smoke        Run the node in a localhost-only, nonzero ROS domain without MAVROS.
   verify       Run deps-check, build, test, and the isolated smoke test.
@@ -109,6 +111,8 @@ validate_workspace_layout() {
     die "correction_interfaces is missing from ${WORKSPACE_ROOT}/src"
   [[ -f "${WORKSPACE_ROOT}/src/onboard_control/package.xml" ]] ||
     die "onboard_control is missing from ${WORKSPACE_ROOT}/src"
+  [[ -x "${WORKSPACE_ROOT}/drivers/odin/build.sh" ]] ||
+    die "project Odin builder is missing or not executable: drivers/odin/build.sh"
   [[ -x "${WORKSPACE_ROOT}/correction_service/deploy/install_correction_service.sh" ]] ||
     die "independent correction service installer is missing or not executable"
   [[ -x "${WORKSPACE_ROOT}/correction_service/deploy/install_extnav_correction.sh" ]] ||
@@ -160,7 +164,7 @@ update_checkout() {
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
     "${GITIGNORE_SPARSE_PATH}" \
     "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
-    "${ONBOARD_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
+    "${ONBOARD_SPARSE_PATH}" "${DRIVERS_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
@@ -178,16 +182,21 @@ check_dependencies() {
   local -a ros_packages=(
     ament_cmake
     ament_cmake_gtest
+    ament_index_cpp
     ament_index_python
     builtin_interfaces
+    cv_bridge
     eigen3_cmake_module
     geographic_msgs
     geometry_msgs
+    image_transport
     launch
     launch_ros
     mavros_msgs
     libmavconn
+    message_filters
     nav_msgs
+    pcl_conversions
     rclcpp
     rosidl_default_generators
     rosidl_default_runtime
@@ -195,6 +204,8 @@ check_dependencies() {
     std_msgs
     tf2
     tf2_geometry_msgs
+    tf2_ros
+    visualization_msgs
   )
   source_underlay
   require_command colcon
@@ -205,6 +216,9 @@ check_dependencies() {
   require_command ffmpeg
   require_command ffprobe
   require_command v4l2-ctl
+  require_command pkg-config
+  pkg-config --exists opencv4 pcl_common yaml-cpp libusb-1.0 openssl ||
+    die "Odin development libraries are missing; run setup_onboard_dependencies.sh"
   [[ -f /usr/include/eigen3/Eigen/Core ]] ||
     die "Eigen3 headers are missing: /usr/include/eigen3/Eigen/Core"
   for package in "${ros_packages[@]}"; do
@@ -218,6 +232,8 @@ build_workspace() {
   source_underlay
   require_command colcon
   validate_workspace_layout
+  # Keep the driver isolated from the flight workspace; colcon rebuilds incrementally.
+  ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}" "${WORKSPACE_ROOT}/drivers/odin/build.sh"
   (
     cd -- "${WORKSPACE_ROOT}"
     colcon build \

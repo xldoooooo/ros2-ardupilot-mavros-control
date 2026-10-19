@@ -279,7 +279,7 @@ def test_runtime_environment_file_exports_aircraft_overrides(tmp_path) -> None:
     """分步启动器读取的现场变量必须能被后续 ROS 子进程继承。"""
     environment_file = tmp_path / "onboard.env"
     environment_file.write_text(
-        "ODIN_OVERLAY_SETUP=/fixture/odin/setup.bash\n"
+        "ODIN_CV_BRIDGE_SETUP=/fixture/cv_bridge/local_setup.bash\n"
         "EXTNAV_OVERLAY_SETUP=/fixture/extnav/setup.bash\n"
         "ROS_DOMAIN_ID=42\n",
         encoding="utf-8",
@@ -289,14 +289,14 @@ def test_runtime_environment_file_exports_aircraft_overrides(tmp_path) -> None:
         set -u
         source {RUNTIME_HELPERS!s}
         runtime_source_environment_file {environment_file!s}
-        bash -c 'printf "%s|%s|%s\\n" "$ODIN_OVERLAY_SETUP" "$EXTNAV_OVERLAY_SETUP" "$ROS_DOMAIN_ID"'
+        bash -c 'printf "%s|%s|%s\\n" "$ODIN_CV_BRIDGE_SETUP" "$EXTNAV_OVERLAY_SETUP" "$ROS_DOMAIN_ID"'
         """
     )
     result = run_bash(command)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == (
-        "/fixture/odin/setup.bash|/fixture/extnav/setup.bash|42"
+        "/fixture/cv_bridge/local_setup.bash|/fixture/extnav/setup.bash|42"
     )
 
 
@@ -371,7 +371,7 @@ def test_runtime_package_prefix_tracks_overlay_changes_without_ros_cli(tmp_path)
 
 
 def test_runtime_discovery_finds_the_overlay_that_owns_a_package(tmp_path) -> None:
-    """Odin/extnav 应由 ament 索引反查 overlay，不依赖用户名或工作区名称。"""
+    """外部包应由 ament 索引反查 overlay，不依赖用户名或工作区名称。"""
     prefix = tmp_path / "renamed-workspace" / "install"
     marker = (
         prefix
@@ -407,6 +407,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/.gitignore",
         "/src/guided_interfaces/",
         "/src/onboard_control/",
+        "/drivers/",
         "/video_service/",
         "/scripts/onboard/start_onboard_correction.sh",
         "/scripts/onboard/stop_onboard_correction.sh",
@@ -422,6 +423,8 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     assert "video_service/deploy/install_onboard_video_service.sh" in script
     assert "src/onboard_control/deploy/install_onboard_service.sh" in script
     assert "./src/onboard_control/deploy/install_onboard_service.sh" in guide
+    assert '"${WORKSPACE_ROOT}/drivers/odin/build.sh"' in script
+    assert script.index('ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}"') < script.index("    colcon build")
     assert "/ground_station_core/" not in script
     assert "/src/guided_sim/" not in script
     assert "/scripts/ground/start_ground_all.sh" not in script
@@ -476,7 +479,8 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "ROS_LOCALHOST_ONLY=0" in environment
     assert "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET" in environment
     assert "MAVROS_FCU_DEVICE=" in environment
-    assert "ODIN_OVERLAY_SETUP=" in environment
+    assert "ODIN_CV_BRIDGE_SETUP=" in environment
+    assert "ODIN_OVERLAY_SETUP=" not in environment
     assert "EXTNAV_OVERLAY_SETUP=" in environment
 
 
@@ -512,7 +516,9 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
 
     assert 'export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"' in script
     assert "runtime_detect_ros_setup" in script
-    assert "runtime_ensure_package odin_ros_driver" in script
+    assert 'odin_source_project_overlay "${project_root}"' in script
+    assert '"config_file:=${odin_config_file}"' in script
+    assert "runtime_ensure_package odin_ros_driver" not in script
     assert "runtime_ensure_package extnav_bridge" in script
     assert "ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env" in script
     assert 'runtime_source_setup "${onboard_environment_file}"' in script

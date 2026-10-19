@@ -221,6 +221,13 @@ def test_cancel_launcher_stops_readiness_subscriber_and_components(tmp_path):
     (workspace / "scripts/onboard").mkdir(parents=True)
     (workspace / "install").mkdir()
     (workspace / "install/setup.bash").touch()
+    odin_install = workspace / "drivers/odin/install"
+    (odin_install / "odin_ros_driver").mkdir(parents=True)
+    (odin_install / "local_setup.bash").touch()
+    odin_config = workspace / "drivers/odin/src/odin_ros_driver/config/odom.yaml"
+    odin_config.parent.mkdir(parents=True)
+    odin_config.touch()
+    shutil.copy2(ROOT / "scripts/lib/odin_runtime.bash", workspace / "scripts/lib")
     helper = workspace / "scripts/lib/runtime_common.bash"
     helper.write_text('''# Isolated discovery stubs: no hardware or ROS runtime.
 runtime_source_setup() { :; }
@@ -228,7 +235,13 @@ runtime_detect_ros_setup() { echo "$ONBOARD_WORKSPACE/install/setup.bash"; }
 runtime_detect_fcu_device() { echo /dev/null; }
 runtime_verify_workspace_package_install() { :; }
 runtime_ensure_package() { :; }
-runtime_package_prefix() { echo /fake/overlay; }
+runtime_package_prefix() {
+  if [[ "$1" == odin_ros_driver ]]; then
+    echo "$ONBOARD_WORKSPACE/drivers/odin/install/odin_ros_driver"
+  else
+    echo /fake/overlay
+  fi
+}
 runtime_ensure_mavros_timesync() { :; }
 ''')
     launcher = workspace / "scripts/onboard/start_onboard_control.sh"

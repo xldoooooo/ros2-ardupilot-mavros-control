@@ -82,16 +82,18 @@ sudo dpkg --audit
 
    ```bash
    ROS_APT_MIRROR=https://mirrors.ustc.edu.cn/ros2/ubuntu \
-     ./src/onboard_control/deploy/setup_onboard_dependencies.sh --with-odin-deps --with-camera-deps
+     ./src/onboard_control/deploy/setup_onboard_dependencies.sh --with-camera-deps
    python3 -m venv --system-site-packages .venv
-   ./src/onboard_control/deploy/build_onboard_control.sh --verify
    ```
 
    具体组件、下载校验及故障处理见 [ONBOARD_DEPENDENCIES.md](ONBOARD_DEPENDENCIES.md)。
-   原生构建、单测和 localhost/domain 231 隔离 smoke 必须真实通过。
-4. Odin 驱动、extnav 是仓库外依赖，需要获取对应源代码并在本机 ARM64/Jazzy 原生编译。
-   不复制旧机器 install。核对 `/etc/ros2-ardupilot/onboard.env` 中串口、波特率及
-   `ODIN_OVERLAY_SETUP`、`EXTNAV_OVERLAY_SETUP`，绝不能猜测硬件路径。
+   在下一步确认 OpenCV overlay 后再执行完整构建与验证。
+4. Odin 随项目 `drivers/odin/` 原生构建，完整构建会增量编译它；extnav 仍是独立工作区。
+   不复制旧机器 install。Jetson 厂商 OpenCV 4.8 必须先准备匹配的 cv_bridge overlay，
+   在构建前通过环境变量或 `onboard.env` 设置 `ODIN_CV_BRIDGE_SETUP`，见下节。
+   核对现场串口、波特率和 `EXTNAV_OVERLAY_SETUP`，绝不能猜测硬件路径。
+   然后执行 `./src/onboard_control/deploy/build_onboard_control.sh --verify`；原生构建、单测
+   和 localhost/domain 231 隔离 smoke 必须真实通过。
 5. 仅装环境、硬件未齐时使用安装器 `--install-only`，保持单元不启动：
 
    ```bash
@@ -100,7 +102,7 @@ sudo dpkg --audit
    ./correction_service/deploy/install_correction_service.sh --install-only
    ```
 
-   硬件和外部驱动齐备后，才执行默认安装入口及 `scripts/onboard/start_onboard_control.sh --check`。
+   硬件和 extnav 齐备后，才执行默认安装入口及 `scripts/onboard/start_onboard_control.sh --check`。
 6. 视频为独立入口 `./video_service/deploy/install_onboard_video_service.sh`；
    correction 为 `./correction_service/deploy/install_correction_service.sh`。
    按各自 README 配置真实相机稳定路径，不把默认 `device=auto` 当成相机验收通过。
@@ -117,7 +119,7 @@ ssh -N -o ExitOnForwardFailure=yes -R 10809:127.0.0.1:10808 \
 # 新机终端，仅对本次命令设置代理，不写入全局 apt 或桌面配置。
 HTTPS_PROXY=http://127.0.0.1:10809 \
 ROS_APT_MIRROR=https://mirrors.ustc.edu.cn/ros2/ubuntu \
-  ./src/onboard_control/deploy/setup_onboard_dependencies.sh --with-odin-deps --with-camera-deps
+  ./src/onboard_control/deploy/setup_onboard_dependencies.sh --with-camera-deps
 ```
 
 本次 SourceForge 下载未及时完成，改为复制开发机已安装的架构无关 GeographicLib 数据集
@@ -128,30 +130,22 @@ ROS_APT_MIRROR=https://mirrors.ustc.edu.cn/ros2/ubuntu \
 `c4b25a03ec5845cec4778a54b580aeda676363f2205a89137e8677b2337af3ec`。
 首次联网成功后也可直接运行 MAVROS 数据安装脚本；不要在失败时伪造数据文件。
 
-本次经用户授权从 `drone-new` **只读**迁移以下源码，未启停参考机服务：
+Odin 源码、配置及厂家静态库随项目 `drivers/odin/src/odin_ros_driver` 部署，不再从参考机
+迁移到外部 `catkin_ws`。extnav 仍从已授权的独立源码工作区准备，再由项目安装器核对/部署
+受控版本；修正相机由 `correction_service/uvc_camera_node` 直接访问 UVC，不依赖外部相机工作区。
 
-| 包 | 参考机路径 / 新机路径 | 迁移内容 |
-| --- | --- | --- |
-| Odin | `/home/nvidia/catkin_ws/src/odin_ros_driver` | 源码、配置、launch、厂家 ARM64 静态库；排除 `.git`、map/log/recorddata、build/install |
-| extnav | `/home/nvidia/vrpn_mavros/src/extnav_bridge` | 仅包源码；由当前项目 extnav 安装器核对/部署受控版本 |
-| 修正相机 | 主项目 `correction_service/correction_service/uvc_camera_node.py` | 随修正服务构建，直接使用系统 UVC 设备，无外部相机工作区 |
-
-可用 `ssh drone-new 'tar ... -czf - ...' > archive.tar.gz` 直接把源码流写到开发机，
-避免在参考机生成临时文件；先检查归档内容、再解到新机对应 `src/`。
-Odin 不能直接对系统 `cv_bridge` 构建。先按
-[JETSON_OPENCV_OVERLAY.md](JETSON_OPENCV_OVERLAY.md) 在 Odin 独立工作区用厂商 OpenCV 4.8
-隔离构建 `cv_bridge`，source 该 overlay 后，再以 symlink 模式构建 Odin。Odin 源码的发行版
-自动判断遗漏 Jazzy，必须显式选择 ROS2：
+厂商 OpenCV 4.8 不能混用链接系统 OpenCV 4.6 的 `cv_bridge`。先按
+[JETSON_OPENCV_OVERLAY.md](JETSON_OPENCV_OVERLAY.md) 准备兼容 overlay，再配置并构建：
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-cd /home/nvidia/catkin_ws
-source install/setup.bash
-CMAKE_BUILD_PARALLEL_LEVEL=3 colcon build --symlink-install --packages-select odin_ros_driver \
-  --cmake-args -DBUILD_SYSTEM=ROS2 -DCMAKE_BUILD_TYPE=Release
-cd /home/nvidia/ros2-ardupilot-mavros-control
+export ODIN_CV_BRIDGE_SETUP=/home/nvidia/ros2-ardupilot-mavros-control/drivers/odin/cv_bridge_ws/install/local_setup.bash
+./src/onboard_control/deploy/build_onboard_control.sh --verify
 ./correction_service/deploy/install_extnav_correction.sh
 ```
+
+在 `/etc/ros2-ardupilot/onboard.env` 保存同一 `ODIN_CV_BRIDGE_SETUP`，使 systemd 与交互启动
+使用相同 cv_bridge。已有兼容 overlay 可只读引用，不能在旧 `catkin_ws` 中重新构建或改动。
+Odin 自身的 `build/`、`install/`、`log/` 只写在项目 `drivers/odin/` 下。
 
 新机用户需加入 `dialout,video,plugdev`，重新登录后生效；新增依赖安装器已处理该组权限。
 本次 Odin USB 权限文件 `/etc/udev/rules.d/99-odin-usb.rules` 为：
@@ -162,7 +156,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="2207", ATTR{idProduct}=="0019", MODE="0660", 
 ```
 
 安装后 `sudo udevadm control --reload-rules`，设备连接时再确认权限。
-不要复制参考机的 `/dev/ttyTHS1` 假定它必然连接新机飞控；只把已构建的 Odin/extnav overlay
+不要复制参考机的 `/dev/ttyTHS1` 假定它必然连接新机飞控；只把已确认的 cv_bridge/extnav overlay
 路径写入新机 `onboard.env`，硬件路径待实际接线确认。
 
 ## 5. 桌面软件与输入法
@@ -257,7 +251,7 @@ GNOME 设置中保持 **桌面共享**开启、**远程登录**关闭；这里�
 - `dpkg-query -W` 核对软件版本和架构，NoMachine未取得同版包则明确未完成。
 - Wi-Fi重启后仍可扫描；连接/互联网验证需使用用户指定的网络凭据。
 - Fcitx5实际切换、拼音输入和桌面共享真实认证。
-- 项目原生构建、测试、隔离smoke结果；外部驱动、飞控和相机缺失必须逐项列出。
+- 项目原生构建、测试、隔离smoke结果；extnav、飞控和相机缺失必须逐项列出。
 - 当前新机没有飞控、Odin 或相机等任何外设，飞控、视频、修正三个机载服务保持 disabled/stopped
   是预期交付状态；不得为了“全绿”而启动服务或沿用旧机设备路径与标定。
 

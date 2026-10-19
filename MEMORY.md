@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-19。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
+维护日期：2026-10-19。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。项目Odin驱动已迁入drivers/odin并在refresh原生构建、未解锁全链验证；new与hp-desktop待同步此迁移。refresh MAVROS2.16.0修复overlay保持。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -33,6 +33,11 @@
 - 三个机载 unit 独立：`ros2-ardupilot-onboard.service`（MAVROS/Odin/extnav/onboard）、
   `video-service.service`、`odin-correction.service`。视频和修正不能绑定飞控共同启停/故障域；
   地面正式连接不启动或停止远端服务。避障另行启停，目前没有规划自启 unit。
+- Odin 权威维护目录是 `drivers/odin/`，独立构建入口 `drivers/odin/build.sh`；完整机载构建先增量构建它。
+  单独及集成启动均用 `-c odom|slam|reloc|original|/absolute/custom.yaml`，默认 odom，强制选择项目 overlay。
+  四份 YAML 在 `drivers/odin/src/odin_ros_driver/config/`；`control_command.yaml` 仅链接 odom。
+  reloc 的地图绝对路径由用户手动维护，`drivers/odin/maps/` 地图及运行/构建产物不入 Git。
+  外部 `catkin_ws` 原驱动保留，干净终端只 source 它仍使用原驱动；本次没有实现 map/odom 飞控转换或运行中模式切换。
 - 避障停止脚本已在开发机、refresh 更新：清理本机全部 domain/工作区的避障启动器、规划器/桥及已捕获的后代，
   保留孤儿身份，逐级 INT/TERM/KILL，复核无活动残留才返回成功；不停止飞控栈。脚本更新无需重建。
   new、hp-desktop 尚待同步此停止脚本；隔离验证与范围见[修复报告](agent/report/report-2026-10-19-stop-avoidance-fix-refresh.md)。
@@ -63,6 +68,11 @@
 | new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | 主工程3.4原生双树接入；SetGoal持久目标、流式精确p/v/a、方向动力学限额，已重建 | 桥地图/射线/unknown及执行retime已删除；DDS/核心通过，SITL严格净空指标及实飞仍未全面验收 |
+
+- Odin迁移：开发机及refresh已完成独立/完整机载构建，refresh隔离domain230全链READY且armed=false，测试后全部停止。
+  refresh的`ODIN_CV_BRIDGE_SETUP`指向项目`drivers/odin/cv_bridge_ws/install/local_setup.bash`，OpenCV仅4.8；
+  旧`ODIN_OVERLAY_SETUP`字段已不参与项目驱动选择。new及hp-desktop待同步驱动源码并原生构建，勿复制refresh安装产物或逐机环境。
+  重定位设备实测及地图定位验收未做，详见[迁移报告](agent/report/report-2026-10-19-project-odin-driver-migration.md)。
 
 - **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
   new 使用 Wasintek 1920×1080@30 / Tag0 0.170 m，修正活动目录为
@@ -182,9 +192,9 @@
   常规同cell异速仍沿用position-only hash，不能保证所有滚动情形。
 - **Task5已在refresh与hp-desktop同步两仓库并原生重建；new仍待同步原生接入与本次修复。** 同步时同时重建独立库、guided_interfaces、
   avoidance_bridge和onboard消费端，使用build_avoidance.sh；旧Task38服务/包线与新安装不能混用。
-- `/odin1/cloud_slam_down`现由两机Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，新版不创建或发布原始cloud_slam，原9行发布/初始化/声明代码保留为注释，取消注释后重新构建即可恢复；内部临时XYZRGB转换保留；配置为`/home/nvidia/catkin_ws/src/odin_ros_driver/config/control_command.yaml`顶层`cloud_downsample`：enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false。驱动沿用已有源码目录配置读取方式；不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者。原Python保留备用，独立避障库未改。
+- `/odin1/cloud_slam_down`现由Odin host SDK在`cloud_slam`输出端直接生成，仅含x/y/z FLOAT32、point_step=12；不再携带RGB，新版不创建或发布原始cloud_slam，原9行发布/初始化/声明代码保留为注释，取消注释后重新构建即可恢复；内部临时XYZRGB转换保留。项目选定YAML顶层`cloud_downsample`默认enabled=true、voxel_size=0.1、robot_radius=0.4、center_mode=auto、debug_enabled=false；SDK实际读取启动传入的config_file。new未迁移前仍使用外部catkin_ws的control_command.yaml。不再同时启动`/home/nvidia/down_samp_exe.py`，避免双发布者；原Python保留备用，独立避障库未改。
 - SDK已移除auto的1m距离启发式：auto/odom只用有效Odin里程计；缺少/非有限球心时只降采样，不猜原点，origin才显式使用(0,0,0)。有限正voxel、有限radius、合法模式在启动时严格检查；非法值仅关闭新增功能并报错。XYZ的NaN/Inf全部跳过；降采样不读取或保存RGB。球面删除、字节键排序及空结果不发布保持。GCC过滤函数局部禁FMA保留；负零符号位微小差异保留。上游剔除仍可能删除真实近障，二次盲区保持关闭；这不是设备内部SLAM的输入过滤。
-- 调试需要将`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。维护目录已由用户移至开发机`/home/nvidia/scq/projects/odin_ros_driver-modified`；私有远端`LostPatrol/odin_ros_driver-modified`已推送main `3ce35d8`。仓库采用独立凭据，仓库级http.proxy为空以绕过本机不稳定代理。
+- 调试需要将所选YAML的`debug_enabled`设true并重启Odin，再`ros2 topic echo /odin1/cloud_slam_down/debug std_msgs/msg/String`；默认没有调试发布器，无订阅时不计时或格式化。项目`drivers/odin`已集成原修改版SDK；外部`/home/nvidia/scq/projects/odin_ros_driver-modified`及私有远端`LostPatrol/odin_ros_driver-modified`仅保留既有副本，不再作为本项目启动源码。
 - new曾在正常关闭后重连出现USB可枚举但设备无下行数据，原驱动二进制也复现；用户冷启动恢复；本次补充修复后用户要求普通重连，实际Odin连接成功且有原始/down云，不能据此认定旧重连问题根因已消除。不要把发布器存在当成点云有效；后续若复现先核对实际数据与Odin连接状态，不能靠改过滤器或自动重置设备掩盖。仅down发布证据与new待生效状态见[关闭原始云报告](agent/report/report-2026-10-13-task2-down-only.md)；仅XYZ输出证据见[RGB移除报告](agent/report/report-2026-10-13-task2-xyz-only.md)；校验与auto修复见[校验与auto修复报告](agent/report/report-2026-10-13-task2-cloud-validation-auto-fix.md)，首次迁移见[SDK集成报告](agent/report/report-2026-10-13-task2-down-samp-exec-inte.md)。
 
 - 三入口均CLI→公共planner.yaml→原生默认；缺失/坏YAML告警回退，启动时复制，修改须重建/重启。
