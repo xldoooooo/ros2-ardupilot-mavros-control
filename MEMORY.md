@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-16。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
+维护日期：2026-10-19。Task5避障修复已在开发机、refresh和hp-desktop原生部署：自由首段/精确停速、实际超速制动接续、延迟接入/恢复、DOB连续切换、启发式修正和默认lambda1。new仍待同步两个仓库的原生接入及后续修复。refresh静态未解锁检查通过；SITL上冲明显减少，但约29.4cm实际净空未过35cm标准，实机飞行尚未验收。两机Odin host SDK仅XYZ down输出及refresh MAVROS2.16.0修复overlay基线保持。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -226,7 +226,10 @@
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
-- **共用控制输出限jerk已在开发机和refresh原生部署**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，但制动回拉略增，名义速度仍非实际硬限速，实机肉眼消抖未验收。refresh已同步代码2c9b99f并原生重建onboard_control，33项测试及隔离8/3参数回读通过，原控制参数和38项其他配置保持；机载服务保持停止，下次启动加载新版本。new/hp-desktop仍待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)、[refresh同步](agent/report/report-2026-10-15-refresh-common-jerk-sync.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+- **共用控制输出限jerk已在开发机和refresh原生部署**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，用户实飞反馈已消抖但绕障后偏离参考；名义速度仍非实际硬限速，实飞跟踪与净空未验收。refresh已同步代码2c9b99f并原生重建onboard_control，33项测试及隔离8/3参数回读通过，原控制参数和38项其他配置保持；机载服务保持停止，下次启动加载新版本。new/hp-desktop仍待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)、[refresh同步](agent/report/report-2026-10-15-refresh-common-jerk-sync.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+
+- **输出限jerk与原生避障的跟踪可行性仍有缺口**：当前原生仅C1且未约束jerk，PD+DOB前馈及反馈一起经过8/3输出斜率限制；SITL已证实制动请求与实际下发控制量反向滞后，激进aXY=2时可大幅偏离、进入虚拟障碍几何或触发0.8m跟踪保护。提高WNxy不是已验证修复；关闭jerk又恢复姿态跳变。参考时钟照常推进，跟踪保护仅等待，未专门要求原生立即重规划；100s/100m强制触发设置下可能等待超时LAND。不得仅按任务完成判定净空合格。
+  总加速度模长推力与ArduPilot Guided归一化推力入口的angle_boost存在重复倾斜补偿，SITL对照支持其造成部分高度偏高；真实飞控参数及视频约30cm高度差尚未完整验证。ROS原生入口会将旧scalar限额抬高至显式方向限额最大值，不应将scalar=1、方向=2理解为实际上限1。正式算法/配置未因本次排查修改，翻新机现场读取按用户要求延期。复现条件、限制和证据见[偏轨SITL报告](agent/report/report-2026-10-19-post-obstacle-tracking-sitl.md)。
 
 ## 关键历史与资料索引
 
