@@ -16,6 +16,27 @@ identity 使用 `p_raw + T - R_OF*T`；修正有效时 XY 使用 `p_corrected - 
 Odin 断流、时间戳回退或 frame 改变使旧修正失效；退出修正服务本身不清除 active。
 状态仍为2 Hz加事件，分别报告 active 身份和最终样本冻结身份。
 
+## 启动时自动补偿安装俯仰
+
+外参YAML中设置`auto_installation: true`可在每次节点启动后学习一次安装俯仰；
+`auto_installation_seconds`默认3秒。项目默认YAML已启用，旧逐机`ODIN_EXTRINSICS_FILE`
+需补这两个参数；直接启动节点、不加载YAML时默认关闭，保持原手工安装角。
+
+节点比较Odin姿态与`/mavros/imu/data`姿态各自对应的机体系重力方向，只估计`pitch_cam`。
+`roll_cam`、`yaw_cam`和杆臂保持配置值；机身不必摆水平，两套世界的yaw也不必一致。
+正常20至30度俯仰安装可直接学习。只有`/mavros/state`确认连接、未解锁，姿态有效且连续静止时收集；
+速度小于0.1m/s、角速度小于0.05rad/s，重力方向相对窗口首样本的变化不超过0.5度。
+移动、缺少飞控输入或Tag修正有效时继续使用手工配置，状态提示等待，不中断正常导航输出。
+
+收敛后一次更新原有姿态和杆臂转换，移除两个临时校准订阅，固定到节点退出。
+以后改变机械安装应重启extnav重新学习；不在飞行中跟随姿态调角，也不把估计写回YAML。
+实际使用值看`/extnav/correction_status`的`installation_pitch_rad`及`last_event`中的
+“自动安装角已锁定”；ROS参数中的pitch仍是启动回退值。
+
+它补偿两套重力参考的相对俯仰，不能独立区分IMU水平标定误差与机械安装误差，
+也不能校准偏航、滚转或平移。自动模式用于无Tag正常导航；非零安装角的Tag限制继续保持。
+新增的`sensor_msgs`、`mavros_msgs`构建依赖由现有ROS/MAVROS安装提供。
+
 ## 构建与部署
 
 先构建项目 `correction_interfaces` 并 source 对应 overlay。隔离构建不修改现有生产安装：
@@ -44,9 +65,11 @@ cmake --install agent/codex/extnav-candidate/build
 
 ## 维护
 
-- `include/extnav_bridge/math.hpp`：坐标、杆臂、协方差和幂等数值比较；固定修正矩阵按 revision 缓存。
+- `include/extnav_bridge/math.hpp`：坐标、杆臂、重力俯仰拟合、协方差和幂等数值比较。
 - `src/extnav_to_vision_pose.cpp`：参数、会话、修正事务、快照和 ROS 发布；所有业务回调串行执行。
 - `extnav_to_vision_pose.py`：保留的原 Python 对照源码，供现有数学回归与跨实现测试使用，不再是 C++ 安装的生产入口。
 - `tests/correction/test_extnav_cpp_equivalence.py`：设置 `EXTNAV_CPP_EXECUTABLE` 后，对照两种实现的公共 ROS 契约。
+- `tests/correction/test_extnav_auto_installation.py`：同一变量指定候选程序后验证自动俯仰；
+  独立姿态参考使用`python3-scipy`（仅测试依赖，生产桥不依赖Python数学库）。
 
 PoseStamped 仍不能携带 MAVLink estimator reset_counter，原有修正瞬态及非零安装角 Tag 限制保持。

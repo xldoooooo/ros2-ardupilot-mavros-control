@@ -11,10 +11,14 @@
 extnav 的机体安装外参独立维护于项目 `config/odin_extrinsics.yaml`，两种机载启动入口
 均使用它；设置 `ODIN_EXTRINSICS_FILE=/etc/ros2-ardupilot/odin_extrinsics.yaml` 可覆盖逐机配置。
 RPY 单位 rad，定义 `R_FI` 将 Odin IMU 轴变换到 FCU FLU 轴，采用标准 ZYX；上仰约 22°
-对应 `pitch_cam=-0.3839724354`，应以实际测量为准。`odin_xyz` 为 FCU→Odin IMU 在 FCU
+对应 `pitch_cam=-0.3839724354`。设置`auto_installation: true`后，C++桥在未解锁静止约3秒后
+用Odin与飞控的重力方向自动估计俯仰并锁定，pitch参数作为收敛前回退；roll/yaw保持配置。
+不要求机身精确摆平，改变安装后重启节点重新学习；详情见[extnav说明](extnav_patch/README.md)。
+`odin_xyz` 为 FCU→Odin IMU 在 FCU
 FLU 系中的米制向量。姿态使用 `R_OF=R_OI R_IF`，局部位置使用 `p_LF=p_OI+T-R_OF T`，
 速度使用 `v_LF=v_OI-R_OF(omega_F×T)`；Odin 世界点云已经重力对齐，不再整体旋转。
-仓库默认安装角零以保持旧配置；TODO(task6-tag)：新安装角只用于正常外部导航，Tag 标定、
+仓库手工回退角为零、默认YAML启用自动俯仰；旧逐机YAML需显式添加开关才启用。
+TODO(task6-tag)：新安装角只用于正常外部导航，Tag 标定、
 应用跳变预测与非零安装角尚未联合验证，继续拒绝此组合。
 
 ## 数据链和中心语义

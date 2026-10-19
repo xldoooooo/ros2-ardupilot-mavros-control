@@ -1,9 +1,11 @@
-# Odin IMU I -> FCU FLU F installation; keep the legacy zero-angle default.
+# Odin IMU I -> FCU FLU F installation; learn ground pitch once, then hold until node restart.
 # R_FI = Rz(yaw_cam) Ry(pitch_cam) Rx(roll_cam), radians; upward nose tilt is negative pitch.
 # odin_xyz is FCU-origin -> Odin-IMU-origin, expressed in F, in metres.
-# Override with ODIN_EXTRINSICS_FILE for each aircraft; use each aircraft's installation estimate or calibration.
+# Override with ODIN_EXTRINSICS_FILE; pitch is fallback, roll/yaw and translation stay configured.
 /extnav_to_vision_pose:
   ros__parameters:
+    auto_installation: true
+    auto_installation_seconds: 3.0
     roll_cam: 0.0
     pitch_cam: 0.0
     yaw_cam: 0.0

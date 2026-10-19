@@ -102,6 +102,39 @@ inline Vector3 rotate(const Matrix3 & r, const Vector3 & v)
     r[6] * v[0] + r[7] * v[1] + r[8] * v[2]};
 }
 
+/** Express world up in the sensor/body frame; world yaw cancels exactly. */
+inline Vector3 body_up(const Quaternion & orientation)
+{
+  const auto r = rotation_matrix(normalize(orientation));
+  return {r[6], r[7], r[8]};
+}
+
+/** Solve installation pitch from mean gravity directions, preserving configured roll/yaw. */
+inline double gravity_pitch(Vector3 sensor_up, Vector3 fcu_up, double roll, double yaw)
+{
+  for (auto * vector : {&sensor_up, &fcu_up}) {
+    const double norm = std::hypot((*vector)[0], (*vector)[1], (*vector)[2]);
+    if (!std::isfinite(norm) || norm < kMinimumQuaternionNorm) {
+      throw std::invalid_argument("invalid mean gravity direction");
+    }
+    for (double & value : *vector) {value /= norm;}
+  }
+  const double cr = std::cos(roll), sr = std::sin(roll);
+  const Vector3 a{sensor_up[0], cr * sensor_up[1] - sr * sensor_up[2],
+    sr * sensor_up[1] + cr * sensor_up[2]};
+  const double c = std::cos(yaw), s = std::sin(yaw);
+  const Vector3 b{c * fcu_up[0] + s * fcu_up[1],
+    -s * fcu_up[0] + c * fcu_up[1], fcu_up[2]};
+  // A body whose gravity lies along its y axis cannot observe a rotation around that axis.
+  constexpr double minimum_projection = 1e-6;
+  if (!std::isfinite(roll) || !std::isfinite(yaw) ||
+    std::hypot(a[0], a[2]) < minimum_projection || std::hypot(b[0], b[2]) < minimum_projection)
+  {
+    throw std::invalid_argument("gravity cannot determine installation pitch");
+  }
+  return std::atan2(b[0] * a[2] - b[2] * a[0], b[0] * a[0] + b[2] * a[2]);
+}
+
 /** Cache installation rotation while retaining the original lever validation. */
 inline Installation installation(const Vector3 & lever, double roll, double pitch, double yaw)
 {

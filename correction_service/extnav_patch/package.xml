@@ -12,10 +12,13 @@
   <depend>correction_interfaces</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>mavros_msgs</depend>
   <depend>rclcpp</depend>
 
   <test_depend>python3-numpy</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>python3-scipy</test_depend>
   <test_depend>rclpy</test_depend>
 
   <export>

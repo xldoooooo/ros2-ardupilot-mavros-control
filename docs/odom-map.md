@@ -28,7 +28,10 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 - 安装外参：`config/odin_extrinsics.yaml`，或 `onboard.env` 中的 `ODIN_EXTRINSICS_FILE`。
   `roll_cam/pitch_cam/yaw_cam` 定义 `R_FI=Rz Ry Rx`，单位弧度；机头向上安装为负 pitch。
   `odin_x/y/z` 是 FCU 到 Odin IMU 的向量，以 FCU FLU 表达，单位米。
-  仓库默认零角保持旧配置，按飞机单独设置；约 22° 应填写约 `-0.3839724354`，不能视为精密标定。
+  手工回退角按飞机设置，上仰22°对应约`-0.3839724354`。
+  `auto_installation: true`在未解锁静止约3秒后，用Odin/飞控重力方向自动学习安装俯仰并锁定，
+  roll/yaw及杆臂保持配置，不要求机身摆平；重启extnav可重新学习。项目默认YAML已启用，
+  旧逐机YAML需添加开关，详情见[extnav说明](../correction_service/extnav_patch/README.md)。
 - 地图：`drivers/odin/src/odin_ros_driver/config/reloc.yaml` 的 `relocalization_map_abs_path`。
   必须先提供存在的 bin；地图文件放 `drivers/odin/maps/`，不提交 Git。
 - 默认选择：`/etc/ros2-ardupilot/navigation.env` 的 `NAVIGATION_MODE=odom|map`。
@@ -48,7 +51,7 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 | 定位健康、目标转换、模式切换服务 | `src/onboard_control/src/navigation_frame.cpp` |
 | 航点提交、起飞前校验、状态输出 | `src/onboard_control/src/onboard_control_node.cpp` |
 | 规划目标撤销重发、遇障悬停通道重查 | `src/onboard_control/src/avoidance_execution.cpp` |
-| 姿态及杆臂转换 | `correction_service/extnav_patch/extnav_to_vision_pose.py` |
+| 姿态、杆臂及自动安装俯仰 | `correction_service/extnav_patch/src/extnav_to_vision_pose.cpp`、`include/extnav_bridge/math.hpp` |
 | 地面重启事务 | `scripts/onboard/switch_navigation_mode.sh` |
 | GUI / 上位机坐标适配 | `ground_station_core/ros_controller.py`、`qt_ui/`、`upstream/` |
 

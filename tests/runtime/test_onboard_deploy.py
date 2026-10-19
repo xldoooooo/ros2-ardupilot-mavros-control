@@ -515,6 +515,7 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
 
     extrinsics = yaml.safe_load((PROJECT_ROOT / "config/odin_extrinsics.yaml").read_text())
     assert extrinsics["/extnav_to_vision_pose"]["ros__parameters"] == {
+        "auto_installation": True, "auto_installation_seconds": 3.0,
         "roll_cam": 0.0, "pitch_cam": 0.0, "yaw_cam": 0.0,
         "odin_x": 0.06, "odin_y": -0.03, "odin_z": 0.05,
     }

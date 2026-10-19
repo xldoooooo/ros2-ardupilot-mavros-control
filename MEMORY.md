@@ -75,7 +75,7 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | extnav已完成隔离对照后部署C++；本次按用户授权恢复飞控、视频、修正与避障，手动进程运行、未解锁、navigation.env=map（Odin reloc.yaml），unit inactive不代表节点停止。四次未解锁模式切换及约100Hz串口基线保持，未实飞验收。地图在项目`drivers/odin/maps/map_20261019_155047.bin`；外参由onboard.env指定`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
+| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 用户确认当前已下线；自动安装俯仰新版尚未同步，须原生重建extnav并在逐机外参增加auto_installation:true及3秒窗口，保留原杆臂/roll/yaw。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过，未实飞验收。地图在项目`drivers/odin/maps/map_20261019_155047.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
 | new | Task38 / 3.4、Odin XYZ输出保留；仍为Task3 Python extnav，C++桥待同步安装 | 最近实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留；同步C++时使用安装器原生构建，不复制refresh二进制 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成。旧Task6末端异常的4Hz遥测冲突已查明，恢复100Hz后odom/map本轮均无失败；严格净空及实飞未验收 |
@@ -143,6 +143,8 @@
   raw全频、vision/辅助timer仍40/100Hz，CAS/session、冻结样本和计数保持；corrected保留原门控，两路辅助输出无读者时跳过构造/publish，有读者恢复，control计数仍推进。控制器消费MAVROS EKF。
   ARM的7,880组数值对照最大误差约7.1e-15，三套构建/安装入口公共契约通过；全服务地面生产CPU约68.78%→10.75%单核，持续订阅切换源时序正常。有限窗口不保证全部时序极值改善，未实飞验收。
   回退与边界见[C++重写报告](agent/report/report-2026-10-19-extnav-cpp-rewrite.md)，成本原因见[成本分析](agent/report/report-2026-10-19-extnav-cost-analysis.md)。
+- C++ extnav已新增启动时自动安装俯仰：`auto_installation:true`后，未解锁静止默认3秒，比较Odin与FCU IMU的机体系重力方向，仅学习pitch，roll/yaw/杆臂保持配置；不要求机身摆平或两世界yaw相同。收敛后移除校准订阅并锁到节点重启，不写YAML；缺输入/移动/active Tag期间保留手工回退。节点开关默认false，项目外参YAML默认true，旧逐机YAML需补参数。
+  开发机Release双目标及隔离安装入口验证通过，refresh/new/hp均尚未同步此功能。实际角及锁定状态见现有ExtnavCorrectionStatus；非零安装角Tag限制保持。估计是相对重力俯仰，不能独立消除两IMU水平标定偏差；原3.3°残差样本对应约-25.3°安装估计，未做新实机标定。用法及待部署项见[自动俯仰报告](agent/report/report-2026-10-20-auto-installation-pitch.md)。
 - **Odin 近身拖点尚未解决，不能把接收端删点当成内部算法前过滤。** refresh 实际运行
   驱动 0.14.0 / SoC 0.14.2 / SLAM 0.13.1；`cloud_slam` 由设备输出，公开驱动/SDK 未查到
   算法输入最小距离或 FOV 裁剪参数。`cloud_raw_confidence_threshold` 只过滤主机发布的 raw 云。
