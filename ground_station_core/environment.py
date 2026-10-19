@@ -412,6 +412,8 @@ class EnvironmentInitializer:
             "ArduCopter",
             "--param",
             "GUID_OPTIONS=8",
+            # Let onboard_control own telemetry rates, including MAVProxy's UDP output.
+            "--mavproxy-args=--streamrate=-1",
         ]
         # 已有有效二进制时跳过每次启动前的重复 waf 构建；首次安装仍自动构建。
         if (sitl_root / "build" / "sitl" / "bin" / "arducopter").is_file():

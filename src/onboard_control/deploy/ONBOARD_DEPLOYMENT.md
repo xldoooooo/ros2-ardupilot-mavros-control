@@ -268,10 +268,13 @@ Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jaz
 2. **MAVROS 只读测试**：只单独启动 MAVROS 并读取 `/mavros/state`，确认 `armed=false`。Odin/extnav 应留到单独评审后的外部定位测试，不调用任何模式、解锁、起飞或原点服务。
 3. **同机链路测试**：启动新机载节点；它会自动、异步配置控制链必需的
    `LOCAL_POSITION_NED(32)`、`ATTITUDE_QUATERNION(31)`、`HIGHRES_IMU(105)` 为 100 Hz，
-   `BATTERY_STATUS(147)` 为 2 Hz，并额外请求 `EXTENDED_SYS_STATE(245)` 为 2 Hz，以取得真实
+   `SYS_STATUS(1)` 为 1 Hz，并额外请求 `EXTENDED_SYS_STATE(245)` 为 2 Hz，以取得真实
    起飞/落地状态；飞控重连后会重试。只观察聚合状态是否正确反映飞控连接、位姿、
    `GUID_OPTIONS` 与 setpoint 发布者冲突；使用独立 Wi-Fi 图标，不点击“连接实机服务”，不发送
    `FlightCommand`/`MotionIntent`/航点。自动消息频率维护不包含模式、解锁、起飞或参数写入。
+   请求ACK不代表实际频率；检查位置、速度消息的时间戳间隔。开发机SITL统一入口显式传入
+   `--mavproxy-args=--streamrate=-1`，关闭MAVProxy默认每15秒的ALL流请求，避免经其UDP转发时
+   覆盖机载端的100Hz配置；修改后重启地面站加载，机载串口入口不使用MAVProxy，无需为此重建。
 4. **完整连接与维护测试**：原“连接实机服务”按钮保留正式功能，会在明确风险确认后申请控制租约、发送心跳、确认消息频率并写 GPS 原点，连接成功后按权威状态开放控制按钮。只有前三步均通过并单独完成安全评审后才可测试；该按钮本身不会发送解锁或起飞请求，但不属于零命令通讯检测。
 5. **飞行控制测试**：本任务明确禁止，不能进行解锁、起飞或实机姿态/推力控制。
 

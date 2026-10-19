@@ -75,7 +75,7 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task6 / 3.5；项目Odin、extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 四次实际未解锁往返切换通过，避障按原运行状态恢复；最终默认odom、服务停止，生产domain0保留。地图在项目`drivers/odin/maps/map_20261019_155047.bin`；逐机外参由onboard.env指定`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，64份任务源码哈希和3.5实际接口为准，勿reset/clean；未实飞验收 |
+| refresh | Task6 / 3.5；项目Odin、extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 四次未解锁往返切换已通过；最新只读检查时其他任务手动运行四组件、navigation.env=map，unit inactive不代表节点停止，勿清理其进程。串口位置/速度约99.1Hz，无持续4Hz覆盖；未实飞验收。地图在项目`drivers/odin/maps/map_20261019_155047.bin`；外参由onboard.env指定`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
 | new | Task38 / 3.4、Odin XYZ输出保留；Task3 extnav与refresh同源，已原生构建，ARM/实际订阅进退通过 | 本次实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留，CPU目标与尾部时序仍未验收 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成。旧Task6末端异常的4Hz遥测冲突已查明，恢复100Hz后odom/map本轮均无失败；严格净空及实飞未验收 |
@@ -251,7 +251,9 @@
 
 - Task6三策略map SITL均实际到点/拍照/LAND，未放宽到点条件。原自主“10次入点失败”的主要上游问题已定位为临时UDP14550链路经MAVProxy默认每15秒请求ALL=4Hz，覆盖已接受的100Hz位置消息配置；正式入口仍直连TCP5762，不能据此归因于实机串口控制。
   仅关闭MAVProxy自动请求，保留0.2秒/1米重规划及jerk8/3，odom/map位置实测约100Hz，两轮均零失败、终点保持约0.3秒后完成；map含运动中0.12m重定位。生产算法及实机参数未改。
-  原34.16秒/map与11.95秒/odom期间参考反复离开终点，并非连续固定末参考收敛；旧终点子集极值不代表整窗。10仅计数上限/异常标记，不触发控制变化。后续SITL优先直连TCP；经MAVProxy时用streamrate=-1且实测位置频率。证据与原结论纠正见[入点诊断](agent/report/report-2026-10-19-waypoint-arrival-convergence-analysis.md)；独立绕障跟踪/净空风险仍保留。
+  原34.16秒/map与11.95秒/odom期间参考反复离开终点，并非连续固定末参考收敛；旧终点子集极值不代表整窗。10仅计数上限/异常标记，不触发控制变化，见[入点诊断](agent/report/report-2026-10-19-waypoint-arrival-convergence-analysis.md)。
+  开发机统一SITL入口已固定传入`--mavproxy-args=--streamrate=-1`，由机载统一配置频率；重启地面站加载，无需改控制参数或机载重建。正式TCP/原问题UDP两轮自主回归均约100Hz、零入点失败，new/hp地面端下次同步带上该源码。
+  refresh当前直连ttyTHS1:460800、无GCS转发；45秒静态位置/速度约99.1Hz、extnav辅助约100Hz、vision约40Hz，未见同类持续降频。偶发源间隔60ms保留，不能声称严格恒定100Hz；串口丢包/溢出/解析错误均0。只读观测未改或重启extnav，独立绕障跟踪/净空风险仍保留，见[修复与机载检查](agent/report/report-2026-10-19-telemetry-rate-fix-refresh-audit.md)。
 
 - **输出限jerk与原生避障的跟踪可行性仍有缺口**：当前原生仅C1且未约束jerk，PD+DOB前馈及反馈一起经过8/3输出斜率限制；SITL已证实制动请求与实际下发控制量反向滞后，激进aXY=2时可大幅偏离、进入虚拟障碍几何或触发0.8m跟踪保护。提高WNxy不是已验证修复；关闭jerk又恢复姿态跳变。参考时钟照常推进，跟踪保护仅等待，未专门要求原生立即重规划；100s/100m强制触发设置下可能等待超时LAND。不得仅按任务完成判定净空合格。
   总加速度模长推力与ArduPilot Guided归一化推力入口的angle_boost存在重复倾斜补偿，SITL对照支持其造成部分高度偏高；真实飞控参数及视频约30cm高度差尚未完整验证。ROS原生入口会将旧scalar限额抬高至显式方向限额最大值，不应将scalar=1、方向=2理解为实际上限1。正式算法/配置未因本次排查修改，翻新机现场读取按用户要求延期。复现条件、限制和证据见[偏轨SITL报告](agent/report/report-2026-10-19-post-obstacle-tracking-sitl.md)。
