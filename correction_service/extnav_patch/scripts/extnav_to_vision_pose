@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Preserve optional-interface fallback before the dynamic loader enters the native node.
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+native="${script_dir}/extnav_to_vision_pose_native"
+if [[ -x "${native}" ]]; then
+  dependencies="$(LC_ALL=C ldd "${native}" 2>&1 || true)"
+  if [[ "${dependencies}" != *"not found"* ]]; then
+    exec "${native}" "$@"
+  fi
+fi
+exec "${script_dir}/extnav_to_vision_pose_identity" "$@"

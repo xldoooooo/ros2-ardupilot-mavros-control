@@ -432,7 +432,9 @@ SLAM 建图模式标为 `unsupported`，不可当成重定位飞行。`localized
 ./scripts/onboard/stop_onboard_correction.sh
 ```
 
-extnav 安装器覆盖生产源前会创建带 SHA-256 的定点备份，只构建、不重启飞控；修正服务启动后
+extnav 现为单线程 C++ `ament_cmake` 包，启动命令和 correction 2.0 接口不变；数学及会话逻辑的维护入口见
+`correction_service/extnav_patch/README.md`。安装器保留旧 source/build/install、原生构建 Release，
+迁移失败恢复旧包，不混用旧 Python 构建缓存，只构建、不重启飞控；修正服务启动后
 保持 idle、相机关闭。后两个机载操作脚本分别用于前台启动和彻底停止该独立 unit；
 停止修正节点不会清除 extnav 已应用的 active correction。完整接口、Tag 坐标约定和 clear 方法见
 `correction_service/README.md`。`odin-correction.service` 不得对飞控 unit 设置

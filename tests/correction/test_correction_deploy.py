@@ -43,9 +43,10 @@ def test_extnav_installer_refuses_running_chain_and_backs_up_before_install() ->
     assert 'systemctl is-active --quiet "${FLIGHT_SERVICE}"' in script
     assert "pgrep -af '[e]xtnav_to_vision_pose'" in script
     assert script.index("sha256sum -c SHA256SUMS") < script.index(
-        'install -m 0644 "${PATCH_SOURCE}"'
+        'mv -- "${BACKUP_DIR}/staging" "${EXTNAV_PACKAGE_ROOT}"'
     )
-    assert "colcon build --packages-select extnav_bridge --symlink-install" in script
+    assert 'colcon build --base-paths "${EXTNAV_PACKAGE_ROOT}" --packages-select extnav_bridge' in script
+    assert "-DCMAKE_BUILD_TYPE=Release" in script
     assert 'CORRECTION_PACKAGE_VERSION="2.0.0"' in script
     assert "installed ExtnavCorrectionStatus is not interface 2.0" in script
     assert "final_sample_revision" in script
