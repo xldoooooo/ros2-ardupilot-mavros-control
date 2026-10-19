@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-19。开发机与refresh已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；new与hp-desktop仍为3.4，待同步接口、客户端及消费包并原生重建。项目Odin驱动和机载MAVROS九插件配置已在开发机/refresh落地，refresh保留MAVROS2.16.0修复overlay。Task5与共用输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-20。开发机与refresh已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；new与hp-desktop仍为3.4，待同步接口、客户端及消费包并原生重建。项目Odin驱动和机载MAVROS九插件配置已在开发机/refresh落地，refresh保留MAVROS2.16.0修复overlay。Task5与共用输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -134,6 +134,7 @@
   MediaMTX 使用系统 `/usr/local/bin/mediamtx`，当前部署 v1.20.0，仓库不带二进制。
   直播尚未启用去畸变；重复序列号摄像头使用 by-path 区分，不能依赖 `/dev/videoN`。
   RTP/JPEG 的 MJPEG 宽高上限为 2040；HP 的 DRI 兼容只转码 RTSP 分支，录像保持原码流。
+  MJPEG兼容分支存在显著CPU转码成本，Python控制层重写无助于消除此项；目标飞机是否触发仍待实查，不能按仓库默认H.264推断现场。
 
 ## AprilTag / Odin 当前基线与风险
 
@@ -158,6 +159,10 @@
 - 首次候选保持 `planar_xy_yaw(H_WI * inverse(H_OI))`，**不能改为单点 `P-RQ` 重锚**。
   从第二个不同 Tag 起，滑窗才从原始 P/Q 点对按绝对逆方差重算 SE(2)，不累计增量或平均单 Tag yaw。
   同帧多 Tag 联合估计、自动航点触发未实现；相机/400 Hz raw 订阅只在任务期间启用，idle 释放。
+- **修正服务性能待优化**：当前仍为四线程Python executor，实体共用默认互斥回调组，采样/apply另有任务线程。
+  本地真实DDS同400Hz输入对照已证实单线程可显著降低CPU；正式修改与事务回归尚未实施。后续原生化应重点评估400Hz采样/同步前端，
+  OpenCV检测已原生、滑窗/PnP不是主要热点；不要直接将30Hz相机发布改10Hz，现有时间戳门会降低实际检测频率。
+  视频与遇障悬停的收益边界同见[机载性能评估](agent/report/report-2026-10-20-onboard-performance-assessment.md)，桌面结果不等于Jetson验收。
 - Task32 已修复 OpenCV 与 AprilRobotics 官方图案的 Tag 基变换，并撤销错误相机 `Rz(180°)` 补偿。
   配置 Tag +X 指官方图案上方、+Y 左、+Z 上；方向改动必须用官方图案和独立物理真值验证，
   yaw 正确或自生成合成闭环不足以证明位置方向正确。
