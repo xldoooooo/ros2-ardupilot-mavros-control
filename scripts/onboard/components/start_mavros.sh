@@ -8,6 +8,9 @@ readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/../../lib/runtime_common.bash"
 runtime_source_environment_file "${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
 
+# Repository-owned launch keeps aircraft plugin selection independent of /opt/ros.
+readonly project_root="${ONBOARD_WORKSPACE:-$(cd "${script_dir}/../../.." && pwd)}"
+readonly mavros_launch="${project_root}/config/mavros/aircraft.launch.xml"
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
 fcu_device="$(runtime_detect_fcu_device "${MAVROS_FCU_DEVICE:-}")" || exit 1
@@ -22,7 +25,8 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 [[ "${ROS_DISTRO:-}" == "humble" ]] && export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
 
 echo "[mavros-startup] FCU=${fcu_device}:${fcu_baud}, ROS=${ROS_DISTRO:-unknown}"
-ros2 launch mavros apm.launch fcu_url:="${fcu_device}:${fcu_baud}" &
+echo "[mavros-startup] profile=${mavros_launch}"
+ros2 launch "${mavros_launch}" fcu_url:="${fcu_device}:${fcu_baud}" &
 mavros_pid=$!
 # Keep the launch tree owned by this entry while checking the runtime clock configuration.
 cleanup_mavros() {

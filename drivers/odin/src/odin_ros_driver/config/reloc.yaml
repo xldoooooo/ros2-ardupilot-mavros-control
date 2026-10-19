@@ -47,7 +47,7 @@ register_keys:
 
   # TF from odom to imu. Leave it on unless you specifically need it off.
   # ATTENTION: critical for rviz to show cloud_raw.
-  send_odom_baselink_tf: 1 # 0: off; 1: on.
+  send_odom_baselink_tf: 0 # Disable sensor visualization TF; odom->map remains independent.
 
   # Extra TF publish rate (Hz) for odom->imu transform.
   # 0: disabled (TF only published with odom data, at actual rate)
@@ -56,7 +56,7 @@ register_keys:
   tf_extra_publish_rate: 0  # 0: off; >0: rate in Hz
 
   # raw dtof data
-  senddtof: 1             # 0: off; 1: on
+  senddtof: 0 # Raw DTOF output is unused by the flight/avoidance pipeline.
   cloud_raw_confidence_threshold: 35 # please refer to readme for more details
   
   # dtof sensor frame rate. Supported values: 100 (10fps) or 145 (14.5fps)
@@ -96,7 +96,7 @@ register_keys:
   recorddata: 0           # 0: off; 1: on
 
   # Save device runtime status info to ws/src/odin_ros_driver/log/Driver_{drvier_start_time}/Conn_{device_connection_time}/dev_status.csv
-  devstatuslog: 1         # 0: off; 1: on.
+  devstatuslog: 0 # Disable diagnostic CSV; no flight consumer reads it.
 
   save_log: 0 # 0: off; 1: on; 
 

@@ -6,6 +6,8 @@ set -Eeuo pipefail
 readonly project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 readonly runtime_helpers="${project_root}/scripts/lib/runtime_common.bash"
 readonly onboard_setup="${project_root}/install/setup.bash"
+# Repository-owned profile selects only the plugins used by the aircraft stack.
+readonly mavros_launch="${project_root}/config/mavros/aircraft.launch.xml"
 [[ -r "${runtime_helpers}" ]] || {
   echo "[startup] runtime discovery helper is missing: ${runtime_helpers}" >&2
   exit 1
@@ -52,6 +54,8 @@ fi
 for required_path in \
   "${ros_setup}" \
   "${onboard_setup}" \
+  "${mavros_launch}" \
+  "${project_root}/config/mavros/aircraft_plugins.yaml" \
   "${fcu_device}"
 do
   if [[ ! -e "${required_path}" ]]; then
@@ -100,6 +104,7 @@ fi
 echo "[startup] auto-discovered ROS=${ROS_DISTRO:-unknown}"
 echo "[startup] workspace=${project_root}"
 echo "[startup] FCU=${fcu_device}:${fcu_baud}"
+echo "[startup] mavros profile=${mavros_launch}"
 echo "[startup] odin=$(runtime_package_prefix odin_ros_driver)"
 echo "[startup] odin config=${odin_config_file}"
 echo "[startup] extnav=$(runtime_package_prefix extnav_bridge)"
@@ -202,7 +207,7 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 launch_component "mavros" \
-  ros2 launch mavros apm.launch "fcu_url:=${fcu_device}:${fcu_baud}"
+  ros2 launch "${mavros_launch}" "fcu_url:=${fcu_device}:${fcu_baud}"
 launch_component "odin" \
   ros2 launch odin_ros_driver odin1_ros2.launch.py "config_file:=${odin_config_file}"
 launch_component "extnav" \

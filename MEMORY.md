@@ -38,6 +38,11 @@
   四份 YAML 在 `drivers/odin/src/odin_ros_driver/config/`；`control_command.yaml` 仅链接 odom。
   reloc 的地图绝对路径由用户手动维护，`drivers/odin/maps/` 地图及运行/构建产物不入 Git。
   外部 `catkin_ws` 原驱动保留，干净终端只 source 它仍使用原驱动；本次没有实现 map/odom 飞控转换或运行中模式切换。
+- 机载性能配置在开发机/refresh已落实：`config/mavros/aircraft.launch.xml`及9插件白名单由独立/整栈机载入口使用，
+  复用已选MAVROS安装的apm参数，不再依赖手改系统插件文件；`gps_status`不在白名单。直连FCU遥控器手飞不依赖ROS的rc_io/manual_control；未改RC/模式参数。
+  开发机SITL保持原配置。项目Odin的odom/reloc关闭raw DTOF、诊断CSV和传感器展示TF，slam保留展示TF，original不变；地图TF独立保留。
+  各机修改前备份在驱动config/backup/20261019-flight-trim，恢复不得跨机覆盖地图路径。new/hp-desktop待同步；外部catkin_ws保持。
+  源码级主机精简只在agent隔离副本评估，未合入正式驱动；HIGHRES_IMU请求仍由原控制器保持100Hz。
 - 避障停止脚本已在开发机、refresh 更新：清理本机全部 domain/工作区的避障启动器、规划器/桥及已捕获的后代，
   保留孤儿身份，逐级 INT/TERM/KILL，复核无活动残留才返回成功；不停止飞控栈。脚本更新无需重建。
   new、hp-desktop 尚待同步此停止脚本；隔离验证与范围见[修复报告](agent/report/report-2026-10-19-stop-avoidance-fix-refresh.md)。

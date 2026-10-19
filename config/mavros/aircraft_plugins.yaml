@@ -1,0 +1,15 @@
+# MAVROS plugins required by the onboard flight-control and extnav pipeline.
+/**:
+  ros__parameters:
+    # Omit the empty denylist: ROS 2 cannot infer its array type from YAML [].
+    plugin_allowlist:
+      - command
+      - global_position
+      # UAS attitude/frame transforms depend on the IMU plugin internally.
+      - imu
+      - local_position
+      - param
+      - setpoint_raw
+      - sys_status
+      - sys_time
+      - vision_pose

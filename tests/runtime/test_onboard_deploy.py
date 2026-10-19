@@ -497,7 +497,7 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
 
     script = INTEGRATED_START.read_text(encoding="utf-8")
     for command in (
-        "ros2 launch mavros apm.launch",
+        'ros2 launch "${mavros_launch}"',
         "ros2 launch odin_ros_driver odin1_ros2.launch.py",
         "ros2 run extnav_bridge extnav_to_vision_pose",
         "ros2 launch onboard_control control.launch.py",

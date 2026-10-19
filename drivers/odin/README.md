@@ -34,6 +34,11 @@ Jetson 的厂商 OpenCV 必须配套相同 ABI 的 cv_bridge，可用 `ODIN_CV_B
 | `reloc.yaml` | 项目重定位模式，`custom_map_mode: 2`；地图绝对路径由使用者手动维护。 |
 
 `control_command.yaml` 仅是指向 `odom.yaml` 的兼容链接，不另维护第五份配置。
+项目 `odom`/`reloc` 配置关闭无人使用的原始 DTOF、诊断 CSV 和传感器展示 TF；
+高频定位、下采样点云与独立的 `odom→map` 重定位 TF 保持。`slam` 关闭原始 DTOF/CSV，
+保留传感器 TF 方便建图查看；开发机需要完整传感器调试时显式选择 `original` 或自定义配置。
+裁剪前配置分别保存在各设备的 `src/odin_ros_driver/config/backup/20261019-flight-trim/`，
+恢复时保留本机地图路径和标定，勿跨机覆盖。
 `original.yaml` 只代表原始配置，不会恢复被项目 SDK 关闭的原始 cloud_slam 发布；其缺少
 `cloud_downsample` 配置时也不会输出项目 down 云。正式避障使用项目配置。
 

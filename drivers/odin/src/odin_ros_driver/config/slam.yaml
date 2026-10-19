@@ -56,7 +56,7 @@ register_keys:
   tf_extra_publish_rate: 0  # 0: off; >0: rate in Hz
 
   # raw dtof data
-  senddtof: 1             # 0: off; 1: on
+  senddtof: 0 # Raw DTOF output is unused by the flight/avoidance pipeline.
   cloud_raw_confidence_threshold: 35 # please refer to readme for more details
   
   # dtof sensor frame rate. Supported values: 100 (10fps) or 145 (14.5fps)
@@ -96,7 +96,7 @@ register_keys:
   recorddata: 0           # 0: off; 1: on
 
   # Save device runtime status info to ws/src/odin_ros_driver/log/Driver_{drvier_start_time}/Conn_{device_connection_time}/dev_status.csv
-  devstatuslog: 1         # 0: off; 1: on.
+  devstatuslog: 0 # Disable diagnostic CSV; no flight consumer reads it.
 
   save_log: 0 # 0: off; 1: on; 
 
