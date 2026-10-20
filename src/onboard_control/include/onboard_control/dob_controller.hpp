@@ -1,6 +1,6 @@
 /**
  * @file dob_controller.hpp
- * @brief Three-axis PD+DOB with shared acceleration-output slew limits.
+ * @brief Three-axis PD+DOB with selectable acceleration-output slew limits.
  */
 #pragma once
 
@@ -76,12 +76,13 @@ public:
   /** 返回当前实际用于推力映射的悬停油门。 */
   double hover_throttle() const noexcept {return parameters_.hover_throttle;}
 
-  /** 使用真实控制周期计算一次姿态与归一化推力。 */
+  /** Compute attitude/thrust, optionally limiting the complete acceleration output slew. */
   ControlOutput compute(
     const VehicleKinematics & state,
     const ControlReference & reference,
     double dt_seconds,
-    bool use_acceleration_feedforward = false);
+    bool use_acceleration_feedforward = false,
+    bool use_output_jerk = false);
 
   const Eigen::Vector3d & disturbance() const noexcept {return disturbance_;}
 

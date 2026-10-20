@@ -1,6 +1,6 @@
 /**
  * @file dob_controller.cpp
- * @brief Shared PD+DOB, acceleration slew limiting and attitude/thrust mapping.
+ * @brief PD+DOB, mode-selected acceleration slew and attitude/thrust mapping.
  */
 #include "onboard_control/dob_controller.hpp"
 
@@ -85,12 +85,13 @@ bool DobController::set_gain_profile(const ControllerParameters & profile,
   return true;
 }
 
-/** Compute PD+DOB and slew the shared output before attitude/thrust mapping. */
+/** Compute PD+DOB and optionally slew its output before attitude/thrust mapping. */
 ControlOutput DobController::compute(
   const VehicleKinematics & state,
   const ControlReference & reference,
   const double dt_seconds,
-  const bool use_acceleration_feedforward)
+  const bool use_acceleration_feedforward,
+  const bool use_output_jerk)
 {
   ControlOutput output;
   if (!state.position.allFinite() || !state.velocity.allFinite() ||
@@ -144,12 +145,12 @@ ControlOutput DobController::compute(
     -parameters_.max_acceleration_z,
     parameters_.max_acceleration_z);
 
-  // All tracking modes share one ramp, including reference and gain changes.
-  if (parameters_.max_jerk_xy > 0.0) {
+  // The node selects the mode; bypassing the ramp still updates the DOB input below.
+  if (use_output_jerk && parameters_.max_jerk_xy > 0.0) {
     motion_acceleration.head<2>() = previous_input_.head<2>() + clamp_norm(
       motion_acceleration.head<2>() - previous_input_.head<2>(), parameters_.max_jerk_xy * dt);
   }
-  if (parameters_.max_jerk_z > 0.0) {
+  if (use_output_jerk && parameters_.max_jerk_z > 0.0) {
     const double step = parameters_.max_jerk_z * dt;
     motion_acceleration.z() = previous_input_.z() + std::clamp(
       motion_acceleration.z() - previous_input_.z(), -step, step);

@@ -8,7 +8,7 @@ import pytest
 
 
 @pytest.fixture
-def avoidance_node(tmp_path, monkeypatch):
+def avoidance_node(tmp_path, monkeypatch, request):
     """Own only this node/process; fictitious MAVROS names cannot address aircraft topics."""
     monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
     monkeypatch.delenv("ROS_STATIC_PEERS", raising=False)
@@ -17,7 +17,7 @@ def avoidance_node(tmp_path, monkeypatch):
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import qos_profile_sensor_data
     from geometry_msgs.msg import PoseStamped, TwistStamped
-    from mavros_msgs.msg import State, ExtendedState, ParamEvent
+    from mavros_msgs.msg import State, ExtendedState, ParamEvent, AttitudeTarget
     from mavros_msgs.srv import MessageInterval, ParamPull
     from guided_interfaces.msg import (
         AvoidanceRequest, AvoidanceResult, ControlHeartbeat, ControlStatus,
@@ -51,6 +51,7 @@ def avoidance_node(tmp_path, monkeypatch):
 
         def __init__(self):
             self.status, self.results, self.requests, self.paths = [], [], [], []
+            self.attitudes = []
             self.delayed_replies = []
             self.active_plan = None
             self.plan_sequences = {}
@@ -67,6 +68,8 @@ def avoidance_node(tmp_path, monkeypatch):
             self.motion = node.create_publisher(MotionIntent, onboard + "/motion_intent", 10)
             node.create_subscription(ControlStatus, onboard + "/status", self.status.append,
                                      qos_profile_sensor_data)
+            node.create_subscription(AttitudeTarget, mavros + "/setpoint_raw/attitude",
+                                     self.attitudes.append, qos_profile_sensor_data)
             node.create_subscription(CommandResult, onboard + "/command_result", self.results.append, 50)
             node.create_subscription(AvoidanceRequest, onboard + "/avoidance_request", self.plan, 10)
             from nav_msgs.msg import Path as RosPath
@@ -224,10 +227,14 @@ def avoidance_node(tmp_path, monkeypatch):
     harness = Harness()
     env = dict(os.environ, ROS_DOMAIN_ID=str(domain))
     args = [str(executable), "--ros-args"]
-    for name, value in {"mavros_prefix": mavros, "interface_prefix": onboard,
+    parameters = {"mavros_prefix": mavros, "interface_prefix": onboard,
                         "avoidance_wait_timeout_seconds": 1.2,
                         "avoidance_result_timeout_seconds": .3,
-                        "avoidance_resume_seconds": .1}.items():
+                        "avoidance_resume_seconds": .1}
+    parameters.update(getattr(request, "param", {}))
+    for name, value in parameters.items():
+        if isinstance(value, bool):
+            value = str(value).lower()
         args += ["-p", f"{name}:={value}"]
     with (tmp_path / "avoidance-onboard.log").open("w") as log:
         process = subprocess.Popen(args, env=env, stdout=log, stderr=log)
@@ -248,6 +255,123 @@ def avoidance_node(tmp_path, monkeypatch):
             executor.shutdown(timeout_sec=1.)
             node.destroy_node()
             rclpy.shutdown(context=context)
+
+
+def _issued_acceleration(message):
+    """Invert the real attitude/thrust mapping for this fixture's known hover calibration."""
+    q = message.orientation
+    body_z = (2. * (q.x * q.z + q.w * q.y),
+              2. * (q.y * q.z - q.w * q.x),
+              1. - 2. * (q.x * q.x + q.y * q.y))
+    ratio = (message.thrust / .22 if message.thrust <= .22 else
+             1. + (message.thrust - .22) * 1.5 / .78)
+    return tuple(9.8 * ratio * component - (9.8 if axis == 2 else 0.)
+                 for axis, component in enumerate(body_z))
+
+
+def _jerk_test_parameters(mode, override):
+    """Use a visibly slow ramp and disable disturbance learning to isolate mode selection."""
+    parameters = {"max_jerk_xy": .1, "max_jerk_z": .1,
+                  "dob_L_xy": 0., "dob_L_z": 0.,
+                  "trajectory_dob_L_xy": 0., "trajectory_dob_L_z": 0.,
+                  "trajectory_wn_xy": 2.236, "trajectory_wn_z": 2.236,
+                  "avoidance_wait_timeout_seconds": 8.}
+    if override:
+        parameters["jerk_limit_modes." + mode] = mode != "avoidance"
+    return parameters
+
+
+def test_output_jerk_parameter_defaults(avoidance_node):
+    """Read declarations from the running node, including each independent startup switch."""
+    from rcl_interfaces.srv import GetParameters
+    h = avoidance_node
+    client = h.node.create_client(GetParameters, "/onboard_control_node/get_parameters")
+    h.until(client.service_is_ready)
+    names = ["max_jerk_xy", "max_jerk_z"] + ["jerk_limit_modes." + mode for mode in
+             ("hover", "motion", "straight", "avoidance", "obstacle_hover", "failsafe_hold")]
+    values = h.call(client, GetParameters.Request(names=names)).values
+    assert [value.double_value for value in values[:2]] == [10., 8.]
+    assert [value.bool_value for value in values[2:]] == [False, False, False, True, False, False]
+
+
+@pytest.mark.parametrize("avoidance_node,mode,override", [
+    pytest.param(_jerk_test_parameters(mode, override), mode, override,
+                 id=f"{mode}-{'override' if override else 'default'}")
+    for mode in ("hover", "motion", "straight", "avoidance", "obstacle_hover", "failsafe_hold")
+    for override in (False, True)
+], indirect=["avoidance_node"])
+def test_output_jerk_follows_runtime_mode(avoidance_node, mode, override):
+    """A measured pose step must reach the real output immediately or through the selected ramp."""
+    from guided_interfaces.msg import ControlStatus, MotionIntent
+    from guided_interfaces.srv import FlightCommand
+    h = avoidance_node
+    assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
+    if mode in ("straight", "avoidance", "obstacle_hover"):
+        h.policy = "clear"
+        strategy = {"straight": 0, "avoidance": 1, "obstacle_hover": 2}[mode]
+        assert h.execute(strategy=strategy).accepted
+        h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_WAYPOINT)
+        if strategy:
+            h.until(lambda: h.status[-1].avoidance_state == ControlStatus.AVOIDANCE_EXECUTING)
+        if strategy == 1:
+            # Freeze this reference; fresh plans would follow the injected measured pose step.
+            h.policy, h.active_plan = "silent", None
+    elif mode == "motion":
+        h.sequence += 1
+        motion = MotionIntent(source_id="avoidance-test", sequence=h.sequence, ttl_ms=3000)
+        motion.header.stamp = h.node.get_clock().now().to_msg()
+        motion.velocity_delta.x = .1
+        h.motion.publish(motion)
+        h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_MOTION)
+    elif mode == "failsafe_hold":
+        h.leased = False
+        h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_FAILSAFE_HOLD, 4.)
+    _assert_pose_step_output_jerk(h, (mode == "avoidance") != override)
+
+
+def _assert_pose_step_output_jerk(h, enabled):
+    """Exercise both axes without approaching acceleration, tilt or tracking-error limits."""
+    h.spin(.15)
+    assert h.attitudes
+    before = _issued_acceleration(h.attitudes[-1])
+    h.position_x += .2
+    h.height += .2
+    h.spin(.15)
+    after = _issued_acceleration(h.attitudes[-1])
+    changes = [abs(after[axis] - before[axis]) for axis in (0, 2)]
+    if enabled:
+        assert max(changes) < .08, changes
+    else:
+        assert min(changes) > .5, changes
+
+
+@pytest.mark.parametrize("avoidance_node,phase", [
+    pytest.param(_jerk_test_parameters("avoidance", False), phase, id=phase)
+    for phase in ("preparation", "planning_wait", "completed")
+], indirect=["avoidance_node"])
+def test_autonomous_jerk_spans_preparation_wait_and_completion(avoidance_node, phase):
+    """Task identity retains autonomous shaping in temporary holds and releases it on completion."""
+    from guided_interfaces.msg import ControlStatus, CommandResult
+    h = avoidance_node
+    if phase == "preparation":
+        h.velocity_x = .3
+        h.spin(.15)
+    elif phase == "completed":
+        h.policy = "clear"
+    assert h.execute(strategy=1, goal_x=.04 if phase == "completed" else 4.).accepted
+    if phase == "preparation":
+        h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_HOVER and
+                h.status[-1].waypoint_count == 1)
+    else:
+        h.until(lambda: h.status[-1].avoidance_state == (
+            ControlStatus.AVOIDANCE_EXECUTING if phase == "completed" else ControlStatus.AVOIDANCE_WAITING))
+    if phase == "completed":
+        h.policy, h.active_plan = "silent", None
+        h.position_x = .04
+        h.until(lambda: any(r.final and r.command == "waypoints" and
+                r.status == CommandResult.STATUS_SUCCEEDED for r in h.results), 5.)
+        h.until(lambda: h.status[-1].control_mode == ControlStatus.MODE_HOVER)
+    _assert_pose_step_output_jerk(h, phase != "completed")
 
 
 @pytest.mark.parametrize("strategy", [0, 2, 1])

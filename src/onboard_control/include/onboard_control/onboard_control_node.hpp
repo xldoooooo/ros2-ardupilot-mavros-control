@@ -332,6 +332,11 @@ private:
   std::string video_prefix_{"/video_service"};
   ControllerParameters controller_parameters_;
   ControllerParameters trajectory_controller_parameters_;
+  // Output slew selection follows active waypoint strategy before temporary hover states.
+  std::array<bool, 3> waypoint_output_jerk_{{false, true, false}};
+  bool hover_output_jerk_{false};
+  bool motion_output_jerk_{false};
+  bool failsafe_hold_output_jerk_{false};
   ReferenceGeneratorParameters reference_generator_parameters_;
   // Avoidance and obstacle-hover share the native planner's resolved motion limits.
   std::array<double, 4> avoidance_motion_limits_{};

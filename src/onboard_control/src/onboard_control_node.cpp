@@ -159,8 +159,15 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     RCLCPP_WARN(get_logger(), "%s must be finite and nonnegative; output slew disabled", name);
     return 0.0;
   };
-  controller_parameters_.max_jerk_xy = jerk_limit("max_jerk_xy", 8.0);
-  controller_parameters_.max_jerk_z = jerk_limit("max_jerk_z", 3.0);
+  controller_parameters_.max_jerk_xy = jerk_limit("max_jerk_xy", 10.0);
+  controller_parameters_.max_jerk_z = jerk_limit("max_jerk_z", 8.0);
+  hover_output_jerk_ = declare_parameter<bool>("jerk_limit_modes.hover", false);
+  motion_output_jerk_ = declare_parameter<bool>("jerk_limit_modes.motion", false);
+  waypoint_output_jerk_ = {{
+    declare_parameter<bool>("jerk_limit_modes.straight", false),
+    declare_parameter<bool>("jerk_limit_modes.avoidance", true),
+    declare_parameter<bool>("jerk_limit_modes.obstacle_hover", false)}};
+  failsafe_hold_output_jerk_ = declare_parameter<bool>("jerk_limit_modes.failsafe_hold", false);
   controller_parameters_.max_disturbance =
     declare_parameter<double>("max_disturbance", 3.0);
   const double max_tilt_degrees = declare_parameter<double>("max_tilt_degrees", 25.0);
@@ -2259,8 +2266,17 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
 
   const bool use_acceleration_feedforward =
     active_tracking_controller_ == TrackingControllerType::kTrajectoryPdDob;
+  bool use_output_jerk = hover_output_jerk_;
+  if (active_task_ == ActiveTask::kWaypoint) {
+    // Startup hover and replanning waits remain part of the same waypoint strategy.
+    use_output_jerk = waypoint_output_jerk_[waypoint_flight_strategy_];
+  } else if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_MOTION) {
+    use_output_jerk = motion_output_jerk_;
+  } else if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_FAILSAFE_HOLD) {
+    use_output_jerk = failsafe_hold_output_jerk_;
+  }
   const ControlOutput output = controller_.compute(
-    vehicle_, reference_, dt_seconds, use_acceleration_feedforward);
+    vehicle_, reference_, dt_seconds, use_acceleration_feedforward, use_output_jerk);
   if (!output.valid) {
     trigger_failsafe_land("PD+DOB 产生非有限控制输出");
     return;

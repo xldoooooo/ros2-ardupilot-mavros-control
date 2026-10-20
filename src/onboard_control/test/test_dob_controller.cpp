@@ -1,6 +1,6 @@
 /**
  * @file test_dob_controller.cpp
- * @brief PD+DOB output, shared jerk bounds, gain transitions and reset behavior.
+ * @brief PD+DOB output, selectable jerk bounds, gain transitions and reset behavior.
  */
 #include <gtest/gtest.h>
 
@@ -130,7 +130,7 @@ TEST(DobController, ContinuousGainSwitchPreservesDisturbanceAndPreviousInputWhil
   }
 }
 
-/** Shared slew bounds apply to feedforward, PD changes and reversing commands. */
+/** Enabled slew bounds apply to feedforward, PD changes and reversing commands. */
 TEST(DobController, SharedOutputSlewBoundsStepsAndReversals)
 {
   ControllerParameters parameters;
@@ -145,7 +145,7 @@ TEST(DobController, SharedOutputSlewBoundsStepsAndReversals)
     const double direction = cycle < 15 || cycle >= 45 ? 1.0 : -1.0;
     if (feedforward) {reference.acceleration = direction * Eigen::Vector3d(1.0, 1.0, 0.5);}
     else {reference.position = direction * Eigen::Vector3d(0.2, 0.2, 0.1);}
-    const auto output = controller.compute(VehicleKinematics{}, reference, 0.01, feedforward);
+    const auto output = controller.compute(VehicleKinematics{}, reference, 0.01, feedforward, true);
     ASSERT_TRUE(output.valid);
     EXPECT_LE((output.acceleration - previous).head<2>().norm(), 0.06 + 1e-12);
     EXPECT_LE(std::abs(output.acceleration.z() - previous.z()), 0.03 + 1e-12);
@@ -164,16 +164,16 @@ TEST(DobController, SlewHistorySurvivesGainChangesButNotExplicitReset)
   reference.acceleration.x() = 1.0;
   ControlOutput previous;
   for (int cycle = 0; cycle < 20; ++cycle) {
-    previous = controller.compute(VehicleKinematics{}, reference, 0.01, true);
+    previous = controller.compute(VehicleKinematics{}, reference, 0.01, true, true);
   }
   ASSERT_NEAR(previous.acceleration.x(), 1.0, 1e-12);
   parameters.wn_xy = 1.2;
   ASSERT_TRUE(controller.set_gain_profile(parameters));
   reference.acceleration.x() = -1.0;
-  const auto switched = controller.compute(VehicleKinematics{}, reference, 0.01, true);
+  const auto switched = controller.compute(VehicleKinematics{}, reference, 0.01, true, true);
   EXPECT_NEAR(switched.acceleration.x(), 0.94, 1e-12);
   controller.reset();
-  const auto restarted = controller.compute(VehicleKinematics{}, reference, 0.01, true);
+  const auto restarted = controller.compute(VehicleKinematics{}, reference, 0.01, true, true);
   EXPECT_NEAR(restarted.acceleration.x(), -0.06, 1e-12);
 }
 
@@ -186,7 +186,7 @@ TEST(DobController, SlewHistoryUsesTiltLimitedIssuedAcceleration)
   DobController controller(parameters);
   ControlReference reference;
   reference.acceleration.x() = 1.0;
-  const auto first = controller.compute(VehicleKinematics{}, reference, 0.01, true);
+  const auto first = controller.compute(VehicleKinematics{}, reference, 0.01, true, true);
   ASSERT_TRUE(first.valid);
   const double issued = parameters.gravity * std::tan(parameters.max_tilt_rad);
   EXPECT_NEAR(first.acceleration.x(), issued, 1e-12);
@@ -195,9 +195,54 @@ TEST(DobController, SlewHistoryUsesTiltLimitedIssuedAcceleration)
   reference.acceleration.x() = -1.0;
   VehicleKinematics state;
   state.velocity.x() = issued * 0.001;  // Ideal plant applies the issued input for this cycle.
-  const auto second = controller.compute(state, reference, 0.001, true);
+  const auto second = controller.compute(state, reference, 0.001, true, true);
   EXPECT_NEAR(second.acceleration.x(), issued - 0.006, 1e-12);
   EXPECT_LT(second.disturbance.norm(), 1e-12);
+}
+
+/** Bypassing slew responds immediately; re-enabling starts from the last issued command. */
+TEST(DobController, OutputSlewSelectionPreservesHistoryAcrossBypass)
+{
+  ControllerParameters parameters;
+  parameters.max_jerk_xy = 10.0;
+  parameters.max_jerk_z = 8.0;
+  parameters.observer_xy = parameters.observer_z = 0.0;
+  DobController controller(parameters);
+  ControlReference reference;
+  reference.acceleration = Eigen::Vector3d(1.0, 0.0, 0.5);
+  const auto bypassed = controller.compute(VehicleKinematics{}, reference, 0.01, true, false);
+  ASSERT_TRUE(bypassed.valid);
+  EXPECT_LT((bypassed.acceleration - reference.acceleration).norm(), 1e-12);
+
+  reference.acceleration = -reference.acceleration;
+  const auto enabled = controller.compute(VehicleKinematics{}, reference, 0.01, true, true);
+  ASSERT_TRUE(enabled.valid);
+  EXPECT_NEAR(enabled.acceleration.x(), 0.9, 1e-12);
+  EXPECT_NEAR(enabled.acceleration.z(), 0.42, 1e-12);
+  const auto released = controller.compute(VehicleKinematics{}, reference, 0.01, true, false);
+  EXPECT_LT((released.acceleration - reference.acceleration).norm(), 1e-12);
+}
+
+/** A bypassed tilt-limited command remains the physical input for both DOB and the next ramp. */
+TEST(DobController, BypassedOutputKeepsTiltLimitedObserverInput)
+{
+  ControllerParameters parameters;
+  parameters.max_jerk_xy = 10.0;
+  parameters.max_tilt_rad = 0.001;
+  DobController controller(parameters);
+  ControlReference reference;
+  reference.acceleration.x() = 1.0;
+  const auto first = controller.compute(VehicleKinematics{}, reference, 0.01, true, false);
+  ASSERT_TRUE(first.valid);
+  const double issued = parameters.gravity * std::tan(parameters.max_tilt_rad);
+  EXPECT_NEAR(first.acceleration.x(), issued, 1e-12);
+
+  VehicleKinematics state;
+  state.velocity.x() = issued * 0.001;
+  reference.acceleration.x() = -1.0;
+  const auto next = controller.compute(state, reference, 0.001, true, true);
+  EXPECT_NEAR(next.acceleration.x(), issued - 0.01, 1e-12);
+  EXPECT_LT(next.disturbance.norm(), 1e-12);
 }
 
 }  // namespace onboard_control
