@@ -5,8 +5,7 @@
   <arg name="tgt_system" default="1" />
   <arg name="tgt_component" default="1" />
   <arg name="fcu_protocol" default="v2.0" />
-  <!-- Keep the launch namespace empty; MAVROS names its UAS/plugins internally. -->
-  <arg name="namespace" default="" />
+  <!-- Inherit node.launch's namespace: 2.14 uses mavros; newer versions use root. -->
   <arg name="pluginlists_yaml" default="$(dirname)/aircraft_plugins.yaml" />
 
   <include file="$(find-pkg-share mavros)/launch/node.launch">
@@ -17,6 +16,5 @@
     <arg name="tgt_system" value="$(var tgt_system)" />
     <arg name="tgt_component" value="$(var tgt_component)" />
     <arg name="fcu_protocol" value="$(var fcu_protocol)" />
-    <arg name="namespace" value="$(var namespace)" />
   </include>
 </launch>
