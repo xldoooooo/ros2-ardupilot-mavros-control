@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-20。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop仍为3.4，待同步接口、客户端及消费包并原生重建。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5与共用输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-20。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop仍为3.4，待同步接口、客户端及消费包并原生重建。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -75,8 +75,8 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 航点启动保留DOB已原生Release部署，并在3架次实飞bag确认运行及扰动连续；原机控制/外参配置未改，残余上拱和梯形相位转折仍在。自动安装俯仰启用3秒窗口，今日完整bag已锁定约-25.214°；原-22°回退/杆臂/roll/yaw保留。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过；直线3架次已复核，自主避障实飞仍未验收。现场地图已更新为项目`drivers/odin/maps/20261020_103327/map_20261020_103624.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
-| new | Task6 / 3.5；项目Odin、C++ extnav、两仓库原生Release重建；共用jerk与航点保留DOB已部署 | 2026-10-20 domain230未解锁全链READY，自动安装pitch锁定-19.8908°；3秒学习，roll/yaw=0、杆臂(.06,-.03,.05)，逐机YAML保留0°回退。保持odom，reloc地图尚未配置；jerk8/3，原61项有效控制值和相机/Tag配置保留。旧避障方向限额迁至原生规划器，速度1/.2、加速度.35/.15。收尾飞控/避障停止，视频/修正active；现场Git HEAD仍旧，以源码哈希和安装接口为准 |
+| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 航点启动保留DOB已原生Release部署，并在3架次实飞bag确认运行及扰动连续；按模式jerk10/8已安装回读，39项控制测试及隔离smoke通过，飞控栈保持停止；其余控制/外参配置保留，残余上拱和梯形相位转折仍在。自动安装俯仰启用3秒窗口，今日完整bag已锁定约-25.214°；原-22°回退/杆臂/roll/yaw保留。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过；直线3架次已复核，自主避障实飞仍未验收。现场地图已更新为项目`drivers/odin/maps/20261020_103327/map_20261020_103624.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
+| new | Task6 / 3.5；项目Odin、C++ extnav、两仓库原生Release重建；按模式jerk10/8与航点保留DOB已部署 | 2026-10-20 domain230未解锁全链READY，自动安装pitch锁定-19.8908°；3秒学习，roll/yaw=0、杆臂(.06,-.03,.05)，逐机YAML保留0°回退。保持odom，reloc地图尚未配置；仅自主任务输出jerk10/8，其余模式默认关闭，74项其他控制值和相机/Tag配置保留。旧避障方向限额迁至原生规划器，速度1/.2、加速度.35/.15。收尾飞控/避障停止，视频/修正active；现场Git HEAD仍旧，以源码哈希和安装接口为准 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成。旧Task6末端异常的4Hz遥测冲突已查明，恢复100Hz后odom/map本轮均无失败；严格净空及实飞未验收 |
 
@@ -93,7 +93,7 @@
   `/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup.bash`，由 `onboard.env` 选择；
   保留项目参数重试修复和原插件裁剪。旧 `mavros_param_fix_ws` 已退出生产，不能再加载。
   new 于2026-10-20再次实查系统为 **2.14.0**；不复制refresh的overlay或环境文件。
-  项目MAVROS profile须继承所选node.launch的namespace默认值：2.14为mavros、2.16为空。开发机/new已修正；refresh旧空值在2.16仍适用，下次常规同步带上该共享XML修正。
+  项目MAVROS profile须继承所选node.launch的namespace默认值：2.14为mavros、2.16为空。开发机/new已修正；refresh已随本次控制器同步带上该共享XML修正，2.16静态启动检查通过。
 - **MAVROS参数加载回归已在refresh修复**：上游 `63f7392` 禁止全局节点重命名时也屏蔽了YAML，
   `thrust_scaling=NaN`会丢弃姿态目标；系统10月10日升级2.16.0后仍被旧overlay覆盖。
   当前使用2.16.0内置官方修复，保留命名/所有权修复；实读推力缩放1.0，隔离UDP姿态输出与重试测试通过。
@@ -260,11 +260,13 @@
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
-- **共用控制输出限jerk已在开发机、refresh和new原生部署**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，用户实飞反馈已消抖但绕障后偏离参考；名义速度仍非实际硬限速，实飞跟踪与净空未验收。refresh已同步代码2c9b99f并原生重建onboard_control，33项测试及隔离8/3参数回读通过，原控制参数和38项其他配置保持；机载服务保持停止，下次启动加载新版本。new已同步并原生重建，37项控制测试及隔离smoke通过；hp-desktop仍待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)、[refresh同步](agent/report/report-2026-10-15-refresh-common-jerk-sync.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+- **按模式输出限jerk已在开发机、refresh和new原生部署**：`max_jerk_xy/z=10.0/8.0`，`jerk_limit_modes`的hover/motion/straight/avoidance/obstacle_hover/failsafe_hold六开关仅avoidance默认true。航点任务按策略选择，含启动速度等待及规划/制动等待；任务结束末点保持归hover。复用原PD+DOB输出限幅，不新增控制器；开关不清空DOB或上一输入，旁路仍记录倾角限幅后的命令。LAND/解除武装/实际停控清理历史，硬约束优先，关闭瞬间不保证jerk连续。开发机39项C++及24项真实node DDS测试通过；两机均39项控制测试/安装参数回读/隔离smoke/静态启动检查通过，逐机74项其他控制参数及标定保留。refresh原8/8、new原8/3已改10/8；两机飞控栈保持停止，new视频/修正继续active；hp-desktop待同步本次模式开关及默认值。SITL显示起飞接管制动改善，但直线/遇障停车姿态指令更陡，停车时间未明显缩短；自主标准及激进场景仍未通过净空，不能当作避障修复或实飞验收。详见[实现、对照及部署](agent/report/report-2026-10-20-mode-selective-output-jerk.md)。
 
-- **航点接续保留DOB已在开发机/refresh/new修复并原生Release安装**：准备航点和速度门控通过两处均保留扰动及既有输入，按当前速度重算内部观测状态；LAND/解除武装/停控清零保持。真实node隔离正负对照分别验证两处清零已消失；refresh三架次实录已确认实际加载，原机jerk8/3未改；开发机用户Z=8保持。new已同步；hp-desktop旧基线待同步。实录启动dZ约.26—.36m/s²未清零；水平最大正高度误差由旧13.6cm减至2.3—6.0cm但弧形仍在，梯形边界快速转折约17—23°/s仍在，制动没有统一增大。第1次较强制动由更大P/D领先反馈解释，且同时转向90°；不能当同条件单因素对照。复核见[实录报告](agent/report/report-2026-10-20-refresh-post-dob-fix-flight-bags-analysis.md)，实现见[修复与两机核查](agent/report/report-2026-10-20-waypoint-dob-preservation-and-aircraft-audit.md)。
+- **航点接续保留DOB已在开发机/refresh/new修复并原生Release安装**：准备航点和速度门控通过两处均保留扰动及既有输入，按当前速度重算内部观测状态；LAND/解除武装/停控清零保持。真实node隔离正负对照分别验证两处清零已消失；refresh三架次实录已确认实际加载；当时原机jerk8/3、开发机Z=8，仅供该批实录解释，当前已切换按模式10/8。new已同步；hp-desktop旧基线待同步。实录启动dZ约.26—.36m/s²未清零；水平最大正高度误差由旧13.6cm减至2.3—6.0cm但弧形仍在，梯形边界快速转折约17—23°/s仍在，制动没有统一增大。第1次较强制动由更大P/D领先反馈解释，且同时转向90°；不能当同条件单因素对照。复核见[实录报告](agent/report/report-2026-10-20-refresh-post-dob-fix-flight-bags-analysis.md)，实现见[修复与两机核查](agent/report/report-2026-10-20-waypoint-dob-preservation-and-aircraft-audit.md)。
 
 - **拱形历史证据需区分飞机**：8/14、9/1正常视频可能为new；今日两机4.6.3提交new=92b0cd78正式、refresh=3fc7011a beta，全库仅版本标记不同。EK3/VISO、推力指数等相同，但内环/IMU标定、当时Python/C++外参桥、安装角及odom/map不同；当前hover .223878/.225926相近，不能直接由参数大小判定故障或互抄调参。旧/新外环同输入输出一致，4.6.3同模型均可上拱，保留DOB能改善该合成工况，尚非实机根因排他证明；FCU vz与高度差分本有不同定义。修复前后4份bag均已离线在bags/且SHA256匹配；new关机前1246项参数与117个原文件在`agent/codex/new-offline-snapshot-20261020-1539/`，refresh新实录及配置证据在`agent/codex/straight-dob-fixed-20261020/`。历史复现见[对照报告](agent/report/report-2026-10-20-straight-history-comparison-and-sitl-reproduction.md)，实录分解见[完整bag诊断](agent/report/report-2026-10-20-straight-full-bag-height-twitch-braking-analysis.md)。
+
+- **new往返实录已离线复核**：`bags/new-20261020/rosbag2_2026_10_20-16_24_47/`完整且SHA256匹配；实际odom、jerk8/3、安装pitch−19.9525°。0.5m起飞峰.6336m；约.4m/vz+.383m/s就接管，首步制动请求−.758被Z jerk限制至−.030m/s²。航点DOB确实保留；出航/返航最大正高度误差1.45/4.77cm，返航另含约6.78cm欠高恢复；爬升最大欠高8.46cm、完成后保持最低.9421m。梯形中部匀速仅.248/.321秒，俯仰边界约22°/s；高度峰谷当步Z jerk不活跃，残余竖直闭环原因未排他定位。仅分析，未改控制/配置；详见[new飞行分析](agent/report/report-2026-10-20-new-flight-performance-analysis.md)。
 
 - Task6三策略map SITL均实际到点/拍照/LAND，未放宽到点条件。原自主“10次入点失败”的主要上游问题已定位为临时UDP14550链路经MAVProxy默认每15秒请求ALL=4Hz，覆盖已接受的100Hz位置消息配置；正式入口仍直连TCP5762，不能据此归因于实机串口控制。
   仅关闭MAVProxy自动请求，保留0.2秒/1米重规划及jerk8/3，odom/map位置实测约100Hz，两轮均零失败、终点保持约0.3秒后完成；map含运动中0.12m重定位。生产算法及实机参数未改。
@@ -272,7 +274,7 @@
   开发机统一SITL入口已固定传入`--mavproxy-args=--streamrate=-1`，由机载统一配置频率；重启地面站加载，无需改控制参数或机载重建。正式TCP/原问题UDP两轮自主回归均约100Hz、零入点失败，new已同步地面启动源码；hp地面端下次同步带上该源码。
   refresh当前直连ttyTHS1:460800、无GCS转发；45秒静态位置/速度约99.1Hz、extnav辅助约100Hz、vision约40Hz，未见同类持续降频。偶发源间隔60ms保留，不能声称严格恒定100Hz；串口丢包/溢出/解析错误均0。只读观测未改或重启extnav，独立绕障跟踪/净空风险仍保留，见[修复与机载检查](agent/report/report-2026-10-19-telemetry-rate-fix-refresh-audit.md)。
 
-- **输出限jerk与原生避障的跟踪可行性仍有缺口**：当前原生仅C1且未约束jerk，PD+DOB前馈及反馈一起经过8/3输出斜率限制；SITL已证实制动请求与实际下发控制量反向滞后，激进aXY=2时可大幅偏离、进入虚拟障碍几何或触发0.8m跟踪保护。提高WNxy不是已验证修复；关闭jerk又恢复姿态跳变。参考时钟照常推进，跟踪保护仅等待，未专门要求原生立即重规划；100s/100m强制触发设置下可能等待超时LAND。不得仅按任务完成判定净空合格。
+- **输出限jerk与原生避障的跟踪可行性仍有缺口**：原生仅C1且未约束jerk，PD+DOB前馈及反馈一起限jerk，参考时钟继续推进。旧8/3的反向制动滞后、跟踪保护后等待而不立即请求重规划问题仍有参考价值。当前仅自主10/8不等于已解决：本轮标准方柱实际中心最小表面距离0.3491m、参考0.3487m，未达0.35m；激进aXY=2场景新配置虽完成，实际中心距离仅0.0641m（旧8/3为0.2386m且保护超时LAND），最大正Z误差0.1864m。曲线/重规划不同，不能将全部差值归于jerk；净空均未扣机体尺寸。不得仅按任务完成判定净空合格或自动提高增益/放宽门限。后续应独立解决轨迹可跟踪性、真实表面净空及失败重规划恢复。
   总加速度模长推力与ArduPilot Guided归一化推力入口的angle_boost存在重复倾斜补偿，SITL对照支持其造成部分高度偏高；真实飞控参数及视频约30cm高度差尚未完整验证。ROS原生入口会将旧scalar限额抬高至显式方向限额最大值，不应将scalar=1、方向=2理解为实际上限1。正式算法/配置未因本次排查修改，翻新机现场读取按用户要求延期。复现条件、限制和证据见[偏轨SITL报告](agent/report/report-2026-10-19-post-obstacle-tracking-sitl.md)。
 
 ## 关键历史与资料索引
