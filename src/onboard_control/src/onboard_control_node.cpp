@@ -1225,7 +1225,7 @@ void OnboardControlNode::start_takeoff(
   ensure_guided_and_armed(command, [this, command]() {send_takeoff_request(command);});
 }
 
-/** Prepare the waypoint task and retain learned compensation only for autonomous avoidance. */
+/** Prepare the waypoint task without discarding learned disturbance compensation. */
 void OnboardControlNode::start_waypoint_task(
   const CommandIdentity & command,
   const std::vector<guided_interfaces::msg::Waypoint> & waypoints,
@@ -1269,8 +1269,8 @@ void OnboardControlNode::start_waypoint_task(
       reference_.acceleration.setZero();
       reference_.yaw = yaw_;
       target_yaw_rate_ = 0.0;
-      // Autonomous replans start from actual p/v, so they need the learned hover compensation.
-      activate_tracking_controller(active_tracking_controller_, waypoint_flight_strategy_ == 1);
+      // Every waypoint strategy needs the compensation learned during the preceding hover.
+      activate_tracking_controller(active_tracking_controller_, true);
       control_mode_ = guided_interfaces::msg::ControlStatus::MODE_HOVER;
       waypoint_start_pending_ = true;
       update_waypoint_start(SteadyClock::now());
@@ -1322,7 +1322,7 @@ void OnboardControlNode::update_waypoint_start(const SteadyTime & now)
     message.str(), 0, static_cast<std::uint32_t>(waypoints_.size()));
 }
 
-/** Start tracking once the speed gate is ready, preserving autonomous observer continuity. */
+/** Start tracking once the speed gate is ready, preserving observer continuity. */
 void OnboardControlNode::activate_waypoint_execution(const CommandIdentity & command)
 {
   if (!active_task_matches(command) || waypoints_.empty()) {
@@ -1336,7 +1336,7 @@ void OnboardControlNode::activate_waypoint_execution(const CommandIdentity & com
   reference_.yaw = yaw_;
   target_yaw_rate_ = 0.0;
   // Do not clear the same compensation again after the waypoint start-speed gate.
-  activate_tracking_controller(active_tracking_controller_, waypoint_flight_strategy_ == 1);
+  activate_tracking_controller(active_tracking_controller_, true);
   initialize_waypoint_segment();
   control_mode_ = guided_interfaces::msg::ControlStatus::MODE_WAYPOINT;
   std::ostringstream stream;
@@ -1387,7 +1387,7 @@ void OnboardControlNode::enter_hover(
   set_status_message(reason, log_level);
 }
 
-/** Preserve the observer only when explicitly requested by autonomous waypoint activation. */
+/** Optionally preserve the observer while switching the controller gain profile. */
 void OnboardControlNode::activate_tracking_controller(
   const TrackingControllerType type, const bool preserve_observer)
 {

@@ -75,8 +75,8 @@
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 自动安装俯仰已原生Release部署并启用3秒窗口，正式入口ARM隔离7例通过；原-22°回退/杆臂/roll/yaw保留，真实传感器收敛待下次启动验证。收尾三个服务及链路进程均停止。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过，未实飞验收。现场地图已更新为项目`drivers/odin/maps/20261020_103327/map_20261020_103624.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
-| new | Task38 / 3.4、Odin XYZ输出保留；仍为Task3 Python extnav，C++桥待同步安装 | 最近实查机载链路进程正在运行（飞行unit仍failed）；Odin仅down新版已安装，但旧进程尚未重启，下次重启后生效。相机/Tag/安装配置保留；同步C++时使用安装器原生构建，不复制refresh二进制 |
+| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 航点启动保留DOB修复已原生Release部署，控制栈保持停止，下次启动加载；原机控制/外参配置未改。自动安装俯仰启用3秒窗口，今日完整bag已锁定约-25.214°；原-22°回退/杆臂/roll/yaw保留。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过，未实飞验收。现场地图已更新为项目`drivers/odin/maps/20261020_103327/map_20261020_103624.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
+| new | Task38 / 3.4、Odin XYZ输出保留；仍为Task3 Python extnav，C++桥待同步安装 | 2026-10-20只读实查链路运行，armed=false；Odin当前odom，extnav使用highfreq、安装角0/0/0、杆臂(.06,-.03,.05)。当前不含共用jerk与航点保留DOB改动，本轮未写入；相机/Tag/安装配置保留，同步需原生构建 |
 | hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
 | 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成。旧Task6末端异常的4Hz遥测冲突已查明，恢复100Hz后odom/map本轮均无失败；严格净空及实飞未验收 |
 
@@ -92,7 +92,7 @@
 - refresh 系统与活动 MAVROS overlay 均为 **2.16.0**，活动路径为
   `/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup.bash`，由 `onboard.env` 选择；
   保留项目参数重试修复和原插件裁剪。旧 `mavros_param_fix_ws` 已退出生产，不能再加载。
-  new 最近确认系统为 **2.14.0**，本次未连接；下次同步先实查版本，不复制refresh的overlay或环境文件。
+  new 于2026-10-20再次实查系统为 **2.14.0**；不复制refresh的overlay或环境文件。
 - **MAVROS参数加载回归已在refresh修复**：上游 `63f7392` 禁止全局节点重命名时也屏蔽了YAML，
   `thrust_scaling=NaN`会丢弃姿态目标；系统10月10日升级2.16.0后仍被旧overlay覆盖。
   当前使用2.16.0内置官方修复，保留命名/所有权修复；实读推力缩放1.0，隔离UDP姿态输出与重试测试通过。
@@ -259,6 +259,10 @@
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
 - **共用控制输出限jerk已在开发机和refresh原生部署**：control.yaml的max_jerk_xy/z默认8.0/3.0 m/s³，各方向0关闭；所有持续PD+DOB姿态控制共用，参数修改后重启。轨迹/增益切换保留输出历史，LAND/解除武装/实际停止控制清理；DOB使用倾角限幅后的输入，硬约束优先。原生p/v/a仍保持C1及精确时间尺度。方柱SITL的指令阶跃显著降低，用户实飞反馈已消抖但绕障后偏离参考；名义速度仍非实际硬限速，实飞跟踪与净空未验收。refresh已同步代码2c9b99f并原生重建onboard_control，33项测试及隔离8/3参数回读通过，原控制参数和38项其他配置保持；机载服务保持停止，下次启动加载新版本。new/hp-desktop仍待同步此改动并原生重建onboard_control；逐机配置/标定必须保留。旧odometry快速制动已由用户切换highfreq解决，应与参考/输出跳变区分；旧bag缺执行参考和控制输出。详见[实现与对照](agent/report/report-2026-10-15-common-output-jerk-limit.md)、[refresh同步](agent/report/report-2026-10-15-refresh-common-jerk-sync.md)，原原因见[排查报告](agent/report/report-2026-10-14-avoidance-trajectory-twitch-investigation.md)。
+
+- **航点接续保留DOB已在开发机/refresh修复并原生Release安装**：准备航点和速度门控通过两处均保留扰动及既有输入，按当前速度重算内部观测状态；LAND/解除武装/停控清零保持。真实node隔离正负对照分别验证两处清零已消失；refresh保持停栈，原机jerk8/3未改；开发机用户Z=8保持。new/hp-desktop旧基线待同步。实飞高度/抖动/制动尚未验收，见[修复与两机核查](agent/report/report-2026-10-20-waypoint-dob-preservation-and-aircraft-audit.md)。
+
+- **拱形历史证据需区分飞机**：8/14、9/1正常视频可能为new；今日两机4.6.3提交new=92b0cd78正式、refresh=3fc7011a beta，全库仅版本标记不同。EK3/VISO、推力指数等相同，但内环/IMU标定、Python/C++外参桥、安装角及odom/map不同；当前hover .223878/.225926相近，不能直接由参数大小判定故障或互抄调参。旧/新外环同输入输出一致，4.6.3同模型均可上拱，保留DOB能改善该合成工况，尚非实机根因排他证明；FCU vz与高度差分本有不同定义。两份bag已离线在bags/且SHA256匹配，历史复现见[对照报告](agent/report/report-2026-10-20-straight-history-comparison-and-sitl-reproduction.md)，实录分解见[完整bag诊断](agent/report/report-2026-10-20-straight-full-bag-height-twitch-braking-analysis.md)。
 
 - Task6三策略map SITL均实际到点/拍照/LAND，未放宽到点条件。原自主“10次入点失败”的主要上游问题已定位为临时UDP14550链路经MAVProxy默认每15秒请求ALL=4Hz，覆盖已接受的100Hz位置消息配置；正式入口仍直连TCP5762，不能据此归因于实机串口控制。
   仅关闭MAVProxy自动请求，保留0.2秒/1米重规划及jerk8/3，odom/map位置实测约100Hz，两轮均零失败、终点保持约0.3秒后完成；map含运动中0.12m重定位。生产算法及实机参数未改。
