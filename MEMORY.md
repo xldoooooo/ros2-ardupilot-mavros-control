@@ -106,9 +106,9 @@
   `network-online.target` 未必已有 Wi-Fi IPv4，视频入口保留 DDS 创建前的本地路由等待。
 - refresh 的 video service 已换 Wasintek，相机当前为 `/dev/video2`；修正使用的 UQ212 为 `/dev/video0`。
   内参标定源码 `video_service/calibration/wainstek_cam_calib.py` 与现场 `~/camera_int_calib/wainstek_cam_calib.py`
-  当前为最初脚本加最小修复：CAMERA_ID=2、OpenCV4.6的DetectorParameters_create与模块级detectMarkers；其余原样。
+  当前为最初脚本加最小修复：CAMERA_ID=2、OpenCV4.6检测API，以及图像边缘ROI裁剪/空区域跳过，防止Laplacian崩溃。
   原1920×1080@30、默认VideoCapture采集、采样/标定与当前目录输出行为保留，未再加入生产参数读取或新解码链路。
-  已实看真实MJPEG预览，60帧约19.7fps（无有效标定板场景），合成36个Tag识别与原采样质量检查通过。
+  真实MJPEG预览、合成36Tag、左右上下边界及普通样本结果一致性已核验；性能随场景变化，实测持板性能未验收。
   尚未完成新镜头实测标定；new/hp-desktop未同步，不覆盖逐机镜头或内参。
 - 独立 USB Jetson（`192.168.55.1`、序列号 `1424324322770`）不是现役飞机，基础环境已构建，
   无外设、后续补丁未逐项同步。新机事项查 [检查清单](src/onboard_control/deploy/JETSON_NEW_MACHINE_CHECKLIST.md)；

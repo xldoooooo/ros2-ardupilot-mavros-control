@@ -191,8 +191,14 @@ def descriptor_distance(a, b):
 
 
 def sample_quality(gray, object_points, image_points, tag_count, descriptors, image_size):
+    """Evaluate the original quality criteria using an image-clipped board region."""
     x, y, w, h = cv2.boundingRect(image_points.reshape(-1, 2))
-    board_roi = gray[y : y + h, x : x + w]
+    # Refined edge corners can be negative; NumPy negative slices wrap from the end.
+    height, width = gray.shape[:2]
+    board_roi = gray[max(0, y):max(0, min(height, y + h)),
+                     max(0, x):max(0, min(width, x + w))]
+    if board_roi.size == 0:
+        return False, None, 0.0, 0.0, "board outside image"
     sharpness = float(cv2.Laplacian(board_roi, cv2.CV_64F).var())
     descriptor, area_ratio = board_descriptor(object_points, image_points, image_size)
 
@@ -460,6 +466,8 @@ def main():
                     descriptors,
                     image_size,
                 )
+                if current_descriptor is None:
+                    current_image_points = None
                 if good and stable_detections < STABLE_DETECTIONS_REQUIRED:
                     good = False
                     quality_message = f"hold still {stable_detections}/{STABLE_DETECTIONS_REQUIRED}"
