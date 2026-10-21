@@ -12,6 +12,7 @@ readonly RUNTIME_HELPERS="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)/scripts/li
 }
 # shellcheck disable=SC1090
 source "${RUNTIME_HELPERS}"
+source "${SCRIPT_DIR}/../../../scripts/lib/build_dependencies.bash"
 readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 # Keep ignore rules available so build outputs stay out of update's dirty-tree check.
 readonly GITIGNORE_SPARSE_PATH="/.gitignore"
@@ -59,7 +60,7 @@ Commands:
   show-config  Show the resolved workspace, ROS distribution, and Git revision.
   update       Fast-forward the onboard packages and launchers sparse checkout.
   deps-check   Check ROS packages and toolchain without changing the OS.
-  build        Build project Odin, flight packages, and correction interfaces/service.
+  build        Install missing controller libraries, then build Odin and flight/correction packages.
   test         Run package tests and report all colcon test results.
   smoke        Run the node in a localhost-only, nonzero ROS domain without MAVROS.
   verify       Run deps-check, build, test, and the isolated smoke test.
@@ -238,6 +239,7 @@ build_workspace() {
   source_underlay
   require_command colcon
   validate_workspace_layout
+  build_ensure_control_dependencies
   # Keep the driver isolated from the flight workspace; colcon rebuilds incrementally.
   ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}" "${WORKSPACE_ROOT}/drivers/odin/build.sh"
   (
@@ -397,6 +399,7 @@ case "${1:-}" in
     smoke_test
     ;;
   verify)
+    build_ensure_control_dependencies
     check_dependencies
     build_workspace
     test_workspace

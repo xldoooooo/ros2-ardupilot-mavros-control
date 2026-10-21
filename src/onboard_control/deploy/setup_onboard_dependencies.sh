@@ -3,6 +3,9 @@
 
 set -Eeuo pipefail
 
+# Keep fresh installations and incremental builds on the same controller dependency list.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../scripts/lib/build_dependencies.bash"
+
 readonly ROS_DISTRO="jazzy"
 readonly ROS_KEY_URL="https://raw.githubusercontent.com/ros/rosdistro/master/ros.key"
 readonly ROS_KEY_FINGERPRINT="C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654"
@@ -118,7 +121,7 @@ run_root install -m 0644 "${stage_dir}/ros2.list" "${ROS_SOURCE}"
 
 run_root apt-get update
 run_root apt-get install -y \
-  build-essential cmake git libeigen3-dev nlohmann-json3-dev \
+  build-essential cmake git "${CONTROL_BUILD_APT_PACKAGES[@]}" \
   python3-colcon-common-extensions python3-numpy python3-opencv python3-pytest \
   python3-rosdep python3-vcstool python3-yaml \
   python3-venv \

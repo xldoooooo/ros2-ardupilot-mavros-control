@@ -170,7 +170,9 @@ export HTTP_PROXY=socks5h://127.0.0.1:19080
 ./src/onboard_control/deploy/onboard_workspace.sh deps-check
 ```
 
-`deps-check` 只读取工具链、Eigen 头文件和 ROS 包索引，不依赖已初始化的 rosdep 数据库，也不会调用 `apt` 或 `sudo`。如果报告缺包，应先人工审查清单；不要直接批量安装或升级已有 ROS 环境。
+`deps-check` 只读取工具链、Eigen/JSON 头文件和 ROS 包索引，不依赖已初始化的 rosdep 数据库，也不会调用 `apt` 或 `sudo`。
+正常机载构建、`--verify`、地面站安装和避障构建则在编译前自动补齐缺少的 Eigen/JSON 开发包，
+需要 sudo 与可用的 apt 网络，已有包不升级；完整 ROS、Odin 和媒体依赖仍按[新机依赖指导](ONBOARD_DEPENDENCIES.md)部署。
 
 ## 3. 编译、单元测试与安全烟雾测试
 

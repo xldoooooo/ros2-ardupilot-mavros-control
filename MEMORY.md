@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-20。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop仍为3.4，待同步接口、客户端及消费包并原生重建。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-21。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -22,7 +22,7 @@
   该工具未加入自动启动；refresh 本次未核对或部署，需要时从开发机 `dev/` 单独复制即可。
 - 开发机及两架现役飞机均为 Ubuntu 24.04 / ROS 2 Jazzy；机载为 Jetson Orin NX / ARM64。
   Python 使用项目 `.venv`。旧 Ubuntu 22.04/Humble 台架数据不再代表现役环境。
-- 开发机、refresh及new飞行协议 **3.5**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.5.0**；hp-desktop仍为3.4，不能混用新旧接口及安装产物。
+- 开发机、refresh、new及hp-desktop飞行协议 **3.5**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.5.0**；不能混用新旧接口及安装产物。
   独立视频协议 **3.2**，AprilTag 修正协议 **2.0**。地面与机载共享接口必须同步重建。
 - PySide6 地面站是薄客户端；`src/onboard_control` 是唯一飞行控制权威，负责租约、安全状态机、
   航点推进及 100 Hz PD+DOB。唯一生产输出为 `/mavros/setpoint_raw/attitude`；GUI、规划器、
@@ -47,11 +47,11 @@
 - 机载性能配置在开发机/refresh/new已落实：`config/mavros/aircraft.launch.xml`及9插件白名单由独立/整栈机载入口使用，
   复用已选MAVROS安装的apm参数，不再依赖手改系统插件文件；`gps_status`不在白名单。直连FCU遥控器手飞不依赖ROS的rc_io/manual_control；未改RC/模式参数。
   开发机SITL保持原配置。项目Odin的odom/reloc关闭raw DTOF、诊断CSV和传感器展示TF，slam保留展示TF，original不变；地图TF独立保留。
-  开发机/refresh修改前备份在驱动config/backup/20261019-flight-trim，恢复不得跨机覆盖地图路径；new旧外部驱动保留。hp-desktop待同步；外部catkin_ws保持。
+  开发机/refresh修改前备份在驱动config/backup/20261019-flight-trim，恢复不得跨机覆盖地图路径；new旧外部驱动保留。hp-desktop已同步源码并原生构建项目驱动；外部catkin_ws保持。
   源码级主机精简只在agent隔离副本评估，未合入正式驱动；HIGHRES_IMU请求仍由原控制器保持100Hz。
 - 避障停止脚本已在开发机、refresh 更新：清理本机全部 domain/工作区的避障启动器、规划器/桥及已捕获的后代，
   保留孤儿身份，逐级 INT/TERM/KILL，复核无活动残留才返回成功；不停止飞控栈。脚本更新无需重建。
-  new已同步；hp-desktop 尚待同步此停止脚本；隔离验证与范围见[修复报告](agent/report/report-2026-10-19-stop-avoidance-fix-refresh.md)。
+  new与hp-desktop均已同步此停止脚本；隔离验证与范围见[修复报告](agent/report/report-2026-10-19-stop-avoidance-fix-refresh.md)。
 
 | 用途 | 当前入口 / 说明 |
 | --- | --- |
@@ -62,6 +62,8 @@
 | 修正启停 | `scripts/onboard/start_onboard_correction.sh`、`stop_onboard_correction.sh` |
 | 避障构建、启停 | `src/onboard_control/deploy/build_avoidance.sh`、`scripts/onboard/start_avoidance.sh`、`stop_avoidance.sh` |
 | Odin/extnav 单独启动 | `scripts/onboard/components/start_odin.sh`、`start_extnav.sh`；读取 `onboard.env`，不启动其他组件 |
+
+地面站安装、机载构建（含verify）和避障构建共用`scripts/lib/build_dependencies.bash`，编译前仅对缺失的Eigen/JSON开发包执行sudo/apt；全量依赖安装器复用同一清单，`deps-check`保持只读。开发机与hp已同步验证；refresh/new下次同步须带上该共享文件及部署脚本，无需重启运行服务。
 
 部署细节查 [机载部署指导](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)、
 [视频说明](video_service/README.md)、[修正说明](correction_service/README.md)、
@@ -77,12 +79,12 @@
 | --- | --- | --- |
 | refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 航点启动保留DOB已原生Release部署，并在3架次实飞bag确认运行及扰动连续；按模式jerk10/8已安装回读，39项控制测试及隔离smoke通过，飞控栈保持停止；其余控制/外参配置保留，残余上拱和梯形相位转折仍在。自动安装俯仰启用3秒窗口，今日完整bag已锁定约-25.214°；原-22°回退/杆臂/roll/yaw保留。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过；直线3架次已复核，自主避障实飞仍未验收。现场地图已更新为项目`drivers/odin/maps/20261020_103327/map_20261020_103624.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
 | new | Task6 / 3.5；项目Odin、C++ extnav、两仓库原生Release重建；按模式jerk10/8与航点保留DOB已部署 | 2026-10-20 domain230未解锁全链READY，自动安装pitch锁定-19.8908°；3秒学习，roll/yaw=0、杆臂(.06,-.03,.05)，逐机YAML保留0°回退。保持odom，reloc地图尚未配置；仅自主任务输出jerk10/8，其余模式默认关闭，74项其他控制值和相机/Tag配置保留。旧避障方向限额迁至原生规划器，速度1/.2、加速度.35/.15。收尾飞控/避障停止，视频/修正active；现场Git HEAD仍旧，以源码哈希和安装接口为准 |
-| hp-desktop | 2026-10-13 主工程62ce78e、独立避障b527fbc同源同步；两个仓库原生Release重建，修正服务重建，地面站环境检查通过 | 已具备Task38 / 3.4、原生目标与方向限额接口；旧源码及build/install/log保存在`/home/scq/backups/code-sync-20261013/`，修正测试现场改动保留，旧避障launch仅归档、不混用 |
+| hp-desktop | 2026-10-21 主工程2f340b3、独立避障8b4630c及开发机当前源码差异已同步；3.5接口、六个主工程包、独立避障与项目Odin原生Release重建 | 地面环境、隔离控制smoke和39项规划参数回读通过；备份`/home/scq/backups/code-sync-20261021/`，TODO及修正测试现场改动保留。无外部vrpn_mavros，C++ extnav仅同步维护源码，未新增机载服务；旧回退参数测试预期仍有偏差，见同步简报 |
 | 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成。旧Task6末端异常的4Hz遥测冲突已查明，恢复100Hz后odom/map本轮均无失败；严格净空及实飞未验收 |
 
 - Odin迁移：开发机、refresh及new已完成独立/完整机载构建；两机隔离domain230全链READY且armed=false，测试后飞控栈全部停止。
   refresh的`ODIN_CV_BRIDGE_SETUP`指向项目`drivers/odin/cv_bridge_ws/install/local_setup.bash`，OpenCV仅4.8；
-  旧`ODIN_OVERLAY_SETUP`字段已不参与项目驱动选择。new已独立原生构建兼容cv_bridge及项目驱动，OpenCV固定/usr/lib/cmake/opencv4的4.8，不选该机/usr/local的4.14；hp-desktop待同步，勿复制refresh安装产物或逐机环境。
+  旧`ODIN_OVERLAY_SETUP`字段已不参与项目驱动选择。new已独立原生构建兼容cv_bridge及项目驱动，OpenCV固定/usr/lib/cmake/opencv4的4.8，不选该机/usr/local的4.14；hp-desktop已用系统cv_bridge原生构建项目Odin，勿复制refresh安装产物或逐机环境。
   后续Task6已完成真实重定位静态核对，绝对定位精度和实飞仍未验收；最初迁移见[迁移报告](agent/report/report-2026-10-19-project-odin-driver-migration.md)。
 
 - **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
@@ -141,12 +143,12 @@
 ## AprilTag / Odin 当前基线与风险
 
 - extnav权威源码为`correction_service/extnav_patch/`的单线程C++/固定尺寸数学；公共入口仍`ros2 run extnav_bridge extnav_to_vision_pose`。
-  安装器以Release迁移外部`/home/nvidia/vrpn_mavros`包并备份旧source/build/install；开发机隔离验证、refresh/new生产安装已完成，hp-desktop待同步安装。原Python仅保留作比较参考。
+  安装器以Release迁移外部`/home/nvidia/vrpn_mavros`包并备份旧source/build/install；开发机隔离验证、refresh/new生产安装已完成，hp-desktop已同步维护源码，但无外部vrpn_mavros，未新增该机载安装。原Python仅保留作比较参考。
   raw全频、vision/辅助timer仍40/100Hz，CAS/session、冻结样本和计数保持；corrected保留原门控，两路辅助输出无读者时跳过构造/publish，有读者恢复，control计数仍推进。控制器消费MAVROS EKF。
   ARM的7,880组数值对照最大误差约7.1e-15，三套构建/安装入口公共契约通过；全服务地面生产CPU约68.78%→10.75%单核，持续订阅切换源时序正常。有限窗口不保证全部时序极值改善，未实飞验收。
   回退与边界见[C++重写报告](agent/report/report-2026-10-19-extnav-cpp-rewrite.md)，成本原因见[成本分析](agent/report/report-2026-10-19-extnav-cost-analysis.md)。
 - C++ extnav已新增启动时自动安装俯仰：`auto_installation:true`后，未解锁静止默认3秒，比较Odin与FCU IMU的机体系重力方向，仅学习pitch，roll/yaw/杆臂保持配置；不要求机身摆平或两世界yaw相同。收敛后移除校准订阅并锁到节点重启，不写YAML；缺输入/移动/active Tag期间保留手工回退。节点开关默认false，项目外参YAML默认true，旧逐机YAML需补参数。
-  开发机Release双目标及隔离安装入口验证通过；refresh/new均已原生重建、正式入口ARM隔离7例通过，并在逐机YAML启用自动补偿；refresh完整bag约-25.214°，new未解锁静态锁定-19.8908°，pitch输出约0.54°、同期FCU IMU约0.58°。hp待同步。refresh回退备份在`/home/nvidia/backups/ros2-ardupilot-maintenance/auto-pitch-20261020/`。实际角及锁定状态见现有ExtnavCorrectionStatus；非零安装角Tag限制保持。估计是相对重力俯仰，不能独立消除两IMU水平标定偏差；原3.3°残差样本对应约-25.3°安装估计，该历史例不替代当前两机各自启动学习。用法及待部署项见[自动俯仰报告](agent/report/report-2026-10-20-auto-installation-pitch.md)。
+  开发机Release双目标及隔离安装入口验证通过；refresh/new均已原生重建、正式入口ARM隔离7例通过，并在逐机YAML启用自动补偿；refresh完整bag约-25.214°，new未解锁静态锁定-19.8908°，pitch输出约0.54°、同期FCU IMU约0.58°。hp已同步维护源码，未新增外部extnav部署。refresh回退备份在`/home/nvidia/backups/ros2-ardupilot-maintenance/auto-pitch-20261020/`。实际角及锁定状态见现有ExtnavCorrectionStatus；非零安装角Tag限制保持。估计是相对重力俯仰，不能独立消除两IMU水平标定偏差；原3.3°残差样本对应约-25.3°安装估计，该历史例不替代当前两机各自启动学习。用法及待部署项见[自动俯仰报告](agent/report/report-2026-10-20-auto-installation-pitch.md)。
 - **Odin 近身拖点尚未解决，不能把接收端删点当成内部算法前过滤。** refresh 实际运行
   驱动 0.14.0 / SoC 0.14.2 / SLAM 0.13.1；`cloud_slam` 由设备输出，公开驱动/SDK 未查到
   算法输入最小距离或 FOV 裁剪参数。`cloud_raw_confidence_threshold` 只过滤主机发布的 raw 云。
@@ -198,7 +200,7 @@
   search.max_vel_xy/max_vel_z/max_acc_xy/max_acc_z在普通原语与shot的原时间内生效。
   旧scalar CLI填未显式给出的方向值，方向CLI优先。PlanResult/AvoidanceResult携带最终解析限额；遇障悬停仅紧急制动继承原生加速度，HORIZON制动预留仍使用原生限额。
   遇障悬停从首次等待时的实际p/v生成恒减速度参考，零速后保持预计停点；重复阻挡不移动起点或重置等待计时。
-  正常参考复用直线组与误差制动策略分离已在开发机、refresh原生部署（代码541b8b4）；new已同步并原生重建；hp-desktop仍待同步并原生重建onboard_control。
+  正常参考复用直线组与误差制动策略分离已在开发机、refresh原生部署（代码541b8b4）；new已同步并原生重建；hp-desktop也已同步并原生重建onboard_control。
   超过0.8m位置误差的制动判断仅用于自主避障；遇障悬停与普通直线一样继续跟踪正常参考，不因参考领先自动停车。
   开发机SITL无障碍遇障悬停/普通直线实际XY峰值1.06359/1.06372m/s；正常参考一致，仍非实际硬限速。
   运动中遇障制动参考2m/s²，约.604s降至实际XY<.15m/s；阻挡无拍照，移障可恢复。
@@ -260,9 +262,9 @@
   原因与未解问题查[分析报告](agent/report/report-2026-10-13-task5-avoidance-analysis.md)，
   实施/逐机结果查[执行报告](agent/report/report-2026-10-13-task5-avoidance-fix.md)。
 
-- **按模式输出限jerk已在开发机、refresh和new原生部署**：`max_jerk_xy/z=10.0/8.0`，`jerk_limit_modes`的hover/motion/straight/avoidance/obstacle_hover/failsafe_hold六开关仅avoidance默认true。航点任务按策略选择，含启动速度等待及规划/制动等待；任务结束末点保持归hover。复用原PD+DOB输出限幅，不新增控制器；开关不清空DOB或上一输入，旁路仍记录倾角限幅后的命令。LAND/解除武装/实际停控清理历史，硬约束优先，关闭瞬间不保证jerk连续。开发机39项C++及24项真实node DDS测试通过；两机均39项控制测试/安装参数回读/隔离smoke/静态启动检查通过，逐机74项其他控制参数及标定保留。refresh原8/8、new原8/3已改10/8；两机飞控栈保持停止，new视频/修正继续active；hp-desktop待同步本次模式开关及默认值。SITL显示起飞接管制动改善，但直线/遇障停车姿态指令更陡，停车时间未明显缩短；自主标准及激进场景仍未通过净空，不能当作避障修复或实飞验收。详见[实现、对照及部署](agent/report/report-2026-10-20-mode-selective-output-jerk.md)。
+- **按模式输出限jerk已在开发机、refresh和new原生部署**：`max_jerk_xy/z=10.0/8.0`，`jerk_limit_modes`的hover/motion/straight/avoidance/obstacle_hover/failsafe_hold六开关仅avoidance默认true。航点任务按策略选择，含启动速度等待及规划/制动等待；任务结束末点保持归hover。复用原PD+DOB输出限幅，不新增控制器；开关不清空DOB或上一输入，旁路仍记录倾角限幅后的命令。LAND/解除武装/实际停控清理历史，硬约束优先，关闭瞬间不保证jerk连续。开发机39项C++及24项真实node DDS测试通过；两机均39项控制测试/安装参数回读/隔离smoke/静态启动检查通过，逐机74项其他控制参数及标定保留。refresh原8/8、new原8/3已改10/8；两机飞控栈保持停止，new视频/修正继续active；hp-desktop已同步并原生安装本次模式开关及默认值。SITL显示起飞接管制动改善，但直线/遇障停车姿态指令更陡，停车时间未明显缩短；自主标准及激进场景仍未通过净空，不能当作避障修复或实飞验收。详见[实现、对照及部署](agent/report/report-2026-10-20-mode-selective-output-jerk.md)。
 
-- **航点接续保留DOB已在开发机/refresh/new修复并原生Release安装**：准备航点和速度门控通过两处均保留扰动及既有输入，按当前速度重算内部观测状态；LAND/解除武装/停控清零保持。真实node隔离正负对照分别验证两处清零已消失；refresh三架次实录已确认实际加载；当时原机jerk8/3、开发机Z=8，仅供该批实录解释，当前已切换按模式10/8。new已同步；hp-desktop旧基线待同步。实录启动dZ约.26—.36m/s²未清零；水平最大正高度误差由旧13.6cm减至2.3—6.0cm但弧形仍在，梯形边界快速转折约17—23°/s仍在，制动没有统一增大。第1次较强制动由更大P/D领先反馈解释，且同时转向90°；不能当同条件单因素对照。复核见[实录报告](agent/report/report-2026-10-20-refresh-post-dob-fix-flight-bags-analysis.md)，实现见[修复与两机核查](agent/report/report-2026-10-20-waypoint-dob-preservation-and-aircraft-audit.md)。
+- **航点接续保留DOB已在开发机/refresh/new修复并原生Release安装**：准备航点和速度门控通过两处均保留扰动及既有输入，按当前速度重算内部观测状态；LAND/解除武装/停控清零保持。真实node隔离正负对照分别验证两处清零已消失；refresh三架次实录已确认实际加载；当时原机jerk8/3、开发机Z=8，仅供该批实录解释，当前已切换按模式10/8。new已同步；hp-desktop已同步并原生安装。实录启动dZ约.26—.36m/s²未清零；水平最大正高度误差由旧13.6cm减至2.3—6.0cm但弧形仍在，梯形边界快速转折约17—23°/s仍在，制动没有统一增大。第1次较强制动由更大P/D领先反馈解释，且同时转向90°；不能当同条件单因素对照。复核见[实录报告](agent/report/report-2026-10-20-refresh-post-dob-fix-flight-bags-analysis.md)，实现见[修复与两机核查](agent/report/report-2026-10-20-waypoint-dob-preservation-and-aircraft-audit.md)。
 
 - **拱形历史证据需区分飞机**：8/14、9/1正常视频可能为new；今日两机4.6.3提交new=92b0cd78正式、refresh=3fc7011a beta，全库仅版本标记不同。EK3/VISO、推力指数等相同，但内环/IMU标定、当时Python/C++外参桥、安装角及odom/map不同；当前hover .223878/.225926相近，不能直接由参数大小判定故障或互抄调参。旧/新外环同输入输出一致，4.6.3同模型均可上拱，保留DOB能改善该合成工况，尚非实机根因排他证明；FCU vz与高度差分本有不同定义。修复前后4份bag均已离线在bags/且SHA256匹配；new关机前1246项参数与117个原文件在`agent/codex/new-offline-snapshot-20261020-1539/`，refresh新实录及配置证据在`agent/codex/straight-dob-fixed-20261020/`。历史复现见[对照报告](agent/report/report-2026-10-20-straight-history-comparison-and-sitl-reproduction.md)，实录分解见[完整bag诊断](agent/report/report-2026-10-20-straight-full-bag-height-twitch-braking-analysis.md)。
 
@@ -273,11 +275,11 @@
 - Task6三策略map SITL均实际到点/拍照/LAND，未放宽到点条件。原自主“10次入点失败”的主要上游问题已定位为临时UDP14550链路经MAVProxy默认每15秒请求ALL=4Hz，覆盖已接受的100Hz位置消息配置；正式入口仍直连TCP5762，不能据此归因于实机串口控制。
   仅关闭MAVProxy自动请求，保留0.2秒/1米重规划及jerk8/3，odom/map位置实测约100Hz，两轮均零失败、终点保持约0.3秒后完成；map含运动中0.12m重定位。生产算法及实机参数未改。
   原34.16秒/map与11.95秒/odom期间参考反复离开终点，并非连续固定末参考收敛；旧终点子集极值不代表整窗。10仅计数上限/异常标记，不触发控制变化，见[入点诊断](agent/report/report-2026-10-19-waypoint-arrival-convergence-analysis.md)。
-  开发机统一SITL入口已固定传入`--mavproxy-args=--streamrate=-1`，由机载统一配置频率；重启地面站加载，无需改控制参数或机载重建。正式TCP/原问题UDP两轮自主回归均约100Hz、零入点失败，new已同步地面启动源码；hp地面端下次同步带上该源码。
+  开发机统一SITL入口已固定传入`--mavproxy-args=--streamrate=-1`，由机载统一配置频率；重启地面站加载，无需改控制参数或机载重建。正式TCP/原问题UDP两轮自主回归均约100Hz、零入点失败，new已同步地面启动源码；hp地面端也已同步该源码。
   refresh当前直连ttyTHS1:460800、无GCS转发；45秒静态位置/速度约99.1Hz、extnav辅助约100Hz、vision约40Hz，未见同类持续降频。偶发源间隔60ms保留，不能声称严格恒定100Hz；串口丢包/溢出/解析错误均0。只读观测未改或重启extnav，独立绕障跟踪/净空风险仍保留，见[修复与机载检查](agent/report/report-2026-10-19-telemetry-rate-fix-refresh-audit.md)。
 
 - **原生曲线与净空仍有已证缺口，尚未正式修复**：此前lambda5真SLAM公共配置回放活动窗127成功/19起点净空失败；13/127成功曲线侵入保留的cloud_slam_down输入点.35m净空，最小.319616m，同位置最近质心.354638m；PCL双树逐帧复建与198/198成功地图点数匹配。普通原语连续证书仅保证质心距离，shot/服务还有离散漏检。单条曲线p/v连续但最大a阶跃5.099m/s²，输出jerk10/8不能让参考自动可跟踪；既有10/8激进SITL参考距柱.3344m、实际中心.0641m且未扣机体尺寸。实际换轨只校验新曲线对实际p/v，未保证对旧执行参考p/v/a连续，曾记录10ms内参考速度跳.216m/s。跟踪保护后仍可能等待而未立即要求原生重规划；不能提高增益/放宽门限冒充修复。修复应直接处理原生体素占据几何、全曲线连续净空、a/jerk可实现性及换轨合同，见[真SLAM与起飞分析](agent/report/report-2026-10-20-real-slam-curves-clearance-takeoff-analysis.md)。上述缺口仍未修复，lambda2部署不等于避障验收。
-  固定同一146组真SLAM输入、lambda1–5各3轮均127成功/19起点失败，lambda5逐系数复现误差0。开发机lambda1搜索中位327ms/P95约500ms，68/381成功耗时≥490ms；相对5平均路长−5.85%、代价−14.56%，仍有最大Δa3.526。lambda2中位7.84ms/P95 30.57ms，平均路长−3.81%、代价−9.55%；**开发机、refresh、new已仅将lambda5→2，原生安装及39项实际参数回读通过，其余逐机配置/标定保留；hp本次未同步**。两机飞控/避障仍停止，new视频/修正active。详见[权重扫描](agent/report/report-2026-10-20-heuristic-weight-sweep-c2-design.md)及[lambda2部署与局部过渡评估](agent/report/report-2026-10-20-lambda2-aircraft-sync-local-quintic-assessment.md)。
+  固定同一146组真SLAM输入、lambda1–5各3轮均127成功/19起点失败，lambda5逐系数复现误差0。开发机lambda1搜索中位327ms/P95约500ms，68/381成功耗时≥490ms；相对5平均路长−5.85%、代价−14.56%，仍有最大Δa3.526。lambda2中位7.84ms/P95 30.57ms，平均路长−3.81%、代价−9.55%；**开发机、refresh、new已仅将lambda5→2，原生安装及39项实际参数回读通过，其余逐机配置/标定保留；hp已于2026-10-21同步，原生构建及39项参数回读通过**。两机飞控/避障仍停止，new视频/修正active。详见[权重扫描](agent/report/report-2026-10-20-heuristic-weight-sweep-c2-design.md)及[lambda2部署与局部过渡评估](agent/report/report-2026-10-20-lambda2-aircraft-sync-local-quintic-assessment.md)。
   平滑方案优先评估原生局部五次窗口：lambda2的127条曲线532处替换，.2/.4/约.54s窗口最大改形仅.48/1.92/3.50mm，但89/87/87条产生原2m/s²水平加速度越限，峰2.32379；仅扩大窗口不能消除此满限额bang-bang边界的固定时间不可行性，需允许局部延时/适当调整边界，再考虑B-spline扩大优化范围。五次需扩现有4系数协议及全链消费者；本轮未实施平滑。用户允许未来平滑后移除控制输出jerk，不把现10/8作为局部方案硬门限；目前六模式开关仍保持。接续p/v/a和连续净空仍需修，不能用仅C2宣称已可飞。
   已有[三次B样条离线效果预览](agent/report/report-2026-10-21-cubic-bspline-preview.md)：同127条lambda2真SLAM曲线，保持原首末p/v/a及时间、位置贴近加jerk平方正则，两档实际三次输出均C2；偏保形最大同期偏移6.332mm、强平滑10.796cm，仍有87/39条超原v/a限额。只有边界硬约束，未加障碍/动力硬约束，不能直接部署；原末a未强置0，跨计划接续未修。三地图仅距离见证，seq785强平滑后输入点距离.358112m；生产和两机配置未变。另有[大转弯补充图](agent/report/report-2026-10-21-bspline-large-turns-preview.md)：真实最大角度主要为末端低速回钩，另用原生库生成米级合成L/U绕行，不能混作真实SLAM；B样条仍保留折返，合成前两例原参考到实体盒仅.327m，净空缺口未修。
   总加速度模长推力与ArduPilot Guided归一化推力入口的angle_boost存在重复倾斜补偿，SITL对照支持其造成部分高度偏高；真实飞控参数及视频约30cm高度差尚未完整验证。ROS原生入口会将旧scalar限额抬高至显式方向限额最大值，不应将scalar=1、方向=2理解为实际上限1。该项重复补偿尚未正式修复。复现条件、限制和证据见[偏轨SITL报告](agent/report/report-2026-10-19-post-obstacle-tracking-sitl.md)。

@@ -5,9 +5,11 @@ project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../..
 planner_root="${AVOIDANCE_WORKSPACE:-${project_root%/*}/dyn_small_obs_avoidance-ros2}"
 source "${project_root}/scripts/lib/runtime_common.bash"
 runtime_source_setup "$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")"
+source "${project_root}/scripts/lib/build_dependencies.bash"
 [[ -d "${planner_root}/path_searching" && -d "${planner_root}/path_planning" ]] || {
   echo "Missing standalone planner checkout: ${planner_root}" >&2; exit 1;
 }
+build_ensure_control_dependencies
 (
   cd "${planner_root}"
   colcon build --base-paths path_searching path_planning --packages-select path_searching path_planning \

@@ -1,3 +1,4 @@
+<!-- Fresh-machine dependencies and incremental native build prerequisites. -->
 # 全新 Ubuntu 24.04 机载机依赖安装
 
 `setup_onboard_dependencies.sh` 用于全新 Ubuntu 24.04 amd64 或 arm64 主机。它配置带
@@ -19,6 +20,10 @@ extnav 仍为独立工作区，运行集成安装器前须按该飞机的部署�
 
 默认依赖包括 OpenCV、PCL、yaml-cpp、OpenSSL、libusb 开发包和 Odin 所需 ROS 包。
 飞行接口 3.5 的 Odin 运行状态解析另需 `nlohmann-json3-dev`，依赖脚本一并安装。
+地面站安装、机载构建（含 `--verify`）和避障构建也会在编译前补装缺少的
+`libeigen3-dev` / `nlohmann-json3-dev`；清单统一维护在 `scripts/lib/build_dependencies.bash`。
+仅缺包时调用 sudo/apt，已有包不升级，不重写 ROS 软件源或启动服务。离线机器须预先安装这两个包。
+`onboard_workspace.sh deps-check` 仍只读，报告缺失依赖，不自动安装。
 旧命令中的 `--with-odin-deps` 仍可使用，已无需显式追加。
 完整机载构建每次都会增量构建项目 Odin，首次部署不再依赖外部 `catkin_ws` 安装产物：
 

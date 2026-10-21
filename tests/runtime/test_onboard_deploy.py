@@ -36,6 +36,47 @@ def run_bash(script: str, environment: dict[str, str] | None = None):
     )
 
 
+@pytest.mark.parametrize("missing_json,update_failure", [(False, False), (True, False), (True, True)])
+def test_control_build_dependencies_install_only_missing_packages(
+    tmp_path, missing_json: bool, update_failure: bool,
+) -> None:
+    """Installed hosts need no sudo; missing JSON is installed and apt failure stops the build."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    call_log = tmp_path / "apt.log"
+    stubs = {
+        "dpkg-query": '''#!/usr/bin/env bash
+if [[ "$MISSING_JSON" == 1 && "${@: -1}" == nlohmann-json3-dev ]]; then exit 1; fi
+printf 'install ok installed'
+''',
+        "sudo": '#!/usr/bin/env bash\nexec "$@"\n',
+        "apt-get": '''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$CALL_LOG"
+if [[ "$1" == update && "$UPDATE_FAILURE" == 1 ]]; then exit 42; fi
+''',
+    }
+    for name, content in stubs.items():
+        stub = bin_dir / name
+        stub.write_text(content, encoding="utf-8")
+        stub.chmod(0o755)
+    environment = dict(
+        os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", CALL_LOG=str(call_log),
+        MISSING_JSON=str(int(missing_json)), UPDATE_FAILURE=str(int(update_failure)),
+        BUILD_HELPER=str(PROJECT_ROOT / "scripts/lib/build_dependencies.bash"),
+    )
+    result = run_bash('set -eu; source "$BUILD_HELPER"; build_ensure_control_dependencies', environment)
+    calls = call_log.read_text().splitlines() if call_log.exists() else []
+    if not missing_json:
+        assert result.returncode == 0, result.stderr
+        assert calls == []
+    elif update_failure:
+        assert result.returncode != 0
+        assert calls == ["update"]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert calls == ["update", "install -y --no-upgrade nlohmann-json3-dev"]
+
+
 def test_onboard_workspace_script_has_valid_shell_and_help() -> None:
     """脚本必须可执行、语法有效，并公开全部非破坏性部署阶段。"""
     assert os.access(WORKSPACE_SCRIPT, os.X_OK)

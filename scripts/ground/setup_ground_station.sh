@@ -15,6 +15,8 @@ source "${runtime_helpers}"
 ros_setup="$(runtime_detect_ros_setup "${PROJECT_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
 runtime_source_setup "${ros_setup}"
+source "${project_root}/scripts/lib/build_dependencies.bash"
+build_ensure_control_dependencies
 
 for command in colcon cmake g++ python3; do
   command -v "${command}" >/dev/null 2>&1 || {

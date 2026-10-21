@@ -6,12 +6,14 @@ set -Eeuo pipefail
 readonly project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 readonly workspace_helper="${project_root}/src/onboard_control/deploy/onboard_workspace.sh"
 
+# Describe native build prerequisites and optional verification.
 usage() {
   cat <<'EOF'
 Usage: ./src/onboard_control/deploy/build_onboard_control.sh [--verify]
 
 Without arguments, incrementally build project Odin, flight packages and the
 independent correction interfaces/service in Release mode.
+Missing Eigen/JSON development packages are installed via apt, using sudo when needed.
 
 Options:
   --verify  Check dependencies, rebuild, run unit tests, and run the isolated smoke test.
