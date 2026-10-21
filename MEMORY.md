@@ -104,6 +104,12 @@
 - 飞控环境为 `/etc/ros2-ardupilot/onboard.env`，视频优先使用同目录 `camera.conf/lens.conf`。
   串口和 overlay 按目标机核对，不照搬历史 `/dev/ttyTHS*`。systemd 不依赖外网校时；
   `network-online.target` 未必已有 Wi-Fi IPv4，视频入口保留 DDS 创建前的本地路由等待。
+- refresh 的 video service 已换 Wasintek 相机，2026-10-21 核对生产为 H.264 1920×1080@60，
+  与修正服务的 UQ212 分开。内参标定维护源码为 `video_service/calibration/wainstek_cam_calib.py`，
+  refresh 现场入口 `~/camera_int_calib/wainstek_cam_calib.py` 已同步；复用生产相机/镜头解析器及控制时序，
+  兼容系统 OpenCV 4.6。每次结果独立保存到 `~/camera_int_calib/wainstek_runs/<时间戳>/`，
+  **新镜头尚待用户移动标定板完成实测采样，旧 Wasintek 内参不能视为新镜头标定**；视频仍未应用去畸变。
+  new/hp-desktop 尚未同步这个标定工具；不要覆盖两机现有标定或相机配置。
 - 独立 USB Jetson（`192.168.55.1`、序列号 `1424324322770`）不是现役飞机，基础环境已构建，
   无外设、后续补丁未逐项同步。新机事项查 [检查清单](src/onboard_control/deploy/JETSON_NEW_MACHINE_CHECKLIST.md)；
   厂商 OpenCV 4.8 必须使用配套 cv_bridge overlay，避免与系统 4.6 在 Odin 同进程混用。
