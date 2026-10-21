@@ -93,10 +93,6 @@ ROS 航点抓拍不使用这条事件路径，而是逐条排队、逐条发布�
 `config/Wasintek/` 与 `config/UQ212/` 分别保存两种相机的视频、镜头和内参档案。它们用于人工
 恢复或迁移，运行时仍只读取根 `config/camera.conf`、`config/lens.conf`，不会自动切换档案。
 
-Wasintek 更换镜头后的内参标定入口为
-[`calibration/wainstek_cam_calib.py`](calibration/wainstek_cam_calib.py)，直接读取生产相机和镜头
-配置；运行及采样说明见[内参标定](calibration/README.md)。
-
 ### 飞机上为什么也有 Qt 文件
 
 机载 sparse checkout 会同步整个 `video_service/`，因此飞机磁盘上也能看到

@@ -1,57 +1,54 @@
 #!/usr/bin/env python3
-"""Calibrate Wasintek intrinsics using the existing 6x6 tag36h11 AprilGrid.
+"""
+使用指定 6x6 tag36h11 AprilGrid 的纯 OpenCV 实时相机内参标定。
 
-Uses the project environment and production video settings; saves runs separately.
-The original board geometry, sampling thresholds and five-coefficient model remain.
+依赖：pip install opencv-contrib-python numpy
+
+使用：
+1. 按需修改下方相机分辨率。
+2. 使用固定标定板：6x6 tag36h11，ID 0~35，Tag=5.5cm，间隔=1.65cm。
+3. 运行：python3 realtime_camera_calibration.py
+4. 缓慢移动标定板，使其覆盖画面四角、中央，并改变距离、俯仰、偏航和旋转角。
+
+直接加载已有 YAML 预览去畸变：
+  python3 realtime_camera_calibration.py --preview-yaml camera_calibration.yaml
+4. 收集完成后会自动标定并写出 camera_calibration.yaml。
+
+按键：
+  A      开关自动采样
+  空格   强制加入当前检测结果
+  C      立即标定
+  R      清空并重新采样
+  U      标定后切换原图/去畸变预览
+  S      再次保存结果
+  Q/ESC  退出
 """
 
 import argparse
-import json
 import math
-import os
-from pathlib import Path
-import re
-import subprocess
-import sys
 import time
-from datetime import datetime
-from fractions import Fraction
-
-# Re-enter the project environment when launched directly from the aircraft desktop.
-if __name__ == "__main__":
-    candidates = [Path(__file__).resolve().parents[2] / ".venv",
-                  Path.home() / "ros2-ardupilot-mavros-control/.venv"]
-    environment = next((p for p in candidates if (p / "bin/python").is_file()), None)
-    if environment is None:
-        raise SystemExit("Project .venv not found; use ros2-ardupilot-mavros-control/.venv")
-    if Path(sys.prefix).resolve() != environment.resolve():
-        os.execv(str(environment / "bin/python"),
-                 [str(environment / "bin/python"), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 import cv2
 import numpy as np
 
-# Locate the production parsers for both the repository and aircraft standalone copy.
-PROJECT_ROOT = next((root for root in (Path(__file__).resolve().parents[2],
-                                     Path.home() / "ros2-ardupilot-mavros-control")
-                     if (root / "video_service/camera_app/onboard_config.py").is_file()), None)
-if PROJECT_ROOT is None:
-    raise SystemExit("Cannot find project video_service/camera_app/onboard_config.py")
-sys.path.insert(0, str(PROJECT_ROOT / "video_service"))
-from camera_app.onboard_config import load_lens_controls, load_onboard_settings
 
+# ============================== 用户配置 ==============================
+CAMERA_ID = 2
 
-# ============================== Camera configuration ==============================
+# 请求相机输出的分辨率；相机必须原生支持该模式。
+FRAME_WIDTH = 1920
+FRAME_HEIGHT = 1080
+CAMERA_FPS = 30
 
-# Collect distinct, sharp views; allow manual calibration after 15 samples.
+# 25～40 张通常足够。自动采样只收录清晰且与已有样本差异明显的画面。
 TARGET_SAMPLES = 30
 MIN_SAMPLES_TO_CALIBRATE = 15
 AUTO_CAPTURE = True
 
-# Keep the original five-coefficient model unless rational calibration is requested.
+# 普通镜头建议 False（k1,k2,p1,p2,k3）；明显广角镜头可改为 True（增加 k4,k5,k6）。
 USE_RATIONAL_MODEL = False
 
-# Original sharpness, board coverage and pose diversity thresholds.
+# 自动样本质量阈值。高分辨率清晰图通常可把 MIN_SHARPNESS 提高到 120～250。
 MIN_SHARPNESS = 80.0
 MIN_BOARD_AREA_RATIO = 0.025
 MAX_BOARD_AREA_RATIO = 0.72
@@ -61,35 +58,27 @@ MIN_DIVERSITY_DISTANCE = 0.85
 STABLE_DETECTIONS_REQUIRED = 2
 MAX_CORNER_MOTION_PX = 1.8
 
-# Detection cadence and display size do not change the calibration coordinates.
 DETECT_EVERY_N_FRAMES = 2
 DISPLAY_SCALE = 0.72
-# Each interactive run gets its own directory; old lens results remain intact.
-OUTPUT_ROOT = Path.home() / "camera_int_calib/wainstek_runs"
-OUTPUT_YAML = None
-# Record the lens state alongside K/D; production configuration is never overwritten.
-CAPTURE_METADATA = {}
+OUTPUT_YAML = "camera_calibration.yaml"
 # ====================================================================
 
-# Fixed physical board: IDs increase rightwards from bottom-left, then upwards.
+# 这部分严格对应用户提供的唯一标定板，不作为可选配置。
 TAG_COLS = 6
 TAG_ROWS = 6
 TAG_SIZE = 0.055       # m
-TAG_GAP = 0.0165       # m between the black outer borders
+TAG_GAP = 0.0165       # m，两个 Tag 黑色外框之间的净间距
 TAG_PITCH = TAG_SIZE + TAG_GAP
 FIRST_TAG_ID = 0
 LAST_TAG_ID = 35
 BOARD_WIDTH = (TAG_COLS - 1) * TAG_PITCH + TAG_SIZE
 BOARD_HEIGHT = (TAG_ROWS - 1) * TAG_PITCH + TAG_SIZE
 
-# Shared HighGUI window title and the original AprilTag detector tuning.
 WINDOW_NAME = "OpenCV camera calibration (Q quit, A auto, SPACE capture, C calibrate)"
 
 
 TAG_DICTIONARY = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
-# OpenCV 4.6 exposes a constructor that segfaults; use its supported factory.
-_parameter_factory = getattr(cv2.aruco, "DetectorParameters_create", None)
-DETECTOR_PARAMETERS = (_parameter_factory() if _parameter_factory else cv2.aruco.DetectorParameters())
+DETECTOR_PARAMETERS = cv2.aruco.DetectorParameters()
 DETECTOR_PARAMETERS.markerBorderBits = 2
 DETECTOR_PARAMETERS.minMarkerPerimeterRate = 0.01
 DETECTOR_PARAMETERS.maxMarkerPerimeterRate = 0.8
@@ -100,12 +89,16 @@ DETECTOR_PARAMETERS.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 DETECTOR_PARAMETERS.cornerRefinementWinSize = 9
 DETECTOR_PARAMETERS.cornerRefinementMaxIterations = 50
 DETECTOR_PARAMETERS.cornerRefinementMinAccuracy = 0.005
-TAG_DETECTOR = (cv2.aruco.ArucoDetector(TAG_DICTIONARY, DETECTOR_PARAMETERS)
-                if hasattr(cv2.aruco, "ArucoDetector") else None)
+TAG_DETECTOR = cv2.aruco.ArucoDetector(TAG_DICTIONARY, DETECTOR_PARAMETERS)
 
 
 def marker_object_corners(marker_id):
-    """Return the original physical board corners in OpenCV marker corner order."""
+    """
+    返回与 OpenCV detectMarkers 四角顺序对应的板面坐标。
+
+    这块实物板的 ID 从左下角 0 开始，向右、再向上递增；所有 Tag 相对
+    板面方向一致。下面的角点次序已用用户提供的整板照片逐角验证。
+    """
     index = marker_id - FIRST_TAG_ID
     col = index % TAG_COLS
     row = index // TAG_COLS
@@ -123,11 +116,7 @@ def marker_object_corners(marker_id):
 
 
 def detect_board(gray):
-    """Detect the original board with either the OpenCV 4.6 or newer API."""
-    marker_corners, marker_ids, _ = (
-        TAG_DETECTOR.detectMarkers(gray) if TAG_DETECTOR is not None else
-        cv2.aruco.detectMarkers(gray, TAG_DICTIONARY, parameters=DETECTOR_PARAMETERS)
-    )
+    marker_corners, marker_ids, _ = TAG_DETECTOR.detectMarkers(gray)
     if marker_ids is None:
         return None
 
@@ -149,22 +138,18 @@ def detect_board(gray):
 
 
 def board_descriptor(object_points, image_points, image_size):
-    """Describe position, size, rotation and perspective for sample deduplication."""
+    """用位置、大小、旋转和透视变化描述一张样本，供自动去重。"""
     width, height = image_size
     flat = image_points.reshape(-1, 2)
     center = flat.mean(axis=0)
     area_ratio = cv2.contourArea(cv2.convexHull(flat)) / float(width * height)
 
     homography, _ = cv2.findHomography(object_points[:, :2], flat)
-    if homography is None or not np.isfinite(homography).all():
-        raise ValueError("invalid board geometry")
     board_corners = np.array(
         [[0.0, 0.0], [BOARD_WIDTH, 0.0], [0.0, BOARD_HEIGHT], [BOARD_WIDTH, BOARD_HEIGHT]],
         dtype=np.float32,
     ).reshape(-1, 1, 2)
     projected = cv2.perspectiveTransform(board_corners, homography).reshape(4, 2)
-    if not np.isfinite(projected).all():
-        raise ValueError("invalid board projection")
     p00, p01, p10, p11 = projected
     top = np.linalg.norm(p01 - p00)
     bottom = np.linalg.norm(p11 - p10)
@@ -188,7 +173,6 @@ def board_descriptor(object_points, image_points, image_size):
 
 
 def descriptor_distance(a, b):
-    """Measure the original normalized pose diversity distance."""
     angle = abs(a[3] - b[3])
     angle = min(angle, 2.0 * math.pi - angle)
     delta = np.array(
@@ -205,22 +189,10 @@ def descriptor_distance(a, b):
 
 
 def sample_quality(gray, object_points, image_points, tag_count, descriptors, image_size):
-    """Check sharpness and coverage without accepting invalid edge geometry."""
-    flat = np.asarray(image_points).reshape(-1, 2)
-    height, width = gray.shape[:2]
-    if (gray.size == 0 or len(flat) < 4 or not np.isfinite(flat).all()
-            or np.any(flat < 0) or np.any(flat[:, 0] >= width)
-            or np.any(flat[:, 1] >= height)):
-        return False, None, 0.0, 0.0, "invalid board corners"
-    x, y, w, h = cv2.boundingRect(flat)
-    board_roi = gray[max(0, y):min(height, y+h), max(0, x):min(width, x+w)]
-    if board_roi.size == 0:
-        return False, None, 0.0, 0.0, "empty board region"
-    try:
-        descriptor, area_ratio = board_descriptor(object_points, image_points, image_size)
-    except (cv2.error, ValueError):
-        return False, None, 0.0, 0.0, "invalid board geometry"
+    x, y, w, h = cv2.boundingRect(image_points.reshape(-1, 2))
+    board_roi = gray[y : y + h, x : x + w]
     sharpness = float(cv2.Laplacian(board_roi, cv2.CV_64F).var())
+    descriptor, area_ratio = board_descriptor(object_points, image_points, image_size)
 
     if tag_count < MIN_TAGS_PER_VIEW:
         return False, descriptor, sharpness, area_ratio, "need more tags"
@@ -240,7 +212,7 @@ def sample_quality(gray, object_points, image_points, tag_count, descriptors, im
 
 
 def calibrate(object_points, image_points, image_size):
-    """Calibrate using every accepted view without filtering or dropping samples."""
+    """使用当前全部视图执行一次标定，不筛选、不删帧。"""
     flags = cv2.CALIB_RATIONAL_MODEL if USE_RATIONAL_MODEL else 0
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 150, 1e-12)
     result = cv2.calibrateCameraExtended(
@@ -270,10 +242,7 @@ def calibrate(object_points, image_points, image_size):
 
 
 def save_calibration(path, image_size, calibration):
-    """Save OpenCV K/D and the capture state in the current run directory."""
     fs = cv2.FileStorage(path, cv2.FILE_STORAGE_WRITE)
-    if not fs.isOpened():
-        raise RuntimeError(f"Cannot write calibration: {path}")
     fs.write("image_width", image_size[0])
     fs.write("image_height", image_size[1])
     fs.write("camera_name", "camera")
@@ -293,16 +262,12 @@ def save_calibration(path, image_size, calibration):
     fs.write("first_tag_id", FIRST_TAG_ID)
     fs.write("last_tag_id", LAST_TAG_ID)
     fs.write("used_views", len(calibration["kept_indices"]))
-    fs.write("capture_metadata", json.dumps(CAPTURE_METADATA, sort_keys=True))
     fs.release()
     print(f"saved: {path}")
 
 
 def load_calibration(path):
-    """Load an OpenCV calibration without silently changing its resolution."""
     fs = cv2.FileStorage(path, cv2.FILE_STORAGE_READ)
-    if not fs.isOpened():
-        raise ValueError(f"Cannot read calibration: {path}")
     image_size = (
         int(fs.getNode("image_width").real()),
         int(fs.getNode("image_height").real()),
@@ -313,15 +278,12 @@ def load_calibration(path):
         "rms": float(fs.getNode("rms_reprojection_error").real()),
     }
     fs.release()
-    if min(image_size) <= 0 or calibration["camera_matrix"] is None or calibration["dist_coeffs"] is None:
-        raise ValueError(f"Invalid OpenCV calibration YAML: {path}")
     print(f"loaded calibration: {path}")
     print(f"resolution: {image_size[0]} x {image_size[1]}, RMS={calibration['rms']:.4f}px")
     return image_size, calibration
 
 
 def print_calibration(calibration, image_size):
-    """Print K/D and global and per-view reprojection errors."""
     k = calibration["camera_matrix"]
     d = calibration["dist_coeffs"].reshape(-1)
     errors = calibration["per_view_errors"]
@@ -336,7 +298,7 @@ def print_calibration(calibration, image_size):
 
 
 def evaluate_calibration(object_points, image_points, descriptors, image_size):
-    """Calibrate all samples, save the result and build undistortion maps."""
+    """使用全部样本直接标定、保存并生成去畸变映射。"""
     calibration = calibrate(object_points, image_points, image_size)
 
     kept = calibration["kept_indices"]
@@ -362,7 +324,6 @@ def evaluate_calibration(object_points, image_points, descriptors, image_size):
 
 
 def corner_motion(previous, marker_corners, marker_ids):
-    """Measure median corner motion across tags visible in both detections."""
     current = {
         int(marker_id): corners.reshape(4, 2)
         for corners, marker_id in zip(marker_corners, marker_ids.reshape(-1))
@@ -375,7 +336,6 @@ def corner_motion(previous, marker_corners, marker_ids):
 
 
 def draw_coverage(image, descriptors):
-    """Draw the original sample coverage grid and accepted sample centers."""
     height, width = image.shape[:2]
     for x in (width // 3, 2 * width // 3):
         cv2.line(image, (x, 0), (x, height), (70, 70, 70), 1)
@@ -387,154 +347,32 @@ def draw_coverage(image, descriptors):
 
 
 def put_text(image, text, line, color=(255, 255, 255)):
-    """Draw a readable status line over the camera image."""
     scale = max(0.55, image.shape[1] / 1900.0)
     y = int(30 + line * 31 * scale)
     cv2.putText(image, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4, cv2.LINE_AA)
     cv2.putText(image, text, (16, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
 
 
-def open_camera(device, image_size, fps, lens_config, codec):
-    """Open the production camera mode and restore its lens control sequence."""
-    if not Path(device).exists():
-        raise RuntimeError(f"Camera not found: {device}; check /dev/v4l/by-id")
-    busy = subprocess.run(["fuser", device], capture_output=True)
-    if busy.returncode == 0:
-        raise RuntimeError("Camera is busy; close video capture before calibration")
-    cap = cv2.VideoCapture()
-    try:
-        fourcc = {"h264": "H264", "mjpeg": "MJPG"}[codec]
-        if codec == "h264":
-            # V4L2 VideoCapture can return H.264 bytes in an image-shaped buffer.
-            # Decode explicitly; keep the production device, mode and lens settings.
-            rate = Fraction(fps).limit_denominator(10000)
-            pipeline = (
-                f"v4l2src device={json.dumps(device)} ! video/x-h264,"
-                f"width={image_size[0]},height={image_size[1]},"
-                f"framerate={rate.numerator}/{rate.denominator} ! "
-                "h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! "
-                "appsink max-buffers=1 drop=true sync=false"
-            )
-            if not cap.open(pipeline, cv2.CAP_GSTREAMER):
-                raise RuntimeError("Cannot decode camera H.264; check OpenCV GStreamer support and "
-                                   "gstreamer1.0-plugins-good / gstreamer1.0-plugins-bad")
-        else:
-            if not cap.open(device, cv2.CAP_V4L2):
-                raise RuntimeError(f"Cannot open camera: {device}")
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, image_size[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, image_size[1])
-            cap.set(cv2.CAP_PROP_FPS, fps)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        actual_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-        actual_fps = cap.get(cv2.CAP_PROP_FPS)
-        if (actual_size != image_size or abs(actual_fps - fps) > 0.1
-                or (codec == "mjpeg" and int(cap.get(cv2.CAP_PROP_FOURCC)) != cv2.VideoWriter_fourcc(*fourcc))):
-            raise RuntimeError(f"Unexpected camera mode: {actual_size}@{actual_fps}; requested {fourcc} {image_size}@{fps}")
-        # Wasintek resets some controls when the stream starts.
-        settle_until = time.monotonic() + 1.0
-        while time.monotonic() < settle_until:
-            read_frame(cap, image_size)
-        controls = load_lens_controls(lens_config)
-        actual_controls = {}
-        for name, value in controls:
-            subprocess.run(["v4l2-ctl", "-d", device, "--set-ctrl", f"{name}={int(value)}"],
-                           check=True, capture_output=True, text=True, timeout=3)
-            # Match CameraController._apply_lens_controls on the aircraft.
-            if name in {"auto_exposure", "exposure_time_absolute"}:
-                time.sleep(0.2)
-        for name, value in controls:
-            result = subprocess.run(["v4l2-ctl", "-d", device, "--get-ctrl", name],
-                                    check=True, capture_output=True, text=True, timeout=3)
-            match = re.search(r":\s*(-?\d+)", result.stdout)
-            if match is None or int(match.group(1)) != int(value):
-                raise RuntimeError(f"Lens control readback differs: {name}: {result.stdout.strip()}")
-            actual_controls[name] = int(match.group(1))
-        CAPTURE_METADATA.update(device=device, width=actual_size[0], height=actual_size[1],
-                                fps=actual_fps, pixel_format=fourcc, lens_controls=actual_controls,
-                                capture_backend=cap.getBackendName(),
-                                decoder="openh264dec" if codec == "h264" else "OpenCV MJPEG",
-                                lens_config=str(lens_config), opencv_version=cv2.__version__,
-                                python_environment=sys.prefix)
-        for _ in range(5):
-            read_frame(cap, image_size)
-        print(f"Camera ready: {device}, {fourcc} {actual_size[0]}x{actual_size[1]}@{actual_fps}")
-        return cap
-    except BaseException:
-        cap.release()
-        raise
-
-
-def read_frame(cap, image_size):
-    """Reject read failures or frame sizes that would invalidate K/D."""
-    ok, frame = cap.read()
-    if not ok or frame is None:
-        raise RuntimeError("Camera returned no image; check USB and close other camera clients")
-    if frame.shape[1::-1] != image_size:
-        raise RuntimeError(f"Unexpected image size: {frame.shape[1::-1]}, expected {image_size}")
-    return frame
-
-
 def main():
-    """Run the camera check or the original interactive AprilGrid calibration."""
-    global OUTPUT_YAML
-    # Follow start_onboard_video.sh: explicit environment, then /etc, then repository.
-    camera_config = Path(os.environ.get("VIDEO_SERVICE_ONBOARD_CONFIG") or
-                         ("/etc/ros2-ardupilot/camera.conf" if Path("/etc/ros2-ardupilot/camera.conf").is_file()
-                          else PROJECT_ROOT / "video_service/config/camera.conf"))
-    lens_config = Path(os.environ.get("VIDEO_SERVICE_LENS_CONFIG") or
-                       ("/etc/ros2-ardupilot/lens.conf" if Path("/etc/ros2-ardupilot/lens.conf").is_file()
-                        else PROJECT_ROOT / "video_service/config/lens.conf"))
     parser = argparse.ArgumentParser(description="Realtime AprilGrid camera calibration and YAML undistortion preview")
     parser.add_argument("--preview-yaml", metavar="PATH", help="load an existing calibration YAML and preview undistortion")
-    parser.add_argument("--camera-config", type=Path, default=camera_config, help="production camera.conf")
-    parser.add_argument("--lens-config", type=Path, default=lens_config, help="production lens.conf")
-    parser.add_argument("--output-dir", type=Path, default=OUTPUT_ROOT, help="parent of unique run directories")
-    parser.add_argument("--check-camera", action="store_true", help="check 30 frames and board detection without a window or calibration")
     args = parser.parse_args()
-    settings = load_onboard_settings(args.camera_config).camera
-    requested_size = (settings.width, settings.height)
 
     preview_mode = args.preview_yaml is not None
     if preview_mode:
-        yaml_size, loaded_calibration = load_calibration(args.preview_yaml)
-        if yaml_size != requested_size:
-            parser.error(f"Preview YAML size {yaml_size} differs from production size {requested_size}")
+        requested_size, loaded_calibration = load_calibration(args.preview_yaml)
     else:
+        requested_size = (FRAME_WIDTH, FRAME_HEIGHT)
         loaded_calibration = None
 
-    if not args.check_camera and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
-        parser.error("No desktop display; run in an aircraft desktop terminal or use --check-camera over SSH")
-    cap = open_camera(settings.device, requested_size, settings.fps, args.lens_config, settings.codec)
-    CAPTURE_METADATA["camera_config"] = str(args.camera_config)
-    try:
-        if args.check_camera:
-            max_tags = 0
-            for _ in range(30):
-                frame = read_frame(cap, requested_size)
-                detection = detect_board(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-                if detection is not None:
-                    max_tags = max(max_tags, len(detection[3]))
-            print(json.dumps(CAPTURE_METADATA, indent=2))
-            print(f"Image mean={frame.mean():.2f}, std={frame.std():.2f}; "
-                  f"bottom-half mean={frame[requested_size[1] // 2:].mean():.2f}")
-            print(f"PASS: 30 frames decoded and detector ran; max board tags={max_tags}/36; no calibration performed")
-            return
-        if not preview_mode:
-            run_dir = args.output_dir.expanduser() / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            run_dir.mkdir(parents=True)
-            OUTPUT_YAML = str(run_dir / "camera_calibration.yaml")
-            print(f"Calibration output: {OUTPUT_YAML}")
-        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        run_interactive(cap, preview_mode, requested_size, loaded_calibration)
-    finally:
-        cap.release()
-        if not args.check_camera:
-            cv2.destroyAllWindows()
+    cap = cv2.VideoCapture(CAMERA_ID)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, requested_size[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, requested_size[1])
+    cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
-    """Keep the original sampling thresholds, board geometry and calibration model."""
     object_points = []
     image_points = []
     descriptors = []
@@ -559,7 +397,9 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
     image_size = requested_size
 
     while True:
-        frame = read_frame(cap, requested_size)
+        ok, frame = cap.read()
+        if not ok:
+            break
 
         height, width = frame.shape[:2]
         image_size = (width, height)
@@ -618,8 +458,6 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
                     descriptors,
                     image_size,
                 )
-                if current_descriptor is None:
-                    current_image_points = None
                 if good and stable_detections < STABLE_DETECTIONS_REQUIRED:
                     good = False
                     quality_message = f"hold still {stable_detections}/{STABLE_DETECTIONS_REQUIRED}"
@@ -682,9 +520,9 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
             break
-        if key == ord("a") and not preview_mode:
+        if key == ord("a"):
             auto_capture = not auto_capture
-        elif key == ord(" ") and current_image_points is not None and not undistort:
+        elif key == ord(" ") and current_image_points is not None:
             descriptor, _ = board_descriptor(current_object_points, current_image_points, image_size)
             object_points.append(current_object_points.copy())
             image_points.append(current_image_points.copy())
@@ -732,8 +570,9 @@ def run_interactive(cap, preview_mode, requested_size, loaded_calibration):
             current_motion = float("inf")
             quality_message = "reset"
 
+    cap.release()
+    cv2.destroyAllWindows()
+
+
 if __name__ == "__main__":
-    try:
-        main()
-    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError, cv2.error) as exc:
-        raise SystemExit(f"Calibration error: {exc}") from exc
+    main()
