@@ -54,5 +54,14 @@ video service 当前仅存放内参档案，视频流水线尚未应用去畸变
 python3 ~/camera_int_calib/wainstek_cam_calib.py --preview-yaml /absolute/path/camera_calibration.yaml
 ```
 
-依赖复用项目环境中的 OpenCV contrib、NumPy 及系统 `v4l2-ctl`、`fuser`；
+依赖复用项目环境中的 OpenCV contrib、NumPy 及系统 `v4l2-ctl`、`fuser`。
+H.264 通过 OpenCV 的 GStreamer 后端执行 `h264parse → openh264dec → BGR` 真正解码；
+不能直接把 V4L2 返回的 H.264 数据当像素。解码只影响标定侧读取，不改变生产相机模式。
+需要 OpenCV 构建时启用 GStreamer，以及以下插件（refresh 已具备）：
+
+```bash
+sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+```
+
 兼容 refresh 当前的 OpenCV 4.6 检测器 API，无需替换系统 OpenCV。
+`--check-camera` 同时打印图像均值与标准差，方便排查异常黑屏。

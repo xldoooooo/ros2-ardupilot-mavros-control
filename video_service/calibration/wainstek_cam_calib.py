@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from fractions import Fraction
 
 # Re-enter the project environment when launched directly from the aircraft desktop.
 if __name__ == "__main__":
@@ -402,18 +403,33 @@ def open_camera(device, image_size, fps, lens_config, codec):
         raise RuntimeError("Camera is busy; close video capture before calibration")
     cap = cv2.VideoCapture()
     try:
-        if not cap.open(device, cv2.CAP_V4L2):
-            raise RuntimeError(f"Cannot open camera: {device}")
         fourcc = {"h264": "H264", "mjpeg": "MJPG"}[codec]
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, image_size[0])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, image_size[1])
-        cap.set(cv2.CAP_PROP_FPS, fps)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if codec == "h264":
+            # V4L2 VideoCapture can return H.264 bytes in an image-shaped buffer.
+            # Decode explicitly; keep the production device, mode and lens settings.
+            rate = Fraction(fps).limit_denominator(10000)
+            pipeline = (
+                f"v4l2src device={json.dumps(device)} ! video/x-h264,"
+                f"width={image_size[0]},height={image_size[1]},"
+                f"framerate={rate.numerator}/{rate.denominator} ! "
+                "h264parse ! openh264dec ! videoconvert ! video/x-raw,format=BGR ! "
+                "appsink max-buffers=1 drop=true sync=false"
+            )
+            if not cap.open(pipeline, cv2.CAP_GSTREAMER):
+                raise RuntimeError("Cannot decode camera H.264; check OpenCV GStreamer support and "
+                                   "gstreamer1.0-plugins-good / gstreamer1.0-plugins-bad")
+        else:
+            if not cap.open(device, cv2.CAP_V4L2):
+                raise RuntimeError(f"Cannot open camera: {device}")
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, image_size[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, image_size[1])
+            cap.set(cv2.CAP_PROP_FPS, fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         actual_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
         actual_fps = cap.get(cv2.CAP_PROP_FPS)
         if (actual_size != image_size or abs(actual_fps - fps) > 0.1
-                or int(cap.get(cv2.CAP_PROP_FOURCC)) != cv2.VideoWriter_fourcc(*fourcc)):
+                or (codec == "mjpeg" and int(cap.get(cv2.CAP_PROP_FOURCC)) != cv2.VideoWriter_fourcc(*fourcc))):
             raise RuntimeError(f"Unexpected camera mode: {actual_size}@{actual_fps}; requested {fourcc} {image_size}@{fps}")
         # Wasintek resets some controls when the stream starts.
         settle_until = time.monotonic() + 1.0
@@ -436,6 +452,8 @@ def open_camera(device, image_size, fps, lens_config, codec):
             actual_controls[name] = int(match.group(1))
         CAPTURE_METADATA.update(device=device, width=actual_size[0], height=actual_size[1],
                                 fps=actual_fps, pixel_format=fourcc, lens_controls=actual_controls,
+                                capture_backend=cap.getBackendName(),
+                                decoder="openh264dec" if codec == "h264" else "OpenCV MJPEG",
                                 lens_config=str(lens_config), opencv_version=cv2.__version__,
                                 python_environment=sys.prefix)
         for _ in range(5):
@@ -498,6 +516,8 @@ def main():
                 if detection is not None:
                     max_tags = max(max_tags, len(detection[3]))
             print(json.dumps(CAPTURE_METADATA, indent=2))
+            print(f"Image mean={frame.mean():.2f}, std={frame.std():.2f}; "
+                  f"bottom-half mean={frame[requested_size[1] // 2:].mean():.2f}")
             print(f"PASS: 30 frames decoded and detector ran; max board tags={max_tags}/36; no calibration performed")
             return
         if not preview_mode:
