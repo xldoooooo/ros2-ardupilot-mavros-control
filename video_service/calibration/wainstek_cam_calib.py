@@ -78,7 +78,8 @@ WINDOW_NAME = "OpenCV camera calibration (Q quit, A auto, SPACE capture, C calib
 
 
 TAG_DICTIONARY = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
-DETECTOR_PARAMETERS = cv2.aruco.DetectorParameters()
+# OpenCV 4.6 requires its factory and module-level marker detection API.
+DETECTOR_PARAMETERS = cv2.aruco.DetectorParameters_create()
 DETECTOR_PARAMETERS.markerBorderBits = 2
 DETECTOR_PARAMETERS.minMarkerPerimeterRate = 0.01
 DETECTOR_PARAMETERS.maxMarkerPerimeterRate = 0.8
@@ -89,7 +90,6 @@ DETECTOR_PARAMETERS.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 DETECTOR_PARAMETERS.cornerRefinementWinSize = 9
 DETECTOR_PARAMETERS.cornerRefinementMaxIterations = 50
 DETECTOR_PARAMETERS.cornerRefinementMinAccuracy = 0.005
-TAG_DETECTOR = cv2.aruco.ArucoDetector(TAG_DICTIONARY, DETECTOR_PARAMETERS)
 
 
 def marker_object_corners(marker_id):
@@ -116,7 +116,9 @@ def marker_object_corners(marker_id):
 
 
 def detect_board(gray):
-    marker_corners, marker_ids, _ = TAG_DETECTOR.detectMarkers(gray)
+    marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(
+        gray, TAG_DICTIONARY, parameters=DETECTOR_PARAMETERS
+    )
     if marker_ids is None:
         return None
 
