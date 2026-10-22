@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -12,7 +13,6 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -40,6 +40,13 @@ from correction_interfaces.srv import (
     StartCorrection,
     StopCorrection,
 )
+
+# Resolve the source checkout for direct ros2 runs and symlink installations.
+for _source_parent in Path(__file__).resolve().parents:
+    if (_source_parent / "project_configuration.py").is_file():
+        sys.path.insert(0, str(_source_parent))
+        break
+from project_configuration import config_file
 
 from . import INTERFACE_VERSION
 from .camera_process import CameraProcess
@@ -183,13 +190,12 @@ class CorrectionServiceNode(Node):
     def __init__(self, **node_kwargs) -> None:
         """严格加载 2.0 配置并仅创建低频状态接口，默认不订高频 Odin。"""
         super().__init__("correction_service", **node_kwargs)
-        default_config = str(
-            Path(get_package_share_directory("correction_service")) / "config"
-        )
+        default_config = str(config_file("correction"))
         self.declare_parameter("config_dir", default_config)
         self.config: ServiceConfig = load_config(
             str(self.get_parameter("config_dir").value)
         )
+        self.get_logger().info(f"configuration: {self.config.config_dir}")
         if self.config.interface_version != INTERFACE_VERSION:
             raise ValueError(
                 "general_settings.yaml interface_version 与源码不一致："

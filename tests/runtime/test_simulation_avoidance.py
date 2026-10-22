@@ -89,6 +89,22 @@ def test_scene_and_launch_refuse_real_aircraft_environment(monkeypatch, domain, 
         module.generate_launch_description()
 
 
+def test_demo_launch_uses_simulation_profile_even_when_aircraft_is_selected(monkeypatch):
+    """A ground host's aircraft selection must never supply SITL planner tuning."""
+    monkeypatch.setenv('ROS_DOMAIN_ID', '231')
+    monkeypatch.setenv('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST')
+    monkeypatch.setenv('AIRCRAFT_ID', 'uav001')
+    root = Path(__file__).resolve().parents[2]
+    path = root / 'src/guided_sim/launch/avoidance_demo.launch.py'
+    spec = importlib.util.spec_from_file_location('simulation_profile_launch', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, 'get_package_share_directory', lambda _package: '/tmp/bridge')
+    launch = module.generate_launch_description()
+    arguments = dict(launch.entities[1].launch_arguments)
+    assert arguments['config'] == str(root / 'config/aircraft/simulation/avoidance/planner.yaml')
+
+
 def test_cylinder_occludes_back_wall_and_removal_reveals_it():
     origin, anchor = np.array([0., 0., 1.5]), np.zeros(3)
     directions = np.array([[1., 0., 0.]])

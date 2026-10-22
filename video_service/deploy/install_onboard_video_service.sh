@@ -6,9 +6,7 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly WORKSPACE_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 readonly SERVICE_NAME="video-service.service"
-readonly SERVICE_TEMPLATE="${SCRIPT_DIR}/video-service.service.example"
-readonly CONFIG_SOURCE="${WORKSPACE_ROOT}/video_service/config/camera.conf"
-readonly LENS_SOURCE="${WORKSPACE_ROOT}/video_service/config/lens.conf"
+readonly SERVICE_TEMPLATE="${WORKSPACE_ROOT}/system/systemd/video-service.service"
 readonly MEDIAMTX_VERSION="1.20.0"
 
 usage() {
@@ -16,9 +14,9 @@ usage() {
 Usage: ./video_service/deploy/install_onboard_video_service.sh [--install-only]
 
 On Ubuntu 24.04/Jazzy ARM64, verify system FFmpeg, v4l2-ctl and MediaMTX,
-build the ROS interface when needed, install default configuration, writable
+build the ROS interface when needed, use project configuration, install writable
 media directories and video-service.service, then enable and start the service.
-Existing /etc camera configuration is kept.
+Selected aircraft camera configuration is kept.
 
 --install-only performs the same validation, build and unit/configuration
 installation, but leaves video-service.service disabled and stopped.
@@ -52,8 +50,11 @@ esac
 (( $# <= 1 )) || die "unexpected extra argument: $2"
 
 [[ -f "${SERVICE_TEMPLATE}" ]] || die "missing unit template: ${SERVICE_TEMPLATE}"
-[[ -f "${CONFIG_SOURCE}" ]] || die "missing camera config: ${CONFIG_SOURCE}"
-[[ -f "${LENS_SOURCE}" ]] || die "missing lens config: ${LENS_SOURCE}"
+source "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash"
+source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+project_config_load "${WORKSPACE_ROOT}"
+[[ -f "${AIRCRAFT_CONFIG_DIR}/video/camera.conf" ]] || die "missing selected camera config"
+[[ -f "${AIRCRAFT_CONFIG_DIR}/video/lens.conf" ]] || die "missing selected lens config"
 [[ "$(uname -m)" == "aarch64" ]] ||
   die "this onboard installer currently supports Ubuntu ARM64 only"
 
@@ -78,21 +79,8 @@ if [[ ! -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
   "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" --verify
 fi
 
-run_root install -d -m 0755 /etc/ros2-ardupilot
 run_root install -d -o "${video_user}" -g "${video_user}" -m 0755 \
   /home/share /home/share/jpg
-
-# 首次安装写入默认值；再次运行保留现场已经核对和调优的配置。
-if [[ ! -e /etc/ros2-ardupilot/camera.conf ]]; then
-  run_root install -m 0644 "${CONFIG_SOURCE}" /etc/ros2-ardupilot/camera.conf
-else
-  printf '[video-install] Keeping existing /etc/ros2-ardupilot/camera.conf\n'
-fi
-if [[ ! -e /etc/ros2-ardupilot/lens.conf ]]; then
-  run_root install -m 0644 "${LENS_SOURCE}" /etc/ros2-ardupilot/lens.conf
-else
-  printf '[video-install] Keeping existing /etc/ros2-ardupilot/lens.conf\n'
-fi
 
 unit_stage="$(mktemp)"
 trap 'rm -f -- "${unit_stage}"' EXIT

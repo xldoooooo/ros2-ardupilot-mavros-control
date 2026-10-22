@@ -7,7 +7,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-import yaml
 from correction_service.detector import AprilTagDetector
 from correction_service.geometry import (
     compute_planar_correction,
@@ -16,9 +15,9 @@ from correction_service.geometry import (
     rotation_z,
 )
 
-from correction_service.config import _load_intrinsics, load_config
+from correction_service.config import load_config
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "correction_service/config"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "config/aircraft/simulation/correction"
 # AprilRobotics 官方 PNG 的 8×8 黑边及数据位，按原文件上方排列；不是由待测
 # OpenCV 字典或几何函数生成。白色保护边不计入 0.170m 的检测边长。
 # https://github.com/AprilRobotics/apriltag-imgs/blob/master/tag36h11/tag36_11_00000.png
@@ -40,34 +39,6 @@ OFFICIAL_TAG0 = (
 )
 
 
-def _physical_camera_in_imu() -> np.ndarray:
-    """独立冻结 2026-08-27 原始标定，禁止从待测配置反推物理真值。"""
-    return np.array(
-        [
-            [
-                0.07572468395269205,
-                -0.9965466361414317,
-                -0.03406720175568133,
-                0.04780285496559549,
-            ],
-            [
-                -0.9969178615240186,
-                -0.07496181266164714,
-                -0.023140959722069636,
-                0.027639069129542938,
-            ],
-            [
-                0.02050730637219694,
-                0.035714543783696824,
-                -0.9991516009833945,
-                -0.07853750991857861,
-            ],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    )
-
-
-@pytest.mark.parametrize("camera_profile", ("Wasintek", "UQ212"))
 @pytest.mark.parametrize(
     "fcu_xy,yaw_deg,tag_yaw_deg",
     [
@@ -78,25 +49,17 @@ def _physical_camera_in_imu() -> np.ndarray:
     ],
 )
 def test_official_print_to_first_correction_and_return_to_center(
-    camera_profile: str,
     fcu_xy: tuple[float, float],
     yaw_deg: float,
     tag_yaw_deg: float,
 ) -> None:
     """真实图案→检测→PnP→首次修正→移回原点，水平位置与航向都必须正确。"""
     cfg = load_config(CONFIG_DIR)
-    physical = _physical_camera_in_imu()
-    if camera_profile == "Wasintek":
-        # 历史图案方向回归仍使用旧相机档案，与独立冻结的历史矩阵核对。
-        archive = yaml.safe_load((CONFIG_DIR / "Wasintek/extrinsics.yaml").read_text())
-        cfg = replace(cfg, t_imu_camera=np.array(archive["matrix"]["data"]).reshape(4, 4),
-                      intrinsics=_load_intrinsics(CONFIG_DIR / "Wasintek"))
-    else:
-        # 独立构造本次机械安装场景，不从待测矩阵生成期望真值。
-        physical = homogeneous(
-            np.array(((0, -1, 0), (-1, 0, 0), (0, 0, -1))),
-            np.array((41 + 5.57, 50 - 21.03, -(46 + 12 + 9.26))) / 1000,
-        )
+    # Independently build the supported UQ212 mechanical installation scene.
+    physical = homogeneous(
+        np.array(((0, -1, 0), (-1, 0, 0), (0, 0, -1))),
+        np.array((41 + 5.57, 50 - 21.03, -(46 + 12 + 9.26))) / 1000,
+    )
     # 历史独立真值场景固定17cm；现场换纸不得改变此场景的像素尺寸与精度断言。
     tag = replace(cfg.tags[0], size_m=0.170, yaw_rad=math.radians(tag_yaw_deg))
     # 这里使用无畸变合成镜头，以单独检查角点方向；畸变另有公制回归覆盖。

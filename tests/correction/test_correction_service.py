@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-import configparser
 import csv
 import importlib.util
 import json
 import logging
 import math
 import subprocess
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import cv2
 import numpy as np
+import pytest
 import yaml
 from correction_service.camera_process import CameraProcess, parse_v4l2_control_value
 from correction_service.detector import AprilTagDetector
@@ -37,32 +38,35 @@ from correction_service.synchronizer import (
 from correction_service.config import load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_DIR = PROJECT_ROOT / "correction_service" / "config"
+CONFIG_DIR = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "correction"
 
 
-def _read_ini(path: Path) -> dict[str, dict[str, str]]:
-    """忽略注释读取配置档案，便于核对活动副本而不要求字节相同。"""
-    parser = configparser.ConfigParser(interpolation=None)
-    parser.read(path, encoding="utf-8")
-    return {section: dict(parser[section]) for section in parser.sections()}
+def test_aircraft_correction_configs_are_complete() -> None:
+    """Each aircraft owns one directly readable correction configuration."""
+    required = {"camera.conf", "intrinsics.yaml", "extrinsics.yaml", "lens.conf",
+                "general_settings.yaml", "tag_pose.csv"}
+    for aircraft_id in ("simulation", "uav001", "uav002"):
+        profile = PROJECT_ROOT / "config" / "aircraft" / aircraft_id / "correction"
+        assert required <= {path.name for path in profile.iterdir()}
+        assert np.allclose(load_config(profile).fcu_reference.lever_arm_m, (0.10, -0.04, 0.05))
 
 
-def test_uq212_profile_matches_active_camera_configuration() -> None:
-    """命名 UQ212 档案必须完整，并与根目录当前活动配置参数一致。"""
-    profile = CONFIG_DIR / "UQ212"
-    assert _read_ini(profile / "camera.conf") == _read_ini(CONFIG_DIR / "camera.conf")
-    assert _read_ini(profile / "lens.conf") == _read_ini(CONFIG_DIR / "lens.conf")
-    for name in ("intrinsics.yaml", "extrinsics.yaml"):
-        assert yaml.safe_load((profile / name).read_text(encoding="utf-8")) == yaml.safe_load(
-            (CONFIG_DIR / name).read_text(encoding="utf-8")
-        )
-
-
-def test_named_correction_camera_profiles_are_complete() -> None:
-    """每个相机档案都必须包含换机时需要一起核验的四份配置。"""
-    required = {"camera.conf", "intrinsics.yaml", "extrinsics.yaml", "lens.conf"}
-    for profile_name in ("Wasintek", "UQ212"):
-        assert {path.name for path in (CONFIG_DIR / profile_name).iterdir()} == required
+def test_shared_odin_geometry_changes_reference_and_fingerprint(tmp_path: Path) -> None:
+    """Odin source edits affect correction geometry and invalidate saved windows."""
+    root = tmp_path / "correction"
+    shutil.copytree(CONFIG_DIR, root)
+    odin_path = tmp_path / "odin_extrinsics.yaml"
+    shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", odin_path)
+    before = load_config(root)
+    odin = yaml.safe_load(odin_path.read_text())
+    odin["/extnav_to_vision_pose"]["ros__parameters"]["odin_x"] = 0.12
+    odin_path.write_text(yaml.safe_dump(odin))
+    after = load_config(root)
+    assert np.allclose(after.fcu_reference.lever_arm_m, (0.12, -0.04, 0.05))
+    assert after.config_fingerprint != before.config_fingerprint
+    odin_path.unlink()
+    with pytest.raises(ValueError, match="odin_extrinsics.yaml"):
+        load_config(root)
 
 
 def test_job_journal_emits_strict_json_for_unavailable_metrics(tmp_path: Path) -> None:

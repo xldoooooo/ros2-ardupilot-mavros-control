@@ -25,6 +25,9 @@ RULES = {
     "ground_station_core/process_manager.py": ("runtime",),
     "ground_station_core/event_log.py": GROUND,
     "ground_station_core/config.py": GROUPS,
+    "project_configuration.py": GROUPS,
+    "config/*": GROUPS,
+    "system/*": ("runtime", "video", "correction"),
     "ground_station_core/models.py": GROUND,
     "ground_station_core/__init__.py": GROUND,
     "ground_station_core/ros_controller.py": (

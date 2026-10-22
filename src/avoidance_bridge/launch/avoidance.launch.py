@@ -58,7 +58,10 @@ def _nodes(context):
 
 def generate_launch_description():
     """Declare optional overrides; the selected YAML remains the configuration authority."""
-    config = str(Path(get_package_share_directory('path_planning')) / 'config/planner.yaml')
+    root = next(parent for parent in Path(__file__).resolve().parents
+                if (parent / 'project_configuration.py').is_file())
+    configuration = runpy.run_path(str(root / 'project_configuration.py'))
+    config = str(configuration['config_file']('avoidance/planner.yaml', root))
     arguments = [DeclareLaunchArgument('config', default_value=config)]
     arguments.extend(DeclareLaunchArgument(name, default_value='') for name in (
         'coordinate_mode', 'cloud', 'odom', 'preview', 'blind_radius', 'map_mode',

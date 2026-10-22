@@ -20,7 +20,7 @@ source /opt/ros/jazzy/setup.bash
 
 标签 `4.1.0` 的已验证提交为 `f5b738d9694f0cee5904440d03912fc249943f8a`。
 CMake 应选择厂商 OpenCV 4.8；非默认安装位置可显式传入 `-DOpenCV_DIR=<vendor-config-dir>`。
-在 `/etc/ros2-ardupilot/onboard.env` 配置真实路径：
+在 `config/aircraft/<AIRCRAFT_ID>/onboard.env` 配置真实路径：
 
 ```bash
 ODIN_CV_BRIDGE_SETUP=/home/nvidia/ros2-ardupilot-mavros-control/drivers/odin/cv_bridge_ws/install/local_setup.bash

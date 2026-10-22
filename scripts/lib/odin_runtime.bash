@@ -26,7 +26,7 @@ odin_parse_options() {
 # Persisted ground switches apply to both manual starts and the systemd service.
 odin_default_selection() {
   [[ -z "${odin_config_selection}" ]] || return 0
-  local navigation_env="${NAVIGATION_ENV_FILE:-/etc/ros2-ardupilot/navigation.env}"
+  local navigation_env="${NAVIGATION_ENV_FILE:-${ONBOARD_WORKSPACE}/config/aircraft/simulation/navigation.env}"
   if [[ -e "${navigation_env}" ]]; then
     runtime_source_environment_file "${navigation_env}" || return 1
   fi
@@ -78,7 +78,7 @@ odin_resolve_config() {
   local config_file
   case "${selection}" in
     odom|slam|reloc|original)
-      config_file="${odin_project_root}/drivers/odin/src/odin_ros_driver/config/${selection}.yaml"
+      config_file="${AIRCRAFT_CONFIG_DIR:-${odin_project_root}/config/aircraft/simulation}/odin/${selection}.yaml"
       ;;
     /*) config_file="${selection}" ;;
     *) runtime_die "unknown Odin configuration: ${selection}; use a preset or absolute YAML path"; return 2 ;;

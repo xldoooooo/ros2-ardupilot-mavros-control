@@ -59,7 +59,7 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
     None
 ):
     """修正服务必须是独立故障域，并只启动默认 idle 的 correction_node。"""
-    unit = _text(CORRECTION_ROOT / "deploy" / "correction-service.service.example")
+    unit = _text(PROJECT_ROOT / "system/systemd/odin-correction.service")
     installer_path = CORRECTION_ROOT / "deploy" / "install_correction_service.sh"
     installer = _text(installer_path)
 
@@ -75,6 +75,9 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
 
     assert "ExecStart=ONBOARD_WORKSPACE_PATH/scripts/onboard/start_onboard_correction.sh" in unit
     assert "CORRECTION_CAMERA_OVERLAY_SETUP" not in unit
+    assert "/etc/ros2-ardupilot" not in unit
+    assert "/etc/ros2-ardupilot" not in installer
+    assert "project_config_load" in installer
     assert "SupplementaryGroups=video" in unit
     assert "KillMode=control-group" in unit
     assert "ros2-ardupilot-onboard.service" not in unit

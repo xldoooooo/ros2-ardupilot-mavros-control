@@ -24,15 +24,8 @@ if ((odin_help)); then
   exit 0
 fi
 
-# Per-aircraft hardware choices stay outside Git and are shared by systemd/manual starts.
-readonly onboard_environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
-if [[ -e "${onboard_environment_file}" && ! -r "${onboard_environment_file}" ]]; then
-  echo "[startup] onboard environment is not readable: ${onboard_environment_file}" >&2
-  exit 1
-fi
-if [[ -r "${onboard_environment_file}" ]]; then
-  runtime_source_setup "${onboard_environment_file}"
-fi
+source "${project_root}/scripts/lib/project_config.bash"
+project_config_load "${project_root}"
 odin_default_selection
 
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
@@ -109,6 +102,9 @@ echo "[startup] FCU=${fcu_device}:${fcu_baud}"
 echo "[startup] mavros profile=${mavros_launch}"
 echo "[startup] odin=$(runtime_package_prefix odin_ros_driver)"
 echo "[startup] odin config=${odin_config_file}"
+echo "[startup] mavros config=${MAVROS_CONFIG_FILE}"
+echo "[startup] extnav config=${ODIN_EXTRINSICS_FILE}"
+echo "[startup] control config=${ONBOARD_CONTROL_CONFIG}"
 echo "[startup] extnav=$(runtime_package_prefix extnav_bridge)"
 
 if ((odin_check)); then
@@ -209,13 +205,12 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 launch_component "mavros" \
-  ros2 launch "${mavros_launch}" "fcu_url:=${fcu_device}:${fcu_baud}"
+  ros2 launch "${mavros_launch}" "fcu_url:=${fcu_device}:${fcu_baud}" "config_yaml:=${MAVROS_CONFIG_FILE}"
 launch_component "odin" \
   ros2 launch odin_ros_driver odin1_ros2.launch.py "config_file:=${odin_config_file}"
 launch_component "extnav" \
   ros2 run extnav_bridge extnav_to_vision_pose --ros-args \
-  --params-file "${ODIN_EXTRINSICS_FILE:-${project_root}/config/odin_extrinsics.yaml}" \
-  -p vision_rate_hz:=40.0 -p ctrl_rate_hz:=100.0 -p odom_topic:=/odin1/odometry_highfreq
+  --params-file "${ODIN_EXTRINSICS_FILE}"
 launch_component "onboard" \
   bash --noprofile --norc -c 'cd -- "$1"; shift; exec "$@"' onboard \
   "${project_root}" ros2 launch onboard_control control.launch.py \

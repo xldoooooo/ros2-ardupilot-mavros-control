@@ -2,7 +2,7 @@
 # MAVROS 机载配置
 
 `aircraft_plugins.yaml` 是当前机载飞行链路的 9 插件白名单；
-`aircraft.launch.xml` 使用它，并复用当前已选 MAVROS 安装中的 `apm_config.yaml`，
+`aircraft.launch.xml` 使用它，并使用当前已选 MAVROS 安装中的 `apm_config.yaml`，
  `start_mavros.sh` 和`start_onboard_control.sh` 均自动使用此配置，原有 MAVROS overlay 选择保持有效。
 launch 的 `namespace` 默认为空，保留机载 MAVROS 内部的 `/mavros/...` 接口命名；
 不要再额外传入 `namespace:=mavros`，避免与内部 UAS 命名重复。
@@ -95,7 +95,7 @@ GPS 状态插件的正确标识是 `gps_status`；旧拼写 `gpsstatus` 不能�
 在已加载 ROS/MAVROS overlay 的终端，可独立启动此配置：
 
 ```bash
-ros2 launch "$(pwd)/config/mavros/aircraft.launch.xml" fcu_url:=/dev/serial/by-id/FCU:460800
+bash scripts/onboard/components/start_mavros.sh
 ```
 
 串口示例需替换为实际设备；正常机载启动建议使用上述脚本读取逐机 `onboard.env`。

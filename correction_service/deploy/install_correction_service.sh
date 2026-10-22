@@ -6,8 +6,7 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly WORKSPACE_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 readonly SERVICE_NAME="odin-correction.service"
-readonly SERVICE_TEMPLATE="${SCRIPT_DIR}/correction-service.service.example"
-readonly ENV_TEMPLATE="${SCRIPT_DIR}/correction.env.example"
+readonly SERVICE_TEMPLATE="${WORKSPACE_ROOT}/system/systemd/odin-correction.service"
 readonly FLIGHT_SERVICE="ros2-ardupilot-onboard.service"
 readonly CORRECTION_PACKAGE_VERSION="2.0.0"
 
@@ -65,13 +64,16 @@ case "${1:-}" in
 esac
 (( $# <= 1 )) || die "unexpected extra argument: $2"
 [[ -r /opt/ros/jazzy/setup.bash ]] || die "ROS 2 Jazzy setup is missing"
-[[ -f "${SERVICE_TEMPLATE}" && -f "${ENV_TEMPLATE}" ]] ||
+[[ -f "${SERVICE_TEMPLATE}" ]] ||
   die "service deployment templates are incomplete"
 [[ -x "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_correction.sh" ]] ||
   die "independent correction launcher is missing or not executable"
 [[ -x "${WORKSPACE_ROOT}/scripts/onboard/stop_onboard_correction.sh" ]] ||
   die "independent correction stop helper is missing or not executable"
-[[ -f "${WORKSPACE_ROOT}/correction_service/config/general_settings.yaml" ]] ||
+source "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash"
+source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+project_config_load "${WORKSPACE_ROOT}"
+[[ -f "${AIRCRAFT_CONFIG_DIR}/correction/general_settings.yaml" ]] ||
   die "correction configuration is missing"
 verify_manifest_version "${WORKSPACE_ROOT}/src/correction_interfaces/package.xml"
 verify_manifest_version "${WORKSPACE_ROOT}/correction_service/package.xml"
@@ -131,19 +133,8 @@ ros2 interface show correction_interfaces/srv/ClearWindow >/dev/null
 ros2 interface show correction_interfaces/srv/ApplySavedCorrection >/dev/null
 ros2 interface show correction_interfaces/srv/SetCorrection >/dev/null
 
-run_root install -d -m 0755 /etc/ros2-ardupilot
-if [[ ! -e /etc/ros2-ardupilot/correction.env ]]; then
-  env_stage="$(mktemp)"
-  sed \
-    -e "s|/home/nvidia/ros2-ardupilot-sitl-hardware|${WORKSPACE_ROOT}|g" \
-    "${ENV_TEMPLATE}" > "${env_stage}"
-  run_root install -m 0644 "${env_stage}" /etc/ros2-ardupilot/correction.env
-else
-  printf '[correction-install] keeping /etc/ros2-ardupilot/correction.env\n'
-fi
-
 unit_stage="$(mktemp)"
-trap 'rm -f -- "${env_stage:-}" "${unit_stage}"' EXIT
+trap 'rm -f -- "${unit_stage}"' EXIT
 sed \
   -e "s|ONBOARD_USER|${correction_user}|g" \
   -e "s|ONBOARD_WORKSPACE_PATH|${WORKSPACE_ROOT}|g" \

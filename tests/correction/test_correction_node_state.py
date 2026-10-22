@@ -20,7 +20,7 @@ from correction_service.window import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_DIR = PROJECT_ROOT / "correction_service" / "config"
+CONFIG_DIR = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "correction"
 
 
 def _keyframe(job_id: str = "sample-job") -> CalibrationKeyframe:
@@ -120,7 +120,7 @@ def correction_node(monkeypatch):
         odin_session_id="odin-a",
         correction_valid=False,
         revision=0,
-        lever_arm_m=np.array((0.06, -0.03, 0.05)),
+        lever_arm_m=node.config.fcu_reference.lever_arm_m.copy(),
         installation_rpy=np.zeros(3),
     )
     yield node
@@ -285,9 +285,9 @@ def test_session_change_automatically_invalidates_saved_window(
     status.service_available = True
     status.odin_available = True
     status.odin_session_id = "odin-b"
-    status.lever_arm_x_m = 0.06
-    status.lever_arm_y_m = -0.03
-    status.lever_arm_z_m = 0.05
+    status.lever_arm_x_m, status.lever_arm_y_m, status.lever_arm_z_m = (
+        node.config.fcu_reference.lever_arm_m
+    )
 
     node._on_extnav_status(status)
 

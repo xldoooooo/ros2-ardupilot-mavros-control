@@ -73,7 +73,7 @@ ROS_LOCALHOST_ONLY=0
 
 https://asset.manifoldtech.cn/media/static/download/odin1/Odin1%20%E5%BF%AB%E9%80%9F%E5%90%AF%E5%8A%A8%20v1.5.0.pdf
 
-catkin_ws/ 下 control_command.yaml 可配置关闭发送某些数据以降低对机载计算机的cpu占用
+在 `config/aircraft/<编号>/odin/` 的所选模式 YAML 中配置 Odin 输出。
 
 # AP飞控
 
@@ -81,6 +81,8 @@ catkin_ws/ 下 control_command.yaml 可配置关闭发送某些数据以降低�
 
 
 # 机载服务
+
+配置统一位于 [`config/`](config/README.md)。本机 `config/aircraft.local.env` 选择固定编号：`uav001` 为1号机、`uav002` 为2号机、`simulation` 为仿真。编辑所选档案后重启对应服务即可生效，无需为调参重新构建；系统集成源文件位于 `system/`。
 
 ## 新机载计算机部署索引
 
@@ -193,7 +195,7 @@ sudo systemctl enable ros2-ardupilot-onboard.service
 `scripts/onboard/start_onboard_control.sh` 会自动读取以下配置文件：
 
 ```text
-/etc/ros2-ardupilot/onboard.env
+config/aircraft/<编号>/onboard.env
 ```
 
 ```bash
@@ -201,7 +203,6 @@ ROS_DOMAIN_ID=0
 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 MAVROS_FCU_DEVICE=/dev/serial/by-id/<已核对的飞控设备>
 MAVROS_FCU_BAUD=460800
-ODIN_OVERLAY_SETUP=/home/<机载用户>/<odin工作区>/install/setup.bash
 EXTNAV_OVERLAY_SETUP=/home/<机载用户>/<extnav工作区>/install/setup.bash
 ```
 
@@ -212,7 +213,7 @@ EXTNAV_OVERLAY_SETUP=/home/<机载用户>/<extnav工作区>/install/setup.bash
 云台相机镜头参数
 
 ```text
-/etc/ros2-ardupilot/
+config/aircraft/<编号>/video/
 ```
 
 

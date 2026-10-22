@@ -67,9 +67,10 @@ echo "[navigation-switch] requested=${requested_mode}, log=${log_file}"
 source "${project_root}/scripts/lib/runtime_common.bash"
 source "${project_root}/scripts/lib/odin_runtime.bash"
 switch_step="loading the aircraft environment"
-runtime_source_environment_file "${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
+source "${project_root}/scripts/lib/project_config.bash"
+project_config_load "${project_root}"
 readonly avoidance_service="${AVOIDANCE_SYSTEMD_SERVICE:-ros2-ardupilot-avoidance.service}"
-readonly navigation_env="${NAVIGATION_ENV_FILE:-/etc/ros2-ardupilot/navigation.env}"
+readonly navigation_env="${NAVIGATION_ENV_FILE}"
 readonly project_python="${ONBOARD_PYTHON:-${project_root}/.venv/bin/python}"
 [[ -x "${project_python}" ]] || { echo "Missing project Python: ${project_python}"; exit 1; }
 runtime_source_setup "$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")"
@@ -176,8 +177,9 @@ if [[ -e "${navigation_env}" ]]; then
   sed '/^[[:space:]]*\(export[[:space:]]\+\)\?NAVIGATION_MODE[[:space:]]*=/d' "${navigation_env}" > "${stage}"
 fi
 printf 'NAVIGATION_MODE=%s\n' "${requested_mode}" >> "${stage}"
-run_root install -d -m 0755 "$(dirname "${navigation_env}")"
-run_root install -m 0644 "${stage}" "${navigation_env}"
+# Keep the project parameter file editable by the service user after a GUI switch.
+install -d -m 0755 "$(dirname "${navigation_env}")"
+install -m 0644 "${stage}" "${navigation_env}"
 rm -f -- "${stage}"
 
 switch_step="restarting the previously running components"

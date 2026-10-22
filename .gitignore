@@ -150,3 +150,11 @@ site/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Host selection, runtime camera preferences, and local configuration snapshots.
+/config/aircraft.local.env
+/config/host.local.env
+/config/ground/*.json
+/backups/
+/config/aircraft/*/log/
+/config/aircraft/*/odin/calibration/cam_in_ex.txt

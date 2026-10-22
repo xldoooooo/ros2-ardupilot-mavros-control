@@ -12,6 +12,8 @@ readonly workspace_setup="${project_root}/install/setup.bash"
 }
 # shellcheck disable=SC1090
 source "${runtime_helpers}"
+# Host dependency paths are local project settings, independent of aircraft profiles.
+runtime_source_environment_file "${project_root}/config/host.local.env"
 
 ros_setup="$(runtime_detect_ros_setup "${GROUND_STATION_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup

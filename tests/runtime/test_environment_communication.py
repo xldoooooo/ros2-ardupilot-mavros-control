@@ -14,6 +14,7 @@ from ground_station_core.config import (
     HARDWARE_DISCOVERY_RANGE,
     HARDWARE_DOMAIN_ID,
     INTERFACE_VERSION,
+    PROJECT_ROOT,
     SIMULATION_DISCOVERY_RANGE,
     SIMULATION_DOMAIN_ID,
 )
@@ -449,6 +450,7 @@ def test_simulation_parallelizes_safe_startup_and_uses_sim_only_fast_param_check
     sitl_environment = supervisor.start_kwargs["sitl"]["extra_environment"]
     assert sitl_environment["PATH"].split(os.pathsep)[0] == str(mavproxy.parent)
     assert "fcu_parameter_check_initial_delay_seconds:=2.0" in onboard_command
+    assert str(PROJECT_ROOT / 'config/aircraft/simulation/control.yaml') in onboard_command
     assert rviz_command[:4] == ("nice", "-n", "5", "ros2")
     assert "pose_topic:=/mavros/local_position/pose" in rviz_command
     assert stable_calls == [("mavros_sim", 1.0), ("rviz", 0.2)]

@@ -53,7 +53,7 @@ sudo apt-get install ros-jazzy-angles
 安装器按系统版本选择固定源码并校验 SHA-256：2.15.1 使用 `~/mavros_param_fix_ws`，
 2.16.0 使用 `~/mavros_param_fix_2.16.0_ws`，独立构建 overlay，不覆盖
 `/opt/ros/jazzy`，也不自动重启服务。离线源码可通过 `MAVROS_SOURCE_ARCHIVE` 指定。
-在 `/etc/ros2-ardupilot/onboard.env` 设置实际路径：
+在 `config/aircraft/<AIRCRAFT_ID>/onboard.env` 设置实际路径：
 
 ```bash
 MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup.bash
@@ -89,6 +89,7 @@ git sparse-checkout set \
   '/src/onboard_control/' \
   '/drivers/' \
   '/config/' \
+  '/system/' \
   '/correction_service/' \
   '/scripts/onboard/start_onboard_correction.sh' \
   '/scripts/onboard/stop_onboard_correction.sh' \
@@ -136,7 +137,7 @@ src/onboard_control/scripts/reboot_fcu_client.py
 已有 sparse checkout 须在拉取前纳入新目录，否则旧更新脚本的清单不会检出这些文件：
 
 ```bash
-git sparse-checkout add '/scripts/onboard/' '/scripts/lib/' '/drivers/' '/config/'
+git sparse-checkout add '/scripts/onboard/' '/scripts/lib/' '/drivers/' '/config/' '/system/'
 git pull --ff-only origin main
 ```
 
@@ -294,13 +295,14 @@ Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jaz
 ./src/onboard_control/deploy/install_onboard_service.sh
 ```
 
-安装器会运行原生构建、单测和隔离 smoke，首次生成 `/etc/ros2-ardupilot/onboard.env`，根据当前
+安装器会运行原生构建、单测和隔离 smoke，读取已选择的 `config/aircraft/<AIRCRAFT_ID>/onboard.env`，根据当前
 用户名与仓库路径安装 `/etc/systemd/system/ros2-ardupilot-onboard.service`，完成只读 `--check`
-后执行 `enable --now`。已有 `onboard.env` 不会被覆盖。若飞控服务已经 active，安装器会拒绝更新，
+后执行 `enable --now`。项目内逐机参数不会被安装器覆盖。安装器还将 `system/udev/99-odin-usb.rules`
+安装到系统规则目录并重新加载规则；已连接设备需要重新插拔后获取新权限。若飞控服务已经 active，安装器会拒绝更新，
 必须由人工确认飞机未解锁并进入维护窗口后先停止服务；安装器绝不自行停止运行中的飞控链。
 
 首次自动发现存在多个串口、多个 extnav overlay 或缺少硬件包时，`--check` 会明确失败。此时
-应人工核对并编辑 `/etc/ros2-ardupilot/onboard.env`，不能为了“一键”而猜测飞控设备。
+应人工核对并编辑 `config/aircraft/<AIRCRAFT_ID>/onboard.env`，不能为了“一键”而猜测飞控设备。
 
 机载工作区`scripts/onboard/start_onboard_control.sh` 自动发现并统一启动四个组件：
 
@@ -342,8 +344,8 @@ READY 使用单个持续订阅和 GNU `timeout` 的 120 秒相对定时器，不
 `SECONDS`；同一条新状态必须满足全部条件。匹配状态或探针错误保存在该次日志目录的
 `readiness.log`。取消启动时也会清理此订阅进程；超时后四组件继续受监督运行。
 
-脚本启动时会读取 `/etc/ros2-ardupilot/onboard.env`，也可用
-`ONBOARD_ENV_FILE` 指定另一文件。已人工确认串口或 overlay 后，应在该机专用
+脚本启动时从 `config/aircraft.local.env` 读取 `AIRCRAFT_ID`，再读取
+`config/aircraft/<AIRCRAFT_ID>/onboard.env`。已人工确认串口或 overlay 后，应在该机专用
 环境文件中配置，使 systemd 与交互终端直接执行脚本时共享同一选择。
 
 在运行脚本的同一终端按 `Ctrl+C` 会停止本次启动的全部进程。每次运行的合并日志位于
@@ -371,14 +373,14 @@ bash scripts/onboard/components/start_odin.sh -c original
 bash scripts/onboard/components/start_odin.sh -c /absolute/path/custom.yaml
 ```
 
-省略 `-c` 读取 `/etc/ros2-ardupilot/navigation.env` 的 `NAVIGATION_MODE=odom|map`，
+省略 `-c` 读取 `config/aircraft/<AIRCRAFT_ID>/navigation.env` 的 `NAVIGATION_MODE=odom|map`，
 文件缺失时使用 `odom`，`map` 选择 `reloc.yaml`。独立入口、完整机载入口和 systemd 使用同一规则。
-显式 `-c` 优先；自定义配置使用绝对路径。预设保存在项目驱动的 `config/` 中，
+显式 `-c` 优先；自定义配置使用绝对路径。预设保存在 `config/aircraft/<AIRCRAFT_ID>/odin/` 中，
 `original` 保留引入时的厂家配置，按机体修改配置前先保留现场标定。
 
 ### 地面 odom/map 切换
 
-先在 `drivers/odin/src/odin_ros_driver/config/reloc.yaml` 设置已录制地图的绝对 `.bin` 路径。
+先在 `config/aircraft/<AIRCRAFT_ID>/odin/reloc.yaml` 设置已录制地图的绝对 `.bin` 路径。
 reloc 启动前验证文件存在、可读且非空；地图不入 Git。切换脚本使用项目 `.venv/bin/python`
 和现有 PyYAML/rclpy；若逐机虚拟环境位置不同，在 `onboard.env` 设置 `ONBOARD_PYTHON`。
 
@@ -410,24 +412,24 @@ SLAM 建图模式标为 `unsupported`，不可当成重定位飞行。`localized
 
 分步入口现集中在 `scripts/onboard/components/`，包含 `start_link.sh`、`start_mavros.sh`、
 `start_odin.sh` 和 `start_extnav.sh`。两个硬件脚本会自动读取
-`/etc/ros2-ardupilot/onboard.env`，因此可在两个终端中分别直接一键启动 Odin 和 extnav；
+`config/aircraft/<AIRCRAFT_ID>/onboard.env`，因此可在两个终端中分别直接一键启动 Odin 和 extnav；
 两者都不启动 MAVROS、onboard_control、修正或视频服务。
 部署前备份与本次实机测试结论
 记录在对应日期的任务报告中。
 
 ## 8. systemd 示例
 
-`onboard-control.service.example` 是四组件生产模板，由
+`system/systemd/ros2-ardupilot-onboard.service` 是四组件生产模板，由
 `install_onboard_service.sh` 自动替换用户、HOME 与工作区。当前 Jetson 已部署的
 `ros2-ardupilot-onboard.service` 负责同一套四组件集成启动。
 
 任务 22.5 的视频节点必须另外使用
-`video_service/deploy/video-service.service.example`。不要把它加入
+`system/systemd/video-service.service`。不要把它加入
 `scripts/onboard/start_onboard_control.sh` 的受监督子进程，也不要在 systemd 中对飞控服务声明
 依赖。
 
 任务 27 的修正节点同样使用独立的
-`correction_service/deploy/correction-service.service.example`。在确认未解锁并人工停止飞控
+`system/systemd/odin-correction.service`。在确认未解锁并人工停止飞控
 主服务后，依次执行：
 
 ```bash
@@ -447,7 +449,7 @@ extnav 现为单线程 C++ `ament_cmake` 包，启动命令和 correction 2.0 �
 视频 unit 也不得设置 `Requires=`/`PartOf=`：摄像头、FFmpeg、MediaMTX 或磁盘失败只能重启视频 unit，
 不能清理飞行栈。飞机 aarch64 还必须把 MediaMTX v1.20.0 ARM64 安装到系统
 `/usr/local/bin/mediamtx`；Git 仓库不再携带任何架构的 MediaMTX 可执行文件。
-镜头配置应复制为 `/etc/ros2-ardupilot/lens.conf`，媒体目录 `/home/share/jpg` 需由
+镜头配置直接维护于 `config/aircraft/<AIRCRAFT_ID>/video/lens.conf`，媒体目录 `/home/share/jpg` 需由
 视频服务用户可写。模板中的 `ONBOARD_USER`、`ONBOARD_HOME_PATH`、
 `ONBOARD_WORKSPACE_PATH` 必须全部替换。默认采集模式现为 H.264 1920×1080@60；完整依赖安装、
 配置复制、ARM64 摘要校验、systemd 命令、QoS 和隔离验收步骤见 `video_service/README.md`。

@@ -121,7 +121,8 @@ def test_onboard_service_installer_builds_and_installs_integrated_unit() -> None
     installer = ONBOARD_INSTALLER.read_text(encoding="utf-8")
     for required in (
         "build_onboard_control.sh\" --verify",
-        "/etc/ros2-ardupilot/onboard.env",
+        "project_config_load",
+        "system/systemd/ros2-ardupilot-onboard.service",
         "scripts/onboard/start_onboard_control.sh\" --check",
         "systemctl enable --now",
         "systemctl is-active",
@@ -145,10 +146,14 @@ def test_onboard_service_install_only_skips_hardware_and_service_start(tmp_path)
     deploy.mkdir(parents=True)
     for source in (
         ONBOARD_INSTALLER,
-        DEPLOY_DIR / "onboard-control.service.example",
-        DEPLOY_DIR / "onboard.env.example",
+        PROJECT_ROOT / "system/systemd/ros2-ardupilot-onboard.service",
+        PROJECT_ROOT / "system/udev/99-odin-usb.rules",
+        PROJECT_ROOT / "scripts/lib/project_config.bash",
+        PROJECT_ROOT / "scripts/lib/runtime_common.bash",
+        PROJECT_ROOT / "config/aircraft/simulation/onboard.env",
     ):
-        target = deploy / source.name
+        target = workspace / source.relative_to(PROJECT_ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
         target.chmod(0o755 if source == ONBOARD_INSTALLER else 0o644)
 
@@ -197,6 +202,8 @@ def test_onboard_service_install_only_skips_hardware_and_service_start(tmp_path)
     assert "sudo install -m 0644" in calls
     assert "/etc/systemd/system/ros2-ardupilot-onboard.service" in calls
     assert "sudo systemctl daemon-reload" in calls
+    assert "/etc/udev/rules.d/99-odin-usb.rules" in calls
+    assert "sudo udevadm control --reload-rules" in calls
     assert "start_onboard_control.sh --check" not in calls
     assert "systemctl enable --now" not in calls
     assert "it was not enabled or started" in result.stdout
@@ -504,10 +511,9 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     }
     assert {"ament_index_python", "launch", "launch_ros"} <= runtime_dependencies
 
-    service = (DEPLOY_DIR / "onboard-control.service.example").read_text(
+    service = (PROJECT_ROOT / "system/systemd/ros2-ardupilot-onboard.service").read_text(
         encoding="utf-8"
     )
-    environment = (DEPLOY_DIR / "onboard.env.example").read_text(encoding="utf-8")
     assert "User=ONBOARD_USER" in service
     assert "/opt/ros/jazzy" not in service
     assert "WorkingDirectory=ONBOARD_WORKSPACE_PATH" in service
@@ -516,14 +522,7 @@ def test_onboard_runtime_dependencies_and_service_template_are_portable() -> Non
     assert "systemd-time-wait-sync.service" not in service
     assert "time-sync.target" not in service
     assert "After=network-online.target" in service
-    assert "ONBOARD_ROS_DISTRO=ONBOARD_ROS_DISTRO_VALUE" in environment
-    assert "ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH" in environment
-    assert "ROS_LOCALHOST_ONLY=0" in environment
-    assert "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET" in environment
-    assert "MAVROS_FCU_DEVICE=" in environment
-    assert "ODIN_CV_BRIDGE_SETUP=" in environment
-    assert "ODIN_OVERLAY_SETUP=" not in environment
-    assert "EXTNAV_OVERLAY_SETUP=" in environment
+    assert "/etc/ros2-ardupilot" not in service
 
 
 def test_integrated_start_supervises_all_four_components_without_flight_commands() -> None:
@@ -548,17 +547,17 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
     for parameter in (
         "runtime_detect_fcu_device",
         "MAVROS_FCU_BAUD:-460800",
-        "vision_rate_hz:=40.0",
-        "ctrl_rate_hz:=100.0",
-        '--params-file "${ODIN_EXTRINSICS_FILE:-${project_root}/config/odin_extrinsics.yaml}"',
+        '--params-file "${ODIN_EXTRINSICS_FILE}"',
     ):
         assert parameter in script
 
-    extrinsics = yaml.safe_load((PROJECT_ROOT / "config/odin_extrinsics.yaml").read_text())
+    extrinsics = yaml.safe_load((PROJECT_ROOT / "config/aircraft/simulation/odin_extrinsics.yaml").read_text())
     assert extrinsics["/extnav_to_vision_pose"]["ros__parameters"] == {
         "auto_installation": True, "auto_installation_seconds": 3.0,
         "roll_cam": 0.0, "pitch_cam": 0.0, "yaw_cam": 0.0,
-        "odin_x": 0.06, "odin_y": -0.03, "odin_z": 0.05,
+        "odin_x": 0.10, "odin_y": -0.04, "odin_z": 0.05,
+        "vision_rate_hz": 40.0, "ctrl_rate_hz": 100.0,
+        "odom_topic": "/odin1/odometry_highfreq",
     }
 
     assert 'export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"' in script
@@ -567,8 +566,8 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
     assert '"config_file:=${odin_config_file}"' in script
     assert "runtime_ensure_package odin_ros_driver" not in script
     assert "runtime_ensure_package extnav_bridge" in script
-    assert "ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env" in script
-    assert 'runtime_source_setup "${onboard_environment_file}"' in script
+    assert 'project_config_load "${project_root}"' in script
+    assert "/etc/ros2-ardupilot" not in script
     assert "--check" in script
     assert "refusing to create duplicate flight-stack processes" in script
     assert "kill -INT -- \"-${pid}\"" in script
@@ -642,7 +641,7 @@ def test_synced_split_launchers_and_local_ground_launcher_are_well_scoped() -> N
         launcher = DRONE_START_DIRECTORY / launcher_name
         assert os.access(launcher, os.X_OK)
         text = launcher.read_text(encoding="utf-8")
-        assert "runtime_source_environment_file" in text
+        assert 'project_config_load "${project_root}"' in text
         assert "ROS_AUTOMATIC_DISCOVERY_RANGE" in text
 
     for obsolete_name in (

@@ -444,6 +444,9 @@ class EnvironmentInitializer:
         self._publish_status(
             status, LogLevel.INFO, "3/5 正在并行启动仿真 MAVROS 与机载控制服务..."
         )
+        self._events.info(
+            "environment", f"仿真配置: MAVROS={apm_config}；控制器={ONBOARD_PARAM_FILE}"
+        )
         mavros = self._supervisor.start(
             "mavros_sim",
             [

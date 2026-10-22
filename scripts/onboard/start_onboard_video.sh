@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# 独立启动机载视频 ROS 节点；不加入飞控四进程的共同生命周期。
+# Start the independent onboard video node with project-owned configuration.
 
 set -Eeuo pipefail
 
 readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 readonly VIDEO_DIR="${WORKSPACE_ROOT}/video_service"
-readonly SYSTEM_CAMERA_CONFIG="/etc/ros2-ardupilot/camera.conf"
-readonly SYSTEM_LENS_CONFIG="/etc/ros2-ardupilot/lens.conf"
+source "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash"
+source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+project_config_load "${WORKSPACE_ROOT}"
 # 冷启动时有限等待主路由获得源 IPv4；不探测或等待外网连通性。
 readonly LAN_ROUTE_TIMEOUT_SECONDS=30
 
+# Locate the installed ROS distribution.
 resolve_ros_setup() {
   local distro setup
   if [[ -n "${ROS_DISTRO:-}" && -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
@@ -27,24 +29,7 @@ resolve_ros_setup() {
   return 1
 }
 
-resolve_video_config() {
-  local requested="$1"
-  local system_config="$2"
-  local project_config="$3"
-  if [[ -n "${requested}" ]]; then
-    [[ -r "${requested}" ]] || {
-      printf '[video-service] ERROR: configured file is not readable: %s\n' \
-        "${requested}" >&2
-      return 1
-    }
-    printf '%s\n' "${requested}"
-  elif [[ -r "${system_config}" ]]; then
-    printf '%s\n' "${system_config}"
-  else
-    printf '%s\n' "${project_config}"
-  fi
-}
-
+# Wait for the LAN interface before creating the DDS participant.
 wait_for_lan_route() {
   local attempt=0 source_ip
   command -v ip >/dev/null 2>&1 || {
@@ -78,14 +63,15 @@ wait_for_lan_route() {
 
 readonly ROS_SETUP="$(resolve_ros_setup)"
 readonly PYTHON_EXECUTABLE="${VIDEO_SERVICE_PYTHON:-python3}"
-readonly CAMERA_CONFIG="$(resolve_video_config \
-  "${VIDEO_SERVICE_ONBOARD_CONFIG:-}" \
-  "${SYSTEM_CAMERA_CONFIG}" \
-  "${VIDEO_DIR}/config/camera.conf")"
-readonly LENS_CONFIG="$(resolve_video_config \
-  "${VIDEO_SERVICE_LENS_CONFIG:-}" \
-  "${SYSTEM_LENS_CONFIG}" \
-  "${VIDEO_DIR}/config/lens.conf")"
+readonly CAMERA_CONFIG="${VIDEO_SERVICE_ONBOARD_CONFIG}"
+readonly LENS_CONFIG="${VIDEO_SERVICE_LENS_CONFIG}"
+for config_file in "${CAMERA_CONFIG}" "${LENS_CONFIG}"; do
+  [[ -r "${config_file}" ]] || {
+    printf '[video-service] ERROR: config is not readable: %s\n' "${config_file}" >&2
+    exit 1
+  }
+done
+printf '[video-service] camera=%s lens=%s\n' "${CAMERA_CONFIG}" "${LENS_CONFIG}"
 
 [[ -f "${WORKSPACE_ROOT}/install/setup.bash" ]] || {
   printf '[video-service] ERROR: workspace overlay is missing: %s\n' \

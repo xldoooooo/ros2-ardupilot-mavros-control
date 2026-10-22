@@ -4,6 +4,8 @@ set -Eeuo pipefail
 project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 planner_root="${AVOIDANCE_WORKSPACE:-${project_root%/*}/dyn_small_obs_avoidance-ros2}"
 source "${project_root}/scripts/lib/runtime_common.bash"
+source "${project_root}/scripts/lib/project_config.bash"
+project_config_load "${project_root}"
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")"
 runtime_source_setup "${ros_setup}"
 for path in "${planner_root}/install/setup.bash" "${project_root}/install/setup.bash"; do
@@ -34,4 +36,4 @@ if [[ "${1:-}" == '--check' ]]; then
   echo 'Avoidance overlays and source/install manifests verified; no process started.'
   exit 0
 fi
-exec ros2 launch avoidance_bridge avoidance.launch.py "$@"
+exec ros2 launch avoidance_bridge avoidance.launch.py "config:=${AVOIDANCE_CONFIG_FILE}" "$@"

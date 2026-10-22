@@ -143,12 +143,13 @@ export ODIN_CV_BRIDGE_SETUP=/home/nvidia/ros2-ardupilot-mavros-control/drivers/o
 ./correction_service/deploy/install_extnav_correction.sh
 ```
 
-在 `/etc/ros2-ardupilot/onboard.env` 保存同一 `ODIN_CV_BRIDGE_SETUP`，使 systemd 与交互启动
+在 `config/aircraft/<AIRCRAFT_ID>/onboard.env` 保存同一 `ODIN_CV_BRIDGE_SETUP`，使 systemd 与交互启动
 使用相同 cv_bridge。已有兼容 overlay 可只读引用，不能在旧 `catkin_ws` 中重新构建或改动。
 Odin 自身的 `build/`、`install/`、`log/` 只写在项目 `drivers/odin/` 下。
 
 新机用户需加入 `dialout,video,plugdev`，重新登录后生效；新增依赖安装器已处理该组权限。
-本次 Odin USB 权限文件 `/etc/udev/rules.d/99-odin-usb.rules` 为：
+Odin USB 权限源文件为 `system/udev/99-odin-usb.rules`，安装到
+`/etc/udev/rules.d/99-odin-usb.rules`：
 
 ```udev
 # Odin USB access for the onboard user.

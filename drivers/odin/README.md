@@ -26,14 +26,14 @@ Jetson 的厂商 OpenCV 必须配套相同 ABI 的 cv_bridge，可用 `ODIN_CV_B
 完整机载入口 `./scripts/onboard/start_onboard_control.sh` 使用相同的 `-c` 选项，默认也为 odom。
 `--check` 只检查配置路径及安装入口，不连接设备。切换配置前先停止现有 Odin 进程。
 
-| 配置文件（`src/odin_ros_driver/config/`） | 用途 |
+| 配置文件（项目根 `config/aircraft/<编号>/odin/`） | 用途 |
 | --- | --- |
 | `original.yaml` | 厂商原始配置，原样保留其开关；当前原版默认是 SLAM 模式。 |
 | `odom.yaml` | 项目里程计模式，`custom_map_mode: 0`。 |
 | `slam.yaml` | 项目建图模式，`custom_map_mode: 1`。 |
 | `reloc.yaml` | 项目重定位模式，`custom_map_mode: 2`；地图绝对路径由使用者手动维护。 |
 
-`control_command.yaml` 仅是指向 `odom.yaml` 的兼容链接，不另维护第五份配置。
+项目启动入口直接读取所选飞机的模式 YAML；修改后重启 Odin，无需重新构建。
 项目 `odom`/`reloc` 配置关闭无人使用的原始 DTOF、诊断 CSV 和传感器展示 TF；
 高频定位、下采样点云与独立的 `odom→map` 重定位 TF 保持。`slam` 关闭原始 DTOF/CSV，
 保留传感器 TF 方便建图查看；开发机需要完整传感器调试时显式选择 `original` 或自定义配置。

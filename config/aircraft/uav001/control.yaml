@@ -1,0 +1,119 @@
+# Flight control parameters; restart the selected service after editing.
+/**:
+  ros__parameters:
+    # 固定周期执行与聚合状态发布
+    control_frequency: 100.0  # 机载主控制循环频率，单位：Hz。
+    status_frequency: 10.0  # 聚合控制状态发布频率，单位：Hz。
+
+    # Map tasks use Odin's live odom<-map TF; local control and point clouds stay continuous.
+    navigation_status_timeout_seconds: 3.0  # Driver identity reception timeout.
+    navigation_tf_timeout_seconds: 5.0  # Maximum map TF age, including device status age.
+    navigation_max_jump_m: 2.0  # Reject one correction that moves the current world pose this far.
+    navigation_max_jump_degrees: 45.0  # Reject one large rotational correction.
+    navigation_hold_timeout_seconds: 15.0  # Local brake/hold duration before LAND.
+    navigation_retarget_distance_m: 0.05  # Accumulate ordinary TF noise before retargeting.
+    navigation_retarget_degrees: 2.0  # Accumulated heading change before retargeting.
+    navigation_retarget_interval_seconds: 1.0  # Minimum interval between target updates.
+    navigation_retarget_blend_seconds: 1.0  # Smooth small straight-flight endpoint corrections.
+
+    # 遥测新鲜度、失联处理与命令时效安全阈值
+    pose_timeout_seconds: 0.30  # 位姿或速度遥测最大允许断流时间，单位：秒。
+    state_timeout_seconds: 2.0  # 飞控连接状态最大允许断流时间，单位：秒。
+    # 连接后主动异步拉参数；早检查、未同步时重试，不跳过推力参数值校验。
+    fcu_parameter_check_initial_delay_seconds: 2.0  # 首次只读检查延迟，单位：秒。
+    link_loss_land_timeout_seconds: 10.0  # 地面站失联后悬停多久转入自动降落，单位：秒。
+    takeoff_timeout_seconds: 45.0  # 起飞任务等待高度确认的最长时间，单位：秒。
+    # 降落命令只有在飞控回报解除武装后才判定成功。
+    land_confirmation_timeout_seconds: 120.0  # 等待降落并解除武装确认的最长时间，单位：秒。
+    # 绝对墙钟无需一致；本值只限制相邻租约心跳基准下异常的相对时间超前。
+    max_clock_skew_seconds: 2.0  # 命令相对地面站本地时间基准允许的最大超前量，单位：秒。
+
+    # 航点到达判定与键盘运动参考限制
+    waypoint_tolerance: 0.30  # 飞机到航点的三维距离容差，单位：米。
+    waypoint_hold_seconds: 0.3  # 进入航点容差后必须持续保持的时间，单位：秒。
+
+    # 仅避障任务读取；直线任务不依赖规划器，等待包括制动且失败不重置计时。
+    avoidance_wait_timeout_seconds: 15.0  # 无通道/完整路径连续等待超时后失败并LAND。
+    avoidance_result_timeout_seconds: 0.8  # 新结果最大搜索年龄及目标/直线查询等待时间，含求解/DDS。
+    avoidance_resume_seconds: 0.4  # CHECK_LINE stopped/clear observation window; PLAN resumes on a joinable result.
+    avoidance_join_position_tolerance: 0.08  # Base position mismatch in metres, plus native delay allowance.
+    avoidance_join_velocity_tolerance: 0.08  # Base velocity mismatch in m/s, plus native delay allowance.
+    max_velocity_xy: 1.5  # 键盘运动模式的最大水平参考速度，单位：米/秒。
+    max_velocity_z: 0.8  # 键盘运动模式的最大垂直参考速度，单位：米/秒。
+    max_yaw_rate: 1.0  # 键盘运动模式的最大偏航角速度，单位：弧度/秒。
+    max_reference_error_xy: 0.8  # 键盘虚拟参考允许领先飞机的最大水平距离，单位：米。
+    max_reference_error_z: 0.5  # 键盘虚拟参考允许领先飞机的最大垂直距离，单位：米。
+
+    # 平滑航点方法必须从稳定悬停开始；启动余速和入点余速分别独立重试。
+    # 两处均在首次失败时立即计数，之后每秒重判，连续失败 10 次标记异常。
+    waypoint_start_speed_tolerance: 0.20  # 启动平滑航点任务允许的最大三维实际速度，单位：米/秒。
+    waypoint_start_retry_interval_seconds: 1.0  # 平滑航点启动速度失败的重判间隔，单位：秒。
+    waypoint_start_failure_limit: 10  # 启动速度连续失败达到此次数后标记无人机状态异常。
+    waypoint_arrival_speed_tolerance: 0.15  # 航点到达判定允许的最大三维实际速度，单位：米/秒。
+    waypoint_arrival_retry_interval_seconds: 1.0  # 入点失败重新判定和计数的间隔，单位：秒。
+    waypoint_arrival_failure_limit: 10  # 入点失败达到此次数后标记无人机状态异常。
+
+    # 位置 PD 与一阶扰动观测器的原有基线参数
+    hover_wn_xy: 2.236  # 基线水平位置闭环自然频率，单位：弧度/秒。
+    hover_zeta_xy: 0.8  # 基线水平位置闭环阻尼比，无量纲。
+    hover_wn_z: 2.236  # 基线垂直位置闭环自然频率，单位：弧度/秒。
+    hover_zeta_z: 0.6  # 基线垂直位置闭环阻尼比，无量纲。
+    dob_L_xy: 1.5  # 基线水平扰动观测器带宽系数，单位：1/秒。
+    dob_L_z: 0.6  # 基线垂直扰动观测器带宽系数，单位：1/秒。
+
+    # 轨迹 PD+DOB 的独立低带宽参数，并启用参考加速度前馈。
+    # 显式悬停、键盘运动和位置 PD+DOB 使用上方基线；轨迹结束后的末点保持继续沿用本组增益。
+    trajectory_wn_xy: 1.2  # 轨迹跟踪水平位置闭环自然频率，单位：弧度/秒。
+    trajectory_zeta_xy: 1.1  # 轨迹跟踪水平位置闭环阻尼比，无量纲。
+    trajectory_wn_z: 1.2  # 轨迹跟踪垂直位置闭环自然频率，单位：弧度/秒。
+    trajectory_zeta_z: 1.1  # 轨迹跟踪垂直位置闭环阻尼比，无量纲。
+    trajectory_dob_L_xy: 0.5  # 轨迹跟踪水平扰动观测器带宽系数，单位：1/秒。
+    trajectory_dob_L_z: 0.3  # 轨迹跟踪垂直扰动观测器带宽系数，单位：1/秒。
+
+    # Straight and clear obstacle-hover flight share these limits; obstacle braking uses search.*.
+    straight_max_velocity_xy: 1.0  # Horizontal speed norm, m/s.
+    straight_max_velocity_z: 0.2  # Absolute vertical speed, m/s.
+    straight_max_acceleration_xy: 0.35  # Horizontal acceleration norm, m/s².
+    straight_max_acceleration_z: 0.15  # Absolute vertical acceleration, m/s².
+
+    # Independent second-order filter shaping parameters.
+    second_order_filter_wn_xy: 1.2  # 水平二阶命令滤波器自然频率，单位：弧度/秒。
+    second_order_filter_zeta_xy: 1.0  # 水平二阶命令滤波器阻尼比，无量纲。
+    second_order_filter_wn_z: 0.8  # 垂直二阶命令滤波器自然频率，单位：弧度/秒。
+    second_order_filter_zeta_z: 1.0  # 垂直二阶命令滤波器阻尼比，无量纲。
+    second_order_filter_completion_position_tolerance: 0.05  # 判定滤波完成的位置误差阈值，单位：米。
+    second_order_filter_completion_velocity_tolerance: 0.05  # 判定滤波完成的速度阈值，单位：米/秒。
+
+    # 普通梯形速度参考的独立对照参数；相位交界处允许加速度不连续。
+    trapezoidal_max_deceleration_xy: 0.40  # 梯形参考的最大水平减速度绝对值，单位：米/秒²。
+    trapezoidal_max_deceleration_z: 0.18  # 梯形参考的最大垂直减速度绝对值，单位：米/秒²。
+
+    # 限 jerk S 曲线的主推荐参数；长航段按平滑加速、恒速平台、平滑减速执行。
+    s_curve_max_deceleration_xy: 0.40  # S 曲线参考的最大水平减速度绝对值，单位：米/秒²。
+    s_curve_max_deceleration_z: 0.18  # S 曲线参考的最大垂直减速度绝对值，单位：米/秒²。
+    s_curve_max_jerk_xy: 0.40  # S 曲线参考的最大水平加加速度，单位：米/秒³。
+    s_curve_max_jerk_z: 0.16  # S 曲线参考的最大垂直加加速度，单位：米/秒³。
+
+    # 推力映射与控制输出硬限幅；启用原始姿态控制前，启动回退值会被飞控标定值替换。
+    hover_throttle: 0.22  # 飞控悬停油门的启动回退值，运行时由 MOT_THST_HOVER 覆盖。
+    thrust_ratio: 2.5  # 最大推力与重力的估计比值，用于分段线性油门映射。
+    gravity: 9.8  # 控制器使用的重力加速度，单位：米/秒²。
+    max_acceleration_xy: 4.0  # 控制器允许输出的最大水平合加速度，单位：米/秒²。
+    max_acceleration_z: 4.0  # 控制器允许输出的最大垂直加速度绝对值，单位：米/秒²。
+    max_jerk_xy: 10.0  # Horizontal output slew when enabled, m/s³; 0 disables this axis.
+    max_jerk_z: 8.0  # Vertical output slew when enabled, m/s³; hard limits take priority.
+    # Startup parameters; waypoint strategy includes its preparation and planning waits.
+    jerk_limit_modes:
+      hover: false  # Includes takeoff handover and holding after waypoint completion.
+      motion: false  # Keyboard/manual motion commands.
+      straight: false  # Straight waypoint tasks, with either tracking controller.
+      avoidance: true  # Autonomous waypoint tasks, including braking/replanning waits.
+      obstacle_hover: false  # Straight flight with obstacle-stop permission checks.
+      failsafe_hold: false  # Link-loss and health-protection hover.
+    max_disturbance: 3.0  # 扰动观测器各轴估计值的绝对限幅，单位：米/秒²。
+    max_tilt_degrees: 25.0  # 姿态指令允许的最大倾角，单位：度。
+    min_total_acceleration_z: 2.0  # 加入重力补偿后要求的最小竖直加速度，单位：米/秒²。
+
+    # MAVROS 与机载接口命名空间，可在多机部署时通过参数重映射。
+    mavros_prefix: /mavros  # MAVROS 话题和服务使用的命名空间前缀。
+    interface_prefix: /onboard_control  # 机载控制高层话题和服务使用的命名空间前缀。

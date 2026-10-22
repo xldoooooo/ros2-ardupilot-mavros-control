@@ -6,19 +6,20 @@ set -Eeuo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly WORKSPACE_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd -P)"
 readonly SERVICE_NAME="ros2-ardupilot-onboard.service"
-readonly SERVICE_TEMPLATE="${SCRIPT_DIR}/onboard-control.service.example"
-readonly ENV_TEMPLATE="${SCRIPT_DIR}/onboard.env.example"
+readonly SERVICE_TEMPLATE="${WORKSPACE_ROOT}/system/systemd/ros2-ardupilot-onboard.service"
+# Canonical USB access policy installed alongside the service.
+readonly UDEV_RULE_TEMPLATE="${WORKSPACE_ROOT}/system/udev/99-odin-usb.rules"
 
 usage() {
   cat <<'EOF'
 Usage: ./src/onboard_control/deploy/install_onboard_service.sh [--install-only]
 
-On Ubuntu 24.04/Jazzy, verify and build the onboard ROS packages, create the
-per-aircraft environment file when absent, install the four-component systemd
-unit, then enable and start it. Existing /etc onboard configuration is kept.
+On Ubuntu 24.04/Jazzy, verify and build the onboard ROS packages, use the selected
+project aircraft configuration, install the four-component systemd unit, then
+enable and start it. Existing aircraft parameters are kept.
 
 --install-only still builds, tests, runs the hardware-isolated smoke test and
-installs the environment/unit, but skips the hardware check and does not enable
+installs the unit, but skips the hardware check and does not enable
 or start the unit. Use it while extnav or aircraft hardware is incomplete.
 
 Project Odin is built automatically. Run as the normal onboard user after
@@ -52,7 +53,11 @@ esac
 [[ -r /opt/ros/jazzy/setup.bash ]] ||
   die "ROS 2 Jazzy is missing: /opt/ros/jazzy/setup.bash"
 [[ -f "${SERVICE_TEMPLATE}" ]] || die "missing unit template: ${SERVICE_TEMPLATE}"
-[[ -f "${ENV_TEMPLATE}" ]] || die "missing environment template: ${ENV_TEMPLATE}"
+[[ -f "${UDEV_RULE_TEMPLATE}" ]] || die "missing udev rule: ${UDEV_RULE_TEMPLATE}"
+source "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash"
+source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+project_config_load "${WORKSPACE_ROOT}"
+[[ -r "${ONBOARD_ENV_FILE}" ]] || die "missing selected aircraft environment: ${ONBOARD_ENV_FILE}"
 [[ -x "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" ]] ||
   die "missing build entry: ${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh"
 [[ -x "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh" ]] ||
@@ -72,20 +77,8 @@ onboard_home="$(getent passwd "${onboard_user}" | cut -d: -f6)"
 # 构建、单测和 localhost 隔离 smoke 不连接真实 MAVROS，也不发送飞行命令。
 "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" --verify
 
-run_root install -d -m 0755 /etc/ros2-ardupilot
-if [[ ! -e /etc/ros2-ardupilot/onboard.env ]]; then
-  env_stage="$(mktemp)"
-  sed \
-    -e 's|ONBOARD_ROS_DISTRO_VALUE|jazzy|g' \
-    -e "s|ONBOARD_WORKSPACE_PATH|${WORKSPACE_ROOT}|g" \
-    "${ENV_TEMPLATE}" > "${env_stage}"
-  run_root install -m 0644 "${env_stage}" /etc/ros2-ardupilot/onboard.env
-else
-  printf '[onboard-install] Keeping existing /etc/ros2-ardupilot/onboard.env\n'
-fi
-
 unit_stage="$(mktemp)"
-trap 'rm -f -- "${env_stage:-}" "${unit_stage}"' EXIT
+trap 'rm -f -- "${unit_stage}"' EXIT
 sed \
   -e "s|ONBOARD_USER|${onboard_user}|g" \
   -e "s|ONBOARD_WORKSPACE_PATH|${WORKSPACE_ROOT}|g" \
@@ -94,6 +87,9 @@ sed \
 run_root install -m 0644 "${unit_stage}" "/etc/systemd/system/${SERVICE_NAME}"
 run_root systemd-analyze verify "/etc/systemd/system/${SERVICE_NAME}"
 run_root systemctl daemon-reload
+run_root install -d -m 0755 /etc/udev/rules.d
+run_root install -m 0644 "${UDEV_RULE_TEMPLATE}" /etc/udev/rules.d/99-odin-usb.rules
+run_root udevadm control --reload-rules
 
 if ${install_only}; then
   printf '[onboard-install] Installed %s for %s; it was not enabled or started.\n' \
@@ -104,8 +100,7 @@ if ${install_only}; then
 fi
 
 # --check 只做硬件路径和 ROS 包发现；任何歧义都在启动 systemd 前明确失败。
-ONBOARD_ENV_FILE=/etc/ros2-ardupilot/onboard.env \
-  "${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh" --check
+"${WORKSPACE_ROOT}/scripts/onboard/start_onboard_control.sh" --check
 run_root systemctl enable --now "${SERVICE_NAME}"
 
 printf '[onboard-install] Installed and started %s for %s\n' \

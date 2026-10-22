@@ -22,7 +22,7 @@ VIDEO_INSTALLER = (
 
 
 VIDEO_SERVICE_UNIT = (
-    PROJECT_ROOT / "video_service" / "deploy" / "video-service.service.example"
+    PROJECT_ROOT / "system" / "systemd" / "video-service.service"
 )
 
 
@@ -55,7 +55,8 @@ def test_video_service_installer_is_one_command_and_preserves_isolation() -> Non
     installer = VIDEO_INSTALLER.read_text(encoding="utf-8")
     for required in (
         "/usr/local/bin/mediamtx",
-        "/etc/ros2-ardupilot/camera.conf",
+        "project_config_load",
+        "system/systemd/video-service.service",
         "/home/share/jpg",
         "systemctl enable --now",
     ):
@@ -63,7 +64,7 @@ def test_video_service_installer_is_one_command_and_preserves_isolation() -> Non
     assert "ros2-ardupilot-onboard.service" not in installer
     assert "apt-get" not in installer
     assert "github.com/bluenviron" not in installer
-    assert "[[ ! -e /etc/ros2-ardupilot/camera.conf ]]" in installer
+    assert "/etc/ros2-ardupilot" not in installer
 
 
 def test_mediamtx_is_a_system_dependency_not_a_repository_binary() -> None:
@@ -73,7 +74,7 @@ def test_mediamtx_is_a_system_dependency_not_a_repository_binary() -> None:
         PROJECT_ROOT / "video_service" / "camera_app" / "config.py"
     ).read_text(encoding="utf-8")
     onboard_config = (
-        PROJECT_ROOT / "video_service" / "config" / "camera.conf"
+        PROJECT_ROOT / "config" / "aircraft" / "simulation" / "video" / "camera.conf"
     ).read_text(encoding="utf-8")
     assert "/usr/local/bin/mediamtx" in config_source
     assert 'bin" / "mediamtx' not in config_source
@@ -125,10 +126,9 @@ def test_video_service_has_an_independent_lifecycle() -> None:
         "This script never stops or restarts ros2-ardupilot-onboard.service.", ""
     )
     assert "video_service" not in integrated_start
-    assert 'SYSTEM_CAMERA_CONFIG="/etc/ros2-ardupilot/camera.conf"' in launcher
-    assert 'SYSTEM_LENS_CONFIG="/etc/ros2-ardupilot/lens.conf"' in launcher
-    assert '"${VIDEO_SERVICE_ONBOARD_CONFIG:-}"' in launcher
-    assert 'elif [[ -r "${system_config}" ]]' in launcher
+    assert "project_config_load" in launcher
+    assert "/etc/ros2-ardupilot" not in launcher
+    assert "/etc/ros2-ardupilot" not in service
     assert "LAN_ROUTE_TIMEOUT_SECONDS=30" in launcher
     assert "ip -4 route show default" in launcher
     assert "!/linkdown/" in launcher

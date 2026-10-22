@@ -39,6 +39,9 @@ class LaunchParameterTest(unittest.TestCase):
         self.assertEqual(os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE'), 'LOCALHOST')
         original = yaml.safe_load((planner / 'path_planning/config/planner.yaml').read_text())
         defaults = original['path_planning']['ros__parameters']
+        bridge_profile = yaml.safe_load(
+            (project / 'config/aircraft/simulation/avoidance/planner.yaml').read_text())
+        bridge_defaults = bridge_profile['path_planning']['ros__parameters']
         custom = dict(defaults)
         custom.update({
             'search.safe_distance': .37, 'search.max_tau': .7, 'search.horizon': 75.,
@@ -63,8 +66,24 @@ class LaunchParameterTest(unittest.TestCase):
                                    'search.safe_distance': .41, 'search.lower': [-31., -32., -4.],
                                    'cloud.blind_radius': 0., 'planning_frame': 'cli_frame',
                                    'stamp_clock': 'receive'})
-        fallback = dict(defaults)
-        fallback['search.vertical_distance_weight'] = 0.0  # Bare core keeps legacy behavior.
+        # Bare defaults are defined by SearchConfig and the C++ Planner constructor,
+        # independently of either repository's tuned YAML profile.
+        fallback = {
+            'search.max_tau': .6, 'search.init_max_tau': .8,
+            'search.max_vel': 1., 'search.max_acc': 2.,
+            'search.max_vel_xy': 1., 'search.max_vel_z': .2,
+            'search.max_acc_xy': 2., 'search.max_acc_z': 2.,
+            'search.w_time': 10., 'search.vertical_distance_weight': 0.,
+            'search.horizon': 100., 'search.lambda_heu': 1.,
+            'search.resolution': .1, 'search.time_resolution': .8,
+            'search.safe_distance': .25, 'search.voxel_size': .1,
+            'search.collision_step': .05, 'search.search_budget': .3,
+            'search.allocate_num': 100000, 'search.tree_period': 20,
+            'search.max_cloud_points': 500000,
+            'search.lower': [-50., -50., -2.], 'search.upper': [50., 50., 10.],
+            'cloud.map_mode': 'dual_tree', 'cloud.blind_radius': 0.,
+            'planning_frame': 'odom', 'stamp_clock': 'receive', 'planning_rate': 10.,
+        }
         scalar_args = [f'config:={fixture}', 'search.max_vel:=2.1', 'search.max_acc:=1.4']
         cases = [
             ('shared_yaml', [], defaults),
@@ -88,6 +107,8 @@ class LaunchParameterTest(unittest.TestCase):
             for label, launch, node in launches:
                 for case, arguments, expected in cases:
                     with self.subTest(launch=label, case=case):
+                        if label == 'bridge' and case == 'shared_yaml':
+                            expected = bridge_defaults
                         reader = rclpy.create_node('launch_parameter_reader')
                         log = artifacts / f'{label}-{case}.log'
                         env = dict(os.environ, ROS_LOG_DIR=str(artifacts / 'ros-log'))

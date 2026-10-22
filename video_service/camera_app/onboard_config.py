@@ -10,14 +10,15 @@ from pathlib import Path
 from .config import (
     DEFAULT_MEDIAMTX_BINARY,
     CameraConfig,
-    VIDEO_SERVICE_ROOT,
+    config_file,
     default_camera_device,
     detect_lan_ipv4,
 )
 
 
-DEFAULT_CAMERA_CONFIG = VIDEO_SERVICE_ROOT / "config" / "camera.conf"
-DEFAULT_LENS_CONFIG = VIDEO_SERVICE_ROOT / "config" / "lens.conf"
+# These source paths follow the selected aircraft profile.
+DEFAULT_CAMERA_CONFIG = config_file("video/camera.conf")
+DEFAULT_LENS_CONFIG = config_file("video/lens.conf")
 
 
 @dataclass(frozen=True)

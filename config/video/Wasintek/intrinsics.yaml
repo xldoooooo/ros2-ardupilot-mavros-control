@@ -1,0 +1,29 @@
+# Wasintek 下视相机 1920x1080 标定内参档案。
+# 来源：飞机 /home/nvidia/camera_int_calib/wainstek-intrinsics/camera_calibration.yaml（2026-10-21）。
+image_width: 1920
+image_height: 1080
+distortion_model: plumb_bob
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+    - 1143.7875833413573
+    - 0.0
+    - 959.21558242126753
+    - 0.0
+    - 1144.6345002541459
+    - 548.79116619986564
+    - 0.0
+    - 0.0
+    - 1.0
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+    - -0.21382891086845826
+    - 0.0089200326404033879
+    - -0.00017844359170078261
+    - -0.00027358498967834839
+    - 0.011517209020005009
+rms_reprojection_error: 0.80932690961855325
+calibration_tag_family: tag36h11

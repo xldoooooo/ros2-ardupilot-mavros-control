@@ -33,6 +33,9 @@ from tests import run
         ("scripts/onboard/components/start_link.sh", {"runtime", "flight", "video", "correction"}),
         ("scripts/ground/start_ground_all.sh", {"runtime"}),
         ("scripts/onboard/reboot_fcu.sh", {"flight"}),
+        ("project_configuration.py", set(run.GROUPS)),
+        ("config/aircraft/uav001/control.yaml", set(run.GROUPS)),
+        ("system/systemd/ros2-ardupilot-onboard.service", {"runtime", "video", "correction"}),
     ],
 )
 def test_independent_and_shared_boundaries(path: str, expected: set[str]) -> None:

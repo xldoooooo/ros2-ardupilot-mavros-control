@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# 彻底停止独立机载视频服务、残留媒体进程和真实摄像头占用者。
+# Stop onboard video and release its media processes and camera devices.
 
 set -Eeuo pipefail
 
 readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 readonly SERVICE_NAME="${VIDEO_SERVICE_SYSTEMD_UNIT:-video-service.service}"
-readonly DEFAULT_CONFIG="/etc/ros2-ardupilot/camera.conf"
-readonly PROJECT_CONFIG="${WORKSPACE_ROOT}/video_service/config/camera.conf"
 readonly PROCESS_PATTERN='(^|[ /])(start_onboard_video\.sh|onboard_video_node\.py)([[:space:]]|$)'
 
 restart_requested=false
 declare -A target_pids=()
 declare -A camera_devices=()
 
+# Print the stop and restart options.
 usage() {
   cat <<'EOF'
 Usage: ./scripts/onboard/stop_onboard_video.sh [--restart]
@@ -45,6 +44,7 @@ while (($# > 0)); do
   shift
 done
 
+# Run the cleanup command with system permissions.
 run_privileged() {
   if ((EUID == 0)); then
     "$@"
@@ -53,11 +53,13 @@ run_privileged() {
   fi
 }
 
+# Check whether the independent video unit is installed.
 unit_exists() {
   command -v systemctl >/dev/null 2>&1 &&
     systemctl cat "${SERVICE_NAME}" >/dev/null 2>&1
 }
 
+# Read one section key from the active camera configuration.
 read_ini_value() {
   local config_file="$1"
   local section="$2"
@@ -83,17 +85,7 @@ read_ini_value() {
   ' "${config_file}"
 }
 
-resolve_config() {
-  local requested="${VIDEO_SERVICE_ONBOARD_CONFIG:-}"
-  if [[ -n "${requested}" && -r "${requested}" ]]; then
-    printf '%s\n' "${requested}"
-  elif [[ -r "${DEFAULT_CONFIG}" ]]; then
-    printf '%s\n' "${DEFAULT_CONFIG}"
-  else
-    printf '%s\n' "${PROJECT_CONFIG}"
-  fi
-}
-
+# Collect configured and connected camera nodes.
 collect_camera_devices() {
   local config_file="$1"
   local configured_device="${VIDEO_SERVICE_CAMERA_DEVICE:-}"
@@ -119,6 +111,7 @@ collect_camera_devices() {
   fi
 }
 
+# Keep live target processes outside this launcher.
 add_pid() {
   local pid="$1"
   [[ "${pid}" =~ ^[0-9]+$ ]] || return 0
@@ -128,6 +121,7 @@ add_pid() {
   target_pids["${pid}"]=1
 }
 
+# Collect processes holding the requested device or port.
 collect_fuser_pids() {
   local resource="$1"
   local pid
@@ -143,6 +137,7 @@ collect_fuser_pids() {
   done
 }
 
+# Include matching media processes and their descendants.
 collect_targets() {
   local rtsp_port="$1"
   local pid parent_pid
@@ -172,12 +167,14 @@ collect_targets() {
   done
 }
 
+# Display processes selected for cleanup.
 show_targets() {
   ((${#target_pids[@]} > 0)) || return 0
   run_privileged ps -o pid=,ppid=,pgid=,stat=,user=,args= \
     -p "$(IFS=,; echo "${!target_pids[*]}")" || true
 }
 
+# Send a cleanup signal to each selected process.
 signal_targets() {
   local signal_name="$1"
   local pid
@@ -186,6 +183,7 @@ signal_targets() {
   done
 }
 
+# Wait briefly for media processes to finish gracefully.
 wait_for_exit() {
   local rtsp_port="$1"
   local attempts="$2"
@@ -198,7 +196,10 @@ wait_for_exit() {
   return 1
 }
 
-readonly CONFIG_FILE="$(resolve_config)"
+source "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash"
+source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+project_config_load "${WORKSPACE_ROOT}"
+readonly CONFIG_FILE="${VIDEO_SERVICE_ONBOARD_CONFIG}"
 rtsp_port="$(read_ini_value "${CONFIG_FILE}" rtsp port 2>/dev/null || true)"
 [[ "${rtsp_port}" =~ ^[0-9]+$ ]] || rtsp_port=8554
 readonly RTSP_PORT="${rtsp_port}"

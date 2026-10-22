@@ -1,3 +1,4 @@
+<!-- Deployment prerequisites and project configuration entry points. -->
 # Ubuntu 22.04 / ROS 2 Humble 部署与无桨调试
 
 本文档用于在新电脑上部署完整项目。启动器从自身位置推导仓库根目录，并自动发现 ROS、
@@ -70,15 +71,15 @@ bash scripts/onboard/stop_onboard_control.sh
 `ttyTHS`、`ttyACM` 和 `ttyUSB`。Odin/extnav 通过 ament package index 反查其 overlay，
 不依赖用户名或工作区目录名称。
 
-启动器会先读取 `/etc/ros2-ardupilot/onboard.env`（可用 `ONBOARD_ENV_FILE`
-覆盖路径）。对已确认但存在多个串口候选的飞机，把
+启动器按 `config/aircraft.local.env` 的 `AIRCRAFT_ID` 读取
+`config/aircraft/<AIRCRAFT_ID>/onboard.env`。对已确认但存在多个串口候选的飞机，把
 `MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备>` 写入该文件，这样 systemd
 和交互终端直接运行 `./scripts/onboard/start_onboard_control.sh` 使用同一机载配置。
 
 ## 4. 无法唯一判断时
 
 多块串口设备或多个旧 overlay 本身具有安全歧义，程序不会静默选择。确认实际硬件后，
-可将固定选择写入 `/etc/ros2-ardupilot/onboard.env`。临时调试也可只对当前命令
+可将固定选择写入 `config/aircraft/<AIRCRAFT_ID>/onboard.env`。临时调试也可只对当前命令
 提供覆盖值，不需要修改仓库文件：
 
 ```bash
@@ -98,3 +99,11 @@ EXTNAV_OVERLAY_SETUP=<已确认的setup.bash> \
 
 任何 `armed=true`、位置跳变、`thrust_mode_verified=false`、
 `setpoint_conflict=true` 或重复进程都必须立即停止调试。
+
+## 本机依赖环境
+
+地面站的 `scripts/ground/setup_ground_station.sh` 与 `start_ground_all.sh` 首先读取项目
+`config/host.local.env`，该文件不提交 Git；本机 Python、ROS 发行版和依赖 overlay 路径均在这里维护。
+可设置 `GROUND_STATION_ROS_DISTRO`、`GROUND_STATION_PYTHON`，需要的 overlay 可在文件中显式 `source`。
+不再依赖 `~/.config/ros2-ground-station/environment.bash` 或 shell 初始化文件中的项目专用设置。
+地面启动不加载飞机 `onboard.env`，避免仿真档案的 ROS 发现范围覆盖实机连接设置。

@@ -12,13 +12,8 @@ from typing import Iterable
 # 仓库根目录；所有项目内路径均从此处推导，避免依赖启动目录。
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SETUP = PROJECT_ROOT / "install" / "setup.bash"
-ONBOARD_PARAM_FILE = (
-    PROJECT_ROOT
-    / "src"
-    / "onboard_control"
-    / "config"
-    / "control.yaml"
-)
+# SITL always uses its own profile, regardless of this host's aircraft selector.
+ONBOARD_PARAM_FILE = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "control.yaml"
 
 # 真机继续使用既有 domain 0；本地仿真固定放入仅本机发现的独立 domain，
 # 从传输层杜绝同时运行的真机与 SITL 共享同名 topic/service。
@@ -173,6 +168,5 @@ def ardupilot_root(sim_vehicle: Path) -> Path:
 
 
 def mavros_apm_config() -> Path:
-    """返回当前 ROS 发行版的 MAVROS APM 参数文件路径。"""
-    ros_root = Path(os.environ.get("ROS_INSTALL_ROOT", "/opt/ros"))
-    return ros_root / detect_ros_distro() / "share/mavros/launch/apm_config.yaml"
+    """Return the project-managed MAVROS configuration used by local SITL."""
+    return PROJECT_ROOT / "config" / "aircraft" / "simulation" / "mavros" / "apm_config.yaml"

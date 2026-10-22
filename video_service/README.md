@@ -1,3 +1,4 @@
+<!-- Independent video service operation, configuration and deployment. -->
 # 独立视频服务
 
 `video_service/` 复用一条经过本机摄像头验证的链路：FFmpeg 只打开一次 USB
@@ -77,21 +78,18 @@ rm -rf -- "${mediamtx_stage}"
 ROS 航点抓拍不使用这条事件路径，而是逐条排队、逐条发布成功或失败结果。
 
 本机配置默认保存到
-`~/.config/ros2-ardupilot-camera/config.json`，运行文件位于 XDG runtime，日志
+项目内 `config/ground/video.json`，运行文件位于 XDG runtime，日志
 位于 `~/.local/state/ros2-ardupilot-camera/`。停止时先让 FFmpeg 封装录像，再把
 `.partial.<格式>` 原子改名为最终时间文件。
 
 ## 机载进程与 ROS 接口 3.2
 
-机载配置是带完整注释的 [camera.conf](config/camera.conf)，镜头配置是
-[lens.conf](config/lens.conf)，1920×1080 标定内参保存在
-[intrinsics.yaml](config/intrinsics.yaml)。该内参当前仅作为标定基线随代码保存，视频流水线尚未
-读取它或执行去畸变。默认媒体目录为 `/home/share`，JPG 目录为
-`/home/share/jpg`，默认视频模式为原生 H.264 1920×1080@60 fps；格式、分辨率和帧率
+机载配置直接读取项目 `config/aircraft/<AIRCRAFT_ID>/video/camera.conf` 和
+`lens.conf`，由 `config/aircraft.local.env` 的 `AIRCRAFT_ID` 选择飞机。
+视频流只使用 Wasintek；标定基线保存在 `config/video/Wasintek/intrinsics.yaml`，
+后缀 `.old` 表示旧镜头，视频流水线不读取标定内参或执行去畸变。
+默认媒体目录为 `/home/share`，JPG 目录为 `/home/share/jpg`；采集格式、分辨率与帧率
 必须是目标摄像头真实声明的组合。
-
-`config/Wasintek/` 与 `config/UQ212/` 分别保存两种相机的视频、镜头和内参档案。它们用于人工
-恢复或迁移，运行时仍只读取根 `config/camera.conf`、`config/lens.conf`，不会自动切换档案。
 
 ### 飞机上为什么也有 Qt 文件
 
@@ -117,8 +115,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 ```
 
 安装器验证 FFmpeg、v4l2-ctl 和系统 `/usr/local/bin/mediamtx`，在首次需要时构建 ROS 接口，然后
-创建配置、媒体目录与独立 systemd unit，并执行 `enable --now`。已存在的
-`/etc/ros2-ardupilot/camera.conf` 和 `lens.conf` 不会被覆盖。它不会操作
+创建媒体目录与独立 systemd unit，并执行 `enable --now`。项目内逐机配置不会被覆盖。它不会操作
 `ros2-ardupilot-onboard.service`，开机启动的也只是等待 ROS 命令的视频节点，摄像头仍保持关闭。
 
 下面第 2～3 步是新系统必须手工完成的一次性系统依赖；第 4～5 步是安装器内部操作的展开说明，
@@ -174,24 +171,10 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
    若飞机不能直连 GitHub，应在地面机下载并校验同一归档后用 `scp` 传入；不要关闭摘要校验，
    不要跳过摘要校验，也不要从其他机器复制架构不明的可执行文件。
 
-4. **安装配置和媒体目录（安装器自动完成）。**
-
-   ```bash
-   cd /home/<机载用户>/ros2-ardupilot-mavros-control
-   sudo install -d -m 0755 /etc/ros2-ardupilot
-   sudo install -m 0644 video_service/config/camera.conf \
-     /etc/ros2-ardupilot/camera.conf
-   sudo install -m 0644 video_service/config/lens.conf \
-     /etc/ros2-ardupilot/lens.conf
-   sudo install -d -o <机载用户> -g <机载用户> -m 0755 \
-     /home/share /home/share/jpg
-   sudoedit /etc/ros2-ardupilot/camera.conf
-   ```
-
-   至少核对 `device`、`advertise_ip`、保存目录和
-   `mediamtx_binary=/usr/local/bin/mediamtx`。生产环境推荐填写
-   `/dev/v4l/by-id/...-video-index0` 稳定路径；`auto` 只适合唯一摄像头。默认配置是 H.264
-   1920×1080@60、MP4。配置只在下一次摄像头“关闭→开启”时生效，不会改飞控参数。
+4. **选择逐机配置并准备媒体目录。** 在 `config/aircraft.local.env` 设置 `AIRCRAFT_ID=uav001`
+   （1 号新飞机）或 `AIRCRAFT_ID=uav002`（2 号翻新飞机），核对对应 `video/camera.conf`
+   的设备路径、发布 IP 和媒体目录。安装器只创建媒体目录，不复制或覆盖参数。
+   镜头与采集参数在下一次摄像头“关闭→开启”时读取，无需重新构建。
 
 5. **安装独立 systemd unit（安装器自动完成）。** 若需人工排障，可从模板生成实际 unit；三个
    占位符都必须替换：
@@ -206,7 +189,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
      -e "s|ONBOARD_USER|${video_user}|g" \
      -e "s|ONBOARD_WORKSPACE_PATH|${video_workspace}|g" \
      -e "s|ONBOARD_HOME_PATH|${video_home}|g" \
-     video_service/deploy/video-service.service.example > "${video_unit_stage}"
+     system/systemd/video-service.service > "${video_unit_stage}"
    sudo install -m 0644 "${video_unit_stage}" \
      /etc/systemd/system/video-service.service
    sudo systemd-analyze verify /etc/systemd/system/video-service.service
@@ -233,8 +216,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
    地址。随后可由地面摄像头面板测试开启、跨机拉流、抓拍、停止；停止后确认没有
    FFmpeg/MediaMTX、8554 监听或摄像头占用。整个过程不得申请飞行租约、解锁或起飞。
 
-7. **更新与回退。** 更新源码后先运行 `./src/onboard_control/deploy/build_onboard_control.sh --verify`。配置更新用
-   `install` 覆盖前先自行保留 `/etc/ros2-ardupilot/camera.conf`、`lens.conf`；只需重启视频
+7. **更新与回退。** 更新源码后先运行 `./src/onboard_control/deploy/build_onboard_control.sh --verify`。配置更新直接修改对应逐机目录，使用 Git 提交同步；只需重启视频
    unit 时执行 `sudo systemctl restart video-service.service`，不要重启或停止飞控 unit。
 
 独立启动命令：
@@ -243,10 +225,8 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 ./scripts/onboard/start_onboard_video.sh
 ```
 
-手工执行与 systemd unit 使用相同的生产配置：若未显式设置环境变量，脚本优先读取
-`/etc/ros2-ardupilot/camera.conf` 和 `/etc/ros2-ardupilot/lens.conf`；仅在系统配置不存在时
-回退 `video_service/config/`。直接运行脚本时仍是前台普通进程，生命周期由当前终端管理；配置、
-摄像头行为和 MediaMTX 路径则与 systemd 启动一致。
+手工执行与 systemd unit 读取同一份逐机配置，不回退系统目录或安装副本。
+直接运行脚本时仍是前台普通进程，生命周期由当前终端管理。
 
 彻底清理独立 unit、残留机载视频节点、配置的 RTSP 端口和真实摄像头占用者：
 
@@ -265,7 +245,7 @@ cd /home/<机载用户>/ros2-ardupilot-mavros-control
 
 不要把它添加成 `scripts/onboard/start_onboard_control.sh` 的第五个受监督子进程；该飞控脚本会在任一
 子进程退出时清理整套飞行栈，违反视频故障隔离要求。参考
-`deploy/video-service.service.example` 建立单独 unit，且不要声明对飞控 unit 的
+`system/systemd/video-service.service` 建立单独 unit，且不要声明对飞控 unit 的
 `Requires` 或 `PartOf`。当前 Jetson 已按这一边界部署并启用 `video-service.service`。
 
 接口 QoS 与语义：

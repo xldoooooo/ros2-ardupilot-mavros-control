@@ -1,0 +1,14 @@
+# Odin IMU installation in FCU FLU; angles in radians, translation in metres.
+/extnav_to_vision_pose:
+  ros__parameters:
+    auto_installation: true
+    auto_installation_seconds: 3.0
+    roll_cam: 0.0
+    pitch_cam: 0.0
+    yaw_cam: 0.0
+    odin_x: 0.1
+    odin_y: -0.04
+    odin_z: 0.05
+    vision_rate_hz: 40.0
+    ctrl_rate_hz: 100.0
+    odom_topic: /odin1/odometry_highfreq

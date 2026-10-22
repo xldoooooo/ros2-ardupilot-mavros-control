@@ -1,0 +1,115 @@
+# Shared user-tuned comparison profile and native autonomous bridge interface; no hardware is launched.
+# Values are read at startup: restart the node to apply edits. Units below are SI.
+# Bounds/clearance are example planning settings, not a calibrated vehicle safety envelope.
+path_planning:
+  ros__parameters:
+    # Exact frame_id required on cloud, odometry pose and goal; this node does not perform TF transforms.
+    planning_frame: odom
+    # Hz, finite and positive (at most 1000): timer checks for replanning and input-loss diagnostics.
+    planning_rate: 10.0
+    # Seconds, >0: time since the last attempt; .inf disables this forced trigger only.
+    replan_interval: 100.0
+    # Metres, >0: actual 3D displacement since the last attempt; .inf disables this forced trigger only.
+    replan_distance: 100.0
+    # Seconds, >0: maximum steady-clock reception age for cloud and odometry.
+    # In ros mode the same limit also applies to header age; source time may lead by at most 0.05 s.
+    input_timeout: 1.0
+    # receive mode preserves device timestamps but cannot measure upstream acquisition/transport delay.
+    stamp_clock: receive  # ros: validate header age; receive: explicitly accept unknown sensor-clock offset
+    # Native alternating KD-tree accumulation; no bridge snapshot profile.
+    cloud.map_mode: dual_tree
+    odometry_twist_in_body: true  # Generic/MAVROS body twist; Odin uses its entry-specific setting below.
+    # Metres, >=0: remove points strictly inside this 3D radius before map accumulation; 0 disables.
+    # This is a sensor blind zone, not body classification: real obstacles inside it are also removed.
+    cloud.blind_radius: 0.0
+    # Sensor centre relative to the odometry pose origin, expressed in child-frame axes (metres).
+    cloud.blind_origin_offset: [0.0, 0.0, 0.0]
+    # Seconds, >0: nearest valid odometry/cloud source timestamp difference allowed for filtering.
+    # No interpolation; enabled filtering requires a shared source clock even in receive mode.
+    cloud.blind_pose_tolerance: 0.05
+    # Seconds, >0 and <=input_timeout: bounded asynchronous wait for late odometry (one cloud).
+    cloud.blind_wait: 0.15
+    # Seconds, >0: maximum output sample interval. Exact segment endpoints are always included.
+    # Smaller values increase serialization/DDS cost; this does not set collision-check resolution.
+    sample_step: 0.02
+    # [1,1000000]: full output point cap, checked before sample allocation; exceeding it fails empty.
+    output.max_samples: 10000
+    # Seconds, (0,3600]: cap on the full curve duration; exceeding it fails empty without truncation.
+    output.max_duration: 60.0
+    # Seconds, >0: cooperative construction budget, excluding search and DDS publish/queuing.
+    # Checked while constructing and immediately before publish; one allocation may overrun it.
+    output.build_budget: 0.1
+
+    # Seconds, >0: regular acceleration-primitive duration; larger steps change search reach/granularity.
+    # Narrow axes retain five feasible controls; Z also includes distinct bounded exact-stop input.
+    search.max_tau: 0.6
+    # Seconds, >0: maximum initial fixed-acceleration primitive duration (20 candidate durations).
+    # Used only by explicit core init=true and legacy execution-index replans; measured-state plans use init=false.
+    search.init_max_tau: 0.8
+    # Legacy scalar caps, m/s and m/s² per axis; directional limits below also apply.
+    search.max_vel: 2.0
+    search.max_acc: 1.0
+    # Avoidance-only limits: single source for native planning and execution result metadata.
+    # Horizontal vector norms and vertical absolute limits; straight control has its own config.
+    search.max_vel_xy: 2.0  # m/s; this comparison profile retains the current horizontal norm rule.
+    search.max_vel_z: 2.0  # m/s
+    search.max_acc_xy: 1.0  # m/s²; original scalar was per-axis, not a horizontal norm.
+    search.max_acc_z: 1.0  # m/s²
+    # Positive time penalty in integral(||acceleration||² + w_time) dt; larger favors shorter durations.
+    search.w_time: 10.0
+    # Extra cost per metre of accumulated up/down travel; 0 restores the legacy search.
+    # With w_time=10, one vertical metre adds the same cost as one second of time.
+    search.vertical_distance_weight: 80.0
+    # Meters, >0: displacement from start that permits a partial REACH_HORIZON result, not path length.
+    search.horizon: 100.0
+    # Positive heuristic weight; 2 balances route quality and search effort.
+    search.lambda_heu: 2.0
+    # Meters, >0: position hash cell size; distinct velocities can be merged within a spatial cell.
+    search.resolution: 0.1
+    # Seconds, >0: hash time-bin width for core dynamic=true; unused by the current ROS wrapper.
+    search.time_resolution: 0.8
+    # Meters, >0: ROS1 SAFE_DIST; reject nearest stored centroid distances strictly below this value.
+    # No extra voxel/sampling inflation; this does not guarantee clearance from every raw point.
+    search.safe_distance: 0.35
+    # Meters, >0: voxel edge for accumulated clouds; matches ROS1's 0.1 m leaf size.
+    search.voxel_size: 0.1
+    # Meters, >0 and <=safe_distance: terminal-shot and geometry-service sampling travel interval.
+    # Ordinary primitives adaptively certify interval clearance against safe_distance.
+    search.collision_step: 0.05
+    # Seconds, (0,60]: cooperative search budget, excluding map building and result serialization.
+    # A difficult event-triggered search can exceed this cooperative budget; output is not periodic.
+    search.search_budget: 0.5
+    # At least 2 search nodes, preallocated at construction; exhausted searches return NODE_LIMIT.
+    search.allocate_num: 100000
+    # Accepted clouds per bank, >=1. Two banks alternate; history lasts roughly 20-40 updates here.
+    # At 10 Hz this is about 2-4 seconds, not a time-based expiry or moving-object prediction.
+    search.tree_period: 20
+    # >=1: cap on input-cloud size and combined filtered map size; exceeding it invalidates the map.
+    search.max_cloud_points: 500000
+    # Meters: inclusive world-frame [x,y,z] bounds, each lower coordinate strictly below upper.
+    # Shared by primitives and terminal curves; this volume is not a sensor-coverage declaration.
+    search.lower: [-20.0, -20.0, 0.2]
+    search.upper: [20.0, 20.0, 1.8]
+
+# Entry-specific defaults consumed by the independent launch files.
+odin_launch:
+  ros__parameters:
+    # SDK linear twist is in the world frame; override here for a different Odin publisher, or via CLI.
+    odometry_twist_in_body: false
+    cloud: /odin1/cloud_slam_down
+    odom: /odin1/odometry_highfreq
+    goal: /goal
+    time_index: /demo_node/trajectory_time_index
+planner_launch:
+  ros__parameters:
+    cloud: /cloud_registered
+    odom: /Odometry
+    goal: /goal
+    time_index: /demo_node/trajectory_time_index
+
+# Bridge parameters; input_timeout inherits the common planner value unless set here explicitly.
+avoidance_bridge:
+  ros__parameters:
+    coordinate_mode: extnav
+    odometry_topic: /mavros/local_position/odom
+    preview_enabled: false

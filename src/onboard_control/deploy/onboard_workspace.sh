@@ -22,6 +22,8 @@ readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly DRIVERS_SPARSE_PATH="/drivers/"
 # Shared hardware geometry and the ground-only navigation restart entry.
 readonly CONFIG_SPARSE_PATH="/config/"
+# System integration templates travel with the same checkout.
+readonly SYSTEM_SPARSE_PATH="/system/"
 readonly NAVIGATION_SWITCH_SPARSE_PATH="/scripts/onboard/switch_navigation_mode.sh"
 readonly CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"
 readonly CORRECTION_START_SPARSE_PATH="/scripts/onboard/start_onboard_correction.sh"
@@ -169,7 +171,7 @@ update_checkout() {
     "${GITIGNORE_SPARSE_PATH}" \
     "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
     "${ONBOARD_SPARSE_PATH}" "${DRIVERS_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
-    "${CONFIG_SPARSE_PATH}" "${NAVIGATION_SWITCH_SPARSE_PATH}" \
+    "${CONFIG_SPARSE_PATH}" "${SYSTEM_SPARSE_PATH}" "${NAVIGATION_SWITCH_SPARSE_PATH}" \
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
@@ -291,6 +293,8 @@ smoke_test() {
   local smoke_dir node_log status_log attitude_log onboard_prefix node_executable
   local node_pid="" echo_status
   source_overlay
+  source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+  project_config_load "${WORKSPACE_ROOT}"
   require_command timeout
   validate_smoke_domain
   configure_smoke_discovery
@@ -331,7 +335,7 @@ smoke_test() {
   node_executable="${onboard_prefix}/lib/onboard_control/onboard_control_node"
   [[ -x "${node_executable}" ]] || die "onboard executable is missing: ${node_executable}"
   "${node_executable}" --ros-args \
-    --params-file "${WORKSPACE_ROOT}/src/onboard_control/config/control.yaml" \
+    --params-file "${AIRCRAFT_CONFIG_DIR}/control.yaml" \
     -r __node:=task08_smoke_onboard_control \
     -p mavros_prefix:="${SMOKE_MAVROS_PREFIX}" \
     -p interface_prefix:="${SMOKE_INTERFACE_PREFIX}" \

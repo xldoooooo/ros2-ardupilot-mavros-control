@@ -9,14 +9,20 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 
+# Source paths keep configuration editable without rebuilding.
 VIDEO_SERVICE_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = VIDEO_SERVICE_ROOT.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from project_configuration import config_file
 # MediaMTX 是系统依赖；优先使用 PATH，标准手工部署位置为 /usr/local/bin。
 DEFAULT_MEDIAMTX_BINARY = Path(
     shutil.which("mediamtx") or "/usr/local/bin/mediamtx"
@@ -73,7 +79,7 @@ class RuntimePaths:
         config_file = Path(
             os.environ.get(
                 "VIDEO_SERVICE_CONFIG",
-                home / ".config" / "ros2-ardupilot-camera" / "config.json",
+                PROJECT_ROOT / "config" / "ground" / "video.json",
             )
         ).expanduser()
 

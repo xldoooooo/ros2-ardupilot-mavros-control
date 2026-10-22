@@ -1,0 +1,2 @@
+# Odin USB access for the onboard user.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2207", ATTR{idProduct}=="0019", MODE="0660", GROUP="plugdev"

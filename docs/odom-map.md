@@ -25,16 +25,16 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 
 ## 配置与切换
 
-- 安装外参：`config/odin_extrinsics.yaml`，或 `onboard.env` 中的 `ODIN_EXTRINSICS_FILE`。
+- 安装外参：`config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml`，由本机 `config/aircraft.local.env` 选择飞机。
   `roll_cam/pitch_cam/yaw_cam` 定义 `R_FI=Rz Ry Rx`，单位弧度；机头向上安装为负 pitch。
   `odin_x/y/z` 是 FCU 到 Odin IMU 的向量，以 FCU FLU 表达，单位米。
   手工回退角按飞机设置，上仰22°对应约`-0.3839724354`。
   `auto_installation: true`在未解锁静止约3秒后，用Odin/飞控重力方向自动学习安装俯仰并锁定，
   roll/yaw及杆臂保持配置，不要求机身摆平；重启extnav可重新学习。项目默认YAML已启用，
   旧逐机YAML需添加开关，详情见[extnav说明](../correction_service/extnav_patch/README.md)。
-- 地图：`drivers/odin/src/odin_ros_driver/config/reloc.yaml` 的 `relocalization_map_abs_path`。
+- 地图：`config/aircraft/<AIRCRAFT_ID>/odin/reloc.yaml` 的 `relocalization_map_abs_path`。
   必须先提供存在的 bin；地图文件放 `drivers/odin/maps/`，不提交 Git。
-- 默认选择：`/etc/ros2-ardupilot/navigation.env` 的 `NAVIGATION_MODE=odom|map`。
+- 默认选择：`config/aircraft/<AIRCRAFT_ID>/navigation.env` 的 `NAVIGATION_MODE=odom|map`。
   不传 `-c` 时完整、分步启动均读取该选择；显式 `-c odom|reloc` 可覆盖本次启动。
 - 地面站开关调用 `/onboard_control/set_navigation_mode`，需持权、未解锁、已落地且无任务。
   二次确认后脚本退出原飞行栈及原运行的避障，再按原运行情况重启；视频、修正服务独立。

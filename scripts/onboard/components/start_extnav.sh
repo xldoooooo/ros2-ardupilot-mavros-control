@@ -8,8 +8,8 @@ readonly project_root="$(cd -- "${script_dir}/../../.." && pwd -P)"
 # shellcheck disable=SC1091
 source "${script_dir}/../../lib/runtime_common.bash"
 
-readonly onboard_environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
-runtime_source_environment_file "${onboard_environment_file}"
+source "${project_root}/scripts/lib/project_config.bash"
+project_config_load "${project_root}"
 
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")" || exit 1
 readonly ros_setup
@@ -32,7 +32,4 @@ else
 fi
 
 exec ros2 run extnav_bridge extnav_to_vision_pose --ros-args \
-  --params-file "${ODIN_EXTRINSICS_FILE:-${project_root}/config/odin_extrinsics.yaml}" \
-  -p vision_rate_hz:=40.0 \
-  -p ctrl_rate_hz:=100.0 \
-  -p odom_topic:=/odin1/odometry_highfreq
+  --params-file "${ODIN_EXTRINSICS_FILE}"

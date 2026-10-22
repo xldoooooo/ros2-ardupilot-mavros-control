@@ -68,7 +68,7 @@ install(TARGETS dob_controller onboard_control_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config launch deploy DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch deploy DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

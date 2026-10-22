@@ -15,7 +15,7 @@ from correction_service.config import load_config
 @pytest.mark.parametrize("gap", [10, 12, 14])
 def test_printed_outer_frame_preserves_tag_and_metric_corners(tag_id, gap):
     """复现现场额外黑框；旧 .05 筛选会丢失内部可解码候选。"""
-    cfg = load_config(Path(__file__).resolve().parents[2] / "correction_service/config")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "config/aircraft/simulation/correction")
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
     draw = getattr(cv2.aruco, "generateImageMarker", None) or cv2.aruco.drawMarker
     frame = np.full((1080, 1920), 255, np.uint8)
@@ -36,7 +36,7 @@ def test_printed_outer_frame_preserves_tag_and_metric_corners(tag_id, gap):
 
 def test_blank_frame_does_not_decode_with_two_configured_tags():
     """减少候选合并距离不应把纯背景识别为配置中的 Tag。"""
-    cfg = load_config(Path(__file__).resolve().parents[2] / "correction_service/config")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "config/aircraft/simulation/correction")
     tags = {i: replace(cfg.tags[0], tag_id=i) for i in (0, 1)}
     detector = AprilTagDetector(cfg.intrinsics, cfg.detection)
     assert detector.detect(np.full((1080, 1920), 180, np.uint8), tags).marker_ids == ()
@@ -46,7 +46,7 @@ def test_blank_frame_does_not_decode_with_two_configured_tags():
 @pytest.mark.parametrize("outer_frame", [False, True])
 def test_small_tag_pose_with_independent_projected_truth(angle_deg, outer_frame):
     """9.9cm Tag在82cm距离：验证位置真值，不能仅以检测率证明精度。"""
-    cfg = load_config(Path(__file__).resolve().parents[2] / "correction_service/config")
+    cfg = load_config(Path(__file__).resolve().parents[2] / "config/aircraft/simulation/correction")
     intrinsics = replace(cfg.intrinsics, distortion=np.zeros(5))
     tag = replace(cfg.tags[0], tag_id=1, size_m=0.099)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)

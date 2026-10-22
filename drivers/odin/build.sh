@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 readonly workspace_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-readonly environment_file="${ONBOARD_ENV_FILE:-/etc/ros2-ardupilot/onboard.env}"
+readonly project_root="$(cd -- "${workspace_dir}/../.." && pwd -P)"
 if [[ "${1:-}" == '-h' || "${1:-}" == '--help' ]]; then
   echo 'Usage: drivers/odin/build.sh [colcon build options]'
   echo 'Builds the project driver only. Optional: ODIN_CV_BRIDGE_SETUP and ODIN_BUILD_JOBS.'
@@ -11,10 +11,10 @@ if [[ "${1:-}" == '-h' || "${1:-}" == '--help' ]]; then
 fi
 # Preserve caller choices while accepting the same optional environment as launchers.
 cv_bridge_setup="${ODIN_CV_BRIDGE_SETUP:-}"
+source "${project_root}/scripts/lib/runtime_common.bash"
+source "${project_root}/scripts/lib/project_config.bash"
+project_config_load "${project_root}"
 set +u
-if [[ -r "${environment_file}" ]]; then
-  source "${environment_file}"
-fi
 cv_bridge_setup="${cv_bridge_setup:-${ODIN_CV_BRIDGE_SETUP:-}}"
 source "/opt/ros/${ONBOARD_ROS_DISTRO:-${ROS_DISTRO:-jazzy}}/setup.bash"
 if [[ -n "${cv_bridge_setup}" ]]; then

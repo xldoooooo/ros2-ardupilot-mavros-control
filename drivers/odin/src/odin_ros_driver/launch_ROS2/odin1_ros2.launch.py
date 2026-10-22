@@ -2,11 +2,12 @@
 
 import os
 from pathlib import Path
+import runpy
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -16,8 +17,10 @@ def get_odin_runtime_dir():
     """Match the writable calibration directory used by the SDK."""
     if os.environ.get("ODIN_CALIB_DIR"):
         return os.environ["ODIN_CALIB_DIR"]
-    ros_home = os.environ.get("ROS_HOME", str(Path.home() / ".ros"))
-    return str(Path(ros_home) / "odin_ros_driver")
+    root = next(parent for parent in Path(__file__).resolve().parents
+                if (parent / "project_configuration.py").is_file())
+    configuration = runpy.run_path(str(root / "project_configuration.py"))
+    return str(configuration["config_file"]("odin/calibration", root))
 
 
 def launch_nodes(context):
@@ -46,8 +49,12 @@ def launch_nodes(context):
 def generate_launch_description():
     """Default to odometry; keep native ros2 launch usable without project services."""
     package = Path(get_package_share_directory("odin_ros_driver"))
+    root = next(parent for parent in Path(__file__).resolve().parents
+                if (parent / "project_configuration.py").is_file())
+    configuration = runpy.run_path(str(root / "project_configuration.py"))
     return LaunchDescription([
-        DeclareLaunchArgument("config_file", default_value=str(package / "config/odom.yaml"),
+        SetEnvironmentVariable("ODIN_CALIB_DIR", get_odin_runtime_dir()),
+        DeclareLaunchArgument("config_file", default_value=str(configuration["config_file"]("odin/odom.yaml", root)),
                               description="Full path to the selected Odin YAML"),
         DeclareLaunchArgument("rviz", default_value="false", description="Open Odin RViz"),
         DeclareLaunchArgument("rviz_config", default_value=str(package / "config/odin_ros2.rviz")),

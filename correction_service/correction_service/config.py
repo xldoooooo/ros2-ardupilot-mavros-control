@@ -386,23 +386,24 @@ def _load_lens(config_dir: Path) -> dict[str, int]:
     return controls
 
 
-def _configuration_fingerprint(config_dir: Path) -> str:
+def _configuration_fingerprint(config_dir: Path, odin_extrinsics: Path) -> str:
     """哈希全部几何与采集配置，阻止修改后静默复用内存窗口。"""
     digest = hashlib.sha256()
-    for name in (
+    paths = [config_dir / name for name in (
         "general_settings.yaml",
         "intrinsics.yaml",
         "extrinsics.yaml",
         "tag_pose.csv",
         "camera.conf",
         "lens.conf",
-    ):
-        path = config_dir / name
+    )]
+    paths.append(odin_extrinsics)
+    for path in paths:
         try:
             payload = path.read_bytes()
         except OSError as exc:
             raise ValueError(f"无法读取配置指纹输入 {path}: {exc}") from exc
-        digest.update(name.encode("utf-8") + b"\0" + payload + b"\0")
+        digest.update(path.name.encode("utf-8") + b"\0" + payload + b"\0")
     return digest.hexdigest()
 
 
@@ -491,11 +492,20 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
     if not 2 <= recommended_keyframes <= maximum_window_size:
         raise ValueError("recommended_precision_keyframes 必须位于 [2, maximum_size]")
 
-    lever_arm_values = np.asarray(
-        fcu_reference.get("lever_arm_m", []), dtype=np.float64
-    ).reshape(-1)
-    if lever_arm_values.size != 3 or not np.isfinite(lever_arm_values).all():
-        raise ValueError("fcu_reference.lever_arm_m 必须是三个有限数")
+    # Reuse the exact FCU-to-Odin geometry consumed by extnav.
+    extrinsics_value = str(fcu_reference.get("extrinsics_file", "")).strip()
+    if not extrinsics_value:
+        raise ValueError("fcu_reference.extrinsics_file 必须指定 Odin 外参配置")
+    odin_extrinsics = (root / Path(extrinsics_value).expanduser()).resolve()
+    extnav_node = _mapping(
+        _load_yaml(odin_extrinsics).get("/extnav_to_vision_pose"),
+        "/extnav_to_vision_pose",
+    )
+    extnav_parameters = _mapping(extnav_node.get("ros__parameters"), "ros__parameters")
+    lever_arm_values = np.array([
+        _finite(extnav_parameters[f"odin_{axis}"], f"odin_{axis}")
+        for axis in "xyz"
+    ])
 
     intrinsics = _load_intrinsics(root)
     camera = _load_camera(root)
@@ -509,7 +519,7 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
     return ServiceConfig(
         config_dir=root,
         interface_version=str(general.get("interface_version", "")).strip(),
-        config_fingerprint=_configuration_fingerprint(root),
+        config_fingerprint=_configuration_fingerprint(root, odin_extrinsics),
         topics=topics,
         intrinsics=intrinsics,
         t_imu_camera=_load_extrinsics(root),

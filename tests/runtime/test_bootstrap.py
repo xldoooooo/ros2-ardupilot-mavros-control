@@ -91,7 +91,10 @@ def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_pa
     assert project_config.detect_ros_distro() == "humble"
     assert project_config.ros_setup_file() == setup
     assert project_config.mavros_apm_config() == (
-        ros_root / "humble" / "share" / "mavros" / "launch" / "apm_config.yaml"
+        PROJECT_ROOT / "config" / "aircraft" / "simulation" / "mavros" / "apm_config.yaml"
+    )
+    assert project_config.ONBOARD_PARAM_FILE == (
+        PROJECT_ROOT / "config" / "aircraft" / "simulation" / "control.yaml"
     )
 
 

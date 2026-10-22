@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 独立启动 AprilTag-Odin 修正节点；不启动飞控、Odin、extnav 或视频服务。
+# Start independent AprilTag correction with the selected aircraft profile.
 
 set -Eeuo pipefail
 
 readonly WORKSPACE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-readonly ENV_FILE="${CORRECTION_ENV_FILE:-/etc/ros2-ardupilot/correction.env}"
 
+# Print the supported launcher options.
 usage() {
   cat <<'EOF'
 Usage: ./scripts/onboard/start_onboard_correction.sh
@@ -26,6 +26,7 @@ esac
   exit 2
 }
 
+# Source ROS environment files without nounset failures.
 source_setup() {
   local setup_file="$1"
   [[ -r "${setup_file}" ]] || {
@@ -40,22 +41,19 @@ source_setup() {
   set -u
 }
 
-# Match systemd EnvironmentFile behavior for a direct foreground launch.
-if [[ -e "${ENV_FILE}" ]]; then
-  [[ -r "${ENV_FILE}" ]] || {
-    printf '[correction-start] ERROR: environment file is not readable: %s\n' \
-      "${ENV_FILE}" >&2
-    exit 1
-  }
+# Resolve the same project profile for manual and systemd launches.
+source "${WORKSPACE_ROOT}/scripts/lib/runtime_common.bash"
+source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+project_config_load "${WORKSPACE_ROOT}"
+if [[ -r "${CORRECTION_ENV_FILE}" ]]; then
   set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
+  source "${CORRECTION_ENV_FILE}"
   set +a
 fi
 
 readonly ROS_SETUP="${CORRECTION_ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 readonly WORKSPACE_SETUP="${WORKSPACE_ROOT}/install/local_setup.bash"
-readonly CONFIG_DIR="${CORRECTION_CONFIG_DIR:-${WORKSPACE_ROOT}/correction_service/config}"
+readonly CONFIG_DIR="${AIRCRAFT_CONFIG_DIR}/correction"
 
 [[ -r "${CONFIG_DIR}/general_settings.yaml" ]] || {
   printf '[correction-start] ERROR: correction config is missing: %s\n' \
@@ -89,6 +87,7 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE="${ROS_AUTOMATIC_DISCOVERY_RANGE:-SUBNET}"
 export CORRECTION_CONFIG_DIR="${CONFIG_DIR}"
+export PYTHONPATH="${WORKSPACE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 printf '[correction-start] workspace=%s domain=%s config=%s\n' \
   "${WORKSPACE_ROOT}" "${ROS_DOMAIN_ID}" "${CONFIG_DIR}"

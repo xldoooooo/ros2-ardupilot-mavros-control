@@ -1,3 +1,4 @@
+<!-- AprilTag correction geometry, configuration and deployment. -->
 # AprilTag–Odin 多 Tag 滑窗修正服务
 
 `correction_service` 2.0 用世界位置已测的不同 AprilTag 建立空间基线，估计
@@ -8,8 +9,8 @@
 本模块不修正世界高度，不发送解锁、起飞、模式或轨迹命令。任何 ACK 只说明 extnav
 接受了坐标变换，不代表 MAVROS EKF 已稳定，更不构成实飞许可。
 
-extnav 的机体安装外参独立维护于项目 `config/odin_extrinsics.yaml`，两种机载启动入口
-均使用它；设置 `ODIN_EXTRINSICS_FILE=/etc/ros2-ardupilot/odin_extrinsics.yaml` 可覆盖逐机配置。
+extnav 的机体安装外参维护于项目 `config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml`，
+手动与 systemd 启动均使用 `config/aircraft.local.env` 选择的同一份逐机参数。
 RPY 单位 rad，定义 `R_FI` 将 Odin IMU 轴变换到 FCU FLU 轴，采用标准 ZYX；上仰约 22°
 对应 `pitch_cam=-0.3839724354`。设置`auto_installation: true`后，C++桥在未解锁静止约3秒后
 用Odin与飞控的重力方向自动估计俯仰并锁定，pitch参数作为收敛前回退；roll/yaw保持配置。
@@ -79,7 +80,7 @@ PnP 的标准 Tag 轴为 `+X右 / +Y上 / +Z朝观察者`，因此
 航向差而错误加在 `T_imu_camera` 上的光轴 180°旋转。两个错误曾使航向近似抵消、相机世界
 水平位置反号；不能只改其中一处，也不能给最终 x/y/yaw 单独补符号。
 
-更新时须配套部署 `geometry.py` 与 `config/extrinsics.yaml`，重启独立修正服务并重新采样，
+更新时须配套部署 `geometry.py` 与 `config/aircraft/<AIRCRAFT_ID>/correction/extrinsics.yaml`，重启独立修正服务并重新采样，
 不可复用旧窗口或旧 active 修正。应在已确认未武装、无控制任务的维护状态处理旧 active；
 独立修正服务重启不会自动清除 extnav 的 active。无需修改飞行控制节点、Odin 或 extnav。
 UQ212 外参自 2026-09-17 按机械尺寸近似：基座位于模块前表面下边缘宽度中点前方
@@ -173,7 +174,7 @@ GUI 重开只读取这些权威状态，不自计数，也不要求磁盘窗口�
 
 ## 配置和质量门
 
-`config/` 在节点创建 ROS 写接口前严格加载：
+项目 `config/aircraft/<AIRCRAFT_ID>/correction/` 在节点创建 ROS 写接口前严格加载：
 
 - `intrinsics.yaml`：1920×1080 相机内参；
 - `extrinsics.yaml`：`T_imu_camera`；
@@ -182,14 +183,15 @@ GUI 重开只读取这些权威状态，不自计数，也不要求磁盘窗口�
 - `lens.conf`：预先保存的下视相机 UVC 参数；收到首帧并等待视频流稳定后，按文件顺序分步写入，
   丢弃切换期帧并最终逐项读回；任务日志保存 requested/readback；
 - `general_settings.yaml`：接口、同步、停留段、窗口、跳变、超时和日志门限。
+- `../odin_extrinsics.yaml`：与 extnav 共用 FCU 到 Odin 的安装平移；由 `fcu_reference.extrinsics_file` 指定，参与配置指纹，无独立平移副本。
 
 仓库中面向 refresh 飞机的活动配置对应 UQ212：1920×1080 MJPEG 仅使用设备原生声明的 120 fps，
 镜头控制显式恢复 UQ212 驱动报告的默认值。内参采用用户授权的
 `uq212_runs/20260917-011117-295510` 原始30张标定结果，fx/fy=942.1241/942.3490px，
 RMS=0.8863px，使用全部五个实测畸变系数；未剔除20/21号样本。独立精度仍待验证，
-已知异常角点和边缘覆盖不足的风险保留。外参仍使用上述机械尺寸与垂直光轴近似。旧 Wasintek 的
-配置保存在 `config/Wasintek/`，当前 UQ212 配置档案保存在 `config/UQ212/`；两个命名目录都不
-参与运行时加载，根 `config/` 下的同名文件才是当前活动配置。
+已知异常角点和边缘覆盖不足的风险保留。外参仍使用上述机械尺寸与垂直光轴近似。
+修正服务仅使用 UQ212，活动配置位于对应飞机的 `correction/` 目录；
+不再保存 Wasintek 配置或读取模块安装目录中的副本。
 
 ### 采集与发布帧率
 
@@ -206,15 +208,15 @@ RMS=0.8863px，使用全部五个实测畸变系数；未剔除20/21号样本。
 
 ### 更换下视相机时修改哪里
 
-设备入口是根活动配置 [camera.conf](config/camera.conf) 中的 `camera.device`。应优先填写
+设备入口是 `config/aircraft/<AIRCRAFT_ID>/correction/camera.conf` 中的 `camera.device`。应优先填写
 `/dev/v4l/by-id/...-video-index0`；它比 `/dev/videoN` 稳定。地面站标定面板本身不枚举飞机 USB
 设备，而是连接 `correction_service`。服务只在收到 `first/next` 时按该路径打开相机，因此设备
 路径正确、服务重启并重新发布状态后，面板即可使用新设备。
 
 - 仅同一颗相机换 USB 口且 by-id 不变：无需改配置；
-- 同型号相机但 by-id/序列号变化：只改根 `camera.conf` 的 `device`，然后重启独立修正服务；
-- 更换相机型号或镜头：在 `config/<新相机名>/` 保存该型号的 `camera.conf`、
-  `intrinsics.yaml`、`extrinsics.yaml`、`lens.conf`，再把这四份核验后的内容复制为根活动配置并
+- 同型号相机但 by-id/序列号变化：只改该机 `correction/camera.conf` 的 `device`，然后重启独立修正服务；
+- 更换相机型号或镜头：核验并更新该机 `correction/` 的 `camera.conf`、
+  `intrinsics.yaml`、`extrinsics.yaml`、`lens.conf`，然后
   重启独立修正服务。不得只改设备路径后继续沿用未知内外参或不兼容的 V4L2 控制；
 - 纯配置变更无需重新编译，但会改变配置指纹；重启后旧窗口/候选不得继续使用。
 
@@ -283,7 +285,7 @@ source /opt/ros/jazzy/setup.bash
 colcon build --packages-select correction_interfaces correction_service
 source install/setup.bash
 ros2 run correction_service correction_node --ros-args \
-  -p config_dir:="$PWD/correction_service/config"
+  -p config_dir:="$PWD/config/aircraft/uav002/correction"
 ```
 
 采集节点 `correction_service/uvc_camera_node` 随本包安装，直接打开 `camera.conf` 指定的系统
