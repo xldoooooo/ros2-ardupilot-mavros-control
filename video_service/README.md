@@ -6,7 +6,57 @@
 从本机 RTSP 读取，不会第二次占用设备。它是独立进程，摄像头、FFmpeg、
 MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任务。
 
+## 地面集中媒体服务
+
+机载只采集和缓存原片，主动向地面推送一条原始RTSP并通过rsync/SSH上传封装完成的文件。
+机载MediaMTX只监听127.0.0.1，供本机截图；外部只能读取地面`<飞机编号>/rectified`流。
+地面`ground_media.py`独立于GUI运行，复用下述中继处理一次，再将编码码流分发及直接封装到MKV，
+不为录像重复编码。原片、上传暂存、处理暂存与FTP公开目录分开。
+
+地面部署：
+
+```bash
+./video_service/deploy/install_ground_media.sh
+# 主窗口“文件管理”可离线浏览已接收媒体；也可独立打开：
+./.venv/bin/python video_service/file_manager.py
+```
+
+配置示例为`config/ground/media.example.conf`，安装时生成并保留本机`config/ground/media.json`。
+可用`GROUND_MEDIA_CONFIG`指定另一份文件。修改后重启`ground-media.service`。
+`root`指定存储根，`public_host`指定客户端可达地址，`max_bytes`为总媒体容量上限；
+统计internal/public/inbox/staging，包含活动文件，不含索引和日志。超限按最旧记录清理，
+跳过录像/处理/传输及刚入库等待ACK的原片；若活动文件已占满空间，界面报错而不删除唯一机载副本。
+FTP只读公开`root/public`，默认端口2121、被动端口30000～30019；原片和未完成文件不可下载。
+HTTP 8090提供文件列表和处理版下载，本机GUI可删除或整段重建；RTSP默认8554。
+
+每架飞机的`config/aircraft/<AIRCRAFT_ID>/video/camera.conf`中`[media]`配置
+`push_url/public_url/ground_api/upload_target/upload_root/cache_directory`；上传root须与地面root一致。
+先为机载用户配置到`upload_target`的免密SSH（正常host-key校验），再启用视频节点。
+上传使用持久SQLite队列，图片优先，默认2048 KiB/s；网络恢复后rsync差分重传。
+地面核对size和SHA-256并持久入库后发ACK，飞机从ACK开始保留86400秒再清理；
+未确认文件继续保存。缓存清理、上传重试和处理失败分别显示，不影响飞行结果。
+旧飞机FTP需停用，`/home/share`不再被任何新媒体入口使用；旧数据迁移由部署者确认后清理。
+
+各会话固定保存五参数内参与编码配置，照片采用同一alpha=0投影；video记录关联飞机、
+会话和任务，photo_no与waypoint_index分列。文件管理可筛选、预览/打开、另存、删除和从完整原片重建。
+实时实验版与原片重建版分开保存。冷启动、断流或GPU回退可能造成开头/中间缺失；
+界面显示已知中断，封装后检查完整解码及大致时长，不声称逐帧完整。
+建议飞行前手动开启摄像头，待地面显示录像运行后再开始任务；媒体异常不阻止飞控。
+关闭预览/文件管理窗口不会终止录像和上传。
+
+甲方08先报告飞行完成，媒体未就绪时路径为空、`mediaStatus=processing`；文件就绪后补发
+`mediaUpdate=true`。09等待地面处理图才提供`pointPic`；失败提供空路径和`mediaError`。
+08的`videoPath`为实际处理视频下载地址，`JPGPath`为地面FTP会话目录，`images`保留各图关联。
+接收方应按任务及mediaUpdate更新媒体状态，不能把飞行完成等同于媒体完成。
+
+维护入口：`onboard_media.py`处理主动推流和任务关联，`media_transfer.py`维护机载队列，
+`media_store.py`负责核验、照片和容量策略，`ground_media.py`负责服务与录像/重建，
+`file_manager_app.py`与`camera_app/media_status.py`只负责GUI。
+
 ## 地面去畸变中继
+
+新机安装、Intel自动加载、NVIDIA驱动/FFmpeg兼容要求及验收命令，见
+[地面视频部署说明](deploy/GROUND_VIDEO_DEPLOYMENT.md)。
 
 `ground_relay.py` 独立处理一条视频，再向已有 MediaMTX 发布；客户端共用处理结果。
 默认 `--backend auto` 按 Intel、NVIDIA、CPU 顺序选择，先使用本地短样本实际探测硬件链路。
@@ -34,7 +84,8 @@ Ubuntu 24.04 的 Intel 后端需 `intel-opencl-icd` 和可访问的 `/dev/dri/re
 也可用 `--intel-opencl-runtime <目录>` 指定。程序自动为 Intel 子进程设置库路径和 ICD，
 无需手工 export，不改变 NVIDIA/CPU 的环境。mini-ground 已在此固定目录部署并验证自动加载。
 新机器可优先通过系统包安装 `intel-opencl-icd`；自动发现不会自行下载或安装驱动。
-NVIDIA 后端需匹配显卡的 NVIDIA 驱动及其 OpenCL ICD，无需为该路线安装 CUDA Toolkit、CuPy。
+NVIDIA 后端需支持 NVDEC 与 H.264 NVENC 的显卡、匹配 FFmpeg 的 NVIDIA 驱动及其 OpenCL ICD；
+不限定 RTX 3080，驱动最低版本取决于 FFmpeg 使用的编解码 API。无需另装 CUDA Toolkit、CuPy。
 CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
 `python3-opencv python3-numpy python3-yaml`，项目 `.venv` 需能访问系统包。
 媒体工具 `ffmpeg`、`ffprobe` 和已配置允许发布的 MediaMTX 须提前就绪。
@@ -61,7 +112,7 @@ CPU 也失败时明确报错退出，不反复重试掩盖输入、网络或磁�
 局域网地址与回环地址须使用一致写法才能关联。状态文件位于
 `$XDG_RUNTIME_DIR/ros2-ardupilot-relay/`，无该变量时在 `/tmp/ros2-ardupilot-relay-<uid>/`。
 面板与中继须由同一用户运行；远端观看者目前不会收到这些本机状态。
-本入口仍独立启动，尚未接入 GUI 启停或自启服务；原有机载采集链不变。
+该中继由地面媒体后台管理，也可独立启动进行诊断；摄像头面板同时显示后台录像和文件状态。
 
 维护入口：`ground_relay.py` 管理选择、探测与进程；`relay_calibration.py` 共享镜头几何，
 `relay_cpu.py` 实现保留时间戳的软件处理，`shaders/undistort_nv12.cl` 同时支持 NV12 与 YUV420P。
@@ -148,8 +199,8 @@ ROS 航点抓拍不使用这条事件路径，而是逐条排队、逐条发布�
 机载配置直接读取项目 `config/aircraft/<AIRCRAFT_ID>/video/camera.conf` 和
 `lens.conf`，由 `config/aircraft.local.env` 的 `AIRCRAFT_ID` 选择飞机。
 视频流只使用 Wasintek；标定基线保存在 `config/video/Wasintek/intrinsics.yaml`，
-后缀 `.old` 表示旧镜头，视频流水线不读取标定内参或执行去畸变。
-默认媒体目录为 `/home/share`，JPG 目录为 `/home/share/jpg`；采集格式、分辨率与帧率
+后缀 `.old` 表示旧镜头；机载保留原片，地面使用当前内参去畸变。
+默认原片位于 `~/.local/share/ardupilot-media/cache/videos` 和 `cache/images`；采集格式、分辨率与帧率
 必须是目标摄像头真实声明的组合。
 
 ### 飞机上为什么也有 Qt 文件
@@ -392,7 +443,7 @@ file /usr/local/bin/mediamtx
 ## 当前验证边界
 
 当前 Jetson Orin NX（Ubuntu 24.04/Jazzy/aarch64）已完成真实 Wasintek 摄像头、
-ARM64 MediaMTX、NVIDIA FFmpeg 8.0.1、`/home/share` 权限、跨机 RTSP、录像、三类
+ARM64 MediaMTX、NVIDIA FFmpeg 8.0.1、私有缓存权限、主动 RTSP、录像、三类
 JPG、镜头参数、地面 Qt 播放、ROS 直连、状态陈旧和视频故障隔离验证；全过程真实
 FCU 保持 `armed=false`。隔离 domain 中的假 `ExtendedState` 已验证
 `ON_GROUND -> IN_AIR -> ON_GROUND` 会产生关闭、开启、关闭期望。

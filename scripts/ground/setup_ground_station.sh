@@ -64,6 +64,8 @@ if [[ ! -x "${project_root}/.venv/bin/python3" ]]; then
   python3 -m venv --system-site-packages "${project_root}/.venv"
 fi
 "${project_root}/.venv/bin/python3" -m pip install -r requirements-gui.txt
+# GPU drivers are host-specific; the relay can run with its software fallback.
+echo "[ground-setup] GPU video driver setup: video_service/deploy/GROUND_VIDEO_DEPLOYMENT.md"
 
 colcon build \
   --packages-select \
