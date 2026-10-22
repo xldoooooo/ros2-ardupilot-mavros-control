@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..event_log import EventLog
+from ..ground_media_reader import GroundMediaReader
 from ..models import (
     CommandResult,
     VideoCaptureEvent,
@@ -135,6 +136,8 @@ class UpstreamCommunicationService:
             self._events,
             standby_policy,
         )
+        self._media_warning = ""
+        self._media_reader = GroundMediaReader(self._observe_ground_media)
 
     @property
     def journal(self) -> RawFrameJournal:
@@ -165,6 +168,7 @@ class UpstreamCommunicationService:
                 daemon=True,
             )
             self._thread.start()
+        self._media_reader.start()
         self._events.info("upstream", "上位机通讯模块已随地面站启动")
         policy = self.standby_policy
         self._events.info(
@@ -175,8 +179,7 @@ class UpstreamCommunicationService:
             f"Z<{policy.z_tolerance_meters:.2f} m，"
             f"巡检后延时 {policy.inspection_delay_seconds:.1f} s",
         )
-        # TODO(上位机媒体): FTP、RTSP、云台、拍照及媒体路径暂不实现。
-        self._events.info("upstream", "相机、云台、照片、FTP 与媒体路径当前未接入")
+        self._events.info("upstream", "甲方媒体路径由地面媒体目录独立更新")
 
     def connect(self, url: str, client_no: str) -> None:
         """应用面板配置并请求连接；可在地面站会话外独立执行。"""
@@ -235,10 +238,11 @@ class UpstreamCommunicationService:
 
     def stop(self, timeout: float = 3.0) -> bool:
         """在地面站退出时限时停止插件；失败也不阻断主体清理。"""
+        media_stopped = self._media_reader.stop(timeout=min(2.0, max(0.0, timeout)))
         with self._state_lock:
             thread = self._thread
             if thread is None:
-                return True
+                return media_stopped
             self._stopping = True
             self._desired_connected = False
             self._revision += 1
@@ -252,7 +256,7 @@ class UpstreamCommunicationService:
                 self._detail = "上位机通讯线程已停止"
         else:
             self._events.warn("upstream", "上位机通讯线程未在退出时限内停止")
-        return stopped
+        return stopped and media_stopped
 
     def snapshot(self) -> UpstreamConnectionSnapshot:
         """返回面板可无锁使用的连接配置与状态副本。"""
@@ -272,7 +276,7 @@ class UpstreamCommunicationService:
             loop = self._loop
             queue = self._outbound
             connected = self._connected
-            client_no = self._client_no
+            client_no = str(payload.get("clientNo") or self._client_no)
         if loop is None or queue is None or not connected or loop.is_closed():
             return False
         envelope = publish_envelope(client_no, payload)
@@ -284,10 +288,18 @@ class UpstreamCommunicationService:
         return self._projector.report_waypoints_staged()
 
     def begin_mission(
-        self, ticket: int, kind: str, point_indexes: tuple[int, ...]
+        self,
+        ticket: int,
+        kind: str,
+        point_indexes: tuple[int, ...],
+        *,
+        source_id: str = "",
+        aircraft_id: str = "",
     ) -> None:
         """绑定由上位机触发的航点任务与本地可靠命令 ticket。"""
-        self._projector.begin_mission(ticket, kind, point_indexes)
+        self._projector.begin_mission(
+            ticket, kind, point_indexes, source_id=source_id, aircraft_id=aircraft_id
+        )
 
     def begin_landing(self, ticket: int) -> None:
         """绑定由上位机触发的降落与本地可靠命令 ticket。"""
@@ -315,12 +327,24 @@ class UpstreamCommunicationService:
         self._projector.observe_result(result)
 
     def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
-        """提供视频服务新鲜状态，用于 08 的真实媒体路径。"""
+        """提供机载运行状态；机载路径不作为甲方下载入口。"""
         self._projector.observe_video_status(snapshot)
 
     def observe_video_capture(self, event: VideoCaptureEvent) -> None:
-        """提供逐条截图完成事件，用于 09 的真实 pointPic。"""
+        """关联逐条抓拍结果，下载路径随后由地面处理结果提供。"""
         self._projector.observe_video_capture(event)
+
+    def _observe_ground_media(
+        self, records: tuple[dict[str, Any], ...], error: str
+    ) -> None:
+        """后台消费地面媒体快照，日志仅记录故障变化及恢复。"""
+        if error != self._media_warning:
+            if error:
+                self._events.warn("upstream", f"地面媒体目录不可用：{error}")
+            elif self._media_warning:
+                self._events.info("upstream", "地面媒体目录已恢复")
+            self._media_warning = error
+        self._projector.observe_ground_media(records, error)
 
     def reset_runtime(self) -> None:
         """仿真或实机会话断开后清空任务事件关联。"""

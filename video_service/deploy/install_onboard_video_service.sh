@@ -65,7 +65,7 @@ video_user="${SUDO_USER:-$(id -un)}"
 video_home="$(getent passwd "${video_user}" | cut -d: -f6)"
 [[ -n "${video_home}" ]] || die "cannot resolve home directory for ${video_user}"
 
-for command_name in ffmpeg v4l2-ctl; do
+for command_name in ffmpeg v4l2-ctl rsync ssh; do
   command -v "${command_name}" >/dev/null 2>&1 ||
     die "missing ${command_name}; install the packages documented in video_service/README.md"
 done
@@ -79,8 +79,10 @@ if [[ ! -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then
   "${WORKSPACE_ROOT}/src/onboard_control/deploy/build_onboard_control.sh" --verify
 fi
 
-run_root install -d -o "${video_user}" -g "${video_user}" -m 0755 \
-  /home/share /home/share/jpg
+# Media now stays in a private user cache, not the former aircraft FTP root.
+run_root install -d -o "${video_user}" -g "${video_user}" -m 0750 \
+  "${video_home}/.local/share/ardupilot-media/cache/videos" \
+  "${video_home}/.local/share/ardupilot-media/cache/images"
 
 unit_stage="$(mktemp)"
 trap 'rm -f -- "${unit_stage}"' EXIT

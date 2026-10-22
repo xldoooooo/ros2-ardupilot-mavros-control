@@ -29,6 +29,7 @@ class OnboardVideoSettings:
     mediamtx_binary: Path
     lens_config: Path
     status_period_seconds: float
+    media: dict[str, str]
 
 
 def load_onboard_settings(path: Path | None = None) -> OnboardVideoSettings:
@@ -57,10 +58,10 @@ def load_onboard_settings(path: Path | None = None) -> OnboardVideoSettings:
         rtsp_path=parser.get("rtsp", "path", fallback="camera").strip(),
         container=parser.get("storage", "video_format", fallback="mp4").strip().lower(),
         video_directory=parser.get(
-            "storage", "video_directory", fallback="/home/share"
+            "storage", "video_directory", fallback="~/.local/share/ardupilot-media/cache/videos"
         ).strip(),
         image_directory=parser.get(
-            "storage", "image_directory", fallback="/home/share/jpg"
+            "storage", "image_directory", fallback="~/.local/share/ardupilot-media/cache/images"
         ).strip(),
     )
     camera.validate()
@@ -86,6 +87,7 @@ def load_onboard_settings(path: Path | None = None) -> OnboardVideoSettings:
         mediamtx_binary=mediamtx_binary,
         lens_config=lens_config,
         status_period_seconds=status_period,
+        media=dict(parser.items("media")) if parser.has_section("media") else {},
     )
 
 

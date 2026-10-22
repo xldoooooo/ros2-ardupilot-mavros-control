@@ -62,7 +62,7 @@ wait_for_lan_route() {
 }
 
 readonly ROS_SETUP="$(resolve_ros_setup)"
-readonly PYTHON_EXECUTABLE="${VIDEO_SERVICE_PYTHON:-python3}"
+readonly PYTHON_EXECUTABLE="${VIDEO_SERVICE_PYTHON:-${WORKSPACE_ROOT}/.venv/bin/python}"
 readonly CAMERA_CONFIG="${VIDEO_SERVICE_ONBOARD_CONFIG}"
 readonly LENS_CONFIG="${VIDEO_SERVICE_LENS_CONFIG}"
 for config_file in "${CAMERA_CONFIG}" "${LENS_CONFIG}"; do

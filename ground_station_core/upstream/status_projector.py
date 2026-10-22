@@ -11,8 +11,8 @@ from typing import Any
 
 from .models import UpstreamStandbyPolicy
 from .protocol import make_status
-from ..config import VIDEO_INTERFACE_VERSION
 from ..event_log import EventLog
+from ..ground_media_reader import processed_download
 from ..models import (
     CommandResult,
     FlightMode,
@@ -21,9 +21,8 @@ from ..models import (
     VideoServiceSnapshot,
 )
 
-# 甲方 08 状态要求媒体路径非空；真实路径未就绪时使用固定占位路径。
-DEFAULT_VIDEO_PATH = "/home/share/test.mp4"
-DEFAULT_JPG_PATH = "/home/share/jpg"
+# 这些状态已明确不能交付处理文件；传输 retry 仍可恢复，继续等待。
+MEDIA_FAILURE_STATES = frozenset({"error", "processing_error", "deleted", "missing"})
 
 
 @dataclass
@@ -33,22 +32,25 @@ class _MissionState:
     ticket: int
     kind: str
     point_indexes: tuple[int, ...]
+    source_id: str = ""
+    aircraft_id: str = ""
+    client_no: str = ""
     started: bool = False
     reported_points: int = 0
     completed_points: int = 0
-    picture_paths: dict[int, str] = field(default_factory=dict)
+    captures: dict[int, VideoCaptureEvent] = field(default_factory=dict)
     flight_completed: bool = False
     landing_completed: bool = False
-    media_deadline: float = 0.0
+    completion_data: dict[str, Any] | None = None
 
 
 class UpstreamStatusProjector:
-    """在 Qt 线程内维护事件边沿，发送端仅接收不可变 JSON 副本。"""
+    """用锁保护 GUI 飞行事件与后台地面媒体快照，发送独立 JSON 副本。"""
 
+    # 遥测上报周期，以及仿真百分比/实机电压的低电量阈值。
     TELEMETRY_PERIOD_SECONDS = 1.0
     SIMULATION_LOW_PERCENTAGE = 20.0
     HARDWARE_LOW_VOLTAGE = 22.2
-    MEDIA_RESULT_WAIT_SECONDS = 15.0
 
     def __init__(
         self,
@@ -57,6 +59,7 @@ class UpstreamStatusProjector:
         event_log: EventLog,
         standby_policy: UpstreamStandbyPolicy | None = None,
     ) -> None:
+        """维护飞行边沿与独立地面媒体记录，不执行网络请求。"""
         self._client_no = client_no
         self._emit = emit
         self._events = event_log
@@ -70,7 +73,9 @@ class UpstreamStatusProjector:
         self._standby_blocked = False
         self._standby_reported = False
         self._generic_state_notice_logged = False
-        self._video = VideoServiceSnapshot()
+        self._media_records: tuple[Mapping[str, Any], ...] = ()
+        self._media_error = ""
+        self._completed_missions: list[_MissionState] = []
 
     @property
     def standby_policy(self) -> UpstreamStandbyPolicy:
@@ -104,12 +109,23 @@ class UpstreamStatusProjector:
         return self._send("02")
 
     def begin_mission(
-        self, ticket: int, kind: str, point_indexes: tuple[int, ...]
+        self,
+        ticket: int,
+        kind: str,
+        point_indexes: tuple[int, ...],
+        *,
+        source_id: str = "",
+        aircraft_id: str = "",
     ) -> None:
         """绑定本地 ROS ticket，避免旧任务终态误关闭新返航任务。"""
         with self._lock:
             self._mission = _MissionState(
-                ticket=int(ticket), kind=str(kind), point_indexes=tuple(point_indexes)
+                ticket=int(ticket),
+                kind=str(kind),
+                point_indexes=tuple(point_indexes),
+                source_id=source_id,
+                aircraft_id=aircraft_id,
+                client_no=self._client_no(),
             )
 
     def begin_landing(self, ticket: int) -> None:
@@ -140,7 +156,7 @@ class UpstreamStatusProjector:
                 )
                 self._generic_state_notice_logged = True
             self._observe_mission(snapshot)
-            self._finish_completed_mission(current_time)
+            self._finish_completed_mission()
             if (
                 self._landing_ticket is not None
                 and not self._landing_reported
@@ -184,15 +200,11 @@ class UpstreamStatusProjector:
                     and mission.kind == "inspection"
                     and mission.flight_completed
                 ):
-                    # 降落可靠终态来自解除武装；视频关闭也由同一真实边沿触发。
-                    # 从此刻起等待最后图片结果和封装后的 VideoStatus 路径。
+                    # 飞行完成不等待上传、去畸变或录像封装。
                     mission.landing_completed = True
-                    mission.media_deadline = (
-                        time.monotonic() + self.MEDIA_RESULT_WAIT_SECONDS
-                    )
                 if result.final:
                     self._landing_ticket = None
-                self._finish_completed_mission(time.monotonic())
+                self._finish_completed_mission()
                 return
 
             mission = self._mission
@@ -222,32 +234,47 @@ class UpstreamStatusProjector:
                 self._mission = None
 
     def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
-        """保存独立视频服务新鲜快照，供巡检 08 填写实际媒体路径。"""
+        """机载 VideoStatus 仅表示机载状态，不能作为地面下载路径。"""
+
+    def observe_ground_media(
+        self, records: tuple[Mapping[str, Any], ...], error: str = ""
+    ) -> None:
+        """接收后台地面目录快照，并补发本次任务实际可下载的媒体。"""
         with self._lock:
-            self._video = snapshot
-            self._finish_completed_mission(time.monotonic())
+            self._media_records = records
+            self._media_error = error
+            missions = list(self._completed_missions)
+            if self._mission is not None:
+                missions.append(self._mission)
+            for mission in missions:
+                self._report_points(mission)
+                if mission.landing_completed and mission.flight_completed:
+                    self._report_completed_media(mission)
 
     def observe_video_capture(self, event: VideoCaptureEvent) -> None:
         """按任务与 1-based 航点索引关联真实截图结果，乱序结果可先缓存。"""
         with self._lock:
-            mission = self._mission
-            if (
-                mission is None
-                or mission.kind != "inspection"
-                or event.mission_sequence != mission.ticket
-                or not 1 <= event.waypoint_index <= len(mission.point_indexes)
-            ):
+            missions = [self._mission, *reversed(self._completed_missions)]
+            mission = next((item for item in missions if (
+                item is not None and item.kind == "inspection"
+                and event.mission_sequence == item.ticket
+                and (not item.source_id or event.source_id == item.source_id)
+                and 1 <= event.waypoint_index <= len(item.point_indexes)
+            )), None)
+            if mission is None:
                 return
-            mission.picture_paths[event.waypoint_index] = (
-                event.path if event.success else ""
-            )
+            if not mission.source_id:
+                mission.source_id = event.source_id
+            mission.captures[event.waypoint_index] = event
             if not event.success:
                 self._events.warn(
                     "upstream",
                     f"巡检点 {event.waypoint_index} 抓拍失败：{event.message}",
                 )
             self._report_points(mission)
-            self._finish_completed_mission(time.monotonic())
+            if mission.completion_data is not None:
+                self._report_completed_media(mission)
+            self._finish_completed_mission()
 
     def reset_runtime(self) -> None:
         """环境断开时丢弃飞行事件关联，不影响 WebSocket 独立连接。"""
@@ -259,7 +286,7 @@ class UpstreamStatusProjector:
             self._low_power_reported = False
             self._standby_blocked = False
             self._standby_reported = False
-            self._video = VideoServiceSnapshot()
+            # 已完成任务仍可在飞机离线后收到地面媒体入库更新。
 
     def _observe_mission(self, snapshot: VehicleSnapshot) -> None:
         """按机载 current-target 索引计算已完成格数，与 GUI 采用同一规则。"""
@@ -283,78 +310,139 @@ class UpstreamStatusProjector:
         mission.completed_points = max(mission.completed_points, completed)
         self._report_points(mission)
 
+    def _mission_records(self, mission: _MissionState) -> list[Mapping[str, Any]]:
+        """用客户端身份和任务编号隔离多飞机、重启前后的同号任务。"""
+        if not mission.source_id:
+            return []
+        records = []
+        for record in self._media_records:
+            metadata = record.get("metadata") or {}
+            if not isinstance(metadata, Mapping):
+                continue
+            sequence = record.get("mission_sequence", metadata.get("mission_sequence"))
+            if (
+                str(metadata.get("source_id", "")) == mission.source_id
+                and str(sequence) == str(mission.ticket)
+                and (not mission.aircraft_id or record.get("aircraft_id") == mission.aircraft_id)
+            ):
+                records.append(record)
+        return records
+
+    def _select_media(
+        self, records: list[Mapping[str, Any]]
+    ) -> Mapping[str, Any]:
+        """优先使用可下载重建版，其次实验版；原片永不成为对外路径。"""
+        processed = [r for r in records if r.get("variant") in {"experiment", "rebuilt"}]
+        # 原片仅作上传/处理失败的状态来源，下载路径仍由 processed_download 限制。
+        return max(processed or records, key=lambda r: (
+            bool(processed_download(r)), r.get("variant") == "rebuilt",
+            r.get("state") == "ready",
+        ), default={})
+
+    def _point_media(self, mission: _MissionState, index: int) -> dict[str, Any]:
+        """关联真实抓拍编号与地面处理结果，不信任机载本地路径。"""
+        event = mission.captures.get(index)
+        records = []
+        for record in self._mission_records(mission):
+            metadata = record.get("metadata") or {}
+            if record.get("kind") != "image":
+                continue
+            waypoint = record.get("waypoint_index", metadata.get("waypoint_index"))
+            photo = record.get("photo_no", metadata.get("photo_no", ""))
+            if str(waypoint) != str(index):
+                continue
+            if event is not None and (
+                str(photo) != event.photo_no
+                or (metadata.get("sequence") is not None
+                    and str(metadata["sequence"]) != str(event.command_sequence))
+            ):
+                continue
+            records.append(record)
+        record = self._select_media(records)
+        path = processed_download(record)
+        state = str(record.get("state") or "pending")
+        error = str(record.get("error") or "")
+        if event is not None and not event.success and not path:
+            state, error = "error", event.message
+        return {
+            "pointNo": str(mission.point_indexes[index - 1]),
+            "photoNo": event.photo_no if event is not None else str(record.get("photo_no") or ""),
+            "path": path, "state": state, "error": error,
+            "directory": str(record.get("download_directory") or "") if path else "",
+        }
+
     def _report_points(self, mission: _MissionState) -> None:
-        """仅在真实抓拍结果到达后按协议点号顺序发送 09。"""
+        """处理版可下载或抓拍明确失败后，按点号顺序发送 09。"""
         while mission.reported_points < mission.completed_points:
-            position = mission.reported_points
-            waypoint_index = position + 1
-            if waypoint_index not in mission.picture_paths:
+            index = mission.reported_points + 1
+            media = self._point_media(mission, index)
+            if not media["path"] and media["state"] not in MEDIA_FAILURE_STATES:
                 return
-            point_index = mission.point_indexes[position]
-            self._send(
-                "09",
-                {
-                    "pointNo": str(point_index),
-                    "pointName": f"巡检点位 {point_index}",
-                    "pointPic": mission.picture_paths[waypoint_index],
-                },
-            )
+            point = mission.point_indexes[index - 1]
+            payload = {
+                "pointNo": str(point), "pointName": f"巡检点位 {point}",
+                "pointPic": media["path"], "mediaStatus": media["state"],
+                "mediaError": media["error"],
+            }
+            if not self._send_mission(mission, "09", payload):
+                return
             mission.reported_points += 1
 
-    def _finish_completed_mission(self, now: float) -> None:
-        """全部图片已回或超时后发送 08；媒体失败不反向改变飞行结果。"""
+    def _finish_completed_mission(self) -> None:
+        """飞行可靠结束立即发送 08，媒体随后由地面目录独立更新。"""
         mission = self._mission
         if (
-            mission is None
-            or mission.kind != "inspection"
-            or not mission.flight_completed
-            or not mission.landing_completed
+            mission is None or mission.kind != "inspection"
+            or not mission.flight_completed or not mission.landing_completed
         ):
             return
-        expected = len(mission.point_indexes)
-        all_results_arrived = len(mission.picture_paths) >= expected
-        compatible_video = (
-            self._video.service_available
-            and self._video.interface_version == VIDEO_INTERFACE_VERSION
-        )
-        video_finalized = (
-            compatible_video
-            and not self._video.running
-            and bool(self._video.last_video_path)
-        )
-        if (not all_results_arrived or not video_finalized) and now < mission.media_deadline:
-            return
-        if not all_results_arrived:
-            missing = [
-                index
-                for index in range(1, expected + 1)
-                if index not in mission.picture_paths
-            ]
-            for index in missing:
-                mission.picture_paths[index] = ""
-            self._events.warn(
-                "upstream",
-                f"等待巡检图片结果超时，点位 {missing} 的 pointPic 按空路径如实上报",
-            )
         self._report_points(mission)
-        video_path = DEFAULT_VIDEO_PATH
-        jpg_path = DEFAULT_JPG_PATH
-        if compatible_video:
-            jpg_path = self._video.image_directory or DEFAULT_JPG_PATH
-            if video_finalized:
-                video_path = self._video.last_video_path
-            else:
-                self._events.warn(
-                    "upstream",
-                    "等待录像封装超时，08 的 videoPath 按空值如实上报",
-                )
-        else:
-            self._events.warn(
-                "upstream",
-                "视频服务状态不可用或接口版本不兼容，08 的媒体路径按空值如实上报",
-            )
-        self._send("08", {"videoPath": video_path, "JPGPath": jpg_path})
+        self._report_completed_media(mission)
+        self._completed_missions.append(mission)
         self._mission = None
+
+    def _report_completed_media(self, mission: _MissionState) -> None:
+        """媒体状态变化时补发 08；空路径与 incomplete 均如实上报。"""
+        records = self._mission_records(mission)
+        video = self._select_media([r for r in records if r.get("kind") == "video"])
+        video_path = processed_download(video)
+        images = [
+            self._point_media(mission, index)
+            for index in range(1, len(mission.point_indexes) + 1)
+        ]
+        states = [str(video.get("state") or "pending"), *[item["state"] for item in images]]
+        if MEDIA_FAILURE_STATES.intersection(states) or (self._media_error and not self._media_records):
+            state = "error"
+        elif not video_path or any(not item["path"] for item in images):
+            state = "retry" if "retry" in states else "processing"
+        else:
+            state = "incomplete" if "incomplete" in states else "ready"
+        data = {
+            "videoPath": video_path,
+            "JPGPath": next((item["directory"] for item in images if item["path"]), ""),
+            "mediaStatus": state,
+            "videoStatus": str(video.get("state") or "pending"),
+            "mediaError": (
+                self._media_error or str(video.get("error") or "")
+                or next((item["error"] for item in images if item["error"]), "")
+            ),
+            "images": images,
+        }
+        if data == mission.completion_data:
+            return
+        payload = {**data, "mediaUpdate": mission.completion_data is not None}
+        if self._send_mission(mission, "08", payload):
+            mission.completion_data = data
+
+    def _send_mission(
+        self, mission: _MissionState, status: str, data: Mapping[str, Any]
+    ) -> bool:
+        """延迟媒体使用任务开始时的甲方编号，避免切机后归属改变。"""
+        try:
+            return self._emit(make_status(mission.client_no, status, data))
+        except Exception as exc:  # noqa: BLE001 - 媒体插件不得影响飞控。
+            self._events.warn("upstream", f"上位机状态 {status} 排队失败：{exc}")
+            return False
 
     def _send_telemetry(
         self, snapshot: VehicleSnapshot, connection_mode: str

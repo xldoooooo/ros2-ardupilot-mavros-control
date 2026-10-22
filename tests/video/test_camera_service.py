@@ -834,8 +834,8 @@ def test_onboard_configs_preserve_exact_camera_and_lens_values() -> None:
     settings = load_onboard_settings()
     controls = dict(load_lens_controls(settings.lens_config))
 
-    assert settings.camera.video_directory == "/home/share"
-    assert settings.camera.image_directory == "/home/share/jpg"
+    assert settings.camera.video_directory == "~/.local/share/ardupilot-media/cache/videos"
+    assert settings.camera.image_directory == "~/.local/share/ardupilot-media/cache/images"
     assert settings.camera.container == "mp4"
     assert (settings.camera.width, settings.camera.height, settings.camera.fps) == (
         1920,

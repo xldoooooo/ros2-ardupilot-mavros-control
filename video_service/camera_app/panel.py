@@ -58,6 +58,7 @@ from .config import (
 from .controller import CameraServiceError
 from .ipc import CameraServiceClient
 from .relay_status import preview_notice
+from .media_status import GroundMediaStatus
 
 
 SERVICE_SCRIPT = VIDEO_SERVICE_ROOT / "camera_service.py"
@@ -303,6 +304,8 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         header_layout.addWidget(self.stop_button)
         header_layout.addWidget(self.snapshot_button)
         body_layout.addWidget(header)
+        self.ground_media_status = GroundMediaStatus(self)
+        body_layout.addWidget(self.ground_media_status)
 
         content = QHBoxLayout()
         content.setSpacing(10)

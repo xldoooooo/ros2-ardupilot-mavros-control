@@ -251,8 +251,10 @@ class _FakeUpstreamService:
         return True
 
     def begin_mission(
-        self, ticket: int, kind: str, point_indexes: tuple[int, ...]
+        self, ticket: int, kind: str, point_indexes: tuple[int, ...],
+        *, source_id: str = "", aircraft_id: str = "",
     ) -> None:
+        """Accept mission identity while preserving existing call assertions."""
         self.calls.append(("mission", (ticket, kind, point_indexes)))
 
     def begin_landing(self, ticket: int) -> None:

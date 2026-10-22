@@ -60,7 +60,7 @@ def test_video_service_installer_is_one_command_and_preserves_isolation() -> Non
         "/usr/local/bin/mediamtx",
         "project_config_load",
         "system/systemd/video-service.service",
-        "/home/share/jpg",
+        "ardupilot-media/cache/images",
         "systemctl enable --now",
     ):
         assert required in installer

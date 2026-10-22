@@ -511,6 +511,12 @@ class GroundStationWindow(QMainWindow):
         )
         self.camera_panel_button.clicked.connect(self._open_camera_panel)
         controls_layout.addWidget(self.camera_panel_button)
+        self.file_manager_button = QPushButton("文件管理")
+        self.file_manager_button.setObjectName("fileManagerButton")
+        self.file_manager_button.setProperty("compact", True)
+        self.file_manager_button.setToolTip("打开独立地面媒体文件管理面板")
+        self.file_manager_button.clicked.connect(self._open_file_manager)
+        controls_layout.addWidget(self.file_manager_button)
         self.correction_panel_button = QPushButton("Tag-Odin 修正面板")
         self.correction_panel_button.setObjectName("correctionPanelButton")
         self.correction_panel_button.setProperty("compact", True)
@@ -632,6 +638,25 @@ class GroundStationWindow(QMainWindow):
         message = "摄像头配置面板启动失败，请检查项目Python和PySide6环境。"
         self._events.error("camera", message)
         self._show_notice("无法打开摄像头面板", message, QMessageBox.Icon.Warning)
+
+    def _open_file_manager(self) -> None:
+        """分离启动文件管理，关闭地面站不终止媒体后台。"""
+        panel_script = PROJECT_ROOT / "video_service" / "file_manager.py"
+        try:
+            started, process_id = QProcess.startDetached(
+                sys.executable, [str(panel_script)], str(panel_script.parent)
+            )
+        except Exception as exc:
+            started, process_id = False, 0
+            self._events.error("media", f"文件管理面板启动异常：{exc}")
+        if started:
+            self._events.info("media", f"已启动独立文件管理面板（PID={process_id}）")
+            self.activity_banner.set_message("已打开独立文件管理面板。", LogLevel.INFO)
+        else:
+            self._show_notice(
+                "无法打开文件管理", "文件管理面板启动失败，请检查项目Python和PySide6环境。",
+                QMessageBox.Icon.Warning,
+            )
 
     def _open_correction_panel(self) -> None:
         """分离启动修正面板，不把相机任务或 extnav 修正纳入 GUI 清理链。"""
@@ -1320,7 +1345,8 @@ class GroundStationWindow(QMainWindow):
         mission_kind = "inspection" if sequence.kind == "inspection" else "return"
         try:
             self._upstream.begin_mission(
-                ticket, mission_kind, sequence.point_indexes
+                ticket, mission_kind, sequence.point_indexes,
+                source_id=self._ros.source_id,
             )
         except Exception as exc:
             self._events.warn("upstream", f"任务状态关联失败：{exc}")

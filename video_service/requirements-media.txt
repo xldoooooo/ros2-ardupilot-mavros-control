@@ -1,0 +1,2 @@
+# Read-only ground FTP service; relay dependencies remain in requirements-gui.txt.
+pyftpdlib>=2.1,<3

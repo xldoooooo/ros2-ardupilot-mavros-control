@@ -13,6 +13,8 @@ import rclpy
 from camera_app.config import DEFAULT_MEDIAMTX_BINARY, CameraConfig
 from camera_app.controller import CameraController, CameraServiceError
 from camera_app.onboard_config import OnboardVideoSettings, load_onboard_settings
+from project_configuration import config_dir
+from onboard_media import OnboardMedia
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
@@ -21,6 +23,8 @@ from guided_interfaces.msg import (
     VideoCaptureResult,
     VideoControl,
     VideoStatus,
+    ControlStatus,
+    CommandResult,
 )
 from guided_interfaces.srv import SetVideoState
 
@@ -56,7 +60,14 @@ class OnboardVideoNode(Node):
             lens_config_path=(self._settings.lens_config if self._settings else None),
             persist_config=False,
             strict_mode_probe=False,
+            local_only=True,
         )
+        self._media = None
+        if controller is None and self._settings and self._settings.media:
+            try:
+                self._media = OnboardMedia(self._controller, self._settings.media, config_dir().name)
+            except (OSError, ValueError, KeyError) as exc:
+                self._configuration_error = f"媒体传输初始化失败：{exc}"
         self._shutdown = threading.Event()
         self._control_queue: queue.Queue[VideoControl] = queue.Queue(maxsize=64)
         self._capture_queue: queue.Queue[VideoCapture] = queue.Queue(maxsize=256)
@@ -98,6 +109,15 @@ class OnboardVideoNode(Node):
             f"{VIDEO_PREFIX}/set_video_state",
             self._on_set_video_state,
         )
+        # 被动关联任务编号，不申请租约、不发控制命令，也不阻塞飞行回调。
+        self._flight_status_subscription = self.create_subscription(
+            ControlStatus, "/onboard_control/status", self._on_flight_status,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+        )
+        self._mission_result_subscription = self.create_subscription(
+            CommandResult, "/onboard_control/command_result", self._on_mission_result,
+            QoSProfile(depth=50, reliability=ReliabilityPolicy.RELIABLE),
+        )
 
         status_period = self._settings.status_period_seconds if self._settings else 1.0
         self._status_timer = self.create_timer(status_period, self._publish_status)
@@ -115,6 +135,16 @@ class OnboardVideoNode(Node):
         self._capture_worker.start()
         self._publish_status()
         self.get_logger().info("独立机载视频服务已启动；飞控不会等待本节点")
+
+    def _on_flight_status(self, message: ControlStatus) -> None:
+        """视频服务中途启动时，从只读任务状态恢复当前媒体归属。"""
+        if self._media and message.control_mode == ControlStatus.MODE_WAYPOINT:
+            self._media.update_mission(message.lease_owner, message.active_command_sequence)
+
+    def _on_mission_result(self, message: CommandResult) -> None:
+        """在航点任务接受后建立任务关联，不等待第一张照片。"""
+        if self._media and message.command == "waypoints" and message.status == CommandResult.STATUS_RUNNING:
+            self._media.update_mission(message.source_id, message.sequence)
 
     def _on_control(self, message: VideoControl) -> None:
         """回调只排队最新期望状态，不执行设备或外部进程 I/O。"""
@@ -222,9 +252,13 @@ class OnboardVideoNode(Node):
                     self._configuration_error = ""
                     self._controller.mediamtx_binary = settings.mediamtx_binary
                     self._controller.lens_config_path = settings.lens_config
+                    if self._media:
+                        self._media.begin(str(command.source_id))
                     self._controller.start(settings.camera.to_dict())
                 else:
                     self._controller.stop()
+                    if self._media:
+                        self._media.finish()
             except (CameraServiceError, OSError, ValueError) as exc:
                 self._configuration_error = str(exc)
                 self.get_logger().error(f"视频状态切换失败：{exc}")
@@ -249,11 +283,18 @@ class OnboardVideoNode(Node):
                 result = self._controller.request_snapshot(
                     kind=kind, photo_no=str(command.photo_no)
                 )
-            except CameraServiceError as exc:
+                if self._media:
+                    self._media.capture(result['path'], {
+                        'source_id': str(command.source_id), 'sequence': int(command.sequence),
+                        'mission_sequence': int(command.mission_sequence),
+                        'waypoint_index': int(command.waypoint_index), 'photo_no': str(command.photo_no),
+                    })
+            except (CameraServiceError, OSError, ValueError) as exc:
                 self._publish_capture_result(command, False, "", str(exc))
             else:
                 self._publish_capture_result(
-                    command, True, str(result["path"]), "JPG 抓拍完成"
+                    command, True, "" if self._media else str(result["path"]),
+                    "原图已缓存，等待地面上传及去畸变" if self._media else "JPG 抓拍完成"
                 )
             self._publish_status()
 
@@ -297,6 +338,12 @@ class OnboardVideoNode(Node):
         message.last_error = self._configuration_error or str(
             status.get("last_error", "")
         )
+        if self._media:
+            message.rtsp_url = self._media.settings['public_url']
+            # 机载缓存路径不能作为甲方可下载文件上报；地面文件目录由媒体 API 提供。
+            message.video_directory = message.image_directory = ""
+            message.current_video_path = message.last_video_path = message.last_image_path = ""
+            message.last_error = message.last_error or self._media.error
         self._status_publisher.publish(message)
 
     def close(self) -> None:
@@ -307,6 +354,8 @@ class OnboardVideoNode(Node):
         self._control_worker.join(timeout=12.0)
         self._capture_worker.join(timeout=8.0)
         self._controller.close()
+        if self._media:
+            self._media.close()
 
 
 def main() -> int:

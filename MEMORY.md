@@ -92,6 +92,12 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 | mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
 | 开发机 | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`，SITL始终显式使用仿真档案；实机档案不影响仿真。配置重启生效已实际验证；原有TODO、RViz及文档现场改动保留 |
 
+- **集中媒体服务（Task8）**：飞机仅保留回环RTSP，按逐机`video/camera.conf`主动推流和rsync/SSH上传到mini-ground；外部使用地面`<aircraft>/rectified`、HTTP8090与只读FTP2121。原片/暂存私有，去畸变成品才公开。地面独立`ground-media.service`拥有处理、封装、图片入库、容量清理与原片重建；GUI关闭不影响后台。
+  机载SQLite队列从大小/SHA-256核验入库ACK开始计算默认24小时保留期；未确认原片不清理。总容量默认100GiB，跳过活动文件，超限明确告警。归属为飞机/session/source_id/mission_sequence，photo_no与waypoint_index分开。08飞行完成与媒体就绪分开，09只提供地面已处理图片或明确失败。
+  开发机、refresh、new、hp-desktop、mini-ground已同步媒体代码及现有Intel/NVIDIA/AMD/CPU中继；不覆盖逐机标定、本机选择与依赖环境。开发机/hp/mini已安装并启用地面后台，飞机接收目标为mini；两机旧FTP及`/home/share`已清理，上传专用SSH别名为`media-ground`。飞机视频/飞控服务最终保持停止。
+  mini已安装Intel OpenCL ICD，保留自动选择用户级Intel运行时的兼容路线。真实refresh台架完成图片/原片上传、去畸变流及录像、3并发读者、FTP下载和原片重建；new无摄像头，仅验证真实传输失败重试/恢复/ACK后清理。冷启动首帧约晚5.9秒，实时实验版明确标记不完整，飞行前建议手动开相机等待地面录像；不宣称逐帧完整或实飞验收。
+  配置和维护入口见[视频说明](video_service/README.md)，部署/验收边界见[Task8报告](agent/report/report-2026-10-22-task8-video-refactor.md)。
+
 - **Odin Wi-Fi断网停流已根修复（全部现役设备，`3a09be8`）**：静态SDK全局`MD5`曾覆盖Fast DDS同名类，造成DDS混用实现、同机通信依赖Wi-Fi；USB采集本身持续正常。
   `drivers/odin/src/odin_ros_driver/CMakeLists.txt`在ARM链接设置之后对`host_sdk_sample`追加SDK归档符号隐藏，ARM/AMD自动选库；不改QoS、发现范围或设备配置。开发机、new、refresh、hp-desktop及mini-ground均已原生构建安装，逐机验证SDK MD5导出为0、7条实际DDS MD5绑定全部回到DDS自身。
   new正式systemd入口、无USB网络条件下，断开Wi-Fi约60秒和关闭无线电约40秒的Odin→extnav→MAVROS全链持续，PID/session不变且armed=false；地面恢复订阅收到数据。Wi-Fi/USB网络已恢复，逐机YAML与环境哈希保留；当前服务状态见上表。
@@ -162,7 +168,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
   08/09 使用视频服务实际结果，占位路径不代表已生成媒体。协议详见 [对接说明](docs/上位机-WebSocket%20对接.md)。
 - 视频使用单次 V4L2 采集，FFmpeg 同时推流和录像，截图从 RTSP 获取；RTSP 固定 TCP。
   MediaMTX 使用系统 `/usr/local/bin/mediamtx`，当前部署 v1.20.0，仓库不带二进制。
-  直播尚未启用去畸变；重复序列号摄像头使用 by-path 区分，不能依赖 `/dev/videoN`。
+  地面统一去畸变后对外提供直播与下载；重复序列号摄像头使用 by-path 区分，不能依赖 `/dev/videoN`。
   RTP/JPEG 的 MJPEG 宽高上限为 2040；HP 的 DRI 兼容只转码 RTSP 分支，录像保持原码流。
   MJPEG兼容分支存在显著CPU转码成本，Python控制层重写无助于消除此项；目标飞机是否触发仍待实查，不能按仓库默认H.264推断现场。
 

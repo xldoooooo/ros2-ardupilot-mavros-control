@@ -1,0 +1,20 @@
+# Independent ground storage/processing; closing the GUI never stops media work.
+[Unit]
+Description=ArduPilot ground media, processed RTSP and FTP
+After=network.target
+
+[Service]
+Type=simple
+User=MEDIA_USER
+Group=MEDIA_USER
+SupplementaryGroups=video render
+WorkingDirectory=MEDIA_WORKSPACE
+Environment=HOME=MEDIA_HOME
+ExecStart=MEDIA_WORKSPACE/.venv/bin/python MEDIA_WORKSPACE/video_service/ground_media.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

@@ -62,6 +62,7 @@ class CameraController:
         initial_config: CameraConfig | None = None,
         persist_config: bool = True,
         strict_mode_probe: bool = True,
+        local_only: bool = False,
     ) -> None:
         """加载持久配置并启动只在收到信号时工作的截图线程。"""
         self.paths = paths or RuntimePaths.discover()
@@ -74,6 +75,7 @@ class CameraController:
         self.lens_config_path = Path(lens_config_path) if lens_config_path else None
         self._persist_config = bool(persist_config)
         self._strict_mode_probe = bool(strict_mode_probe)
+        self._local_only = local_only
 
         self._state_lock = threading.RLock()
         self._operation_lock = threading.Lock()
@@ -718,7 +720,7 @@ class CameraController:
             "playback: false\n"
             "rtsp: true\n"
             "rtspTransports: [tcp]\n"
-            f"rtspAddress: \"0.0.0.0:{config.rtsp_port}\"\n"
+            f"rtspAddress: \"{'127.0.0.1' if self._local_only else '0.0.0.0'}:{config.rtsp_port}\"\n"
             "rtmp: false\n"
             "hls: false\n"
             "webrtc: false\n"
