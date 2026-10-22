@@ -24,6 +24,45 @@ test -x .venv/bin/python || python3 -m venv --system-site-packages .venv
 CPU 后端无需显卡驱动。RTSP 发布另需按视频 README 安装并配置 MediaMTX，
 文件输出自检则不需要启动 MediaMTX。
 
+## 本机 GPU 参数配置
+
+媒体后台读取 `config/ground/media.json`（可通过 `GROUND_MEDIA_CONFIG` 指定其他文件）。
+在现有配置中添加可选 `gpu` 对象即可，完整示例见
+[`media.example.conf`](../../config/ground/media.example.conf)。
+
+```json
+"gpu": {
+  "intel": {"device": "/dev/dri/renderD128", "opencl_runtime": ""},
+  "nvidia": {"cuda_device": 0, "opencl_device": ",device_type=gpu,platform_vendor=NVIDIA"},
+  "amd": {"device": "/dev/dri/renderD128"}
+}
+```
+
+以上是 JSON 对象中的字段片段，合并时保留其余配置及正确的逗号。
+
+| 字段 | 用途与默认值 |
+| --- | --- |
+| `gpu.intel.device` | Intel VAAPI render 设备，默认 `/dev/dri/renderD128` |
+| `gpu.intel.opencl_runtime` | 用户级 Intel OpenCL 目录，支持 `~`；空值沿用自动发现目录，系统环境仍优先 |
+| `gpu.nvidia.cuda_device` | NVDEC/NVENC 使用的 CUDA 设备编号，默认 `0` |
+| `gpu.nvidia.opencl_device` | OpenCL 设备选择表达式，默认选择 NVIDIA GPU；多卡可用 `0.1` 等平台/设备编号，并与 CUDA 选择对应 |
+| `gpu.amd.device` | AMD VAAPI/Vulkan render 设备，默认 `/dev/dri/renderD128` |
+
+顶层 `backend` 仍默认为 `auto`，按 Intel → NVIDIA → AMD → CPU 实际探测；各类别设备互不覆盖。
+没有 `gpu` 的旧配置直接兼容；字段省略、null 或空字符串均使用原有默认值。
+可选参数类型错误会记录警告并忽略该字段；驱动/设备无法使用仍由中继实际探测并回退。
+不会增加显卡型号白名单或要求安装新的依赖。
+
+修改后在没有活动录像时重启 `ground-media.service`，使后台重新读取配置。
+安装脚本仅为新机器复制示例，保留已有 `media.json`；升级无需迁移。
+实时中继和原片重建均使用当前后台加载的 GPU 参数；历史录像仍保留原有标定、码率等处理设置，
+硬件设备路径不会写入会话快照。
+
+独立运行 `ground_relay.py` 时使用命令行参数，不自动读取媒体后台配置：
+`--intel-device` / `--amd-device` 分别覆盖对应后端的通用 `--device`；
+`--intel-opencl-runtime`、`--cuda-device`、`--opencl-device` 保持原有用法。
+仅指定旧的 `--device` 时仍同时用于 Intel/AMD，未改动默认处理链路。
+
 ## Intel 核显
 
 新机器优先安装系统包：

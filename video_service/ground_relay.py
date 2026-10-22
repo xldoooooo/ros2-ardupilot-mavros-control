@@ -40,7 +40,8 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
     source, destination = input_url or args.input, output_url or args.output
     command = [args.ffmpeg, '-hide_banner', '-nostdin', '-loglevel', 'warning']
     if backend == 'intel':
-        command += ['-init_hw_device', f'vaapi=va:{args.device}', '-init_hw_device', 'opencl=ocl@va',
+        device = getattr(args, 'intel_device', None) or args.device
+        command += ['-init_hw_device', f'vaapi=va:{device}', '-init_hw_device', 'opencl=ocl@va',
                     '-filter_hw_device', 'ocl', '-hwaccel', 'vaapi', '-hwaccel_device', 'va',
                     '-hwaccel_output_format', 'vaapi']
         filters = ('hwmap=derive_device=opencl:mode=read+direct,'
@@ -48,7 +49,8 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
                    'hwmap=derive_device=vaapi:reverse=1:mode=write+direct,format=vaapi')
         encoder = ['-c:v', 'h264_vaapi']
     elif backend == 'amd':
-        command += ['-init_hw_device', f'vaapi=va:{args.device}', '-init_hw_device', 'vulkan=vk@va',
+        device = getattr(args, 'amd_device', None) or args.device
+        command += ['-init_hw_device', f'vaapi=va:{device}', '-init_hw_device', 'vulkan=vk@va',
                     '-filter_hw_device', 'vk', '-hwaccel', 'vaapi', '-hwaccel_device', 'va',
                     '-hwaccel_output_format', 'vaapi']
         # AMD encoder surfaces are not Vulkan-renderable; transfer a Vulkan-owned output through RAM.
@@ -294,6 +296,8 @@ def main():
     parser.add_argument('--backend', choices=('auto', *GPU_BACKENDS, 'cpu'), default='auto')
     parser.add_argument('--intrinsics', type=Path, default=DEFAULT_INTRINSICS)
     parser.add_argument('--device', default='/dev/dri/renderD128')
+    parser.add_argument('--intel-device', help='Intel render device; overrides --device for Intel only')
+    parser.add_argument('--amd-device', help='AMD render device; overrides --device for AMD only')
     parser.add_argument('--intel-opencl-runtime', type=Path, default=DEFAULT_INTEL_RUNTIME,
                         help='Extracted Intel runtime used if the normal environment fails')
     parser.add_argument('--cuda-device', type=int, default=0)

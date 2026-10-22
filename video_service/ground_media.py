@@ -23,6 +23,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 from video_service.media_store import MediaStore, atomic_json, safe_component
 from video_service.camera_app.relay_status import status_path
+from video_service.relay_config import gpu_arguments
 
 
 def load_settings(path=None):
@@ -123,14 +124,15 @@ class GroundMedia:
         return process
 
     def relay_command(self, source, target, progress, intrinsics=None, options=None):
-        """Use the existing Intel/NVIDIA/CPU implementation for live and rebuilt media."""
+        """Use current host GPU devices for both live processing and historical rebuilds."""
         options = options or self.config
         return [sys.executable, str(PROJECT / 'video_service/ground_relay.py'),
                 '--input', source, '--output', str(target), '--backend', options.get('backend', 'auto'),
                 '--intrinsics', str(intrinsics or options['intrinsics']),
                 '--bitrate', str(options.get('bitrate', '8M')), '--gop', str(options.get('gop', 60)),
                 '--chroma-location', options.get('chroma_location', 'left'),
-                '--cpu-threads', str(options.get('cpu_threads', 4)), '--progress', str(progress)]
+                '--cpu-threads', str(options.get('cpu_threads', 4)), '--progress', str(progress),
+                *gpu_arguments(self.config)]
 
     def session(self, payload):
         """Merge idempotent aircraft notices without restarting a closed session."""

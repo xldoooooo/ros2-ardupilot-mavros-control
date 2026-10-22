@@ -22,6 +22,9 @@ MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任
 ```
 
 配置示例为`config/ground/media.example.conf`，安装时生成并保留本机`config/ground/media.json`。
+其中 `gpu.intel`、`gpu.nvidia`、`gpu.amd` 可分别设置本机设备，Intel 可另设 OpenCL 运行时目录；
+所有字段均可省略，沿用当前默认探测和 CPU 回退。参数及生效方式见
+[GPU 配置说明](deploy/GROUND_VIDEO_DEPLOYMENT.md#本机-gpu-参数配置)。
 可用`GROUND_MEDIA_CONFIG`指定另一份文件。修改后重启`ground-media.service`。
 `root`指定存储根，`public_host`指定客户端可达地址，`max_bytes`为总媒体容量上限；
 统计internal/public/inbox/staging，包含活动文件，不含索引和日志。超限按最旧记录清理，
@@ -99,7 +102,7 @@ CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
 所有路线保留相对输入时间戳，源视频有时间缺口时不会自动补成完整录像。
 
 常用配置：`--backend`、`--intrinsics`、`--bitrate`（默认8M）、`--gop`（默认60）、
-`--cpu-threads`（默认4）。Intel/AMD设备用 `--device`；NVIDIA用 `--cuda-device`，
+`--cpu-threads`（默认4）。Intel/AMD设备用 `--device`，也可分别用 `--intel-device` / `--amd-device` 覆盖；NVIDIA用 `--cuda-device`，
 OpenCL设备默认选 NVIDIA GPU，多个设备时可用 `--opencl-device 0.0` 指定对应平台/设备。
 `--duration`、`--frames` 用于有限测试，`--progress` 可输出处理进度；`--ffmpeg` / `--ffprobe`
 用于选择工具版本。输出也可直接指定 `.mp4` / `.mkv` 文件；已有文件不会被覆盖。
@@ -120,6 +123,7 @@ CPU 也失败时明确报错退出，不反复重试掩盖输入、网络或磁�
 维护入口：`ground_relay.py` 管理选择、探测与进程；`relay_calibration.py` 共享镜头几何，
 `relay_cpu.py` 实现保留时间戳的软件处理，`shaders/undistort_nv12.cl` 同时支持 NV12 与 YUV420P。
 AMD 着色器为 `shaders/undistort.hook`；面板提示逻辑在 `camera_app/relay_status.py`。
+`relay_config.py` 将媒体配置中的可选 GPU 参数传给中继；设备设置使用当前主机配置，不随历史录像固定。
 
 ## 地面面板
 
