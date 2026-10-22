@@ -6,6 +6,28 @@
 从本机 RTSP 读取，不会第二次占用设备。它是独立进程，摄像头、FFmpeg、
 MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任务。
 
+## 地面 GPU 中继
+
+`ground_relay.py` 提供独立的 Intel GPU 处理入口：VAAPI 解码、OpenCL 去畸变、VAAPI H.264
+编码，再向已有 MediaMTX 发布一条流。客户端共用该流，不为每个观看者重新处理。
+图像保持 NV12 硬件表面，避免逐帧 Python 管道、BGR 转换和 CPU/GPU 往返。
+本入口尚未接入 GUI 或自启服务，不改变原有机载采集与录像。
+
+适用 Ubuntu 24.04 上带 Intel VAAPI/OpenCL 共享支持的 FFmpeg；需安装 `intel-opencl-icd`，
+并有 `/dev/dri/renderD128` 访问权限。输入为硬件可解码的8位视频，分辨率须与标定文件一致。
+默认使用 `config/video/Wasintek/intrinsics.yaml` 的完整五参数模型、1920×1080 输出与 alpha=0。
+
+```bash
+./.venv/bin/python video_service/ground_relay.py \
+  --input rtsp://127.0.0.1:8554/camera-raw \
+  --output rtsp://127.0.0.1:8554/camera-rectified
+```
+
+上述原始流和允许本地发布的 MediaMTX 须提前就绪。默认输出8 Mbit/s、GOP60，不改变输入帧率；
+`--bitrate`、`--gop`、`--device`、`--intrinsics` 可覆盖默认值。默认 H.264 色度位置为 `left`，
+中心采样输入使用 `--chroma-location center`。核函数在 `shaders/undistort_nv12.cl`；它分别处理
+亮度和UV坐标，并避开硬件表面的可见图像之外填充行。硬件映射不支持时明确报错，不静默改为CPU处理。
+
 ## 地面面板
 
 从项目根目录独立打开：
