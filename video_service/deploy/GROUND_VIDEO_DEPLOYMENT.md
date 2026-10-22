@@ -1,7 +1,7 @@
 <!-- Ground relay dependencies, GPU driver requirements and deployment verification. -->
 # 地面视频处理部署（Ubuntu 24.04 / amd64）
 
-本文对应 `video_service/ground_relay.py` 的 Intel、NVIDIA、CPU 后端。
+本文对应 `video_service/ground_relay.py` 的 Intel、NVIDIA、AMD、CPU 后端。
 操作在项目根目录执行；使用说明与参数见[视频 README](../README.md#地面去畸变中继)。
 机载 Jetson 的部署使用[机载视频说明](../README.md#新飞机快速部署ubuntu-2404--jazzy--arm64)，
 不能把桌面 NVIDIA 后端的验证直接等同于 Jetson 兼容性。
@@ -101,6 +101,28 @@ ffmpeg -hide_banner -filters 2>/dev/null | grep program_opencl
 最终以实际视频处理成功为准。多显卡机器可配置 `--cuda-device` 和 `--opencl-device`，
 分别选择匹配的 CUDA GPU 与 OpenCL 平台/设备。
 
+## AMD 核显
+
+使用 Mesa VAAPI 解码/编码和 Vulkan/libplacebo 去畸变；无需 ROCm、AMD 专有驱动或 OpenCL。
+Ubuntu 24.04 上需要可用的 `amdgpu` 内核驱动与以下系统包：
+
+```bash
+sudo apt install -y mesa-va-drivers mesa-vulkan-drivers ffmpeg
+ls -l /dev/dri/renderD*
+ffmpeg -hide_banner -filters 2>/dev/null | grep libplacebo
+ffmpeg -hide_banner -encoders 2>/dev/null | grep h264_vaapi
+```
+
+启动用户需有 render 设备读写权限，多显卡使用 `--device /dev/dri/renderDxxx` 选择 AMD 设备。
+FFmpeg 必须支持从 VAAPI 派生 Vulkan 设备、硬件帧映射及 `libplacebo` 的 `custom_shader_path`。
+GPU 本身需支持输入格式的 VAAPI 解码和 H.264 编码；不同代际/发行版仍须实际处理验收。
+
+已验证 laptop / hp-desktop 的 Ryzen 7 8845HS / Radeon 780M，Mesa 25.2.8、FFmpeg 6.1.1、
+libplacebo 6.338。该机器复用现有组件，未安装新驱动。
+当前输出通过主存搬运后交给 VAAPI 编码，避免直接把不可渲染的 AMD 编码表面作为 Vulkan 输出。
+这不是零拷贝路线；不为旧驱动强行增加专用后端，不兼容时沿用 CPU 回退及面板提醒。
+着色器位于 `video_service/shaders/undistort.hook`，与其他后端共用同一份镜头标定。
+
 ## 实际处理验收与回退
 
 使用与所选标定尺寸一致的8位 H.264 视频测试；下面默认 Wasintek 1920×1080 标定：
@@ -114,9 +136,10 @@ video_check_dir="$(mktemp -d)"
 ffmpeg -v error -xerror -i "${video_check_dir}/corrected.mp4" -f null -
 ```
 
-可指定 `--backend intel` 或 `--backend nvidia` 检查目标 GPU。
+默认自动选择顺序为 Intel → NVIDIA → AMD → CPU。
+可指定 `--backend intel`、`--backend nvidia` 或 `--backend amd` 检查目标 GPU。
 **指定 GPU 时依然允许 CPU 回退，因此退出码为0不等于GPU验收通过：须确认日志明确显示
-“使用 Intel”或“使用 NVIDIA”。** 用户级Intel运行时被选中时还会显示“已自动加载”。
+“使用 Intel”、“使用 NVIDIA”或“使用 AMD”。** 用户级Intel运行时被选中时还会显示“已自动加载”。
 
 无法使用GPU时，日志及本机摄像头面板会提示CPU兼容模式；CPU缺少PyAV时会明确给出安装指引。
 运行中切换后端会中断流，失败录像保留为 `*.gpu-failed-*`；CPU可能低于源帧率并增加延迟。

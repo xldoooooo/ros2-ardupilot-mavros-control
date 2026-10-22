@@ -12,13 +12,14 @@ MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任
 [地面视频部署说明](deploy/GROUND_VIDEO_DEPLOYMENT.md)。
 
 `ground_relay.py` 独立处理一条视频，再向已有 MediaMTX 发布；客户端共用处理结果。
-默认 `--backend auto` 按 Intel、NVIDIA、CPU 顺序选择，先使用本地短样本实际探测硬件链路。
-指定 `--backend intel|nvidia` 时，该 GPU 不可用也会回退 CPU；`--backend cpu` 可直接使用软件路线。
+默认 `--backend auto` 按 Intel、NVIDIA、AMD、CPU 顺序选择，先使用本地短样本实际探测硬件链路。
+指定 `--backend intel|nvidia|amd` 时，该 GPU 不可用也会回退 CPU；`--backend cpu` 可直接使用软件路线。
 
 | 后端 | 处理路线 | 依赖与限制 |
 | --- | --- | --- |
 | Intel | VAAPI 解码 → OpenCL 去畸变 → VAAPI 编码 | Intel OpenCL ICD、VAAPI 驱动与共享表面支持；保留原有低拷贝路线 |
 | NVIDIA | NVDEC 解码 → OpenCL 去畸变 → NVENC 编码 | NVIDIA 驱动提供 CUDA、OpenCL、NVENC；FFmpeg 支持对应接口；含 GPU/主存搬运，不是零拷贝 CUDA 滤镜 |
+| AMD | VAAPI 解码 → Vulkan/libplacebo 去畸变 → VAAPI 编码 | Mesa VAAPI/Vulkan、FFmpeg libplacebo；含主存搬运，无需 ROCm/OpenCL；已验证 laptop Radeon 780M |
 | CPU | 软件解码 → OpenCV 去畸变 → libx264 编码 | 项目 Python 的 PyAV、OpenCV、NumPy、PyYAML；无需 GPU 驱动 |
 
 ```bash
@@ -35,10 +36,12 @@ Ubuntu 24.04 的 Intel 后端需 `intel-opencl-icd` 和可访问的 `/dev/dri/re
 `~/.local/share/ros2-ardupilot-video/intel-opencl`（设置了 `XDG_DATA_HOME` 时跟随该目录）。
 这里存放已解包的 Intel OpenCL 及依赖，保留 `usr/lib/<架构>/intel-opencl/libigdrcl.so` 布局；
 也可用 `--intel-opencl-runtime <目录>` 指定。程序自动为 Intel 子进程设置库路径和 ICD，
-无需手工 export，不改变 NVIDIA/CPU 的环境。mini-ground 已在此固定目录部署并验证自动加载。
+无需手工 export，不改变 NVIDIA/AMD/CPU 的环境。mini-ground 已在此固定目录部署并验证自动加载。
 新机器可优先通过系统包安装 `intel-opencl-icd`；自动发现不会自行下载或安装驱动。
 NVIDIA 后端需支持 NVDEC 与 H.264 NVENC 的显卡、匹配 FFmpeg 的 NVIDIA 驱动及其 OpenCL ICD；
 不限定 RTX 3080，驱动最低版本取决于 FFmpeg 使用的编解码 API。无需另装 CUDA Toolkit、CuPy。
+AMD 后端需 `mesa-va-drivers`、`mesa-vulkan-drivers` 和支持 `libplacebo` 的 FFmpeg；
+laptop 已用现有驱动验证，无需安装 ROCm，其他机器以实际探测结果为准。
 CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
 `python3-opencv python3-numpy python3-yaml`，项目 `.venv` 需能访问系统包。
 媒体工具 `ffmpeg`、`ffprobe` 和已配置允许发布的 MediaMTX 须提前就绪。
@@ -49,7 +52,7 @@ CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
 所有路线保留相对输入时间戳，源视频有时间缺口时不会自动补成完整录像。
 
 常用配置：`--backend`、`--intrinsics`、`--bitrate`（默认8M）、`--gop`（默认60）、
-`--cpu-threads`（默认4）。Intel设备用 `--device`；NVIDIA用 `--cuda-device`，
+`--cpu-threads`（默认4）。Intel/AMD设备用 `--device`；NVIDIA用 `--cuda-device`，
 OpenCL设备默认选 NVIDIA GPU，多个设备时可用 `--opencl-device 0.0` 指定对应平台/设备。
 `--duration`、`--frames` 用于有限测试，`--progress` 可输出处理进度；`--ffmpeg` / `--ffprobe`
 用于选择工具版本。输出也可直接指定 `.mp4` / `.mkv` 文件；已有文件不会被覆盖。
@@ -69,7 +72,7 @@ CPU 也失败时明确报错退出，不反复重试掩盖输入、网络或磁�
 
 维护入口：`ground_relay.py` 管理选择、探测与进程；`relay_calibration.py` 共享镜头几何，
 `relay_cpu.py` 实现保留时间戳的软件处理，`shaders/undistort_nv12.cl` 同时支持 NV12 与 YUV420P。
-面板提示逻辑在 `camera_app/relay_status.py`。
+AMD 着色器为 `shaders/undistort.hook`；面板提示逻辑在 `camera_app/relay_status.py`。
 
 ## 地面面板
 

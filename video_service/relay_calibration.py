@@ -1,4 +1,4 @@
-"""Shared five-coefficient lens geometry for CPU and OpenCL relay backends."""
+"""Shared five-coefficient lens geometry for CPU, OpenCL and Vulkan relay backends."""
 
 from pathlib import Path
 
@@ -31,8 +31,8 @@ class Calibration:
             raise ValueError('Calibration produced an invalid output projection')
         self.chroma_x = 0.0 if chroma_location == 'left' else 0.5
 
-    def shader(self) -> str:
-        """Specialize the shared planar/NV12 OpenCL kernel with this calibration."""
+    def shader(self, *, vulkan: bool = False) -> str:
+        """Specialize the OpenCL kernel or libplacebo Vulkan hook with this calibration."""
         matrix, target = self.matrix, self.target
         k1, k2, p1, p2, k3 = self.distortion
         values = dict(fx=matrix[0, 0], fy=matrix[1, 1], cx=matrix[0, 2], cy=matrix[1, 2],
@@ -40,7 +40,8 @@ class Calibration:
                       k1=k1, k2=k2, p1=p1, p2=p2, k3=k3, image_width=self.width,
                       image_height=self.height, chroma_x=self.chroma_x)
         definitions = '\n'.join(f'#define {key.upper()} {value:.12f}f' for key, value in values.items())
-        path = Path(__file__).resolve().parent / 'shaders/undistort_nv12.cl'
+        filename = 'undistort.hook' if vulkan else 'undistort_nv12.cl'
+        path = Path(__file__).resolve().parent / 'shaders' / filename
         return path.read_text().replace('// CALIBRATION_CONSTANTS', definitions)
 
     def maps(self, chroma: bool = False):

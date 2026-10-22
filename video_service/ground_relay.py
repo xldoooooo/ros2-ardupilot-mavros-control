@@ -16,8 +16,8 @@ import time
 from camera_app.relay_status import status_path, write_status
 from relay_calibration import Calibration, DEFAULT_INTRINSICS
 
-# GPU candidates retain the Intel fast path and add NVIDIA OpenCL/NVDEC/NVENC compatibility.
-GPU_BACKENDS = ('intel', 'nvidia')
+# Retain the Intel fast path, then probe NVIDIA and AMD before software fallback.
+GPU_BACKENDS = ('intel', 'nvidia', 'amd')
 # Finite probes never touch the user's output; slow driver initialization gets a generous timeout.
 PROBE_TIMEOUT = 40
 # A stable per-user installation keeps optional Intel drivers out of experiment directories.
@@ -46,6 +46,17 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
         filters = ('hwmap=derive_device=opencl:mode=read+direct,'
                    f'program_opencl=source={shader_path}:kernel=rectify,'
                    'hwmap=derive_device=vaapi:reverse=1:mode=write+direct,format=vaapi')
+        encoder = ['-c:v', 'h264_vaapi']
+    elif backend == 'amd':
+        command += ['-init_hw_device', f'vaapi=va:{args.device}', '-init_hw_device', 'vulkan=vk@va',
+                    '-filter_hw_device', 'vk', '-hwaccel', 'vaapi', '-hwaccel_device', 'va',
+                    '-hwaccel_output_format', 'vaapi']
+        # AMD encoder surfaces are not Vulkan-renderable; transfer a Vulkan-owned output through RAM.
+        filters = ('hwmap=derive_device=vulkan,'
+                   f'libplacebo=custom_shader_path={shader_path}:format=yuv420p,'
+                   'hwdownload,format=yuv420p,'
+                   f'scale=in_range={args.color_range}:out_range={args.color_range},format=nv12,'
+                   'hwupload=derive_device=vaapi')
         encoder = ['-c:v', 'h264_vaapi']
     else:
         command += ['-init_hw_device', f'opencl=ocl:{args.opencl_device}', '-filter_hw_device', 'ocl',
@@ -165,6 +176,9 @@ def supervise(args, calibration, state):
         # Generated paths contain no filtergraph metacharacters, unlike arbitrary calibration paths.
         shader = root / 'rectify.cl'
         shader.write_text(calibration.shader())
+        vulkan_shader = root / 'rectify.hook'
+        vulkan_shader.write_text(calibration.shader(vulkan=True))
+        shaders = {candidate: vulkan_shader if candidate == 'amd' else shader for candidate in GPU_BACKENDS}
         if args.progress is None:
             args.progress = root / 'progress.txt'
         backend, failures, worker_environment = 'cpu', [], None
@@ -181,7 +195,7 @@ def supervise(args, calibration, state):
                 for candidate in candidates:
                     if stopping:
                         break
-                    command = build_command(args, candidate, shader, str(fixture), probe=True)
+                    command = build_command(args, candidate, shaders[candidate], str(fixture), probe=True)
                     reason = run_probe(command)
                     candidate_environment = None
                     if reason and candidate == 'intel':
@@ -201,12 +215,14 @@ def supervise(args, calibration, state):
             logging.warning('%s\n%s', warning, '\n'.join(failures))
         elif backend == 'nvidia':
             logging.info('使用 NVIDIA：NVDEC → OpenCL 去畸变 → NVENC（含主存搬运）')
+        elif backend == 'amd':
+            logging.info('使用 AMD：VAAPI → Vulkan/libplacebo 去畸变 → VAAPI（含主存搬运）')
         else:
             logging.info('使用 Intel：VAAPI → OpenCL → VAAPI 共享表面')
         while not stopping:
             report('starting', backend, warning, '\n'.join(failures))
             args.progress.unlink(missing_ok=True)
-            command = cpu_command(args) if backend == 'cpu' else build_command(args, backend, shader)
+            command = cpu_command(args) if backend == 'cpu' else build_command(args, backend, shaders[backend])
             error_log = root / 'worker.log'
             with error_log.open('w') as errors:
                 process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors,
@@ -275,7 +291,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', required=True)
     parser.add_argument('--output', required=True)
-    parser.add_argument('--backend', choices=('auto', 'intel', 'nvidia', 'cpu'), default='auto')
+    parser.add_argument('--backend', choices=('auto', *GPU_BACKENDS, 'cpu'), default='auto')
     parser.add_argument('--intrinsics', type=Path, default=DEFAULT_INTRINSICS)
     parser.add_argument('--device', default='/dev/dri/renderD128')
     parser.add_argument('--intel-opencl-runtime', type=Path, default=DEFAULT_INTEL_RUNTIME,

@@ -1,0 +1,25 @@
+// Rectify native Y/UV planes with libplacebo before chroma upsampling and color conversion.
+//!HOOK LUMA
+//!HOOK CHROMA
+//!BIND HOOKED
+//!DESC Calibrated lens rectification
+// Camera parameters and chroma siting are specialized once at startup.
+// CALIBRATION_CONSTANTS
+
+// Map destination texel centers through the full five-coefficient Brown camera model.
+vec4 hook() {
+    bool chroma = HOOKED_size.x < IMAGE_WIDTH;
+    float scale = chroma ? 2.0 : 1.0;
+    vec2 offset = chroma ? vec2(CHROMA_X, 0.5) : vec2(0.0);
+    vec2 pixel = HOOKED_pos * HOOKED_size - vec2(0.5);
+    vec2 point = pixel * scale + offset;
+    float x = (point.x - NCX) / NFX;
+    float y = (point.y - NCY) / NFY;
+    float radius = x*x + y*y;
+    float radial = 1.0 + radius*(K1 + radius*(K2 + radius*K3));
+    vec2 mapped = vec2(FX*(x*radial + 2.0*P1*x*y + P2*(radius + 2.0*x*x)) + CX,
+                       FY*(y*radial + P1*(radius + 2.0*y*y) + 2.0*P2*x*y) + CY);
+    // Clamp to visible pixels, excluding any hardware decoder surface padding.
+    mapped = clamp((mapped-offset)/scale, vec2(0.0), vec2(IMAGE_WIDTH, IMAGE_HEIGHT)/scale-vec2(1.0));
+    return HOOKED_tex((mapped+vec2(0.5))/HOOKED_size);
+}
