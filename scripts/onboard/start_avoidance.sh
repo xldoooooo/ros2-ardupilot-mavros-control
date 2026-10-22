@@ -2,10 +2,10 @@
 # Start only the independent avoidance components; no hardware/control process is restarted.
 set -Eeuo pipefail
 project_root="${ONBOARD_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-planner_root="${AVOIDANCE_WORKSPACE:-${project_root%/*}/dyn_small_obs_avoidance-ros2}"
 source "${project_root}/scripts/lib/runtime_common.bash"
 source "${project_root}/scripts/lib/project_config.bash"
 project_config_load "${project_root}"
+planner_root="${AVOIDANCE_WORKSPACE:-${project_root%/*}/dyn_small_obs_avoidance-ros2}"
 ros_setup="$(runtime_detect_ros_setup "${ONBOARD_ROS_DISTRO:-}")"
 runtime_source_setup "${ros_setup}"
 for path in "${planner_root}/install/setup.bash" "${project_root}/install/setup.bash"; do

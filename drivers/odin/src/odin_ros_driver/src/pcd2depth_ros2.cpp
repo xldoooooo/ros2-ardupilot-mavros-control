@@ -148,7 +148,7 @@ int main(int argc, char **argv)
     RCLCPP_INFO(node->get_logger(), "Package path: %s", package_path.c_str());
     
     const std::string config_file = node->declare_parameter<std::string>(
-        "config_file", package_path + "/config/odom.yaml");
+        "config_file", odin_ros_driver::GetProjectConfigDir(package_path) + "/odin/odom.yaml");
     RCLCPP_INFO(node->get_logger(), "Loading config from: %s", config_file.c_str());
 
     YAML::Node config = YAML::LoadFile(config_file);

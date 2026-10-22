@@ -15,6 +15,11 @@ limitations under the License.
 #define ODIN_CALIB_PATH_H
 
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 
 // Single source of truth for the calibration file location, shared by the
@@ -22,20 +27,50 @@ limitations under the License.
 // Header-only inline functions avoid multiple-definition across translation units.
 namespace odin_ros_driver {
 
+// Resolve the same local selector used by shell and Python entry points.
+inline std::string GetProjectConfigDir(const std::string& start) {
+    auto root = std::filesystem::path(start);
+    while (!std::filesystem::exists(root / "project_configuration.py")) {
+        const auto parent = root.parent_path();
+        if (parent.empty() || parent == root) {
+            throw std::runtime_error("Project configuration root not found from " + start);
+        }
+        root = parent;
+    }
+    std::string aircraft = "simulation";
+    std::ifstream selector(root / "config/aircraft.local.env");
+    std::string line;
+    while (std::getline(selector, line)) {
+        line = line.substr(0, line.find('#'));
+        const auto separator = line.find('=');
+        if (separator == std::string::npos) continue;
+        auto key = line.substr(0, separator);
+        key.erase(std::remove_if(key.begin(), key.end(), [](unsigned char c) {
+            return std::isspace(c);
+        }), key.end());
+        if (key != "AIRCRAFT_ID") continue;
+        aircraft = line.substr(separator + 1);
+        aircraft.erase(std::remove_if(aircraft.begin(), aircraft.end(), [](unsigned char c) {
+            return std::isspace(c) || c == '\'' || c == '"';
+        }), aircraft.end());
+    }
+    const auto config = root / "config/aircraft" / aircraft;
+    if (aircraft.empty() || aircraft.find_first_not_of(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos ||
+            !std::filesystem::is_directory(config)) {
+        throw std::runtime_error("Invalid aircraft configuration: " + config.string());
+    }
+    return config.string();
+}
+
 // Resolve the writable runtime directory that stores calib.yaml.
-// Priority: ODIN_CALIB_DIR -> ROS_HOME -> ~/.ros -> /tmp.
-// Works for both ROS1 and ROS2 (~/.ros is the shared default ROS_HOME).
+// Project launchers export ODIN_CALIB_DIR; direct binaries use the same selector.
 inline std::string GetOdinRuntimeDir() {
     if (const char* custom = std::getenv("ODIN_CALIB_DIR")) {
         return std::string(custom);
     }
-    if (const char* ros_home = std::getenv("ROS_HOME")) {
-        return std::string(ros_home) + "/odin_ros_driver";
-    }
-    if (const char* home = std::getenv("HOME")) {
-        return std::string(home) + "/.ros/odin_ros_driver";
-    }
-    return "/tmp/odin_ros_driver";
+    return GetProjectConfigDir(std::filesystem::read_symlink("/proc/self/exe").string()) +
+        "/odin/calibration";
 }
 
 // Canonical calib.yaml path shared by writer and all readers.

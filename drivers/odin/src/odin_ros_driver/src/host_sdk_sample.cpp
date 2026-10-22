@@ -1584,8 +1584,7 @@ static void lidar_device_callback(const lidar_device_info_t* device, bool attach
             }
         }
         
-        // Primary calib storage: writable runtime dir (~/.ros/odin_ros_driver by default),
-        // independent of the source/install tree so it works for both ROS1 and ROS2.
+        // Store and read device calibration in the selected aircraft source profile.
         std::string calib_runtime_dir = odin_ros_driver::GetOdinRuntimeDir();
         std::error_code ec_mkdir;
         std::filesystem::create_directories(calib_runtime_dir, ec_mkdir);
@@ -2323,8 +2322,7 @@ int main(int argc, char *argv[])
     #else
     	std::string package_path = get_package_share_path("odin_ros_driver");
     #endif
-        std::string config_dir = package_path + "/config";
-        std::string config_file = config_dir + "/odom.yaml";
+        std::string config_file = odin_ros_driver::GetProjectConfigDir(package_path) + "/odin/odom.yaml";
         #ifdef ROS2
         config_file = node->declare_parameter<std::string>("config_file", config_file);
         RCLCPP_INFO(node->get_logger(), "Odin config_file: %s", config_file.c_str());

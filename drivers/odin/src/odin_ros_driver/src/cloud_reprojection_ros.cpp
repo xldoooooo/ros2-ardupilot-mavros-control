@@ -256,7 +256,7 @@ int main(int argc, char** argv)
     // Check if reprojection is enabled from control_command.yaml
     std::string package_path = get_package_source_directory();
     const std::string config_file = temp_node->declare_parameter<std::string>(
-        "config_file", package_path + "/config/odom.yaml");
+        "config_file", odin_ros_driver::GetProjectConfigDir(package_path) + "/odin/odom.yaml");
     
     try {
         YAML::Node config = YAML::LoadFile(config_file);
