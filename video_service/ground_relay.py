@@ -20,6 +20,8 @@ from relay_calibration import Calibration, DEFAULT_INTRINSICS
 GPU_BACKENDS = ('intel', 'nvidia')
 # Finite probes never touch the user's output; slow driver initialization gets a generous timeout.
 PROBE_TIMEOUT = 40
+# A stable per-user installation keeps optional Intel drivers out of experiment directories.
+DEFAULT_INTEL_RUNTIME = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) / 'ros2-ardupilot-video/intel-opencl'
 
 
 def bitrate_value(value):
@@ -73,15 +75,33 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
     return command + ['-n', destination]
 
 
-def run_probe(command):
+def run_probe(command, env=None):
     """Return a concise failure reason after an actual bounded hardware operation."""
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=PROBE_TIMEOUT, env=env)
         if result.returncode:
             return '\n'.join(result.stderr.strip().splitlines()[-6:]) or f'Exit {result.returncode}'
     except (OSError, subprocess.TimeoutExpired) as exc:
         return str(exc)
     return ''
+
+
+def intel_environment(runtime, temporary):
+    """Discover an extracted Intel runtime and configure only its FFmpeg subprocesses."""
+    libraries = list(runtime.expanduser().glob('usr/lib/*/intel-opencl/libigdrcl.so'))
+    if not libraries:
+        return None
+    library = libraries[0].resolve()
+    icd = temporary / 'intel-icd'
+    icd.mkdir(exist_ok=True)
+    (icd / 'intel.icd').write_text(str(library) + '\n')
+    environment = os.environ.copy()
+    environment['OCL_ICD_VENDORS'] = str(icd)
+    paths = [str(library.parent.parent), str(library.parent)]
+    if environment.get('LD_LIBRARY_PATH'):
+        paths.append(environment['LD_LIBRARY_PATH'])
+    environment['LD_LIBRARY_PATH'] = ':'.join(paths)
+    return environment
 
 
 def validate_source(args, calibration):
@@ -147,7 +167,7 @@ def supervise(args, calibration, state):
         shader.write_text(calibration.shader())
         if args.progress is None:
             args.progress = root / 'progress.txt'
-        backend, failures = 'cpu', []
+        backend, failures, worker_environment = 'cpu', [], None
         candidates = GPU_BACKENDS if args.backend == 'auto' else (() if args.backend == 'cpu' else (args.backend,))
         if candidates:
             report('starting')
@@ -161,9 +181,17 @@ def supervise(args, calibration, state):
                 for candidate in candidates:
                     if stopping:
                         break
-                    reason = run_probe(build_command(args, candidate, shader, str(fixture), probe=True))
+                    command = build_command(args, candidate, shader, str(fixture), probe=True)
+                    reason = run_probe(command)
+                    candidate_environment = None
+                    if reason and candidate == 'intel':
+                        candidate_environment = intel_environment(args.intel_opencl_runtime, root)
+                        if candidate_environment is not None:
+                            reason = run_probe(command, env=candidate_environment)
+                            if not reason:
+                                logging.info('已自动加载用户级 Intel OpenCL 运行时：%s', args.intel_opencl_runtime)
                     if not reason:
-                        backend = candidate
+                        backend, worker_environment = candidate, candidate_environment
                         break
                     failures.append(f'{candidate}: {reason}')
         warning = ''
@@ -181,7 +209,8 @@ def supervise(args, calibration, state):
             command = cpu_command(args) if backend == 'cpu' else build_command(args, backend, shader)
             error_log = root / 'worker.log'
             with error_log.open('w') as errors:
-                process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors)
+                process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors,
+                                           env=worker_environment if backend == 'intel' else None)
                 marked_running, stop_at = False, None
                 try:
                     while process.poll() is None:
@@ -249,6 +278,8 @@ def main():
     parser.add_argument('--backend', choices=('auto', 'intel', 'nvidia', 'cpu'), default='auto')
     parser.add_argument('--intrinsics', type=Path, default=DEFAULT_INTRINSICS)
     parser.add_argument('--device', default='/dev/dri/renderD128')
+    parser.add_argument('--intel-opencl-runtime', type=Path, default=DEFAULT_INTEL_RUNTIME,
+                        help='Extracted Intel runtime used if the normal environment fails')
     parser.add_argument('--cuda-device', type=int, default=0)
     parser.add_argument('--opencl-device', default=',device_type=gpu,platform_vendor=NVIDIA')
     parser.add_argument('--chroma-location', choices=('left', 'center'), default='left')

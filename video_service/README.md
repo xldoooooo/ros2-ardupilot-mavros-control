@@ -27,7 +27,13 @@ MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任
   --output rtsp://127.0.0.1:8554/camera-rectified
 ```
 
-Ubuntu 24.04 的 Intel 后端另需 `intel-opencl-icd` 和可访问的 `/dev/dri/renderD128`；
+Ubuntu 24.04 的 Intel 后端需 `intel-opencl-icd` 和可访问的 `/dev/dri/renderD128`。
+启动时优先使用系统/当前环境；如果探测失败，会自动尝试用户目录
+`~/.local/share/ros2-ardupilot-video/intel-opencl`（设置了 `XDG_DATA_HOME` 时跟随该目录）。
+这里存放已解包的 Intel OpenCL 及依赖，保留 `usr/lib/<架构>/intel-opencl/libigdrcl.so` 布局；
+也可用 `--intel-opencl-runtime <目录>` 指定。程序自动为 Intel 子进程设置库路径和 ICD，
+无需手工 export，不改变 NVIDIA/CPU 的环境。mini-ground 已在此固定目录部署并验证自动加载。
+新机器可优先通过系统包安装 `intel-opencl-icd`；自动发现不会自行下载或安装驱动。
 NVIDIA 后端需匹配显卡的 NVIDIA 驱动及其 OpenCL ICD，无需为该路线安装 CUDA Toolkit、CuPy。
 CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
 `python3-opencv python3-numpy python3-yaml`，项目 `.venv` 需能访问系统包。
