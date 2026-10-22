@@ -87,15 +87,15 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
 | refresh / uav002 / 2号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，MAVROS2.16.0修复overlay保持 | 配置直接读取`config/aircraft/uav002/`；杆臂(.10,-.04,.05)，自动pitch与-22°回退保留；导航仍map，当前未定位，不能视为map实飞验收。Wasintek推流及UQ212取帧通过，飞控/视频/修正最终停止；控制/避障参数按迁移前有效值保留 |
-| new / uav001 / 1号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂(.10,-.04,.05)，自动pitch与0°回退保留；保持odom，reloc地图未配置。当前没有摄像头，跳过相机硬件验收；飞控/视频/修正最终active，避障停止；控制/避障参数按迁移前有效值保留 |
+| new / uav001 / 1号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂(.10,-.04,.05)，自动pitch与0°回退保留；保持odom，reloc地图未配置。当前没有摄像头，跳过相机硬件验收；飞控/视频/修正按用户要求最终停止，避障停止；控制/避障参数按迁移前有效值保留 |
 | hp-desktop | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；逐机参数与控制/规划配置随主线同步，旧TODO/RViz等现场改动保留；机载服务未启用 |
 | mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
 | 开发机 | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`，SITL始终显式使用仿真档案；实机档案不影响仿真。配置重启生效已实际验证；原有TODO、RViz及文档现场改动保留 |
 
 - **Odin Wi-Fi断网停流已根修复（全部现役设备，`3a09be8`）**：静态SDK全局`MD5`曾覆盖Fast DDS同名类，造成DDS混用实现、同机通信依赖Wi-Fi；USB采集本身持续正常。
   `drivers/odin/src/odin_ros_driver/CMakeLists.txt`在ARM链接设置之后对`host_sdk_sample`追加SDK归档符号隐藏，ARM/AMD自动选库；不改QoS、发现范围或设备配置。开发机、new、refresh、hp-desktop及mini-ground均已原生构建安装，逐机验证SDK MD5导出为0、7条实际DDS MD5绑定全部回到DDS自身。
-  new正式systemd入口、无USB网络条件下，断开Wi-Fi约60秒和关闭无线电约40秒的Odin→extnav→MAVROS全链持续，PID/session不变且armed=false；地面恢复订阅收到数据。机载/视频/修正active，Wi-Fi/USB网络已恢复，逐机YAML与环境哈希保留。
-  全设备同步已完成，refresh保持机载/视频/修正停止，new保持三服务active；未复制跨架构安装产物或逐机配置，旧外部catkin_ws未改。refresh尚未单独进行断网台架验收。根因见[诊断报告](agent/report/report-2026-10-22-odin1-wifi-dds-symbol-conflict.md)，new断网台架见[实施报告](agent/report/report-2026-10-22-odin-sdk-symbol-isolation-deploy.md)，设备清单及同步结果见[全设备部署报告](agent/report/report-2026-10-22-odin-symbol-fix-all-devices.md)。
+  new正式systemd入口、无USB网络条件下，断开Wi-Fi约60秒和关闭无线电约40秒的Odin→extnav→MAVROS全链持续，PID/session不变且armed=false；地面恢复订阅收到数据。Wi-Fi/USB网络已恢复，逐机YAML与环境哈希保留；当前服务状态见上表。
+  全设备同步已完成；未复制跨架构安装产物或逐机配置，旧外部catkin_ws未改。refresh尚未单独进行断网台架验收。根因见[诊断报告](agent/report/report-2026-10-22-odin1-wifi-dds-symbol-conflict.md)，new断网台架见[实施报告](agent/report/report-2026-10-22-odin-sdk-symbol-isolation-deploy.md)，设备清单及同步结果见[全设备部署报告](agent/report/report-2026-10-22-odin-symbol-fix-all-devices.md)。
 
 - Odin迁移：开发机、refresh及new已完成独立/完整机载构建；两机隔离domain230全链READY且armed=false，测试后飞控栈全部停止。
   refresh的`ODIN_CV_BRIDGE_SETUP`指向项目`drivers/odin/cv_bridge_ws/install/local_setup.bash`，OpenCV仅4.8；
