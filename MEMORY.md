@@ -103,7 +103,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
   后续Task6已完成真实重定位静态核对，绝对定位精度和实飞仍未验收；最初迁移见[迁移报告](agent/report/report-2026-10-19-project-odin-driver-migration.md)。
 
 - **逐机配置统一由固定编号选择**：new=1号机`uav001`，refresh=2号机`uav002`，开发机及两地面站为`simulation`。
-  本机`config/aircraft.local.env`不入Git；各机完整参数档案入Git，改显示名只改`aircraft.yaml`。
+  各档案`aircraft.yaml`的`name`分别为`new`、`refresh`；本机`config/aircraft.local.env`不入Git，各机完整参数档案入Git，改显示名只改`aircraft.yaml`。
   修正服务仅支持UQ212，视频仅Wasintek；当前只有2号机连接两摄像头，1号机没有摄像头。
   Wasintek当前内参在`config/video/Wasintek/intrinsics.yaml`，`.old`仅保留旧镜头存档。
   控制器、规划器、MAVROS、Odin、视频和修正直接读取源项目配置；手动和systemd共用入口，不回退系统/安装副本。
