@@ -2,7 +2,7 @@
 # MAVROS 机载配置
 
 `aircraft_plugins.yaml` 是当前机载飞行链路的 9 插件白名单；
-`aircraft.launch.xml` 使用它，并使用当前已选 MAVROS 安装中的 `apm_config.yaml`，
+`aircraft.launch.xml` 使用它，并读取所选 `config/aircraft/<编号>/mavros/apm_config.yaml`，
  `start_mavros.sh` 和`start_onboard_control.sh` 均自动使用此配置，原有 MAVROS overlay 选择保持有效。
 launch 的 `namespace` 默认为空，保留机载 MAVROS 内部的 `/mavros/...` 接口命名；
 不要再额外传入 `namespace:=mavros`，避免与内部 UAS 命名重复。
@@ -87,7 +87,7 @@ GPS 状态插件的正确标识是 `gps_status`；旧拼写 `gpsstatus` 不能�
 也不关闭 FCU 自身的传感器融合、Home/返航、围栏等功能。
 禁用可省去插件实例、接口及相应回调，但各插件的实际开销不同，不能将表格行数当作算力收益。
 
-开发机 SITL/地面站仍使用原来的系统 MAVROS 配置；
+开发机 SITL/地面站固定读取 `config/aircraft/simulation/mavros/apm_config.yaml`；
 需要完整调试插件时，可使用原命令 `ros2 launch mavros apm.launch ...`，
 或者启动本文件并用 `pluginlists_yaml:=/absolute/debug_plugins.yaml` 显式覆盖白名单。
 仅修改 YAML 后重启相应机载进程即可生效。

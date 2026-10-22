@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-21。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-22。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -26,7 +26,7 @@
   独立视频协议 **3.2**，AprilTag 修正协议 **2.0**。地面与机载共享接口必须同步重建。
 - PySide6 地面站是薄客户端；`src/onboard_control` 是唯一飞行控制权威，负责租约、安全状态机、
   航点推进及 100 Hz PD+DOB。唯一生产输出为 `/mavros/setpoint_raw/attitude`；GUI、规划器、
-  RViz 不得成为第二个 setpoint 发布者。控制参数集中在 `src/onboard_control/config/control.yaml`。
+  RViz 不得成为第二个 setpoint 发布者。控制参数直接读取 `config/aircraft/<AIRCRAFT_ID>/control.yaml`，修改后重启服务，无需重建。
 - GUI 初始 `ROS IDLE`；仿真使用 domain **231 / LOCALHOST**，实机使用 **0 / SUBNET**。
   切换会销毁旧 ROS context；SITL 使用自身 Home，禁止写入 GUI 缓存的实机 GPS 原点。
   退出只清理本项目启动的本地进程组，不停止 ROS daemon 或其他工作负载。
@@ -35,17 +35,17 @@
   地面正式连接不启动或停止远端服务。避障另行启停，目前没有规划自启 unit。
 - Odin 权威维护目录是 `drivers/odin/`，独立构建入口 `drivers/odin/build.sh`；完整机载构建先增量构建它。
   单独及集成启动均用 `-c odom|slam|reloc|original|/absolute/custom.yaml`，默认 odom，强制选择项目 overlay。
-  四份 YAML 在 `drivers/odin/src/odin_ros_driver/config/`；`control_command.yaml` 仅链接 odom。
+  四份模式 YAML 在 `config/aircraft/<AIRCRAFT_ID>/odin/`；设备标定在同目录 `calibration/calib.yaml`，由项目启动入口统一指定。
   reloc 的地图绝对路径由用户手动维护，`drivers/odin/maps/` 地图及运行/构建产物不入 Git。
-  外部 `catkin_ws` 原驱动保留，干净终端只 source 它仍使用原驱动；省略 `-c` 读取`/etc/ros2-ardupilot/navigation.env`的`NAVIGATION_MODE`，缺省odom。
+  外部 `catkin_ws` 原驱动保留，干净终端只 source 它仍使用原驱动；省略 `-c` 读取所选档案 `navigation.env` 的 `NAVIGATION_MODE`，缺省odom。
 - odom/map保持“地图任务、本地控制”：原生TF为`odom ← map`，`p_local=R_OM p_map+t_OM+b`，`b`为既有extnav原点偏移；任务与采点以FCU中心为准。
   `ControlStatus`区分实际local值和task值；map预览用`fcu_local`避免MAVROS历史`map`命名冲突，点云不另做安装角旋转。
   三策略接受地图航点，普通小重定位用连续偏移/重新投递/重新查线；失效或大跳变撤销任务、本地制动悬停，默认15秒后LAND，不自动恢复旧任务。
   实际模式来自`/odin1/navigation_status`的设备ACK/session及原生TF；未定位禁止起飞。地面切换须未解锁、落地且无任务，重启原运行的飞控/避障，保留航点数值。
-  安装外参入口`config/odin_extrinsics.yaml`，逐机以`ODIN_EXTRINSICS_FILE`覆盖；仓库零角默认保留。**TODO：map与Odin-Tag组合未适配，非零安装角Tag apply继续拒绝。**
+  安装外参唯一入口`config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml`，杆臂统一为(.10,-.04,.05)，各机回退角和自动俯仰设置保留；修正服务从同一文件读取杆臂，不另维护副本。**TODO：map与Odin-Tag组合未适配，非零安装角Tag apply继续拒绝。**
   设计与维护入口见[导航说明](docs/odom-map.md)，验证及限制见[Task6报告](agent/report/report-2026-10-19-task6-odom-map.md)。
 - 机载性能配置在开发机/refresh/new已落实：`config/mavros/aircraft.launch.xml`及9插件白名单由独立/整栈机载入口使用，
-  复用已选MAVROS安装的apm参数，不再依赖手改系统插件文件；`gps_status`不在白名单。直连FCU遥控器手飞不依赖ROS的rc_io/manual_control；未改RC/模式参数。
+  apm参数已按所选MAVROS版本迁入各机档案`mavros/apm_config.yaml`，不再读取系统参数副本；`gps_status`不在白名单。直连FCU遥控器手飞不依赖ROS的rc_io/manual_control；未改RC/模式参数。
   开发机SITL保持原配置。项目Odin的odom/reloc关闭raw DTOF、诊断CSV和传感器展示TF，slam保留展示TF，original不变；地图TF独立保留。
   开发机/refresh修改前备份在驱动config/backup/20261019-flight-trim，恢复不得跨机覆盖地图路径；new旧外部驱动保留。hp-desktop已同步源码并原生构建项目驱动；外部catkin_ws保持。
   源码级主机精简只在agent隔离副本评估，未合入正式驱动；HIGHRES_IMU请求仍由原控制器保持100Hz。
@@ -73,24 +73,44 @@
 
 默认连接 `ssh drone-refresh`；不可达时停止并询问用户，不自行切换飞机。
 最近核对别名为 refresh → `.186`、new → `.169`；历史名称/IP 曾变化，连接时核对目标。
-两机工作区均为 `/home/nvidia/ros2-ardupilot-mavros-control`；地面笔记本为 `ssh hp-desktop`（`.101`）。
+两机工作区均为 `/home/nvidia/ros2-ardupilot-mavros-control`。
+2026-10-22 新地面站当前为 `intel@192.168.112.111`（同日由 `.101` 变更），使用 `ssh mini-ground`，工作区为
+`/home/intel/ros2-ardupilot-mavros-control`；独立 HostKeyAlias 与密钥已配置。旧 `hp-desktop`
+已确认仍可连接 `scq@192.168.112.101`，工作区为 `/home/scq/ros2-ardupilot-mavros-control`；旧 `28239-laptop` 别名也配置过 `.111`，连接时核对用户和主机密钥。
+mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` 继承 GNOME 的
+`DISPLAY/XAUTHORITY`，不要仅传 Wayland 变量。RViz 的 OGRE/GLX 仍依赖可用的 X 显示连接；
+缺少 DISPLAY 时地面站本身可见而 RViz 会退出。2026-10-22 已从真实按钮验证窗口显示和仿真就绪。
+桌面基线：开发机为 X11/NVIDIA/Fcitx，mini-ground 为原生 Wayland/Intel Mesa/IBus，Qt均6.11.1。
+新机27项真实Qt窗口/媒体检查通过，IBus拼音引擎可提交中文；真实键鼠候选、剪贴板、屏幕边缘弹层
+及最终视频可见画面仍待人工确认，不能以 offscreen 或无焦点后台模拟替代。
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh | Task6 / 3.5；项目Odin、C++ extnav、控制/接口及桥均原生构建；MAVROS2.16.0修复overlay保持 | 航点启动保留DOB已原生Release部署，并在3架次实飞bag确认运行及扰动连续；按模式jerk10/8已安装回读，39项控制测试及隔离smoke通过，飞控栈保持停止；其余控制/外参配置保留，残余上拱和梯形相位转折仍在。自动安装俯仰启用3秒窗口，今日完整bag已锁定约-25.214°；原-22°回退/杆臂/roll/yaw保留。最近配置navigation.env=map（reloc.yaml）；四次未解锁模式切换及约100Hz串口基线通过；直线3架次已复核，自主避障实飞仍未验收。现场地图已更新为项目`drivers/odin/maps/20261020_103327/map_20261020_103624.bin`；外参`/etc/ros2-ardupilot/odin_extrinsics.yaml`。现场Git HEAD仍旧，以源码哈希/3.5实际接口为准，勿reset/clean |
-| new | Task6 / 3.5；项目Odin、C++ extnav、两仓库原生Release重建；按模式jerk10/8与航点保留DOB已部署 | 2026-10-20 domain230未解锁全链READY，自动安装pitch锁定-19.8908°；3秒学习，roll/yaw=0、杆臂(.06,-.03,.05)，逐机YAML保留0°回退。保持odom，reloc地图尚未配置；仅自主任务输出jerk10/8，其余模式默认关闭，74项其他控制值和相机/Tag配置保留。旧避障方向限额迁至原生规划器，速度1/.2、加速度.35/.15。收尾飞控/避障停止，视频/修正active；现场Git HEAD仍旧，以源码哈希和安装接口为准 |
-| hp-desktop | 2026-10-21 主工程2f340b3、独立避障8b4630c及开发机当前源码差异已同步；3.5接口、六个主工程包、独立避障与项目Odin原生Release重建 | 地面环境、隔离控制smoke和39项规划参数回读通过；备份`/home/scq/backups/code-sync-20261021/`，TODO及修正测试现场改动保留。无外部vrpn_mavros，C++ extnav仅同步维护源码，未新增机载服务；旧回退参数测试预期仍有偏差，见同步简报 |
-| 开发机 | Task6 / 3.5；odom/map三策略、地面站/WebSocket、原生双树与连续参考，已重建 | Python175、C++32及导航DDS9通过；三策略map SITL完成。旧Task6末端异常的4Hz遥测冲突已查明，恢复100Hz后odom/map本轮均无失败；严格净空及实飞未验收 |
+| refresh / uav002 / 2号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，MAVROS2.16.0修复overlay保持 | 配置直接读取`config/aircraft/uav002/`；杆臂(.10,-.04,.05)，自动pitch与-22°回退保留；导航仍map，当前未定位，不能视为map实飞验收。Wasintek推流及UQ212取帧通过，飞控/视频/修正最终停止；控制/避障参数按迁移前有效值保留 |
+| new / uav001 / 1号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂(.10,-.04,.05)，自动pitch与0°回退保留；保持odom，reloc地图未配置。当前没有摄像头，跳过相机硬件验收；飞控/视频/修正最终active，避障停止；控制/避障参数按迁移前有效值保留 |
+| hp-desktop | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；逐机参数与控制/规划配置随主线同步，旧TODO/RViz等现场改动保留；机载服务未启用 |
+| mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
+| 开发机 | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`，SITL始终显式使用仿真档案；实机档案不影响仿真。配置重启生效已实际验证；原有TODO、RViz及文档现场改动保留 |
+
+- **Odin Wi-Fi断网停流已根修复（全部现役设备，`3a09be8`）**：静态SDK全局`MD5`曾覆盖Fast DDS同名类，造成DDS混用实现、同机通信依赖Wi-Fi；USB采集本身持续正常。
+  `drivers/odin/src/odin_ros_driver/CMakeLists.txt`在ARM链接设置之后对`host_sdk_sample`追加SDK归档符号隐藏，ARM/AMD自动选库；不改QoS、发现范围或设备配置。开发机、new、refresh、hp-desktop及mini-ground均已原生构建安装，逐机验证SDK MD5导出为0、7条实际DDS MD5绑定全部回到DDS自身。
+  new正式systemd入口、无USB网络条件下，断开Wi-Fi约60秒和关闭无线电约40秒的Odin→extnav→MAVROS全链持续，PID/session不变且armed=false；地面恢复订阅收到数据。机载/视频/修正active，Wi-Fi/USB网络已恢复，逐机YAML与环境哈希保留。
+  全设备同步已完成，refresh保持机载/视频/修正停止，new保持三服务active；未复制跨架构安装产物或逐机配置，旧外部catkin_ws未改。refresh尚未单独进行断网台架验收。根因见[诊断报告](agent/report/report-2026-10-22-odin1-wifi-dds-symbol-conflict.md)，new断网台架见[实施报告](agent/report/report-2026-10-22-odin-sdk-symbol-isolation-deploy.md)，设备清单及同步结果见[全设备部署报告](agent/report/report-2026-10-22-odin-symbol-fix-all-devices.md)。
 
 - Odin迁移：开发机、refresh及new已完成独立/完整机载构建；两机隔离domain230全链READY且armed=false，测试后飞控栈全部停止。
   refresh的`ODIN_CV_BRIDGE_SETUP`指向项目`drivers/odin/cv_bridge_ws/install/local_setup.bash`，OpenCV仅4.8；
   旧`ODIN_OVERLAY_SETUP`字段已不参与项目驱动选择。new已独立原生构建兼容cv_bridge及项目驱动，OpenCV固定/usr/lib/cmake/opencv4的4.8，不选该机/usr/local的4.14；hp-desktop已用系统cv_bridge原生构建项目Odin，勿复制refresh安装产物或逐机环境。
   后续Task6已完成真实重定位静态核对，绝对定位精度和实飞仍未验收；最初迁移见[迁移报告](agent/report/report-2026-10-19-project-odin-driver-migration.md)。
 
-- **new 与 refresh 相机配置不能互相覆盖。** refresh 使用 UQ212 / Tag 边长 0.099 m；
-  new 使用 Wasintek 1920×1080@30 / Tag0 0.170 m，修正活动目录为
-  `/etc/ros2-ardupilot/correction-config`，由 `correction.env` 的 `CORRECTION_CONFIG_DIR` 选择。
-  仓库根 `correction_service/config/` 默认属于 refresh；命名相机档案不会自动切换运行配置。
+- **逐机配置统一由固定编号选择**：new=1号机`uav001`，refresh=2号机`uav002`，开发机及两地面站为`simulation`。
+  本机`config/aircraft.local.env`不入Git；各机完整参数档案入Git，改显示名只改`aircraft.yaml`。
+  修正服务仅支持UQ212，视频仅Wasintek；当前只有2号机连接两摄像头，1号机没有摄像头。
+  Wasintek当前内参在`config/video/Wasintek/intrinsics.yaml`，`.old`仅保留旧镜头存档。
+  控制器、规划器、MAVROS、Odin、视频和修正直接读取源项目配置；手动和systemd共用入口，不回退系统/安装副本。
+  系统集成源在`system/systemd/`和`system/udev/`，安装位置仍为Linux标准目录；完整索引见`config/README.md`。
+  `/etc/ros2-ardupilot/`及旧模块/安装参数副本已移出活动位置，归档于各机项目`backups/config/<编号或主机>/20261022-task7-before/`。
+  同步时历史现场修改另保存在命名Git stash `task7-config-inte-before-git-sync`；不得把旧补丁整体恢复到新主线。
+  配置改动可直接提交推送；本机选择、host依赖环境、地面视频偏好与备份不入Git。
 - refresh 系统与活动 MAVROS overlay 均为 **2.16.0**，活动路径为
   `/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup.bash`，由 `onboard.env` 选择；
   保留项目参数重试修复和原插件裁剪。旧 `mavros_param_fix_ws` 已退出生产，不能再加载。
@@ -101,7 +121,7 @@
   当前使用2.16.0内置官方修复，保留命名/所有权修复；实读推力缩放1.0，隔离UDP姿态输出与重试测试通过。
   安装器按2.15.1/2.16.0 ABI选择源码与独立缓存，2.15.1额外回移官方参数修复。
   下次升级必须核对活动库与实际参数，起飞成功不等于姿态输出有效。详见[修复报告](agent/report/report-2026-10-13-refresh-native-mavros-fix.md)。
-- 飞控环境为 `/etc/ros2-ardupilot/onboard.env`，视频优先使用同目录 `camera.conf/lens.conf`。
+- 飞控环境为所选档案 `onboard.env`，视频读取同档案 `video/camera.conf`、`lens.conf`。
   串口和 overlay 按目标机核对，不照搬历史 `/dev/ttyTHS*`。systemd 不依赖外网校时；
   `network-online.target` 未必已有 Wi-Fi IPv4，视频入口保留 DDS 创建前的本地路由等待。
 - refresh 的 video service 已换 Wasintek，相机当前为 `/dev/video2`；修正使用的 UQ212 为 `/dev/video0`。
@@ -153,6 +173,7 @@
   raw全频、vision/辅助timer仍40/100Hz，CAS/session、冻结样本和计数保持；corrected保留原门控，两路辅助输出无读者时跳过构造/publish，有读者恢复，control计数仍推进。控制器消费MAVROS EKF。
   ARM的7,880组数值对照最大误差约7.1e-15，三套构建/安装入口公共契约通过；全服务地面生产CPU约68.78%→10.75%单核，持续订阅切换源时序正常。有限窗口不保证全部时序极值改善，未实飞验收。
   回退与边界见[C++重写报告](agent/report/report-2026-10-19-extnav-cpp-rewrite.md)，成本原因见[成本分析](agent/report/report-2026-10-19-extnav-cost-analysis.md)。
+- 系统rclpy未替换；Jazzy计数累加候选在`agent/codex/rclpy-upstream-audit-20261021/rclpy`及个人fork的`codex/jazzy-entity-count-accumulation`，commit `2f215ee`，仅1文件8增1删。用户已批准发布，当前入口是LostPatrol的[独立issue #1746](https://github.com/ros2/rclpy/issues/1746)，#1223下自己的旧评论已删除；[候选](https://github.com/ros2/rclpy/compare/jazzy...LostPatrol:codex/jazzy-entity-count-accumulation)保持。i7-9700KF隔离单核22.83%→20.24%，refresh Orin NX原生67.01%→61.04%（MAXN/schedutil、其他服务停止），相对降11.35%/8.91%；两端59/59 CTest目标通过，ARM含3项上游timer跳过。正式PR等维护者确认Jazzy方案，Rolling已含#1285；Sol实现/Astra复核披露保持，无需重复索要既有范围发布批准。每日10:00反馈检查已转至#1746；接续见[独立issue及ARM验证](agent/report/report-2026-10-21-rclpy-jazzy-issue-arm-validation.md)与过程目录`pr-preparation/publication-state.json`。
 - C++ extnav已新增启动时自动安装俯仰：`auto_installation:true`后，未解锁静止默认3秒，比较Odin与FCU IMU的机体系重力方向，仅学习pitch，roll/yaw/杆臂保持配置；不要求机身摆平或两世界yaw相同。收敛后移除校准订阅并锁到节点重启，不写YAML；缺输入/移动/active Tag期间保留手工回退。节点开关默认false，项目外参YAML默认true，旧逐机YAML需补参数。
   开发机Release双目标及隔离安装入口验证通过；refresh/new均已原生重建、正式入口ARM隔离7例通过，并在逐机YAML启用自动补偿；refresh完整bag约-25.214°，new未解锁静态锁定-19.8908°，pitch输出约0.54°、同期FCU IMU约0.58°。hp已同步维护源码，未新增外部extnav部署。refresh回退备份在`/home/nvidia/backups/ros2-ardupilot-maintenance/auto-pitch-20261020/`。实际角及锁定状态见现有ExtnavCorrectionStatus；非零安装角Tag限制保持。估计是相对重力俯仰，不能独立消除两IMU水平标定偏差；原3.3°残差样本对应约-25.3°安装估计，该历史例不替代当前两机各自启动学习。用法及待部署项见[自动俯仰报告](agent/report/report-2026-10-20-auto-installation-pitch.md)。
 - **Odin 近身拖点尚未解决，不能把接收端删点当成内部算法前过滤。** refresh 实际运行

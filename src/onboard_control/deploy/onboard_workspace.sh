@@ -22,6 +22,8 @@ readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 readonly DRIVERS_SPARSE_PATH="/drivers/"
 # Shared hardware geometry and the ground-only navigation restart entry.
 readonly CONFIG_SPARSE_PATH="/config/"
+# Native launches locate this shared source-profile resolver in the checkout root.
+readonly CONFIG_HELPER_SPARSE_PATH="/project_configuration.py"
 # System integration templates travel with the same checkout.
 readonly SYSTEM_SPARSE_PATH="/system/"
 readonly NAVIGATION_SWITCH_SPARSE_PATH="/scripts/onboard/switch_navigation_mode.sh"
@@ -171,7 +173,7 @@ update_checkout() {
     "${GITIGNORE_SPARSE_PATH}" \
     "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
     "${ONBOARD_SPARSE_PATH}" "${DRIVERS_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
-    "${CONFIG_SPARSE_PATH}" "${SYSTEM_SPARSE_PATH}" "${NAVIGATION_SWITCH_SPARSE_PATH}" \
+    "${CONFIG_SPARSE_PATH}" "${CONFIG_HELPER_SPARSE_PATH}" "${SYSTEM_SPARSE_PATH}" "${NAVIGATION_SWITCH_SPARSE_PATH}" \
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \

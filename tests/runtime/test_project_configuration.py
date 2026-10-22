@@ -1,11 +1,15 @@
 """Verify one profile is selected consistently by Python and shell service entry points."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from ground_station_core.config import PROJECT_ROOT
 from project_configuration import config_dir, config_file
+
+
+# These configuration tests also run on the aircraft's sparse checkout.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize('aircraft', ['simulation', 'uav001', 'uav002'])

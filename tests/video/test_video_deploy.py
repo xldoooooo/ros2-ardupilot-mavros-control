@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-from ground_station_core.config import PROJECT_ROOT
+from pathlib import Path
+
+# Deployment checks do not require the ground station Python package.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 INTEGRATED_START = PROJECT_ROOT / "scripts/onboard/start_onboard_control.sh"
