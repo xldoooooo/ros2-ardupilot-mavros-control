@@ -15,6 +15,7 @@ import time
 
 from camera_app.relay_status import status_path, write_status
 from relay_calibration import Calibration, DEFAULT_INTRINSICS
+from relay_config import render_devices
 
 # Retain the Intel fast path, then probe NVIDIA and AMD before software fallback.
 GPU_BACKENDS = ('intel', 'nvidia', 'amd')
@@ -197,19 +198,28 @@ def supervise(args, calibration, state):
                 for candidate in candidates:
                     if stopping:
                         break
-                    command = build_command(args, candidate, shaders[candidate], str(fixture), probe=True)
-                    reason = run_probe(command)
-                    candidate_environment = None
-                    if reason and candidate == 'intel':
-                        candidate_environment = intel_environment(args.intel_opencl_runtime, root)
-                        if candidate_environment is not None:
-                            reason = run_probe(command, env=candidate_environment)
-                            if not reason:
-                                logging.info('已自动加载用户级 Intel OpenCL 运行时：%s', args.intel_opencl_runtime)
-                    if not reason:
-                        backend, worker_environment = candidate, candidate_environment
+                    requested = getattr(args, f'{candidate}_device', None) or args.device
+                    devices = render_devices(candidate, requested) if candidate in ('intel', 'amd') else [None]
+                    for device in devices:
+                        if device is not None:
+                            setattr(args, f'{candidate}_device', device)
+                        command = build_command(args, candidate, shaders[candidate], str(fixture), probe=True)
+                        reason = run_probe(command)
+                        candidate_environment = None
+                        if reason and candidate == 'intel':
+                            candidate_environment = intel_environment(args.intel_opencl_runtime, root)
+                            if candidate_environment is not None:
+                                reason = run_probe(command, env=candidate_environment)
+                                if not reason:
+                                    logging.info('已自动加载用户级 Intel OpenCL 运行时：%s', args.intel_opencl_runtime)
+                        if not reason:
+                            backend, worker_environment = candidate, candidate_environment
+                            break
+                        failures.append(f'{candidate} ({device or args.cuda_device}): {reason}')
+                    if backend != 'cpu':
+                        if device is not None:
+                            logging.info('已选择 %s render 设备：%s', candidate, device)
                         break
-                    failures.append(f'{candidate}: {reason}')
         warning = ''
         if backend == 'cpu':
             warning = ('GPU 后端不可用，已回退 CPU 兼容模式；处理速度可能下降。' if candidates else
@@ -295,7 +305,7 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--backend', choices=('auto', *GPU_BACKENDS, 'cpu'), default='auto')
     parser.add_argument('--intrinsics', type=Path, default=DEFAULT_INTRINSICS)
-    parser.add_argument('--device', default='/dev/dri/renderD128')
+    parser.add_argument('--device', default='auto', help='Render device or auto (discover and probe available devices)')
     parser.add_argument('--intel-device', help='Intel render device; overrides --device for Intel only')
     parser.add_argument('--amd-device', help='AMD render device; overrides --device for AMD only')
     parser.add_argument('--intel-opencl-runtime', type=Path, default=DEFAULT_INTEL_RUNTIME,

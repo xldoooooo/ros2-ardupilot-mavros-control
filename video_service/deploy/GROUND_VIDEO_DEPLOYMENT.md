@@ -32,9 +32,9 @@ CPU 后端无需显卡驱动。RTSP 发布另需按视频 README 安装并配置
 
 ```json
 "gpu": {
-  "intel": {"device": "/dev/dri/renderD128", "opencl_runtime": ""},
+  "intel": {"device": "auto", "opencl_runtime": ""},
   "nvidia": {"cuda_device": 0, "opencl_device": ",device_type=gpu,platform_vendor=NVIDIA"},
-  "amd": {"device": "/dev/dri/renderD128"}
+  "amd": {"device": "auto"}
 }
 ```
 
@@ -42,14 +42,17 @@ CPU 后端无需显卡驱动。RTSP 发布另需按视频 README 安装并配置
 
 | 字段 | 用途与默认值 |
 | --- | --- |
-| `gpu.intel.device` | Intel VAAPI render 设备，默认 `/dev/dri/renderD128` |
-| `gpu.intel.opencl_runtime` | 用户级 Intel OpenCL 目录，支持 `~`；空值沿用自动发现目录，系统环境仍优先 |
+| `gpu.intel.device` | Intel VAAPI render 设备，默认 `auto`，枚举后实际探测 |
+| `gpu.intel.opencl_runtime` | 用户级 Intel OpenCL 目录，支持项目相对路径、`~`、环境变量；空值沿用自动发现目录，系统环境仍优先 |
 | `gpu.nvidia.cuda_device` | NVDEC/NVENC 使用的 CUDA 设备编号，默认 `0` |
 | `gpu.nvidia.opencl_device` | OpenCL 设备选择表达式，默认选择 NVIDIA GPU；多卡可用 `0.1` 等平台/设备编号，并与 CUDA 选择对应 |
-| `gpu.amd.device` | AMD VAAPI/Vulkan render 设备，默认 `/dev/dri/renderD128` |
+| `gpu.amd.device` | AMD VAAPI/Vulkan render 设备，默认 `auto`，枚举后实际探测 |
 
 顶层 `backend` 仍默认为 `auto`，按 Intel → NVIDIA → AMD → CPU 实际探测；各类别设备互不覆盖。
-没有 `gpu` 的旧配置直接兼容；字段省略、null 或空字符串均使用原有默认值。
+没有 `gpu` 的旧配置直接兼容；字段省略、null 或空字符串使用默认选择。
+Intel/AMD 默认枚举 `/dev/dri/renderD*`，优先对应厂商，再探测其余节点；厂商未知也不会被排除。
+一个节点失败会继续尝试下一个；无法枚举时保留旧的 `renderD128` 探测。
+已明确填写的设备路径不会被自动替换；希望随机器自动发现时，将 `device` 改为 `auto` 或删除该字段。
 可选参数类型错误会记录警告并忽略该字段；驱动/设备无法使用仍由中继实际探测并回退。
 不会增加显卡型号白名单或要求安装新的依赖。
 
@@ -61,7 +64,25 @@ CPU 后端无需显卡驱动。RTSP 发布另需按视频 README 安装并配置
 独立运行 `ground_relay.py` 时使用命令行参数，不自动读取媒体后台配置：
 `--intel-device` / `--amd-device` 分别覆盖对应后端的通用 `--device`；
 `--intel-opencl-runtime`、`--cuda-device`、`--opencl-device` 保持原有用法。
-仅指定旧的 `--device` 时仍同时用于 Intel/AMD，未改动默认处理链路。
+仅指定旧的 `--device` 时仍同时用于 Intel/AMD；默认 `--device auto`，未改动处理链路。
+
+### 路径与迁移
+
+媒体配置中的 `root`、`intrinsics`、`gpu.intel.opencl_runtime` 支持项目根目录相对路径，
+以及 `~`、`${HOME}` 等环境变量；绝对路径继续有效。配置文件自身的相对路径也以项目根目录为基准，
+与配置文件所在目录、终端启动目录无关。例如内参继续使用 `config/video/Wasintek/intrinsics.yaml`，
+随项目携带的 Intel 运行时可填写 `runtime/intel-opencl`。
+默认媒体目录 `~/Media/ardupilot` 和用户级 Intel 运行时目录会跟随当前服务用户，无需填写用户名。
+
+MediaMTX 优先从 `PATH` 查找，兼容原 `/usr/local/bin/mediamtx` 安装位置；
+可在配置中设置 `"mediamtx": "tools/mediamtx"` 或绝对路径，安装脚本按同一规则检查。
+systemd 的 `PATH` 可能与交互式终端不同，个人目录中的工具可通过上述配置明确指定。
+GPU 节点由操作系统提供，迁移时使用 `auto`；若要绑定具体显卡，也可使用系统提供的
+`/dev/dri/by-path/...-render` 稳定链接，而不是把设备节点改成项目相对路径。
+
+独立中继命令行中的文件相对路径仍按当前工作目录解释，保持命令行习惯。
+移动项目后重新运行地面媒体安装脚本以刷新 systemd 的项目路径和用户信息，无需手改服务文件。
+已有媒体目录中的历史目录记录不由此功能迁移；移动媒体数据需另行处理。
 
 ## Intel 核显
 
@@ -74,7 +95,7 @@ clinfo --list
 ```
 
 启动用户需要对应 render 设备的读写权限；调整用户组后重新登录。
-中继默认使用 `/dev/dri/renderD128`，多显卡机器可通过 `--device` 指定。
+中继默认自动枚举 render 设备，多显卡机器可通过 `--intel-device` 或 `--device` 指定。
 硬件、驱动和 FFmpeg 必须支持 VAAPI/OpenCL 表面共享，程序会实际探测整条链路。
 
 没有系统 ICD 时，也可部署完整的用户级运行时：

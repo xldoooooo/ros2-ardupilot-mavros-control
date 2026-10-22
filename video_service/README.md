@@ -23,7 +23,8 @@ MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任
 
 配置示例为`config/ground/media.example.conf`，安装时生成并保留本机`config/ground/media.json`。
 其中 `gpu.intel`、`gpu.nvidia`、`gpu.amd` 可分别设置本机设备，Intel 可另设 OpenCL 运行时目录；
-所有字段均可省略，沿用当前默认探测和 CPU 回退。参数及生效方式见
+所有字段均可省略，Intel/AMD 默认自动发现设备，保留 CPU 回退。配置中的文件路径支持相对项目根目录、
+`~` 和环境变量；MediaMTX 优先从 `PATH` 查找，也可指定相对或绝对路径。参数及生效方式见
 [GPU 配置说明](deploy/GROUND_VIDEO_DEPLOYMENT.md#本机-gpu-参数配置)。
 可用`GROUND_MEDIA_CONFIG`指定另一份文件。修改后重启`ground-media.service`。
 `root`指定存储根，`public_host`指定客户端可达地址，`max_bytes`为总媒体容量上限；
@@ -81,7 +82,7 @@ HTTP 8090提供文件列表和处理版下载，本机GUI可删除或整段重�
   --output rtsp://127.0.0.1:8554/camera-rectified
 ```
 
-Ubuntu 24.04 的 Intel 后端需 `intel-opencl-icd` 和可访问的 `/dev/dri/renderD128`。
+Ubuntu 24.04 的 Intel 后端需 `intel-opencl-icd` 和可访问的 render 设备，默认自动枚举并实际探测。
 启动时优先使用系统/当前环境；如果探测失败，会自动尝试用户目录
 `~/.local/share/ros2-ardupilot-video/intel-opencl`（设置了 `XDG_DATA_HOME` 时跟随该目录）。
 这里存放已解包的 Intel OpenCL 及依赖，保留 `usr/lib/<架构>/intel-opencl/libigdrcl.so` 布局；

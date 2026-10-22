@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ground_station_core.qt_ui.window_chrome import ShadowWindowChromeMixin
+from video_service.relay_config import project_path
 
 # 后台默认端口；GROUND_MEDIA_CONFIG 可替换部署配置。
 _DEFAULT_API_URL = "http://127.0.0.1:8090"
@@ -54,7 +55,7 @@ QLabel#imagePreview { background: #182433; color: #d9e1e8; }
 
 def configured_api_url() -> str:
     """读取地面媒体配置中的 API 地址，未配置时访问本机后台。"""
-    config = Path(os.environ.get(
+    config = project_path(os.environ.get(
         "GROUND_MEDIA_CONFIG",
         str(Path(__file__).resolve().parent.parent / "config/ground/media.json"),
     ))

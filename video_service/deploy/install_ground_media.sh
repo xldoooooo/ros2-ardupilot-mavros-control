@@ -16,7 +16,6 @@ command sudo apt-get install -y rsync openssh-server ffmpeg python3-opencv pytho
 if lspci -nn | grep -Ei '(VGA|Display).*Intel' >/dev/null; then
   command sudo apt-get install -y intel-opencl-icd intel-media-va-driver
 fi
-[[ -x /usr/local/bin/mediamtx ]] || { echo 'Install MediaMTX v1.20.0 as documented in video_service/README.md' >&2; exit 1; }
 if [[ ! -f "${project_root}/config/ground/media.json" ]]; then
   "${media_python}" - "${project_root}" <<'PY'
 """Seed host settings once; preserve subsequent user edits."""
@@ -31,6 +30,17 @@ config['public_host'] = detect_lan_ipv4()
 (root / 'config/ground/media.json').write_text(json.dumps(config, indent=2) + '\n')
 PY
 fi
+"${media_python}" - "${project_root}" <<'PY'
+"""Validate the same configured or PATH-discovered MediaMTX used by the service."""
+from pathlib import Path
+import shutil
+import sys
+sys.path.insert(0, sys.argv[1])
+from video_service.ground_media import load_settings
+settings = load_settings(Path(sys.argv[1]) / 'config/ground/media.json')
+if not shutil.which(settings['mediamtx']):
+    sys.exit('Install MediaMTX v1.20.0 on PATH or set mediamtx in config/ground/media.json')
+PY
 unit_stage="$(mktemp)"
 trap 'rm -f -- "${unit_stage}"' EXIT
 sed -e "s|MEDIA_USER|${media_user}|g" -e "s|MEDIA_HOME|${media_home}|g" \

@@ -23,16 +23,18 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT))
 from video_service.media_store import MediaStore, atomic_json, safe_component
 from video_service.camera_app.relay_status import status_path
-from video_service.relay_config import gpu_arguments
+from video_service.relay_config import gpu_arguments, project_path
 
 
 def load_settings(path=None):
-    """Load editable host settings while keeping calibration relative to the checkout."""
-    path = Path(path or os.environ.get('GROUND_MEDIA_CONFIG', PROJECT / 'config/ground/media.json'))
+    """Resolve host settings independently of the working directory and tool installation prefix."""
+    path = project_path(path or os.environ.get('GROUND_MEDIA_CONFIG', 'config/ground/media.json'))
     value = json.loads(path.read_text())
-    value['root'] = str(Path(value['root']).expanduser().resolve())
-    intrinsics = Path(value.get('intrinsics', 'config/video/Wasintek/intrinsics.yaml'))
-    value['intrinsics'] = str(intrinsics if intrinsics.is_absolute() else PROJECT / intrinsics)
+    value['root'] = str(project_path(value['root']))
+    value['intrinsics'] = str(project_path(value.get('intrinsics', 'config/video/Wasintek/intrinsics.yaml')))
+    # Keep the former system install location as a fallback for service environments with a narrow PATH.
+    executable = value.get('mediamtx') or shutil.which('mediamtx') or '/usr/local/bin/mediamtx'
+    value['mediamtx'] = str(project_path(executable)) if '/' in executable or '$' in executable else executable
     return value
 
 
