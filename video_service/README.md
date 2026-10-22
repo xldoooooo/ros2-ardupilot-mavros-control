@@ -6,27 +6,60 @@
 从本机 RTSP 读取，不会第二次占用设备。它是独立进程，摄像头、FFmpeg、
 MediaMTX 或磁盘失败只进入 `VideoStatus`，不能停止或改变飞控任务。
 
-## 地面 GPU 中继
+## 地面去畸变中继
 
-`ground_relay.py` 提供独立的 Intel GPU 处理入口：VAAPI 解码、OpenCL 去畸变、VAAPI H.264
-编码，再向已有 MediaMTX 发布一条流。客户端共用该流，不为每个观看者重新处理。
-图像保持 NV12 硬件表面，避免逐帧 Python 管道、BGR 转换和 CPU/GPU 往返。
-本入口尚未接入 GUI 或自启服务，不改变原有机载采集与录像。
+`ground_relay.py` 独立处理一条视频，再向已有 MediaMTX 发布；客户端共用处理结果。
+默认 `--backend auto` 按 Intel、NVIDIA、CPU 顺序选择，先使用本地短样本实际探测硬件链路。
+指定 `--backend intel|nvidia` 时，该 GPU 不可用也会回退 CPU；`--backend cpu` 可直接使用软件路线。
 
-适用 Ubuntu 24.04 上带 Intel VAAPI/OpenCL 共享支持的 FFmpeg；需安装 `intel-opencl-icd`，
-并有 `/dev/dri/renderD128` 访问权限。输入为硬件可解码的8位视频，分辨率须与标定文件一致。
-默认使用 `config/video/Wasintek/intrinsics.yaml` 的完整五参数模型、1920×1080 输出与 alpha=0。
+| 后端 | 处理路线 | 依赖与限制 |
+| --- | --- | --- |
+| Intel | VAAPI 解码 → OpenCL 去畸变 → VAAPI 编码 | Intel OpenCL ICD、VAAPI 驱动与共享表面支持；保留原有低拷贝路线 |
+| NVIDIA | NVDEC 解码 → OpenCL 去畸变 → NVENC 编码 | NVIDIA 驱动提供 CUDA、OpenCL、NVENC；FFmpeg 支持对应接口；含 GPU/主存搬运，不是零拷贝 CUDA 滤镜 |
+| CPU | 软件解码 → OpenCV 去畸变 → libx264 编码 | 项目 Python 的 PyAV、OpenCV、NumPy、PyYAML；无需 GPU 驱动 |
 
 ```bash
+# setup_ground_station.sh 也会安装此依赖清单；现有地面站升级时执行：
+./.venv/bin/python -m pip install -r requirements-gui.txt
+
 ./.venv/bin/python video_service/ground_relay.py \
   --input rtsp://127.0.0.1:8554/camera-raw \
   --output rtsp://127.0.0.1:8554/camera-rectified
 ```
 
-上述原始流和允许本地发布的 MediaMTX 须提前就绪。默认输出8 Mbit/s、GOP60，不改变输入帧率；
-`--bitrate`、`--gop`、`--device`、`--intrinsics` 可覆盖默认值。默认 H.264 色度位置为 `left`，
-中心采样输入使用 `--chroma-location center`。核函数在 `shaders/undistort_nv12.cl`；它分别处理
-亮度和UV坐标，并避开硬件表面的可见图像之外填充行。硬件映射不支持时明确报错，不静默改为CPU处理。
+Ubuntu 24.04 的 Intel 后端另需 `intel-opencl-icd` 和可访问的 `/dev/dri/renderD128`；
+NVIDIA 后端需匹配显卡的 NVIDIA 驱动及其 OpenCL ICD，无需为该路线安装 CUDA Toolkit、CuPy。
+CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
+`python3-opencv python3-numpy python3-yaml`，项目 `.venv` 需能访问系统包。
+媒体工具 `ffmpeg`、`ffprobe` 和已配置允许发布的 MediaMTX 须提前就绪。
+
+默认标定为 `config/video/Wasintek/intrinsics.yaml`：完整五参数 `plumb_bob`、alpha=0。
+输入尺寸须与标定一致；尺寸/标定错误会明确报错，CPU 回退不会修复错误的相机标定。
+目标是8位 YUV420 视频；默认色度位置 `left`，中心采样使用 `--chroma-location center`。
+所有路线保留相对输入时间戳，源视频有时间缺口时不会自动补成完整录像。
+
+常用配置：`--backend`、`--intrinsics`、`--bitrate`（默认8M）、`--gop`（默认60）、
+`--cpu-threads`（默认4）。Intel设备用 `--device`；NVIDIA用 `--cuda-device`，
+OpenCL设备默认选 NVIDIA GPU，多个设备时可用 `--opencl-device 0.0` 指定对应平台/设备。
+`--duration`、`--frames` 用于有限测试，`--progress` 可输出处理进度；`--ffmpeg` / `--ffprobe`
+用于选择工具版本。输出也可直接指定 `.mp4` / `.mkv` 文件；已有文件不会被覆盖。
+
+GPU 不可用或运行中退出时，终端打印原因并转入 CPU。运行中切换会重连输入、重建编码器，
+存在短暂中断，客户端可能需要重新播放。若输出为文件，失败的 GPU 文件保留为
+`*.gpu-failed-<时间戳>.*`，再创建 CPU 输出；本地文件输入从头重做，实时输入只能从重连后继续。
+失败文件可能因异常中止而无法解码。CPU 速度取决于机器，可能低于源帧率、增加延迟，不能据此宣称录像完整。
+CPU 也失败时明确报错退出，不反复重试掩盖输入、网络或磁盘故障。
+
+**用户提示：** 摄像头面板的拉流地址下方会显示本机中继的 CPU 回退/处理中断/失败提醒，
+完整原因在悬浮提示中；提示按当前实际播放地址关联，`localhost`、`127.0.0.1`、`::1` 等价。
+局域网地址与回环地址须使用一致写法才能关联。状态文件位于
+`$XDG_RUNTIME_DIR/ros2-ardupilot-relay/`，无该变量时在 `/tmp/ros2-ardupilot-relay-<uid>/`。
+面板与中继须由同一用户运行；远端观看者目前不会收到这些本机状态。
+本入口仍独立启动，尚未接入 GUI 启停或自启服务；原有机载采集链不变。
+
+维护入口：`ground_relay.py` 管理选择、探测与进程；`relay_calibration.py` 共享镜头几何，
+`relay_cpu.py` 实现保留时间戳的软件处理，`shaders/undistort_nv12.cl` 同时支持 NV12 与 YUV420P。
+面板提示逻辑在 `camera_app/relay_status.py`。
 
 ## 地面面板
 

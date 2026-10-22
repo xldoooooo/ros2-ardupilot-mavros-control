@@ -1,4 +1,4 @@
-/* Remap NV12 planes on Intel GPU surfaces with the full calibrated lens model. */
+/* Remap NV12 or YUV420P planes on GPU surfaces with the full calibrated lens model. */
 // Camera intrinsics, target projection, and chroma offsets are baked once at startup.
 // CALIBRATION_CONSTANTS
 

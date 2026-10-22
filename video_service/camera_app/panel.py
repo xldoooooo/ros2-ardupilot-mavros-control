@@ -57,6 +57,7 @@ from .config import (
 )
 from .controller import CameraServiceError
 from .ipc import CameraServiceClient
+from .relay_status import preview_notice
 
 
 SERVICE_SCRIPT = VIDEO_SERVICE_ROOT / "camera_service.py"
@@ -360,6 +361,12 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         url_row.addWidget(self.copy_url_button)
         layout.addLayout(url_row)
 
+        self.relay_status_label = QLabel()
+        self.relay_status_label.setWordWrap(True)
+        self.relay_status_label.setStyleSheet("color: #8a5700; background: #fff4d6; padding: 5px;")
+        self.relay_status_label.setVisible(False)
+        layout.addWidget(self.relay_status_label)
+
         metrics = QGridLayout()
         metrics.setHorizontalSpacing(18)
         self.elapsed_value = QLabel("00:00:00")
@@ -638,6 +645,15 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         """轮询两个独立控制面；任一失败都不能停止播放器。"""
         self._poll_status()
         self._poll_onboard_status()
+        self._refresh_relay_notice()
+
+    def _refresh_relay_notice(self) -> None:
+        """单独展示当前预览对应的地面中继警告，不影响摄像头或播放器。"""
+        url = self._active_preview_url or self.rtsp_url_input.text().strip()
+        notice, detail = preview_notice(url)
+        self.relay_status_label.setText(notice)
+        self.relay_status_label.setToolTip(detail)
+        self.relay_status_label.setVisible(bool(notice))
 
     def _poll_status(self) -> None:
         """异步读取本机后台状态，不阻塞 Qt。"""
