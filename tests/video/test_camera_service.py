@@ -1213,3 +1213,53 @@ def test_every_panel_combo_and_spinbox_ignores_wheel(tmp_path: Path) -> None:
     window.deleteLater()
     application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     application.processEvents()
+
+
+@pytest.mark.parametrize("size", [(900, 560), (1600, 1000)])
+def test_small_preview_reserves_controls_with_video_and_media_details(size, monkeypatch) -> None:
+    """缩小窗口、原生视频帧和展开状态详情均不能覆盖地址或统计控件。"""
+    from PySide6.QtGui import QImage
+    from PySide6.QtMultimedia import QVideoFrame
+    from camera_app.media_status import GroundMediaStatus
+
+    monkeypatch.setattr(GroundMediaStatus, "refresh", lambda self: None)
+    application = _application()
+    window = CameraPanelWindow(auto_bootstrap=False)
+    window.setStyleSheet(PANEL_STYLE_SHEET)
+    window._poll_timer.stop()
+    window._metrics_timer.stop()
+    window.ground_media_status._completed({
+        "streams": [{"aircraft_id": "uav002", "state": "recording", "url": "rtsp://ground/uav002/rectified"}],
+        "records": [{"kind": "video", "variant": "experiment", "aircraft_id": "uav002", "session_id": "task-long-context", "created_at": 1792692000, "state": "incomplete", "error": "已知中断，需要原片重建。" * 30}],
+        "error": "上传失败，其他功能保持运行。" * 30,
+    }, "")
+    window.resize(*size)
+    window.show()
+    application.processEvents()
+    try:
+        assert not window.ground_media_status.details.isVisible()
+        assert window.ground_media_status.height() < 90
+        assert "录像已知不完整" in window.ground_media_status.summary.text()
+        assert window.ground_media_status.alert.isVisible()
+        for state in ("black", "video", "details"):
+            if state == "video":
+                image = QImage(1920, 1080, QImage.Format.Format_RGB32)
+                image.fill(QColor("#23475c"))
+                window.video_sink.setVideoFrame(QVideoFrame(image))
+                window.preview_stack.setCurrentWidget(window.video_widget)
+            elif state == "details":
+                window.ground_media_status.details_button.click()
+            application.processEvents()
+            surface_bottom = window.preview_stack.mapTo(window, QPoint()).y() + window.preview_stack.height()
+            assert surface_bottom <= window.rtsp_url_input.mapTo(window, QPoint()).y()
+            assert window.preview_stack.rect().contains(window.preview_stack.currentWidget().geometry())
+            for control in (window.rtsp_url_input, window.play_pause_button, window.copy_url_button, window.elapsed_value, window.fps_value):
+                position = control.mapTo(window, QPoint())
+                assert position.y() + control.height() <= window.height() - window._SHADOW_MARGIN
+            assert window.width() == size[0]
+            assert window.height() == size[1]
+    finally:
+        window.close()
+        window.deleteLater()
+        application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        application.processEvents()

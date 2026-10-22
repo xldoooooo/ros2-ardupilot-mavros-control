@@ -1,7 +1,10 @@
-"""Software decode, calibrated planar remap and H.264 encode with original frame timing."""
+"""Software rectification with original timing and optional shared RTSP/recording packets."""
 
+from contextlib import ExitStack
 from fractions import Fraction
+from pathlib import Path
 import signal
+import tempfile
 import time
 
 import cv2
@@ -26,7 +29,9 @@ def run_cpu(args, calibration):
     signal.signal(signal.SIGTERM, stop)
     cv2.setNumThreads(args.cpu_threads)
     maps = (calibration.maps(), calibration.maps(True))
-    input_options = {'rtsp_transport': 'tcp'} if args.input.startswith('rtsp://') else {}
+    # Match the GPU path's short RTSP analysis without changing file inputs or source PTS.
+    input_options = ({'rtsp_transport': 'tcp', 'analyzeduration': '200000', 'probesize': '5000000', 'fpsprobesize': '8'}
+                     if args.input.startswith('rtsp://') else {})
     output_options = {'rtsp_transport': 'tcp'} if args.output.startswith('rtsp://') else {}
     output_format = 'rtsp' if output_options else None
     width, height = calibration.width, calibration.height
@@ -37,7 +42,18 @@ def run_cpu(args, calibration):
         rate = stream.average_rate or stream.guessed_rate or Fraction(30, 1)
         # A fine timebase preserves network gaps and VFR instead of manufacturing CFR frames.
         time_base = Fraction(1, 90000)
-        with av.open(args.output, 'w', format=output_format, options=output_options) as sink:
+        with ExitStack() as outputs:
+            destination = args.output
+            if getattr(args, 'recording', None):
+                # Reserve without overwriting, then keep tee away from arbitrary path characters.
+                outputs.enter_context(args.recording.open('xb'))
+                temporary = outputs.enter_context(tempfile.TemporaryDirectory(prefix='ground-relay-record-'))
+                alias = Path(temporary) / 'recording.mkv'
+                alias.symlink_to(args.recording.resolve())
+                rtsp_options = '[f=rtsp:rtsp_transport=tcp]' if output_format == 'rtsp' else ''
+                destination = f'[f=matroska]{alias}|{rtsp_options}{args.output}'
+                output_format, output_options = 'tee', {}
+            sink = outputs.enter_context(av.open(destination, 'w', format=output_format, options=output_options))
             encoded = sink.add_stream('libx264', rate=rate)
             encoded.width, encoded.height, encoded.pix_fmt = width, height, 'yuv420p'
             encoded.bit_rate = args.bitrate_value
@@ -47,6 +63,9 @@ def run_cpu(args, calibration):
             encoded.codec_context.max_b_frames = 0
             encoded.options = {'preset': 'veryfast', 'tune': 'zerolatency',
                                'x264-params': f'chromaloc={0 if args.chroma_location == "left" else 1}'}
+            if getattr(args, 'recording', None):
+                # Both tee slaves receive the same packets and complete H.264 headers.
+                encoded.codec_context.flags |= av.codec.context.Flags.global_header
             for frame in source.decode(stream):
                 if stopping:
                     break
@@ -86,7 +105,8 @@ def run_cpu(args, calibration):
                 count, last_pts = count + 1, pts
                 now = time.monotonic()
                 if args.progress and now - last_progress >= 1:
-                    args.progress.write_text(f'frame={count}\nfps={count / (now-started):.2f}\nprogress=continue\n')
+                    args.progress.write_text(f'frame={count}\nfps={count / (now-started):.2f}\n'
+                                             f'out_time_us={round(pts * time_base * 1000000)}\nprogress=continue\n')
                     last_progress = now
                 if args.frames and count >= args.frames:
                     break
@@ -95,4 +115,4 @@ def run_cpu(args, calibration):
     if not count and not stopping:
         raise RuntimeError('No video frames were received')
     if args.progress:
-        args.progress.write_text(f'frame={count}\nprogress=end\n')
+        args.progress.write_text(f'frame={count}\nout_time_us={round(max(0, last_pts) * time_base * 1000000)}\nprogress=end\n')

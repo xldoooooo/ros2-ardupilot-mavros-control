@@ -95,7 +95,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 - **集中媒体服务（Task8）**：飞机仅保留回环RTSP，按逐机`video/camera.conf`主动推流和rsync/SSH上传到mini-ground；外部使用地面`<aircraft>/rectified`、HTTP8090与只读FTP2121。原片/暂存私有，去畸变成品才公开。地面独立`ground-media.service`拥有处理、封装、图片入库、容量清理与原片重建；GUI关闭不影响后台。
   机载SQLite队列从大小/SHA-256核验入库ACK开始计算默认24小时保留期；未确认原片不清理。总容量默认100GiB，跳过活动文件，超限明确告警。归属为飞机/session/source_id/mission_sequence，photo_no与waypoint_index分开。08飞行完成与媒体就绪分开，09只提供地面已处理图片或明确失败。
   开发机、refresh、new、hp-desktop、mini-ground已同步媒体代码及现有Intel/NVIDIA/AMD/CPU中继；不覆盖逐机标定、本机选择与依赖环境。开发机/hp/mini已安装并启用地面后台，飞机接收目标为mini；两机旧FTP及`/home/share`已清理，上传专用SSH别名为`media-ground`。飞机视频/飞控服务最终保持停止。
-  mini已安装Intel OpenCL ICD，保留自动选择用户级Intel运行时的兼容路线。真实refresh台架完成图片/原片上传、去畸变流及录像、3并发读者、FTP下载和原片重建；new无摄像头，仅验证真实传输失败重试/恢复/ACK后清理。冷启动首帧约晚5.9秒，实时实验版明确标记不完整，飞行前建议手动开相机等待地面录像；不宣称逐帧完整或实飞验收。
+  mini已安装Intel OpenCL ICD，保留自动选择用户级Intel运行时的兼容路线。真实refresh台架完成图片/原片上传、去畸变流及录像、3并发读者、FTP下载和原片重建；new无摄像头，仅验证真实传输失败重试/恢复/ACK后清理。实时去畸变使用同一次编码同时写入MKV与RTSP，避免重复拉流；GPU运行失败保留片段并新建CPU片段继续。2026-10-23真实refresh台架原片22.97秒、地面19.63秒，完整解码通过；通知到检测进度约5.49秒，不能当作精确缺帧时长。仍允许数秒冷启动差，保留不完整提示；不宣称逐帧同步或实飞验收。摄像头面板已压缩顶部摘要，预览支持900×560窗口及高DPI缩放。
   配置和维护入口见[视频说明](video_service/README.md)，部署/验收边界见[Task8报告](agent/report/report-2026-10-22-task8-video-refactor.md)。
 
 - **Odin Wi-Fi断网停流已根修复（全部现役设备，`3a09be8`）**：静态SDK全局`MD5`曾覆盖Fast DDS同名类，造成DDS混用实现、同机通信依赖Wi-Fi；USB采集本身持续正常。

@@ -23,6 +23,8 @@ GPU_BACKENDS = ('intel', 'nvidia', 'amd')
 PROBE_TIMEOUT = 40
 # A stable per-user installation keeps optional Intel drivers out of experiment directories.
 DEFAULT_INTEL_RUNTIME = Path(os.environ.get('XDG_DATA_HOME', Path.home() / '.local/share')) / 'ros2-ardupilot-video/intel-opencl'
+# SDP describes RTSP video tracks; limit the analysis window without changing network timeouts.
+RTSP_PROBE_OPTIONS = ['-analyzeduration', '200000', '-probesize', '5000000', '-fpsprobesize', '8']
 
 
 def bitrate_value(value):
@@ -71,7 +73,7 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
                    'hwdownload,format=yuv420p')
         encoder = ['-c:v', 'h264_nvenc', '-gpu', str(args.cuda_device), '-preset', 'p4', '-tune', 'll']
     if source.startswith('rtsp://'):
-        command += ['-rtsp_transport', 'tcp', '-timeout', '15000000']
+        command += ['-rtsp_transport', 'tcp', '-timeout', '15000000', *RTSP_PROBE_OPTIONS]
     command += ['-threads', '2', '-i', source, '-map', '0:v:0', '-an', '-vf', filters,
                 *encoder, '-b:v', args.bitrate, '-g', str(args.gop), '-bf', '0',
                 '-fps_mode', 'passthrough', '-chroma_sample_location', args.chroma_location]
@@ -84,6 +86,11 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
     if args.frames:
         command += ['-frames:v', str(args.frames)]
     command += ['-progress', str(args.progress), '-stats_period', '1']
+    if getattr(args, 'recording', None):
+        # The supervisor supplies a simple symlink so tee never parses user path characters.
+        recording = args.recording_output
+        return command + ['-flags', '+global_header', '-f', 'tee', '-n',
+                          f'[f=matroska]{recording}|[f=rtsp:rtsp_transport=tcp]{destination}']
     if destination.startswith('rtsp://'):
         command += ['-f', 'rtsp', '-rtsp_transport', 'tcp']
     return command + ['-n', destination]
@@ -122,7 +129,7 @@ def validate_source(args, calibration):
     """Check real input geometry before choosing an output backend."""
     command = [args.ffprobe, '-v', 'error']
     if args.input.startswith('rtsp://'):
-        command += ['-rtsp_transport', 'tcp', '-timeout', '15000000']
+        command += ['-rtsp_transport', 'tcp', '-timeout', '15000000', *RTSP_PROBE_OPTIONS]
     command += ['-select_streams', 'v:0', '-show_entries', 'stream=width,height,color_range', '-of', 'json', args.input]
     result = subprocess.run(command, capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     if result.returncode:
@@ -146,11 +153,13 @@ def cpu_command(args):
         command += ['--duration', str(args.duration)]
     if args.frames:
         command += ['--frames', str(args.frames)]
+    if getattr(args, 'recording', None):
+        command += ['--recording', str(args.recording)]
     return command
 
 
 def supervise(args, calibration, state):
-    """Probe GPUs before publishing, then allow one explicit software recovery."""
+    """Probe GPUs, preserving recording fragments if a live backend fails."""
     stopping = False
     process = None
 
@@ -234,6 +243,12 @@ def supervise(args, calibration, state):
         while not stopping:
             report('starting', backend, warning, '\n'.join(failures))
             args.progress.unlink(missing_ok=True)
+            if backend != 'cpu' and getattr(args, 'recording', None):
+                # Reserve exclusively; tee writes only this new file, never an existing recording.
+                with args.recording.open('xb'):
+                    pass
+                args.recording_output = root / 'recording.mkv'
+                args.recording_output.symlink_to(args.recording.resolve())
             command = cpu_command(args) if backend == 'cpu' else build_command(args, backend, shaders[backend])
             error_log = root / 'worker.log'
             with error_log.open('w') as errors:
@@ -282,7 +297,8 @@ def supervise(args, calibration, state):
             logging.error('%s 处理退出（%s）：%s', backend, code, detail)
             detail = f'{backend} 退出码 {code}：{detail}'
             failures.append(detail)
-            if backend == 'cpu':
+            if backend == 'cpu' or getattr(args, 'recording', None):
+                # The owner starts a new recording fragment when recovering a live GPU failure.
                 report('error', backend, warning, detail)
                 return 1
             # Preserve an interrupted local output before replaying the source from its beginning.
@@ -303,6 +319,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', required=True)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--recording', type=Path, help='Save the same encoded RTSP packets to a new Matroska file')
     parser.add_argument('--backend', choices=('auto', *GPU_BACKENDS, 'cpu'), default='auto')
     parser.add_argument('--intrinsics', type=Path, default=DEFAULT_INTRINSICS)
     parser.add_argument('--device', default='auto', help='Render device or auto (discover and probe available devices)')
@@ -336,6 +353,12 @@ def main():
         args.bitrate_value = bitrate_value(args.bitrate)
         if args.cpu_threads <= 0 or args.gop <= 0 or (args.frames is not None and args.frames <= 0) or (args.duration is not None and args.duration <= 0):
             raise ValueError('Threads, GOP, frames and duration must be positive')
+        if args.recording:
+            if not args.output.startswith('rtsp://'):
+                raise ValueError('--recording requires an RTSP output')
+            if args.recording.exists() or args.recording.is_symlink():
+                raise FileExistsError(f'录像已存在，避免覆盖：{args.recording}')
+            args.recording.parent.mkdir(parents=True, exist_ok=True)
         calibration = Calibration(args.intrinsics, args.chroma_location)
         if args.worker_cpu:
             from relay_cpu import run_cpu

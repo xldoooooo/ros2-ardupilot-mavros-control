@@ -132,7 +132,13 @@ QFrame#panelHeader, QFrame#previewCard, QGroupBox {
     border-radius: 4px;
 }
 QFrame#panelHeader { border-left: 4px solid #245f87; }
-QLabel#panelTitle { font-size: 16pt; font-weight: 700; }
+QLabel#panelTitle { font-size: 11pt; font-weight: 700; }
+QWidget#groundMediaStatus {
+    background: #ffffff; border: 1px solid #cfd6de; border-radius: 4px;
+}
+QLabel#mediaSummary { color: #40596f; }
+QLabel#mediaAlert { color: #9a5b00; }
+QPushButton[mediaCompact="true"] { min-height: 24px; padding: 2px 8px; }
 QLabel#mutedLabel { color: #5f6f80; }
 QGroupBox {
     margin-top: 11px;
@@ -225,6 +231,7 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         auto_bootstrap: bool = True,
         parent: QWidget | None = None,
     ) -> None:
+        """创建三模式控制、可缩放预览和独立后台状态组件。"""
         super().__init__(parent)
         self.client = client or CameraServiceClient()
         self._onboard_client = onboard_client
@@ -248,7 +255,7 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
 
         self.setWindowTitle(DESKTOP_APPLICATION_NAME)
         self._configure_window_chrome()
-        self.setMinimumSize(980, 680)
+        self.setMinimumSize(900, 560)
         self.resize(1180, 780)
         self._build_ui()
         self._connect_signals()
@@ -284,14 +291,14 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         body = QWidget()
         body.setObjectName("subpanelWindowBody")
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(14, 12, 14, 10)
-        body_layout.setSpacing(10)
+        body_layout.setContentsMargins(10, 8, 10, 8)
+        body_layout.setSpacing(8)
 
         header = QFrame()
         header.setObjectName("panelHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(14, 10, 12, 10)
-        title = QLabel("摄像头配置面板")
+        header_layout.setContentsMargins(10, 6, 10, 6)
+        title = QLabel("摄像头控制")
         title.setObjectName("panelTitle")
         header_layout.addWidget(title, 1)
         self.start_button = QPushButton("开启本机摄像头")
@@ -303,6 +310,7 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         header_layout.addWidget(self.start_button)
         header_layout.addWidget(self.stop_button)
         header_layout.addWidget(self.snapshot_button)
+        header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         body_layout.addWidget(header)
         self.ground_media_status = GroundMediaStatus(self)
         body_layout.addWidget(self.ground_media_status)
@@ -328,7 +336,9 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
 
         self.preview_stack = QStackedWidget()
         self.preview_stack.setObjectName("videoSurface")
-        self.preview_stack.setMinimumSize(640, 360)
+        # 固定360像素最小高度会在小窗口中侵入下方控制行；视频尺寸不参与布局下限。
+        self.preview_stack.setMinimumSize(1, 1)
+        self.preview_stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         # QVideoWidget 内部包含原生 QWindow；没有有效帧时始终用普通、
         # 不透明的黑色 QWidget 完整遮住它，提示信息放到预览区外。
         black_palette = self.preview_stack.palette()
@@ -339,8 +349,10 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.preview_placeholder.setObjectName("previewPlaceholder")
         self.preview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_placeholder.setPalette(black_palette)
+        self.preview_placeholder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.video_widget = QVideoWidget()
         self.video_widget.setObjectName("videoSurface")
+        self.video_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.preview_stack.addWidget(self.preview_placeholder)
         self.preview_stack.addWidget(self.video_widget)
         layout.addWidget(self.preview_stack, 1)
@@ -380,9 +392,9 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             heading = QLabel(label)
             heading.setObjectName("mutedLabel")
             widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            metrics.addWidget(heading, 0, column)
-            metrics.addWidget(widget, 1, column)
-            metrics.setColumnStretch(column, 1)
+            metrics.addWidget(heading, 0, column * 2)
+            metrics.addWidget(widget, 0, column * 2 + 1)
+            metrics.setColumnStretch(column * 2 + 1, 1)
         layout.addLayout(metrics)
         return card
 
@@ -390,6 +402,8 @@ class CameraPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         """创建视频源选择及仅本机模式可编辑的发布配置。"""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setMinimumWidth(320)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         form_widget = QWidget()
         layout = QVBoxLayout(form_widget)
         layout.setContentsMargins(0, 0, 0, 0)

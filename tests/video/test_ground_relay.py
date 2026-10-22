@@ -49,7 +49,8 @@ def test_calibration_matches_opencv_and_rejects_nan(tmp_path):
         Calibration(path, 'left')
 
 
-def test_cpu_keeps_source_gaps_and_full_range(tmp_path):
+@pytest.mark.parametrize('recording', (False, True))
+def test_cpu_keeps_source_gaps_and_full_range(tmp_path, recording):
     """An input gap must survive encoding rather than becoming fabricated continuous video."""
     source, output = tmp_path / 'source.mp4', tmp_path / 'corrected.mp4'
     with av.open(str(source), 'w') as container:
@@ -64,8 +65,11 @@ def test_cpu_keeps_source_gaps_and_full_range(tmp_path):
             container.mux(stream.encode(frame))
         container.mux(stream.encode())
     camera = Calibration(calibration_file(tmp_path), 'left')
+    recorded = tmp_path / "录 制 | : ' [test].mkv"
+    progress = tmp_path / 'progress.txt'
     args = Namespace(input=str(source), output=str(output), cpu_threads=2, bitrate_value=1000000,
-                     gop=60, chroma_location='left', duration=None, frames=None, progress=None)
+                     gop=60, chroma_location='left', duration=None, frames=None, progress=progress,
+                     recording=recorded if recording else None)
     handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         run_cpu(args, camera)
@@ -80,3 +84,16 @@ def test_cpu_keeps_source_gaps_and_full_range(tmp_path):
     assert len(frames) == 5
     assert all(frame.color_range == 2 for frame in frames)
     assert abs(float(frames[0].to_ndarray()[:72].mean()) - 128) <= 1
+    assert 'frame=5\nout_time_us=550000\nprogress=end' in progress.read_text()
+    if recording:
+        with av.open(str(recorded)) as container:
+            saved_frames = list(container.decode(video=0))
+        assert len(saved_frames) == len(frames)
+        # Matroska uses milliseconds; both outputs retain the source's half-second gap.
+        np.testing.assert_allclose([frame.time for frame in saved_frames], expected, atol=0.001)
+        assert all(frame.color_range == 2 for frame in saved_frames)
+        with av.open(str(recorded)) as container:
+            saved_packets = [bytes(packet) for packet in container.demux(video=0) if packet.size]
+        with av.open(str(output)) as container:
+            main_packets = [bytes(packet) for packet in container.demux(video=0) if packet.size]
+        assert saved_packets == main_packets

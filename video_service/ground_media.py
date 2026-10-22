@@ -162,7 +162,7 @@ class GroundMedia:
                 session = None
             if session is None:
                 session = dict(aircraft_id=aircraft, session_id=session_id, metadata=dict(payload),
-                               received_at=time.time(), relay=None, recorder=None, record_id=None,
+                               received_at=time.time(), relay=None, record_id=None,
                                next_retry=0, interruptions=[], last_seen=time.time())
                 self.sessions[aircraft] = session
                 # Freeze the intrinsics and processing settings for this recording and rebuild.
@@ -185,28 +185,20 @@ class GroundMedia:
                                    for aircraft, session in self._ended})
 
     def _start_stream(self, session):
-        """Start one correction pipeline and stream-copy its output into a private file."""
+        """Write encoded packets to the recording from the first frame while publishing RTSP."""
         aircraft = session['aircraft_id']
         base = f"rtsp://127.0.0.1:{self.config.get('rtsp_port', 8554)}/{aircraft}"
         session['output'] = base + '/rectified'
-        session['relay'] = self._spawn(self.relay_command(base + '/raw', session['output'],
-            self.root / f'{aircraft}-relay.progress', session['intrinsics'], session['options']), aircraft + '-relay')
         metadata = {**session['metadata'], 'processing': session['options']}
         record_id = self.store.create_record(aircraft, session['session_id'], metadata=metadata)
         session['record_id'] = record_id
         session['partial'] = str(self.root / 'staging' / f'{record_id}.mkv')
         session['record_started'] = None
-        session['recorder'] = None
-
-    def _start_recorder(self, session):
-        """Mux the already encoded stream without decoding or encoding a second time."""
-        progress = self.root / f"{session['record_id']}-record.progress"
+        progress = self.root / f'{record_id}-record.progress'
         session['record_progress'] = progress
-        session['recorder'] = self._spawn([
-            'ffmpeg', '-hide_banner', '-nostdin', '-loglevel', 'warning', '-rtsp_transport', 'tcp',
-            '-timeout', '15000000', '-i', session['output'], '-map', '0:v:0', '-an', '-c:v', 'copy',
-            '-progress', str(progress), '-stats_period', '1', '-n', session['partial']],
-            session['record_id'] + '-record')
+        command = self.relay_command(base + '/raw', session['output'], progress,
+                                     session['intrinsics'], session['options'])
+        session['relay'] = self._spawn(command + ['--recording', session['partial']], aircraft + '-relay')
 
     def _paths(self):
         """Read ready MediaMTX paths from the loopback control API."""
@@ -227,30 +219,28 @@ class GroundMedia:
                                 self._start_stream(session)
                             continue
                         if session['relay'].poll() is not None:
+                            failed = session['relay'].returncode != 0
                             self._finish_fragment(session, '去畸变进程退出，实时录像中断')
+                            # A failed GPU recording remains a separate fragment; retry with software.
+                            if failed:
+                                session['options']['backend'] = 'cpu'
                             session['next_retry'] = time.time() + 3
                             continue
-                        if not session['recorder'] and f'{aircraft}/rectified' in paths:
-                            self._start_recorder(session)
-                        recorder = session['recorder']
-                        if recorder:
-                            if recorder.poll() is not None:
-                                self._finish_fragment(session, '录像封装进程退出，实时录像中断')
-                                session['next_retry'] = time.time() + 3
-                                continue
-                            if not session['record_started'] and session['record_progress'].exists():
-                                progress = session['record_progress'].read_text()
-                                if re.search(r'out_time_us=[1-9]', progress):
-                                    session['record_started'] = time.time()
-                                    delay = session['record_started'] - session['received_at']
-                                    if delay > 3:
-                                        session['interruptions'].append(f'地面首帧比会话通知晚约{delay:.1f}秒，开头覆盖未保证')
+                        if not session['record_started'] and session['record_progress'].exists():
+                            progress = session['record_progress'].read_text()
+                            if re.search(r'frame=\s*[1-9]\d*', progress):
+                                session['record_started'] = time.time()
+                                delay = session['record_started'] - session['received_at']
+                                if delay > 3:
+                                    session['interruptions'].append(f'开始通知后约{delay:.1f}秒检测到录像进度，开头覆盖未保证')
                         if f'{aircraft}/raw' not in paths and time.time() - session['last_seen'] > 30:
                             self._finish(session, '飞机原始流和会话通知中断，结束状态未知')
                             self.sessions.pop(aircraft, None)
+                            continue
                         try:
                             notice = json.loads(status_path(session['output']).read_text())
-                            if notice.get('warning') and notice['warning'] not in session['interruptions']:
+                            if (notice.get('pid') == session['relay'].pid and notice.get('warning')
+                                    and notice['warning'] not in session['interruptions']):
                                 session['interruptions'].append(notice['warning'])
                         except (OSError, ValueError):
                             pass
@@ -262,14 +252,14 @@ class GroundMedia:
         """Finalize one interrupted fragment; never splice it into an apparently complete file."""
         if error:
             session['interruptions'].append(error)
-        stop_process(session.get('recorder'))
         stop_process(session.get('relay'))
         if session.get('record_id'):
             self.store.update(session['record_id'], state='processing')
             snapshot = {**session, 'metadata': dict(session['metadata']),
+                        'options': dict(session['options']),
                         'interruptions': list(session['interruptions']), 'finished_at': time.time()}
             self.workers.submit(self._validate_recording, snapshot)
-        session.update(relay=None, recorder=None, record_id=None, record_started=None)
+        session.update(relay=None, record_id=None, record_started=None)
 
     def _finish(self, session, error=''):
         """Finish a session even if no corrected frame ever reached the recorder."""
@@ -297,6 +287,8 @@ class GroundMedia:
             if check.returncode or check.stderr.strip():
                 errors.append('完整解码检查异常：' + check.stderr[-500:])
             metadata = {**session['metadata'], 'duration': duration, 'expected_duration': expected,
+                        'startup_observed_seconds': (session['record_started'] - session['received_at']
+                                                     if session.get('record_started') else None),
                         'processing': session['options'], 'state': 'incomplete' if errors else 'ready',
                         'error': '；'.join(dict.fromkeys(errors)), 'variant': 'experiment'}
             self.store.register_processed(path, session['aircraft_id'], session['session_id'], metadata,
