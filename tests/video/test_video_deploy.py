@@ -57,7 +57,7 @@ def test_video_service_installer_is_one_command_and_preserves_isolation() -> Non
 
     installer = VIDEO_INSTALLER.read_text(encoding="utf-8")
     for required in (
-        "/usr/local/bin/mediamtx",
+        "load_onboard_settings().mediamtx_binary",
         "project_config_load",
         "system/systemd/video-service.service",
         "ardupilot-media/cache/images",

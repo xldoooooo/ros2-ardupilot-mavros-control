@@ -1,6 +1,8 @@
 """Verify one profile is selected consistently by Python and shell service entry points."""
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,3 +52,33 @@ def test_unknown_profile_is_reported_instead_of_loading_another_aircraft(tmp_pat
     (tmp_path / 'config/aircraft.local.env').write_text('AIRCRAFT_ID=missing\n')
     with pytest.raises(FileNotFoundError, match='missing'):
         config_dir(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ('domain', 'origin', 'valid'),
+    [
+        ('42', '31.2,121.5,15', True),
+        ('231', '31.2,121.5,15', False),
+        ('bad', '31.2,121.5,15', False),
+        ('42', 'nan,121.5,15', False),
+    ],
+)
+def test_ground_host_settings_select_domain_and_default_origin(domain, origin, valid):
+    """Host overrides must load together and reject a colliding domain or invalid GPS origin."""
+    environment = os.environ.copy()
+    environment.update(
+        GROUND_STATION_HARDWARE_DOMAIN_ID=domain,
+        GROUND_STATION_GPS_ORIGIN=origin,
+    )
+    result = subprocess.run(
+        [sys.executable, '-c',
+         'from ground_station_core.config import HARDWARE_DOMAIN_ID, DEFAULT_GPS_ORIGIN; '
+         'print(HARDWARE_DOMAIN_ID, DEFAULT_GPS_ORIGIN)'],
+        cwd=PROJECT_ROOT, env=environment, capture_output=True, text=True,
+    )
+    if valid:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == '42 (31.2, 121.5, 15.0)'
+    else:
+        assert result.returncode != 0
+        assert 'GROUND_STATION_' in result.stderr

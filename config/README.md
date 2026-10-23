@@ -2,7 +2,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `aircraft.local.env` | 本机选择固定编号：`uav001` 为1号机、`uav002` 为2号机、`simulation` 为仿真，不提交 Git。 |
-| `host.local.env` | 本机依赖路径及构建环境，不提交 Git。 |
+| `host.local.env` | 本机依赖路径、构建环境、地面实机 ROS domain 和默认 GPS 原点；参照 `host.local.env.example`，不提交 Git。 |
 | `aircraft/<编号>/aircraft.yaml` | 飞机显示名称，改名不改变固定编号。 |
 | `aircraft/<编号>/onboard.env` | 飞控串口、波特率、ROS 通信及依赖路径。 |
 | `aircraft/<编号>/navigation.env` | 保存 odom/map 导航模式。 |

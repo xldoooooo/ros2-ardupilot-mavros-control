@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-22。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-23。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -71,6 +71,7 @@
 
 ## 逐机部署差异与待同步项
 
+- 开发机源码已增加地面 `config/host.local.env` 的实机 ROS domain 和默认 GPS 原点入口，地面与机载视频安装器使用运行时选定的 MediaMTX 路径。refresh、new、hp-desktop、mini-ground 尚未同步；部署时保留各机配置并核对两端 ROS domain 一致，服务重启后才生效。详见[配置审查报告](agent/report/report-2026-10-23-configurability-audit.md)。
 默认连接 `ssh drone-refresh`；不可达时停止并询问用户，不自行切换飞机。
 最近核对别名为 refresh → `.186`、new → `.169`；历史名称/IP 曾变化，连接时核对目标。
 两机工作区均为 `/home/nvidia/ros2-ardupilot-mavros-control`。

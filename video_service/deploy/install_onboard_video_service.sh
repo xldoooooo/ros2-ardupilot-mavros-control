@@ -69,10 +69,14 @@ for command_name in ffmpeg v4l2-ctl rsync ssh; do
   command -v "${command_name}" >/dev/null 2>&1 ||
     die "missing ${command_name}; install the packages documented in video_service/README.md"
 done
-[[ -x /usr/local/bin/mediamtx ]] ||
-  die "missing /usr/local/bin/mediamtx; install MediaMTX as documented in video_service/README.md"
-[[ "$(/usr/local/bin/mediamtx --version 2>/dev/null || true)" == "v${MEDIAMTX_VERSION}" ]] ||
-  die "MediaMTX v${MEDIAMTX_VERSION} is required at /usr/local/bin/mediamtx"
+video_python="${VIDEO_SERVICE_PYTHON:-${WORKSPACE_ROOT}/.venv/bin/python}"
+[[ -x "${video_python}" ]] || die "missing project Python: ${video_python}"
+mediamtx_binary="$("${video_python}" -c \
+  'from video_service.camera_app.onboard_config import load_onboard_settings; print(load_onboard_settings().mediamtx_binary)')" ||
+  die "cannot read mediamtx_binary from ${VIDEO_SERVICE_ONBOARD_CONFIG}"
+[[ -x "${mediamtx_binary}" ]] || die "MediaMTX is not executable: ${mediamtx_binary}"
+[[ "$("${mediamtx_binary}" --version 2>/dev/null || true)" == "v${MEDIAMTX_VERSION}" ]] ||
+  die "MediaMTX v${MEDIAMTX_VERSION} is required at ${mediamtx_binary}"
 
 # 新 sparse checkout 不要求用户先记住另一条构建命令。
 if [[ ! -f "${WORKSPACE_ROOT}/install/setup.bash" ]]; then

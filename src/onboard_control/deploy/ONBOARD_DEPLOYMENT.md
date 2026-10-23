@@ -261,6 +261,10 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 与 localhost-only；不要把 smoke 的 domain 带入真实 MAVROS。domain 值不会改善地址、链路质量
 或 DDS 序列化兼容性。
 
+地面站通过本机 `config/host.local.env` 的 `GROUND_STATION_HARDWARE_DOMAIN_ID` 选择实机 domain，
+默认 0；应与飞机所选 `config/aircraft/<AIRCRAFT_ID>/onboard.env` 中的 `ROS_DOMAIN_ID` 一致。
+修改两端配置后分别重启对应进程；231 保留给本机仿真，不能用于实机连接。
+
 旧 Ubuntu 22.04/Humble 飞机使用 `ROS_LOCALHOST_ONLY=0` 进行同网段发现；Humble 不应直接照搬
 Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jazzy 混合链曾出现
 `sequence size exceeds remaining buffer`，ROS 官方也不保证跨发行版通信；若恢复旧机，必须按

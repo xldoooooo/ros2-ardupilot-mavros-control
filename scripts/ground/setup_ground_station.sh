@@ -35,12 +35,14 @@ for command in ffmpeg ffprobe v4l2-ctl; do
     exit 1
   }
 done
-if [[ ! -x /usr/local/bin/mediamtx ]]; then
-  echo "[ground-setup] required MediaMTX is missing: /usr/local/bin/mediamtx" >&2
+mediamtx_binary="$(command -v mediamtx || true)"
+mediamtx_binary="${mediamtx_binary:-/usr/local/bin/mediamtx}"
+if [[ ! -x "${mediamtx_binary}" ]]; then
+  echo "[ground-setup] required MediaMTX is missing from PATH and /usr/local/bin" >&2
   echo "[ground-setup] install the matching architecture from video_service/README.md" >&2
   exit 1
 fi
-if ! mediamtx_version="$(/usr/local/bin/mediamtx --version 2>/dev/null)"; then
+if ! mediamtx_version="$("${mediamtx_binary}" --version 2>/dev/null)"; then
   echo "[ground-setup] MediaMTX cannot run on this host; verify its CPU architecture" >&2
   exit 1
 fi

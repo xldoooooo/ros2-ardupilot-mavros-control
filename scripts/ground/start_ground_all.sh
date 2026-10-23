@@ -32,9 +32,14 @@ done
 runtime_source_setup "${ros_setup}"
 runtime_source_setup "${workspace_setup}"
 
-# GUI 内部会为本地仿真重建 domain 231/localhost-only context；实机始终
-# 回到机载服务既有的 domain 0，避免调用者环境把两套系统重新混在一起。
-export ROS_DOMAIN_ID="0"
+# 主机配置明确选择实机 domain；GUI 仿真仍独立使用 231/LOCALHOST。
+hardware_domain="${GROUND_STATION_HARDWARE_DOMAIN_ID:-0}"
+if [[ ! "${hardware_domain}" =~ ^[0-9]+$ ]] ||
+   (( 10#${hardware_domain} > 232 || 10#${hardware_domain} == 231 )); then
+  echo "[ground-startup] invalid GROUND_STATION_HARDWARE_DOMAIN_ID: ${hardware_domain}" >&2
+  exit 1
+fi
+export ROS_DOMAIN_ID="$((10#${hardware_domain}))"
 if [[ "${ROS_DISTRO:-}" == "humble" ]]; then
   export ROS_LOCALHOST_ONLY="0"
   unset ROS_AUTOMATIC_DISCOVERY_RANGE ROS_STATIC_PEERS

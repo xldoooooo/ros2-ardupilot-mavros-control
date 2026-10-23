@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import sys
@@ -15,10 +16,14 @@ INSTALL_SETUP = PROJECT_ROOT / "install" / "setup.bash"
 # SITL always uses its own profile, regardless of this host's aircraft selector.
 ONBOARD_PARAM_FILE = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "control.yaml"
 
-# 真机继续使用既有 domain 0；本地仿真固定放入仅本机发现的独立 domain，
-# 从传输层杜绝同时运行的真机与 SITL 共享同名 topic/service。
-HARDWARE_DOMAIN_ID = 0
+# 实机 domain 可按地面主机设置；仿真固定使用本机隔离 domain。
 SIMULATION_DOMAIN_ID = 231
+try:
+    HARDWARE_DOMAIN_ID = int(os.environ.get("GROUND_STATION_HARDWARE_DOMAIN_ID", "0"))
+except ValueError as exc:
+    raise ValueError("GROUND_STATION_HARDWARE_DOMAIN_ID 必须为整数") from exc
+if not 0 <= HARDWARE_DOMAIN_ID <= 232 or HARDWARE_DOMAIN_ID == SIMULATION_DOMAIN_ID:
+    raise ValueError("GROUND_STATION_HARDWARE_DOMAIN_ID 必须在 0～232 且不能为仿真 domain 231")
 HARDWARE_DISCOVERY_RANGE = "SUBNET"
 SIMULATION_DISCOVERY_RANGE = "LOCALHOST"
 
@@ -52,8 +57,22 @@ WAYPOINT_Z_MIN_METERS = -1000.0
 WAYPOINT_Z_MAX_METERS = 10000.0
 WAYPOINT_YAW_LIMIT_DEGREES = 180.0
 
-# 完整实机连接时写入飞控的默认虚拟原点；本地 SITL 与 Wi-Fi 通讯检测不使用。
-DEFAULT_GPS_ORIGIN = (30.2489634, 120.2052342, 488.0)
+def _default_gps_origin() -> tuple[float, float, float]:
+    """读取本机默认实机原点；连接前仍可在 GUI 中人工确认和修改。"""
+    value = os.environ.get("GROUND_STATION_GPS_ORIGIN", "30.2489634,120.2052342,488.0")
+    try:
+        latitude, longitude, altitude = (float(item.strip()) for item in value.split(","))
+    except ValueError as exc:
+        raise ValueError("GROUND_STATION_GPS_ORIGIN 必须为纬度,经度,高度") from exc
+    if not all(map(math.isfinite, (latitude, longitude, altitude))) or not (
+        -90 <= latitude <= 90 and -180 <= longitude <= 180
+    ):
+        raise ValueError("GROUND_STATION_GPS_ORIGIN 坐标超出范围")
+    return latitude, longitude, altitude
+
+
+# 完整实机连接时使用的默认虚拟原点；本地 SITL 与 Wi-Fi 通讯检测不使用。
+DEFAULT_GPS_ORIGIN = _default_gps_origin()
 
 
 def detect_ros_distro() -> str:
