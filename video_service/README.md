@@ -417,7 +417,8 @@ RTSP 分支，录像仍为 stream copy。若恢复旧 Ubuntu 22.04/Humble 目标
 FFmpeg 4.4.2 仍须在该目标上单独复验，不能用当前 Jetson 结果替代。
 
 MediaMTX 是系统依赖，Git 仓库不再保存预编译文件。所有目标机都必须安装与自身架构匹配的
-v1.20.0，并由 `camera.conf` 使用 `/usr/local/bin/mediamtx`。当前 Jetson 已安装并实测该路径的
+v1.20.0；机载默认路径为 `/usr/local/bin/mediamtx`，也可在所选 `camera.conf` 的
+`mediamtx_binary` 中指定其他可执行路径，安装器与运行时读取同一值。当前 Jetson 已安装并实测默认路径的
 ARM64 版本；地面开发机也必须安装自己的 amd64 版本，不能跨架构复制。
 
 ## H.264 与 MJPEG 的运动画面取舍
