@@ -100,7 +100,8 @@ CPU 依赖中的 OpenCV/NumPy/PyYAML沿用项目环境；缺失时安装系统
 `python3-opencv python3-numpy python3-yaml`，项目 `.venv` 需能访问系统包。
 媒体工具 `ffmpeg`、`ffprobe` 和已配置允许发布的 MediaMTX 须提前就绪。
 
-默认标定为 `config/video/Wasintek/intrinsics.yaml`：完整五参数 `plumb_bob`、alpha=0。
+默认标定为 `config/video/Wasintek/intrinsics.yaml`：完整五参数 `plumb_bob`、alpha=0；
+输出投影保持水平和垂直相同的缩放比例，避免画面变形，边缘按无黑边要求裁切。
 输入尺寸须与标定一致；尺寸/标定错误会明确报错，CPU 回退不会修复错误的相机标定。
 目标是8位 YUV420 视频；默认色度位置 `left`，中心采样使用 `--chroma-location center`。
 所有路线保留相对输入时间戳，源视频有时间缺口时不会自动补成完整录像。

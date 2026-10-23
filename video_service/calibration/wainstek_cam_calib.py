@@ -305,6 +305,18 @@ def print_calibration(calibration, image_size):
     print("========================================\n")
 
 
+def aspect_preserving_new_camera_matrix(calibration, image_size):
+    """保持原始像素比例，并用无黑边的较大缩放生成预览投影。"""
+    camera_matrix = calibration["camera_matrix"]
+    new_k, _ = cv2.getOptimalNewCameraMatrix(
+        camera_matrix, calibration["dist_coeffs"], image_size, 0.0, image_size
+    )
+    scale = max(new_k[0, 0] / camera_matrix[0, 0], new_k[1, 1] / camera_matrix[1, 1])
+    new_k[0, 0] = camera_matrix[0, 0] * scale
+    new_k[1, 1] = camera_matrix[1, 1] * scale
+    return new_k
+
+
 def evaluate_calibration(object_points, image_points, descriptors, image_size):
     """使用全部样本直接标定、保存并生成去畸变映射。"""
     calibration = calibrate(object_points, image_points, image_size)
@@ -317,9 +329,7 @@ def evaluate_calibration(object_points, image_points, descriptors, image_size):
     print_calibration(calibration, image_size)
     save_calibration(OUTPUT_YAML, image_size, calibration)
 
-    new_k, _ = cv2.getOptimalNewCameraMatrix(
-        calibration["camera_matrix"], calibration["dist_coeffs"], image_size, 0.0, image_size
-    )
+    new_k = aspect_preserving_new_camera_matrix(calibration, image_size)
     map1, map2 = cv2.initUndistortRectifyMap(
         calibration["camera_matrix"],
         calibration["dist_coeffs"],
@@ -415,9 +425,7 @@ def main():
         frame_number += 1
 
         if preview_mode and map1 is None:
-            new_k, _ = cv2.getOptimalNewCameraMatrix(
-                calibration["camera_matrix"], calibration["dist_coeffs"], image_size, 0.0, image_size
-            )
+            new_k = aspect_preserving_new_camera_matrix(calibration, image_size)
             map1, map2 = cv2.initUndistortRectifyMap(
                 calibration["camera_matrix"],
                 calibration["dist_coeffs"],

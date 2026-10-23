@@ -29,6 +29,8 @@ def test_calibration_matches_opencv_and_rejects_nan(tmp_path):
     """Verify the model independently and reject coefficients that produce invalid pixels."""
     path = calibration_file(tmp_path)
     camera = Calibration(path, 'left')
+    assert camera.target[0, 0] / camera.matrix[0, 0] == pytest.approx(
+        camera.target[1, 1] / camera.matrix[1, 1])
     reference = cv2.initUndistortRectifyMap(camera.matrix, camera.distortion, None,
                                           camera.target, (128, 72), cv2.CV_32FC1)
     actual = camera.maps()

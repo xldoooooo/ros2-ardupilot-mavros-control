@@ -27,6 +27,10 @@ class Calibration:
             raise ValueError('Calibration dimensions must be positive and even for YUV420')
         self.target, _ = cv2.getOptimalNewCameraMatrix(
             self.matrix, self.distortion, (self.width, self.height), 0, (self.width, self.height))
+        # Alpha-zero can choose unequal axis scales; use the larger scale to keep square pixels without borders.
+        scale = max(self.target[0, 0] / self.matrix[0, 0], self.target[1, 1] / self.matrix[1, 1])
+        self.target[0, 0] = self.matrix[0, 0] * scale
+        self.target[1, 1] = self.matrix[1, 1] * scale
         if not np.isfinite(self.target).all() or self.target[0, 0] <= 0 or self.target[1, 1] <= 0:
             raise ValueError('Calibration produced an invalid output projection')
         self.chroma_x = 0.0 if chroma_location == 'left' else 0.5
