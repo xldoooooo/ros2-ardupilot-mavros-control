@@ -9,6 +9,7 @@ from tests.support.qt import (
     _window,
 )
 import math
+import pytest
 from dataclasses import replace
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -39,9 +40,14 @@ def test_land_button_and_upstream_land_bypass_pending_and_workflow_locks() -> No
         _close_window(window)
 
 
-def test_inspection_standby_locks_takeoff_until_sequence_really_completes() -> None:
-    """03 降落后的延时/入库阶段不得与新起飞或巡检并发。"""
-    window, ros = _window(_operational_snapshot(armed=False))
+@pytest.mark.parametrize("navigation_frame,landing_x", [("odom", 0.0), ("map", 2.0)])
+def test_inspection_standby_locks_takeoff_until_sequence_really_completes(
+    navigation_frame, landing_x,
+) -> None:
+    """03 保留落地延时，机库外的 map 末点也能接续下一轮巡检。"""
+    window, ros = _window(replace(
+        _operational_snapshot(armed=False), navigation_frame=navigation_frame,
+    ))
     execute = parse_command({"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001")
     try:
         window._initialize_simulation()
@@ -49,7 +55,9 @@ def test_inspection_standby_locks_takeoff_until_sequence_really_completes() -> N
         window._handle_upstream_command(execute)
 
         ros.results.append(CommandResult(1, 1, "takeoff", True, "起飞完成"))
-        ros.current_snapshot = _operational_snapshot(armed=True)
+        ros.current_snapshot = replace(
+            _operational_snapshot(armed=True), navigation_frame=navigation_frame,
+        )
         window._refresh()
         assert ros.calls[-1][0] == "waypoints"
 
@@ -66,7 +74,11 @@ def test_inspection_standby_locks_takeoff_until_sequence_really_completes() -> N
         assert ("landing", 4) in window._upstream.calls
 
         ros.results.append(CommandResult(3, 4, "land", True, "降落完成"))
-        ros.current_snapshot = _operational_snapshot(armed=False)
+        ros.current_snapshot = replace(
+            _operational_snapshot(armed=False),
+            navigation_frame=navigation_frame,
+            x=landing_x,
+        )
         window._refresh()
         assert window._upstream_sequence is not None
         assert window._upstream_sequence.phase == "standby"
@@ -82,6 +94,20 @@ def test_inspection_standby_locks_takeoff_until_sequence_really_completes() -> N
         assert window._upstream_sequence is None
         window._refresh()
         assert window.operations.takeoff_button.isEnabled()
+
+        next_task = parse_command({
+            "clientNo": "UAV01001", "commandNo": "02",
+            "taskPoints": [{
+                "index": 9, "x": 3.0, "y": 0.0, "z": 0.5,
+                "forwardAngle": 0, "cameraAngle": 1495, "photoNo": "round-2",
+            }],
+        }, "UAV01001", navigation_frame)
+        window._handle_upstream_command(next_task)
+        window._handle_upstream_command(execute)
+        assert ros.calls[-1][0] == "takeoff"
+        assert window._upstream_sequence.phase == "takeoff"
+        assert window._upstream_sequence.point_indexes == (9,)
+        assert window._upstream_sequence.photo_nos == ("round-2",)
     finally:
         _close_window(window)
 

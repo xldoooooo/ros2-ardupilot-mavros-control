@@ -137,7 +137,9 @@ class GroundStationWindow(QMainWindow):
         """创建后端依赖、模块化面板、线程桥和周期状态刷新。"""
         super().__init__(parent)
         inferred_log = getattr(ros_controller, "event_log", None)
-        self._events = event_log or inferred_log or EventLog()
+        self._events = event_log or inferred_log or EventLog(
+            log_path=PROJECT_ROOT / "log" / "ground_station.log"
+        )
         self._ros = ros_controller or GroundStationRosController(event_log=self._events)
         self._environment = environment or EnvironmentInitializer(
             self._ros, event_log=self._events
@@ -1147,7 +1149,9 @@ class GroundStationWindow(QMainWindow):
     ) -> None:
         """统一给维护者显示业务拒绝；协议接收确认仍已由通讯线程发送。"""
         message = f"拒绝上位机命令 {command.command_no}（{command.label}）：{reason}"
-        self._events.warn("upstream", message)
+        self._events.warn(
+            "upstream", f"{message} (clientNo={command.client_no})"
+        )
         self.activity_banner.set_message(message, LogLevel.WARN)
 
     def _start_inspection_sequence(
@@ -1462,6 +1466,10 @@ class GroundStationWindow(QMainWindow):
             return
         if snapshot.armed or time.monotonic() < sequence.standby_not_before:
             return
+        if sequence.kind == "inspection":
+            # 巡检在末点落地即已完成；待机 01 仍由投影器独立检查机库位置。
+            self._complete_upstream_sequence("巡检已降落且待机延时结束")
+            return
         try:
             in_hangar = self._upstream.is_in_hangar(snapshot)
         except Exception as exc:
@@ -1490,7 +1498,10 @@ class GroundStationWindow(QMainWindow):
             self._events.warn("upstream", f"待机状态解锁失败：{exc}")
         label = sequence.kind if sequence is not None else "upstream"
         message = f"{label} 组合已终止：{reason}"
-        self._events.error("upstream", message)
+        self._events.error(
+            "upstream", f"{message} (source_id={self._ros.source_id}, "
+            f"ticket={sequence.ticket if sequence is not None else None})"
+        )
         self.activity_banner.set_message(message, LogLevel.ERROR)
 
     def _complete_upstream_sequence(self, reason: str) -> None:

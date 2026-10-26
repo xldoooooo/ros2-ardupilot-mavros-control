@@ -1,12 +1,14 @@
-"""线程安全的结构化日志总线，供后端在事件产生时同步标注等级。"""
+"""线程安全的结构化日志总线，支持可选文件落盘与源端等级标注。"""
 
 from __future__ import annotations
 
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum
+from pathlib import Path
 
 
 class LogLevel(IntEnum):
@@ -37,13 +39,16 @@ class LogEvent:
 class EventLog:
     """保存有界日志历史，并支持 GUI 按单调序号增量读取。"""
 
-    def __init__(self, max_events: int = 8000) -> None:
-        """创建日志缓冲；上限防止长时间仿真无限占用内存。"""
+    def __init__(
+        self, max_events: int = 8000, *, log_path: str | Path | None = None,
+    ) -> None:
+        """创建有界内存缓冲；指定路径时额外追加落盘，不清除历史会话。"""
         if max_events <= 0:
             raise ValueError("max_events 必须大于零")
         self._lock = threading.RLock()
         self._sequence = 0
         self._events: deque[LogEvent] = deque(maxlen=max_events)
+        self._log_path = Path(log_path).expanduser() if log_path is not None else None
 
     def emit(self, level: LogLevel, source: str, message: str) -> LogEvent:
         """原子写入一条已分级事件，并返回最终事件对象。"""
@@ -61,6 +66,18 @@ class EventLog:
                 message=clean_message,
             )
             self._events.append(event)
+            if self._log_path is not None:
+                try:
+                    self._log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with self._log_path.open("a", encoding="utf-8") as stream:
+                        stream.write(
+                            f"{event.timestamp.isoformat(timespec='milliseconds')} "
+                            f"[{event.level.label}] [{event.source}] {event.message}\n"
+                        )
+                except OSError as exc:
+                    # 日志磁盘故障不阻断控制；避免后续事件反复报同一写入错误。
+                    print(f"地面站日志落盘失败 {self._log_path}：{exc}", file=sys.stderr)
+                    self._log_path = None
             return event
 
     def debug(self, source: str, message: str) -> LogEvent:
