@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import time
@@ -120,6 +121,8 @@ class GroundStationWindow(QMainWindow):
     _SHADOW_MARGIN = 14
     # Odin startup and map loading can take over a minute on the onboard computer.
     _NAVIGATION_RESTART_TIMEOUT_SECONDS = 120.0
+    # 上位机操作保留取消机会，超时后自动执行。
+    _UPSTREAM_COUNTDOWN_SECONDS = 3
 
     def __init__(
         self,
@@ -160,6 +163,7 @@ class GroundStationWindow(QMainWindow):
         self._upstream_point_indexes: tuple[int, ...] = ()
         self._upstream_photo_nos: tuple[str, ...] = ()
         self._upstream_sequence: _UpstreamFlightSequence | None = None
+        self._upstream_countdown: ShadowMessageBox | None = None
         self._abnormal_return_latched = False
         self._hardware_low_power_notice_latched = False
         self._hardware_abnormal_notice_latched = False
@@ -1037,6 +1041,18 @@ class GroundStationWindow(QMainWindow):
         if not isinstance(command, UpstreamCommand):
             self._events.warn("upstream", "拒绝无法识别的上位机命令对象")
             return
+        safety_land = command.action in {
+            UpstreamAction.LAND,
+            UpstreamAction.EMERGENCY_LAND,
+        }
+        if self._upstream_countdown is not None:
+            if not safety_land:
+                self._reject_upstream_command(command, "上位机操作正在倒计时")
+                return
+            # 降落可抢占尚未发送的操作，旧模态调用返回后不得再继续提交。
+            dialog = self._upstream_countdown
+            self._upstream_countdown = None
+            dialog.reject()
         # 使用与按钮相同的最新门控；不活动时绝不猜测仿真或实机目标。
         self._refresh()
         snapshot = self._ros.snapshot()
@@ -1046,10 +1062,6 @@ class GroundStationWindow(QMainWindow):
         ):
             self._reject_upstream_command(command, "尚未启动仿真或连接实机")
             return
-        safety_land = command.action in {
-            UpstreamAction.LAND,
-            UpstreamAction.EMERGENCY_LAND,
-        }
         if self._shutting_down or (self._workflow_busy and not safety_land):
             self._reject_upstream_command(command, "地面站工作流正忙或正在退出")
             return
@@ -1095,17 +1107,17 @@ class GroundStationWindow(QMainWindow):
             if not self._availability.takeoff:
                 self._reject_upstream_command(command, self._availability.flight_reason)
                 return
-            if self._takeoff() is None:
-                self._reject_upstream_command(command, "起飞操作未获得本地确认")
+            if self._takeoff(upstream=True) is None:
+                self._reject_upstream_command(command, "起飞操作已取消或未进入发送队列")
             return
 
         if command.action in {UpstreamAction.LAND, UpstreamAction.EMERGENCY_LAND}:
             if not self._availability.land:
                 self._reject_upstream_command(command, self._availability.flight_reason)
                 return
-            ticket = self._land(refresh_after_queue=False)
+            ticket = self._land(refresh_after_queue=False, upstream=True)
             if ticket is None:
-                self._reject_upstream_command(command, "降落操作未获得本地确认")
+                self._reject_upstream_command(command, "降落操作已取消或未进入发送队列")
                 return
             try:
                 self._upstream.begin_landing(ticket)
@@ -1179,9 +1191,11 @@ class GroundStationWindow(QMainWindow):
         except Exception as exc:
             self._events.warn("upstream", f"待机状态锁定失败：{exc}")
 
-        ticket = self._takeoff(refresh_after_queue=False)
+        ticket = self._takeoff(refresh_after_queue=False, upstream=True)
+        if self._upstream_sequence is not sequence:
+            return
         if ticket is None:
-            self._abort_upstream_sequence("起飞操作未获得本地确认")
+            self._abort_upstream_sequence("起飞操作已取消或未进入发送队列")
             return
         sequence.ticket = ticket
         self._events.info(
@@ -1198,6 +1212,8 @@ class GroundStationWindow(QMainWindow):
         command: UpstreamCommand | None = None,
     ) -> bool:
         """以当前三项航点组合执行原点航点，稳定后降落。"""
+        if self._upstream_countdown is not None:
+            return False
         active = self._upstream_sequence
         if active is not None and active.kind in {
             "return",
@@ -1336,7 +1352,10 @@ class GroundStationWindow(QMainWindow):
             allow_running_override=sequence.kind != "inspection",
             refresh_after_queue=False,
             local_coordinates=sequence.kind != "inspection",
+            upstream=True,
         )
+        if self._upstream_sequence is not sequence:
+            return
         if ticket is None:
             self._abort_upstream_sequence("航点阶段未进入本地发送队列")
             return
@@ -1402,7 +1421,8 @@ class GroundStationWindow(QMainWindow):
     def _drive_upstream_sequence(self, snapshot: VehicleSnapshot) -> None:
         """在每次权威快照刷新后驱动已就绪但尚未下发的阶段。"""
         sequence = self._upstream_sequence
-        if sequence is None:
+        # 倒计时可能被 LAND 抢占，先等该操作结束再推进旧阶段。
+        if sequence is None or self._upstream_countdown is not None:
             return
         if sequence.phase == "waypoints_pending":
             if not snapshot.armed:
@@ -1424,9 +1444,11 @@ class GroundStationWindow(QMainWindow):
                 return
             # 先离开 pending，防止排队后的刷新重复下发 LAND。
             sequence.phase = "land_submitting"
-            ticket = self._land(refresh_after_queue=False)
+            ticket = self._land(refresh_after_queue=False, upstream=True)
+            if self._upstream_sequence is not sequence:
+                return
             if ticket is None:
-                self._abort_upstream_sequence("降落阶段未获得本地确认")
+                self._abort_upstream_sequence("降落操作已取消或未进入发送队列")
                 return
             sequence.phase = "land"
             sequence.ticket = ticket
@@ -1631,8 +1653,10 @@ class GroundStationWindow(QMainWindow):
         self._ros.request_reboot_fcu()
         self._refresh()
 
-    def _takeoff(self, *, refresh_after_queue: bool = True) -> int | None:
-        """仿真直接请求起飞；实机仍须高风险确认。"""
+    def _takeoff(
+        self, *, refresh_after_queue: bool = True, upstream: bool = False
+    ) -> int | None:
+        """复用起飞入口；实机人工确认，上位机倒计时后执行。"""
         altitude = self.operations.takeoff_altitude()
         strategy = self.waypoints.selected_strategy()
         snapshot = self._ros.snapshot()
@@ -1650,9 +1674,13 @@ class GroundStationWindow(QMainWindow):
                 f"本次锁定策略：{strategy.label}；起飞后禁止修改。\n\n"
                 "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
                 critical=True,
+                auto_execute=upstream,
             ):
                 return None
-            self._events.warn("operator", f"操作者确认起飞至 {altitude:.1f} m")
+            actor = "上位机倒计时结束，自动" if upstream else "操作者确认"
+            self._events.warn(
+                "upstream" if upstream else "operator", f"{actor}起飞至 {altitude:.1f} m"
+            )
         else:
             self._events.info("operator", f"仿真模式请求起飞至 {altitude:.1f} m")
         self._pending_commands.add("takeoff")
@@ -1665,17 +1693,23 @@ class GroundStationWindow(QMainWindow):
             self._refresh()
         return ticket
 
-    def _land(self, *, refresh_after_queue: bool = True) -> int | None:
-        """仿真直接请求 LAND；实机仍须危险操作确认。"""
+    def _land(
+        self, *, refresh_after_queue: bool = True, upstream: bool = False
+    ) -> int | None:
+        """复用 LAND 入口；实机人工确认，上位机倒计时后执行。"""
         simulation = self._connection_mode == "simulation"
         if not simulation:
             if not self._confirm_action(
                 "确认降落",
                 "飞行器将切换 LAND 并开始下降。请确认降落区安全。",
                 critical=True,
+                auto_execute=upstream,
             ):
                 return None
-            self._events.warn("operator", "操作者确认发送 LAND")
+            actor = "上位机倒计时结束，自动" if upstream else "操作者确认"
+            self._events.warn(
+                "upstream" if upstream else "operator", f"{actor}发送 LAND"
+            )
         else:
             self._events.info("operator", "仿真模式请求发送 LAND")
         self._pending_commands.add("land")
@@ -1726,6 +1760,7 @@ class GroundStationWindow(QMainWindow):
         allow_running_override: bool = False,
         refresh_after_queue: bool = True,
         local_coordinates: bool = False,
+        upstream: bool = False,
     ) -> int | None:
         """确认组合语义后原子上传航点与三项飞行前锁定配置。"""
         from ..models import WaypointFlightStrategy
@@ -1794,6 +1829,7 @@ class GroundStationWindow(QMainWindow):
             "\n\n".join(combination_warnings)
             + "\n\n如仍要执行，请确认已理解该组合未经调试。",
             critical=True,
+            auto_execute=upstream,
         ):
             return None
 
@@ -1809,11 +1845,13 @@ class GroundStationWindow(QMainWindow):
                 f"末点 ({last[0]:+.1f}, {last[1]:+.1f}, {last[2]:+.1f})。\n\n"
                 "任务执行将覆盖当前手动/悬停模式，确认继续吗？",
                 critical=True,
+                auto_execute=upstream,
             ):
                 return None
+            actor = "上位机倒计时结束，自动" if upstream else "操作者确认"
             self._events.warn(
-                "operator",
-                f"操作者确认执行 {len(values)} 个航点（避障={flight_strategy.label}，"
+                "upstream" if upstream else "operator",
+                f"{actor}执行 {len(values)} 个航点（避障={flight_strategy.label}，"
                 f"命令生成={generator_label}，跟踪={controller.label}）",
             )
         else:
@@ -2331,9 +2369,12 @@ class GroundStationWindow(QMainWindow):
         self._hover()
 
     def _confirm_action(
-        self, title: str, message: str, critical: bool = False
+        self, title: str, message: str, critical: bool = False,
+        *, auto_execute: bool = False,
     ) -> bool:
-        """用默认取消的模态框确认危险或不可逆操作。"""
+        """人工操作默认取消；上位机操作改用可取消的自动倒计时。"""
+        if auto_execute:
+            return self._countdown_action(title, message, critical)
         dialog = self._message_box(
             title,
             message,
@@ -2348,6 +2389,54 @@ class GroundStationWindow(QMainWindow):
         if cancel_button is not None:
             cancel_button.setText("取消")
         return dialog.exec() == QMessageBox.StandardButton.Yes
+
+    def _countdown_action(self, title: str, message: str, critical: bool) -> bool:
+        """用 Qt 定时器等待三秒，仅超时允许执行；取消或关闭均终止。"""
+        dialog = self._message_box(
+            title.replace("确认", "") + " · 上位机倒计时",
+            message,
+            QMessageBox.Icon.Critical if critical else QMessageBox.Icon.Warning,
+            QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        dialog.button(QMessageBox.StandardButton.Cancel).setText("取消")
+        dialog.setInformativeText(
+            f"上位机命令将在 {self._UPSTREAM_COUNTDOWN_SECONDS} 秒后自动执行，可点击取消。"
+        )
+        countdown_label = dialog.findChild(QLabel, "qt_msgbox_informativelabel")
+        deadline = time.monotonic() + self._UPSTREAM_COUNTDOWN_SECONDS
+        timer = QTimer(dialog)
+        timer.setInterval(self._REFRESH_INTERVAL_MS)
+        mode = self._connection_mode
+
+        def update_countdown() -> None:
+            """显示剩余整秒；会话退出或切换时取消尚未发送的操作。"""
+            snapshot = self._ros.snapshot()
+            if (self._shutting_down or not self._environment_active
+                    or self._connection_mode != mode
+                    or not snapshot.onboard_available or not snapshot.connected
+                    or not snapshot.control_authority):
+                dialog.reject()
+                return
+            remaining = max(0, math.ceil(deadline - time.monotonic()))
+            # 直接更新 QLabel，避免 QMessageBox 重建网格覆盖自绘标题栏。
+            countdown_label.setText(f"上位机命令将在 {remaining} 秒后自动执行，可点击取消。")
+            if remaining == 0:
+                # 只有定时器返回 Yes；界面上不提供确认按钮。
+                dialog.done(QMessageBox.StandardButton.Yes)
+
+        self._upstream_countdown = dialog
+        timer.timeout.connect(update_countdown)
+        dialog.finished.connect(timer.stop)
+        update_countdown()
+        timer.start()
+        try:
+            return dialog.exec() == QMessageBox.StandardButton.Yes
+        finally:
+            timer.stop()
+            if self._upstream_countdown is dialog:
+                self._upstream_countdown = None
+            dialog.deleteLater()
 
     # ---- 安全退出 ----
 
