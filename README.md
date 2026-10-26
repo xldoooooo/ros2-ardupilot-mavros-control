@@ -251,56 +251,15 @@ onboard_control 和相关 RViz；只有服务 inactive 且目标进程全部退�
 
 ## FTP服务
 
-```bash
-sudo apt install vsftpd
-```
-
-配置用户名和密码
+媒体由地面`ground-media.service`集中提供，默认匿名只读FTP端口为2121，虚拟根为媒体配置的`root/public`。
+串行巡检的08最多发送一次，其中`videoPath`是已生成任务MP4在FTP根下的路径；`JPGPath`为同会话照片目录。
+甲方按已配置的地面FTP主机/端口下载该路径，不使用飞机旧`/home/share`或HTTP下载URL。
 
 ```bash
-sudo useradd -d / -s /bin/bash <username>
-sudo passwd <username> <password>
-sudo chmod -R a+rX /home/share
+curl "ftp://<ground-ip>:2121/uav002/<session>/<video-id>.mp4" -O
 ```
 
-当前使用的用户名和密码
-```
-username: s12
-password: 2wsx1qaz
-```
-
-修改FTP配置文件`/etc/vsftpd.conf`
-
-
-```
-listen=YES
-listen_ipv6=NO
-
-anonymous_enable=NO
-local_enable=YES
-write_enable=NO
-
-chroot_local_user=NO
-```
-
-重启
-```bash
-sudo systemctl restart vsftpd
-```
-
-测试下载 (默认端口21可以省略)
-
-```bash
-curl -u <usr>:<pswd> ftp://<ip>:<port>/home/share/jpg/1.jpg -O
-
-curl -u s12:2wsx1qaz \
-  ftp://192.168.112.169/home/share/jpg/snapshot-20260820-000853-395277-manual-1.jpg \
-  -O
-```
-
-更换ip时会自动检测，原命令直接使用新ip即可
-
-
+安装、文件管理与自动原片处理见[视频服务说明](video_service/README.md#地面集中媒体服务)。
 
 # 远程桌面
 

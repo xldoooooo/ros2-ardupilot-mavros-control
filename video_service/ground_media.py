@@ -312,10 +312,23 @@ class GroundMedia:
                                       'session_id': event['session_id'],
                                       'action': 'end' if event['event'] == 'session_end' else 'start'})
                     self._seen_events.add(event['id'])
+                self._finalize_uploaded_videos()
                 self.store.cleanup()
             except Exception as exc:
                 self.error = str(exc)
                 logging.exception('Media ingestion failed')
+
+    def _finalize_uploaded_videos(self):
+        """Create one whole-session task video from each finalized uploaded original."""
+        records = self.store.records()
+        scheduled = {row['metadata'].get('rebuilt_from') for row in records
+                     if row['kind'] == 'video' and row['variant'] == 'rebuilt'}
+        for record in records:
+            if (record['kind'] == 'video' and record['variant'] == 'original'
+                    and record['state'] == 'original_ready'
+                    and record['metadata'].get('mission_sequence')
+                    and record['id'] not in scheduled):
+                self.rebuild(record['id'])
 
     def _photo_loop(self):
         """Process images on a separate worker so acknowledgements remain responsive."""
@@ -354,6 +367,7 @@ class GroundMedia:
                 record.update(state='missing', error='地面处理文件缺失，下载暂不可用')
             record['download_url'] = f"http://{public}:{self.config.get('api_port', 8090)}/api/file?id={record['id']}" if relative else ''
             record['download_directory'] = f"ftp://{public}:{self.config.get('ftp_port', 2121)}/{quote(str(Path(relative).parent))}/" if relative else ''
+            record['ftp_path'] = '/' + relative if relative else ''
         with self.lock:
             streams = [dict(aircraft_id=aircraft, session_id=item['session_id'],
                             state='recording' if item.get('record_started') else 'starting',
@@ -378,6 +392,8 @@ class GroundMedia:
             raise ValueError('原片已被容量策略清理，暂不能重建')
         metadata = dict(record['metadata'])
         metadata['variant'] = 'rebuilt'
+        # Reserve the source identity before starting work, including failed attempts.
+        metadata['rebuilt_from'] = record['id']
         new_id = self.store.create_record(record['aircraft_id'], record['session_id'], metadata=metadata, variant='rebuilt')
         self.store.update(new_id, state='processing')
         original_state = record['state']
@@ -408,6 +424,7 @@ class GroundMedia:
                                           record_id=record_id)
         except Exception as exc:
             self.store.update(record_id, state='error', error=str(exc))
+            logging.exception('Task video processing failed: %s', record_id)
         finally:
             self.store.update(record['id'], state=original_state)
 

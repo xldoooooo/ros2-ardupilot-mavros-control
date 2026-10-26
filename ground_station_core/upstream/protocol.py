@@ -150,7 +150,9 @@ def json_examples(client_no: str) -> tuple[tuple[str, dict[str, Any]], ...]:
                 "状态 08 任务执行完毕",
                 publish_envelope(
                     client_no,
-                    make_status(client_no, "08", {"videoPath": "", "JPGPath": ""}),
+                    make_status(client_no, "08", {
+                        "videoPath": "/uav002/session/video.mp4", "JPGPath": "/uav002/session/",
+                    }),
                 ),
             ),
             (
@@ -163,7 +165,7 @@ def json_examples(client_no: str) -> tuple[tuple[str, dict[str, Any]], ...]:
                         {
                             "pointNo": "1",
                             "pointName": "巡检点位 1",
-                            "pointPic": "",
+                            "pointPic": "/uav002/session/photo.jpg",
                         },
                     ),
                 ),

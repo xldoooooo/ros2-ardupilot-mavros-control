@@ -1,8 +1,11 @@
 """Exercise durable media transfer, verified ingestion and public-file boundaries locally."""
 
 import json
+import io
+from ftplib import FTP
 from pathlib import Path
 import shlex
+import subprocess
 import time
 
 import cv2
@@ -12,6 +15,10 @@ import yaml
 
 from video_service.media_store import MediaStore, atomic_json, file_hash
 from video_service.media_transfer import UploadQueue
+from video_service.ground_media import GroundMedia
+from ground_station_core.event_log import EventLog
+from ground_station_core.models import CommandResult, VideoCaptureEvent
+from ground_station_core.upstream.status_projector import UpstreamStatusProjector
 
 
 class LocalQueue(UploadQueue):
@@ -337,3 +344,95 @@ def test_failed_recording_staging_is_managed_but_active_is_preserved(tmp_path):
     assert store.cleanup() == [failed]
     assert not failed_path.exists() and active_path.exists()
     store.close()
+
+
+def test_serial_inspections_upload_finalize_and_download_their_single_08_video(tmp_path):
+    """Run two real rsync/FFmpeg/FTP deliveries, even when live recording produced no file."""
+    ground = GroundMedia({
+        'root': str(tmp_path / 'ground'), 'intrinsics': str(calibration_file(tmp_path)),
+        'public_host': '127.0.0.1', 'listen': '127.0.0.1', 'ftp_port': 0,
+        'ftp_passive_ports': [0, 0], 'backend': 'cpu', 'cpu_threads': 2,
+    })
+    queue = LocalQueue(tmp_path / 'cache', 'uav002', 'local', str(ground.root), 3600, 0)
+    sent = []
+    projector = UpstreamStatusProjector(
+        lambda: 'UAV01001', lambda payload: not sent.append(dict(payload)), EventLog()
+    )
+    paths = []
+    try:
+        ground._start_ftp()
+        for ticket, color in ((8, 'red'), (18, 'blue')):
+            session = f'round-{ticket}'
+            metadata = {'source_id': 'serial-gui', 'mission_sequence': ticket}
+            notice = dict(metadata, aircraft_id='uav002', session_id=session, started_at=time.time())
+            ground.session(dict(notice, action='start'))
+            ground.session(dict(notice, action='end', ended_at=time.time()))
+            source = tmp_path / (session + '.mp4')
+            subprocess.run([
+                'ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', f'color={color}:s=128x72:r=10',
+                '-t', '1.2', '-c:v', 'libx264', '-threads', '1', str(source),
+            ], check=True, capture_output=True)
+            photo = tmp_path / (session + '.jpg')
+            assert cv2.imwrite(str(photo), np.full((72, 128, 3), 120, dtype=np.uint8))
+            queue.enqueue(source, 'video', session, metadata)
+            queue.enqueue(photo, 'image', session, dict(
+                metadata, sequence=42, waypoint_index=1, photo_no='1'))
+            for _ in range(2):
+                queue.tick()
+                assert all(row['state'] == 'ingested' for row in ground.store.ingest_pending())
+            ground.store.process_pending()
+
+            projector.begin_mission(ticket, 'inspection', (1,), source_id='serial-gui')
+            projector.observe_video_capture(VideoCaptureEvent(1, 'serial-gui', 42, True, 2, ticket, 1, '1', '', ''))
+            projector.observe_result(CommandResult(1, ticket, 'waypoints', True, '完成'))
+            projector.begin_landing(ticket + 1)
+            projector.observe_result(CommandResult(2, ticket + 1, 'land', True, '落地'))
+            before = sum(row['uavStatus'] == '08' for row in sent)
+            projector.observe_ground_media(tuple(ground.inventory()['records']))
+            assert sum(row['uavStatus'] == '08' for row in sent) == before
+
+            ground._finalize_uploaded_videos()
+            ground._finalize_uploaded_videos()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                videos = [row for row in ground.store.records()
+                          if row['session_id'] == session and row['variant'] == 'rebuilt']
+                if videos and videos[0]['state'] in ('ready', 'error'):
+                    break
+                time.sleep(.05)
+            assert len(videos) == 1 and videos[0]['state'] == 'ready', videos
+            inventory = tuple(ground.inventory()['records'])
+            projector.observe_ground_media(inventory)
+            projector.observe_ground_media(inventory)
+            assert sum(row['uavStatus'] == '08' for row in sent) == before + 1
+            message = sent[-1]
+            assert message['uavStatus'] == '08' and set(message['data']) == {'videoPath', 'JPGPath'}
+            path = message['data']['videoPath']
+            assert path.startswith(f'/uav002/{session}/') and path.endswith('.mp4')
+            paths.append(path)
+            public = next(row for row in inventory if row['ftp_path'] == path)
+            assert public['download_url'].startswith('http://')
+            downloaded = io.BytesIO()
+            with FTP() as ftp:
+                ftp.connect('127.0.0.1', ground.ftp.socket.getsockname()[1], timeout=5)
+                ftp.login()
+                ftp.retrbinary('RETR ' + path, downloaded.write)
+            assert downloaded.getvalue() == Path(public['path']).read_bytes()
+            received = tmp_path / f'downloaded-{ticket}.mp4'
+            received.write_bytes(downloaded.getvalue())
+            probe = subprocess.run([
+                'ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0',
+                '-show_entries', 'stream=nb_read_frames', '-of', 'json', str(received),
+            ], check=True, capture_output=True, text=True)
+            assert int(json.loads(probe.stdout)['streams'][0]['nb_read_frames']) == 12
+            capture = cv2.VideoCapture(str(received))
+            ok, frame = capture.read()
+            capture.release()
+            assert ok
+            blue, _, red = frame.mean(axis=(0, 1))
+            assert red > blue if color == 'red' else blue > red
+        assert len(set(paths)) == 2
+    finally:
+        queue.close()
+        ground.close()
+        ground.store.close()

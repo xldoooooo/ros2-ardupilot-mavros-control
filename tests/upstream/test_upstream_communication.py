@@ -180,14 +180,14 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     projector.observe_ground_media((
         {"kind": "image", "variant": "experiment", "state": "ready",
          "mission_sequence": 7, "waypoint_index": 1, "photo_no": "3",
-         "download_url": "ftp://ground/point-3.jpg", "download_directory": "ftp://ground/jpg/",
+         "ftp_path": "/jpg/point-3.jpg",
          "metadata": {"source_id": "UAV01001", "sequence": 101}},
         {"kind": "image", "variant": "experiment", "state": "ready",
          "mission_sequence": 7, "waypoint_index": 2, "photo_no": "4",
-         "download_url": "ftp://ground/point-4.jpg", "download_directory": "ftp://ground/jpg/",
+         "ftp_path": "/jpg/point-4.jpg",
          "metadata": {"source_id": "UAV01001", "sequence": 102}},
-        {"kind": "video", "variant": "experiment", "state": "ready",
-         "mission_sequence": 7, "download_url": "ftp://ground/recording.mp4",
+        {"kind": "video", "variant": "rebuilt", "state": "ready",
+         "mission_sequence": 7, "ftp_path": "/jpg/recording.mp4",
          "metadata": {"source_id": "UAV01001"}},
     ))
     projector.observe_video_capture(
@@ -209,9 +209,7 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     assert first_point["data"] == {
         "pointNo": "10",
         "pointName": "巡检点位 10",
-        "pointPic": "ftp://ground/point-3.jpg",
-        "mediaStatus": "ready",
-        "mediaError": "",
+        "pointPic": "/jpg/point-3.jpg",
     }
 
     projector.observe_result(
@@ -250,10 +248,7 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     mission_statuses = [payload["uavStatus"] for payload in sent]
     assert mission_statuses.count("09") == 2
     assert mission_statuses[-2:] == ["07", "08"]
-    assert sent[-1]["data"]["videoPath"] == "ftp://ground/recording.mp4"
-    assert sent[-1]["data"]["JPGPath"] == "ftp://ground/jpg/"
-    assert sent[-1]["data"]["mediaStatus"] == "ready"
-    assert sent[-1]["data"]["mediaUpdate"] is False
+    assert sent[-1]["data"] == {"videoPath": "/jpg/recording.mp4", "JPGPath": "/jpg/"}
     assert "01" not in [payload["uavStatus"] for payload in sent]
 
 
@@ -321,7 +316,7 @@ def test_status_projector_standby_hangar_blocking_and_return_completion_rules() 
 
 
 def test_status_projector_never_reports_unfinalized_recording_as_video_path() -> None:
-    """媒体等待超时时，运行中的预留文件名不能冒充已封装录像。"""
+    """运行中的预留文件名不能冒充已封装录像，也不发送空路径08。"""
     sent: list[dict[str, object]] = []
     projector = UpstreamStatusProjector(
         lambda: "UAV01001",
@@ -361,14 +356,11 @@ def test_status_projector_never_reports_unfinalized_recording_as_video_path() ->
         CommandResult(2, 22, "land", True, "降落完成", True)
     )
 
-    assert sent[-1]["uavStatus"] == "08"
-    assert sent[-1]["data"]["videoPath"] == ""
-    assert sent[-1]["data"]["JPGPath"] == ""
-    assert sent[-1]["data"]["mediaStatus"] == "processing"
+    assert not any(item["uavStatus"] == "08" for item in sent)
 
 
-def test_status_projector_uses_empty_media_paths_when_video_is_unavailable() -> None:
-    """地面媒体尚未就绪时，飞行完成立即上报且下载路径为空。"""
+def test_status_projector_waits_when_video_is_unavailable() -> None:
+    """地面媒体尚未就绪时，不发送甲方无法下载的空路径08。"""
     sent: list[dict[str, object]] = []
     projector = UpstreamStatusProjector(
         lambda: "UAV01001",
@@ -384,10 +376,7 @@ def test_status_projector_uses_empty_media_paths_when_video_is_unavailable() -> 
         CommandResult(2, 32, "land", True, "降落完成", True)
     )
 
-    assert sent[-1]["uavStatus"] == "08"
-    assert sent[-1]["data"]["videoPath"] == ""
-    assert sent[-1]["data"]["JPGPath"] == ""
-    assert sent[-1]["data"]["mediaStatus"] == "processing"
+    assert not any(item["uavStatus"] == "08" for item in sent)
 
 
 def test_status_projector_uses_voltage_for_hardware_and_reports_landing_once() -> None:

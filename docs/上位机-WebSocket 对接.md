@@ -248,7 +248,7 @@ JAR 转发给地面站时变为：
 - `photoNo` 必须是整数。
 - `z` 必须位于 `[0.1, 50] m`。
 - `forwardAngle` 单位为度，地面站会转换为弧度偏航角。
-- `cameraAngle` 和 `photoNo` 当前校验后忽略。
+- `cameraAngle` 当前忽略；`photoNo` 随任务传给抓拍服务，内部与航点索引分开保存。
 
 ## 7. Reqable接收确认和状态
 
@@ -314,11 +314,31 @@ Reqable实际收到 JAR 转发的：
 | `03` | 巡检任务开始 |
 | `05` | 返航开始 |
 | `07` | 降落开始 |
-| `08` | 航点任务可靠完成 |
-| `09` | 到达一个航点 |
+| `08` | 巡检及降落完成，整轮视频可通过FTP下载；每轮至多一次 |
+| `09` | 巡检点照片可通过FTP下载 |
 | `0A` | 1 秒周期电量；仿真为百分比，实机为电压 |
 | `0B` | 1 秒周期 XYZ 位置 |
 | `0C` | 低电量告警；当前只上报，不自动返航 |
+
+### 7.3 串行巡检的媒体结果
+
+使用`02 → 03 → 08 → FTP下载`的简单串行流程。08等待机载整轮原片上传并自动去畸变为一个MP4，
+不发送空路径预告，也不补发更新；飞行及点位失败仅记录本地日志。
+
+08保留原V2字段：
+
+```json
+{"clientNo":"UAV01001","uavStatus":"08","data":{"videoPath":"/uav002/session/video.mp4","JPGPath":"/uav002/session/"}}
+```
+
+09保留原V2字段：
+
+```json
+{"clientNo":"UAV01001","uavStatus":"09","data":{"pointNo":"1","pointName":"巡检点位 1","pointPic":"/uav002/session/photo.jpg"}}
+```
+
+这些路径是FTP服务器虚拟根下的文件/目录路径，甲方按已配置的地面FTP主机及端口下载，
+不需要解析HTTP URL、任务ID、`mediaStatus`或`mediaUpdate`。
 
 ## 8. 测试顺序
 
@@ -328,7 +348,7 @@ Reqable实际收到 JAR 转发的：
 2. Reqable订阅状态主题。
 3. 地面站启动本地仿真并等待控制链路就绪。
 4. Reqable发送 `02`，检查 GUI 航点列表和返回状态 02。
-5. Reqable直接发送 `03`，检查自动起飞、巡检航点和末点 LAND；媒体回报按现有异步处理流程检查。
+5. Reqable直接发送 `03`，检查自动起飞、巡检航点和末点 LAND；成品就绪后仅收到一次08，并用FTP下载其videoPath。
 6. 确认最终解除武装，等待既有巡检延时结束，再次发送 `02 → 03`，检查第二轮可执行。
 7. 另起一轮发送 `01`，检查独立起飞，再发送 `05`，检查返航和自动降落。
 8. 可在独立起飞后改发 `07`，检查原地 LAND 和最终解除武装。
@@ -381,11 +401,7 @@ Reqable实际收到 JAR 转发的：
 先把现场收到的完整原始帧加入测试，再运行：
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-.venv/bin/python -m pytest -q \
-  tests/test_upstream_communication.py \
-  tests/test_qt_gui.py
+bash tests/run.sh --group upstream video
 ```
 
 重点确认：

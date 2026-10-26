@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from .models import UpstreamStandbyPolicy
@@ -27,7 +28,7 @@ MEDIA_FAILURE_STATES = frozenset({"error", "processing_error", "deleted", "missi
 
 @dataclass
 class _MissionState:
-    """一项由上位机触发且尚未得到终态的航点任务。"""
+    """一轮上位机巡检的飞行进度、抓拍身份及待交付媒体。"""
 
     ticket: int
     kind: str
@@ -41,7 +42,7 @@ class _MissionState:
     captures: dict[int, VideoCaptureEvent] = field(default_factory=dict)
     flight_completed: bool = False
     landing_completed: bool = False
-    completion_data: dict[str, Any] | None = None
+    media_error: str = ""
 
 
 class UpstreamStatusProjector:
@@ -75,6 +76,7 @@ class UpstreamStatusProjector:
         self._generic_state_notice_logged = False
         self._media_records: tuple[Mapping[str, Any], ...] = ()
         self._media_error = ""
+        self._video_error = ""
         self._completed_missions: list[_MissionState] = []
 
     @property
@@ -200,7 +202,7 @@ class UpstreamStatusProjector:
                     and mission.kind == "inspection"
                     and mission.flight_completed
                 ):
-                    # 飞行完成不等待上传、去畸变或录像封装。
+                    # 飞行阶段结束；08仍等待本轮成品视频和点位回报。
                     mission.landing_completed = True
                 if result.final:
                     self._landing_ticket = None
@@ -234,22 +236,25 @@ class UpstreamStatusProjector:
                 self._mission = None
 
     def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
-        """机载 VideoStatus 仅表示机载状态，不能作为地面下载路径。"""
+        """本地记录任务期间的视频故障，机载路径不作为甲方下载入口。"""
+        with self._lock:
+            if self._mission is None and not self._completed_missions:
+                return
+            error = snapshot.last_error or ("视频服务不可用" if not snapshot.service_available else "")
+            if error and error != self._video_error:
+                self._events.error("upstream", f"巡检视频服务：{error}")
+            self._video_error = error
 
     def observe_ground_media(
         self, records: tuple[Mapping[str, Any], ...], error: str = ""
     ) -> None:
-        """接收后台地面目录快照，并补发本次任务实际可下载的媒体。"""
+        """接收后台目录，按巡检顺序发送可通过FTP下载的最终结果。"""
         with self._lock:
             self._media_records = records
             self._media_error = error
-            missions = list(self._completed_missions)
             if self._mission is not None:
-                missions.append(self._mission)
-            for mission in missions:
-                self._report_points(mission)
-                if mission.landing_completed and mission.flight_completed:
-                    self._report_completed_media(mission)
+                self._report_points(self._mission)
+            self._flush_completed_missions()
 
     def observe_video_capture(self, event: VideoCaptureEvent) -> None:
         """按任务与 1-based 航点索引关联真实截图结果，乱序结果可先缓存。"""
@@ -272,8 +277,6 @@ class UpstreamStatusProjector:
                     f"巡检点 {event.waypoint_index} 抓拍失败：{event.message}",
                 )
             self._report_points(mission)
-            if mission.completion_data is not None:
-                self._report_completed_media(mission)
             self._finish_completed_mission()
 
     def reset_runtime(self) -> None:
@@ -368,71 +371,70 @@ class UpstreamStatusProjector:
             "pointNo": str(mission.point_indexes[index - 1]),
             "photoNo": event.photo_no if event is not None else str(record.get("photo_no") or ""),
             "path": path, "state": state, "error": error,
-            "directory": str(record.get("download_directory") or "") if path else "",
+            "directory": str(PurePosixPath(path).parent) + "/" if path else "",
         }
 
     def _report_points(self, mission: _MissionState) -> None:
-        """处理版可下载或抓拍明确失败后，按点号顺序发送 09。"""
+        """处理图可下载后按顺序发送旧协议09；明确失败仅保留本地日志。"""
         while mission.reported_points < mission.completed_points:
             index = mission.reported_points + 1
             media = self._point_media(mission, index)
-            if not media["path"] and media["state"] not in MEDIA_FAILURE_STATES:
+            if not media["path"] and media["state"] in MEDIA_FAILURE_STATES:
+                self._events.error(
+                    "upstream", f"巡检图片未交付 (ticket={mission.ticket}, "
+                    f"pointNo={media['pointNo']})：{media['error'] or media['state']}",
+                )
+                mission.reported_points += 1
+                continue
+            if not media["path"]:
                 return
             point = mission.point_indexes[index - 1]
             payload = {
                 "pointNo": str(point), "pointName": f"巡检点位 {point}",
-                "pointPic": media["path"], "mediaStatus": media["state"],
-                "mediaError": media["error"],
+                "pointPic": media["path"],
             }
             if not self._send_mission(mission, "09", payload):
                 return
             mission.reported_points += 1
 
     def _finish_completed_mission(self) -> None:
-        """飞行可靠结束立即发送 08，媒体随后由地面目录独立更新。"""
+        """结束飞行关联，将媒体交付留在独立的串行待处理队列。"""
         mission = self._mission
-        if (
-            mission is None or mission.kind != "inspection"
-            or not mission.flight_completed or not mission.landing_completed
-        ):
-            return
-        self._report_points(mission)
-        self._report_completed_media(mission)
-        self._completed_missions.append(mission)
-        self._mission = None
+        if (mission is not None and mission.kind == "inspection"
+                and mission.flight_completed and mission.landing_completed):
+            self._completed_missions.append(mission)
+            self._mission = None
+        self._flush_completed_missions()
 
-    def _report_completed_media(self, mission: _MissionState) -> None:
-        """媒体状态变化时补发 08；空路径与 incomplete 均如实上报。"""
+    def _flush_completed_missions(self) -> None:
+        """每轮成品仅发送一次08，后续重建或目录变化不再补发。"""
+        while self._completed_missions:
+            mission = self._completed_missions[0]
+            self._report_points(mission)
+            if not self._report_completed_media(mission):
+                return
+            self._completed_missions.pop(0)
+
+    def _report_completed_media(self, mission: _MissionState) -> bool:
+        """只在完整原片成品可下载后发送旧协议08，内部错误只记录日志。"""
         records = self._mission_records(mission)
-        video = self._select_media([r for r in records if r.get("kind") == "video"])
+        videos = [r for r in records if r.get("kind") == "video" and r.get("variant") == "rebuilt"]
+        video = self._select_media(videos)
         video_path = processed_download(video)
-        images = [
-            self._point_media(mission, index)
-            for index in range(1, len(mission.point_indexes) + 1)
-        ]
-        states = [str(video.get("state") or "pending"), *[item["state"] for item in images]]
-        if MEDIA_FAILURE_STATES.intersection(states) or (self._media_error and not self._media_records):
-            state = "error"
-        elif not video_path or any(not item["path"] for item in images):
-            state = "retry" if "retry" in states else "processing"
-        else:
-            state = "incomplete" if "incomplete" in states else "ready"
-        data = {
+        error = self._media_error or str(video.get("error") or "")
+        if error and error != mission.media_error:
+            self._events.error("upstream", f"巡检媒体状态 (ticket={mission.ticket})：{error}")
+        mission.media_error = error
+        if (not video_path or video.get("state") != "ready"
+                or mission.reported_points < len(mission.point_indexes)):
+            return False
+        sent = self._send_mission(mission, "08", {
             "videoPath": video_path,
-            "JPGPath": next((item["directory"] for item in images if item["path"]), ""),
-            "mediaStatus": state,
-            "videoStatus": str(video.get("state") or "pending"),
-            "mediaError": (
-                self._media_error or str(video.get("error") or "")
-                or next((item["error"] for item in images if item["error"]), "")
-            ),
-            "images": images,
-        }
-        if data == mission.completion_data:
-            return
-        payload = {**data, "mediaUpdate": mission.completion_data is not None}
-        if self._send_mission(mission, "08", payload):
-            mission.completion_data = data
+            "JPGPath": str(PurePosixPath(video_path).parent) + "/",
+        })
+        if sent:
+            self._events.info("upstream", f"巡检08已排队 (ticket={mission.ticket})：{video_path}")
+        return sent
 
     def _send_mission(
         self, mission: _MissionState, status: str, data: Mapping[str, Any]

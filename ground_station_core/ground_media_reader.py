@@ -6,9 +6,8 @@ import json
 import os
 import threading
 from collections.abc import Callable, Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urlparse
 from urllib.request import urlopen
 
 
@@ -25,14 +24,14 @@ def media_api_url(config_path: str | Path | None = None) -> str:
 
 
 def processed_download(record: Mapping[str, Any]) -> str:
-    """仅发布已完成的地面处理版下载地址，保留已知不完整标记。"""
+    """返回已公开处理文件的 FTP 根目录路径，不向甲方发送 HTTP URL。"""
     if record.get("variant") not in {"experiment", "rebuilt"}:
         return ""
     if record.get("state") not in {"ready", "incomplete"}:
         return ""
-    value = str(record.get("download_url") or "").strip()
-    parsed = urlparse(value)
-    return value if parsed.scheme in {"ftp", "http", "https"} and parsed.netloc else ""
+    value = str(record.get("ftp_path") or "").strip()
+    path = PurePosixPath(value)
+    return value if path.is_absolute() and not value.startswith("//") and ".." not in path.parts else ""
 
 
 class GroundMediaReader:
