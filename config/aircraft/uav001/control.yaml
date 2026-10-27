@@ -23,6 +23,7 @@
     fcu_parameter_check_initial_delay_seconds: 2.0  # 首次只读检查延迟，单位：秒。
     link_loss_land_timeout_seconds: 10.0  # 地面站失联后悬停多久转入自动降落，单位：秒。
     takeoff_timeout_seconds: 45.0  # 起飞任务等待高度确认的最长时间，单位：秒。
+    minimum_takeoff_rise_m: 0.2  # 起飞目标按当前map/odom的绝对Z解释；实际上升量不得低于此值，单位：米。
     # 降落命令只有在飞控回报解除武装后才判定成功。
     land_confirmation_timeout_seconds: 120.0  # 等待降落并解除武装确认的最长时间，单位：秒。
     # 绝对墙钟无需一致；本值只限制相邻租约心跳基准下异常的相对时间超前。

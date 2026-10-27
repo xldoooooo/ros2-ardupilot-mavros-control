@@ -1838,7 +1838,7 @@ class GroundStationWindow(QMainWindow):
         if not simulation:
             if not self._confirm_action(
                 "确认起飞",
-                f"飞行器将尝试切换 GUIDED、武装并起飞至 {altitude:.1f} m。\n"
+                f"飞行器将尝试切换 GUIDED、武装并起飞至 {snapshot.navigation_frame} 系 Z={altitude:.1f} m。\n"
                 f"本次锁定策略：{strategy.label}；起飞后禁止修改。\n\n"
                 "请确认螺旋桨区域无人、飞行空间安全且可随时人工接管。",
                 critical=True,
@@ -1847,10 +1847,11 @@ class GroundStationWindow(QMainWindow):
                 return None
             actor = "上位机倒计时结束，自动" if upstream else "操作者确认"
             self._events.warn(
-                "upstream" if upstream else "operator", f"{actor}起飞至 {altitude:.1f} m"
+                "upstream" if upstream else "operator",
+                f"{actor}起飞至 {snapshot.navigation_frame} 系 Z={altitude:.1f} m",
             )
         else:
-            self._events.info("operator", f"仿真模式请求起飞至 {altitude:.1f} m")
+            self._events.info("operator", f"仿真模式请求起飞至 {snapshot.navigation_frame} 系 Z={altitude:.1f} m")
         self._pending_commands.add("takeoff")
         ticket = self._ros.request_takeoff(
             altitude, strategy, self.waypoints.selected_reference_generator(),

@@ -13,6 +13,7 @@ string source_id
 uint64 sequence
 uint32 ttl_ms
 uint8 command
+# TAKEOFF: target Z in the active map/odom task frame, not a relative climb.
 float64 value
 # TAKEOFF 锁定本次飞行策略、参考生成器和跟踪器；其它命令忽略此配置。
 uint8 STRATEGY_STRAIGHT=0

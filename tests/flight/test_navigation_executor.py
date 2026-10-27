@@ -58,6 +58,9 @@ def navigation_node(navigation_process_settings, avoidance_node):
     h.nav_enabled, h.tf_enabled, h.localized = False, True, True
     h.driver_session = "navigation-test-session"
     h.translation = [-1996.06, -1001.97, -6.85]
+    h.rotation = (0., 0., math.sin(math.pi / 4), math.cos(math.pi / 4))
+    h.arm_accept = False
+    h.on_arm = lambda: None
     h.mode_calls, h.arm_calls = [], []
     status_pub = h.node.create_publisher(
         String, "/odin1/navigation_status",
@@ -80,9 +83,13 @@ def navigation_node(navigation_process_settings, avoidance_node):
         return response
 
     def arm(request, response):
-        """Record attempted arming; tests never need simulated arming service success."""
+        """Record arming; takeoff tests can accept and model a Home-height update."""
         h.arm_calls.append(request.value)
-        response.success = False
+        response.success = h.arm_accept
+        if h.arm_accept:
+            h.state.armed = request.value
+            h.on_arm()
+            h.pubs["state"].publish(h.state)
         return response
 
     h.node.create_service(SetMode, h.mavros + "/set_mode", set_mode)
@@ -129,8 +136,8 @@ def navigation_node(navigation_process_settings, avoidance_node):
             transform.header.stamp = h.node.get_clock().now().to_msg()
             for axis, value in zip("xyz", h.translation):
                 setattr(transform.transform.translation, axis, value)
-            transform.transform.rotation.z = math.sqrt(.5)
-            transform.transform.rotation.w = math.sqrt(.5)
+            for axis, value in zip("xyzw", h.rotation):
+                setattr(transform.transform.rotation, axis, value)
             tf_pub.publish(TFMessage(transforms=[transform]))
 
     timer = h.node.create_timer(.04, tick)

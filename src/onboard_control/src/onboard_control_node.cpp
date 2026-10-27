@@ -40,12 +40,20 @@ constexpr double kBatteryMaximumAgeSeconds = 5.0;
 constexpr double kOriginConfirmationTimeoutSeconds = 8.0;
 constexpr double kOriginHorizontalToleranceDegrees = 2.0e-7;
 constexpr double kOriginAltitudeToleranceMeters = 0.5;
+// Preserve the existing 20 m takeoff limit as an actual climb, not a task-frame Z limit.
+constexpr double kMaximumTakeoffRiseMeters = 20.0;
+// Avoid rejecting an exact minimum climb because of floating-point coordinate conversion.
+constexpr double kTakeoffHeightEpsilonMeters = 1.0e-6;
+// Keep the existing 10 cm native-takeoff handover allowance above the minimum climb.
+constexpr double kTakeoffHandoverAllowanceMeters = 0.1;
 
-const std::array<std::pair<std::uint32_t, float>, 5> kMessageIntervals{{
+// These streams also restore the Home-relative altitude needed after each arming.
+const std::array<std::pair<std::uint32_t, float>, 6> kMessageIntervals{{
   {32U, 100.0F},   // LOCAL_POSITION_NED
   {31U, 100.0F},   // ATTITUDE_QUATERNION
   {105U, 100.0F},  // HIGHRES_IMU
   {1U, 1.0F},      // SYS_STATUS (battery fallback used by MAVROS)
+  {33U, 5.0F},     // GLOBAL_POSITION_INT (MAVROS global_position/rel_alt)
   // ArduPilot does not stream this by default on the real FCU.  Without it,
   // MAVROS cannot publish ExtendedState and non-GCS takeoff edges are invisible.
   {245U, 2.0F},    // EXTENDED_SYS_STATE
@@ -93,6 +101,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   link_loss_land_timeout_seconds_ =
     declare_parameter<double>("link_loss_land_timeout_seconds", 10.0);
   takeoff_timeout_seconds_ = declare_parameter<double>("takeoff_timeout_seconds", 45.0);
+  minimum_takeoff_rise_m_ = declare_parameter<double>("minimum_takeoff_rise_m", 0.2);
   land_confirmation_timeout_seconds_ =
     declare_parameter<double>("land_confirmation_timeout_seconds", 120.0);
   waypoint_tolerance_ = declare_parameter<double>("waypoint_tolerance", 0.3);
@@ -248,7 +257,10 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     status_frequency_hz_ <= 0.0 || pose_timeout_seconds_ <= 0.0 ||
     fcu_parameter_check_initial_delay_seconds_ < 0.1 ||
     fcu_parameter_check_initial_delay_seconds_ > 60.0 ||
-    link_loss_land_timeout_seconds_ <= 0.0 || land_confirmation_timeout_seconds_ < 10.0 ||
+    link_loss_land_timeout_seconds_ <= 0.0 ||
+    !std::isfinite(minimum_takeoff_rise_m_) || minimum_takeoff_rise_m_ <= 0.0 ||
+    minimum_takeoff_rise_m_ > kMaximumTakeoffRiseMeters ||
+    land_confirmation_timeout_seconds_ < 10.0 ||
     land_confirmation_timeout_seconds_ > 600.0 || max_velocity_xy_ <= 0.0 ||
     max_velocity_z_ <= 0.0 || !std::isfinite(waypoint_tolerance_) ||
     waypoint_tolerance_ <= 0.0 || !std::isfinite(waypoint_hold_seconds_) ||
@@ -303,6 +315,15 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(
     mavros_prefix_ + "/local_position/pose", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_pose, this, std::placeholders::_1));
+  relative_altitude_subscription_ = create_subscription<std_msgs::msg::Float64>(
+    mavros_prefix_ + "/global_position/rel_alt", rclcpp::SensorDataQoS().keep_last(1),
+    [this](std_msgs::msg::Float64::ConstSharedPtr message) {
+      std::lock_guard<std::recursive_mutex> lock(mutex_);
+      if (std::isfinite(message->data)) {
+        relative_home_altitude_ = message->data;
+        last_relative_altitude_time_ = SteadyClock::now();
+      }
+    });
   velocity_subscription_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     mavros_prefix_ + "/local_position/velocity_local", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1));
@@ -922,8 +943,12 @@ void OnboardControlNode::on_flight_command(
         response->message = "尚未确认 GUID_OPTIONS=8，拒绝起飞后切入姿态/推力控制";
         return;
       }
-      if (!std::isfinite(request->value) || request->value <= 0.0 || request->value > 20.0) {
-        response->message = "起飞高度必须在 (0, 20] 米范围内";
+      if (double local_z = 0.0; !resolve_takeoff_height(request->value, local_z, reason)) {
+        response->message = reason;
+        return;
+      }
+      if (last_relative_altitude_time_ == SteadyTime{}) {
+        response->message = "等待飞控 Home 相对高度遥测，暂不能换算起飞目标";
         return;
       }
       if (!validate_waypoint_configuration(request->flight_strategy, request->reference_generator,
@@ -1231,6 +1256,37 @@ void OnboardControlNode::on_set_gps_origin(
   response->message = stream.str();
 }
 
+/** Resolve a task Z without introducing any horizontal takeoff displacement. */
+bool OnboardControlNode::resolve_takeoff_height(
+  const double altitude, double & local_z, std::string & reason) const
+{
+  if (!std::isfinite(altitude)) {
+    reason = "起飞目标 Z 必须是有限数值";
+    return false;
+  }
+  const auto local_to_task = task_to_local_.inverse();
+  const double task_z = local_to_task.point(vehicle_.position).z();
+  const double vertical_projection = (local_to_task.rotation * Eigen::Vector3d::UnitZ()).z();
+  if (!std::isfinite(vertical_projection) || vertical_projection <= 0.0) {
+    reason = "当前任务坐标系无法换算竖直起飞高度";
+    return false;
+  }
+  const double rise = (altitude - task_z) / vertical_projection;
+  if (!std::isfinite(rise) || rise + kTakeoffHeightEpsilonMeters < minimum_takeoff_rise_m_ ||
+    rise > kMaximumTakeoffRiseMeters)
+  {
+    std::ostringstream stream;
+    stream << "起飞实际上升量 " << rise << " m 须在 [" << minimum_takeoff_rise_m_
+           << ", " << kMaximumTakeoffRiseMeters << "] m；" << navigation_frame_
+           << " 目标 Z 至少为 " << task_z + minimum_takeoff_rise_m_ * vertical_projection << " m";
+    reason = stream.str();
+    return false;
+  }
+  local_z = vehicle_.position.z() + rise;
+  return true;
+}
+
+/** Start one absolute task-height takeoff with a fresh post-arm height conversion. */
 void OnboardControlNode::start_takeoff(
   const CommandIdentity & command, const double altitude)
 {
@@ -1239,13 +1295,20 @@ void OnboardControlNode::start_takeoff(
   active_task_ = ActiveTask::kTakeoff;
   active_task_started_ = SteadyClock::now();
   takeoff_altitude_ = altitude;
+  takeoff_waiting_for_height_ = false;
+  takeoff_request_accepted_ = false;
   control_mode_ = guided_interfaces::msg::ControlStatus::MODE_TAKEOFF;
   controller_engaged_ = true;
   clear_failsafe_locked();
   publish_result(
     command, guided_interfaces::msg::CommandResult::STATUS_RUNNING, false,
     "机载端正在切换 GUIDED、武装并起飞");
-  ensure_guided_and_armed(command, [this, command]() {send_takeoff_request(command);});
+  ensure_guided_and_armed(command, [this]() {
+    // Arming may reset Home or the EKF height datum; use subsequent measured samples.
+    takeoff_height_wait_started_ = SteadyClock::now();
+    takeoff_waiting_for_height_ = true;
+    set_status_message("等待解锁后的本地高度与 Home 相对高度，准备起飞");
+  });
 }
 
 /** Prepare the waypoint task without discarding learned disturbance compensation. */
@@ -1648,6 +1711,7 @@ void OnboardControlNode::ensure_armed(
     });
 }
 
+/** Translate the resolved local climb into ArduPilot's altitude-above-Home command. */
 void OnboardControlNode::send_takeoff_request(const CommandIdentity & command)
 {
   if (!active_task_matches(command)) {
@@ -1662,8 +1726,14 @@ void OnboardControlNode::send_takeoff_request(const CommandIdentity & command)
     fail_active_task("MAVROS 起飞服务不可用", true);
     return;
   }
+  if (!resolve_takeoff_height(takeoff_altitude_, takeoff_target_local_z_, navigation_reason)) {
+    fail_active_task(navigation_reason, true);
+    return;
+  }
+  takeoff_start_z_ = vehicle_.position.z();
+  const double rise = takeoff_target_local_z_ - takeoff_start_z_;
   auto request = std::make_shared<mavros_msgs::srv::CommandTOL::Request>();
-  request->altitude = static_cast<float>(takeoff_altitude_);
+  request->altitude = static_cast<float>(relative_home_altitude_ + rise);
   request->min_pitch = 0.0F;
   request->yaw = 0.0F;
   request->latitude = 0.0F;
@@ -1685,6 +1755,7 @@ void OnboardControlNode::send_takeoff_request(const CommandIdentity & command)
         fail_active_task(std::string("起飞服务异常: ") + error.what(), true);
         return;
       }
+      takeoff_request_accepted_ = true;
       active_task_started_ = SteadyClock::now();
       set_status_message("起飞指令已接受，机载端正在确认高度");
     });
@@ -2003,17 +2074,28 @@ void OnboardControlNode::control_tick()
   enforce_safety(now);
 
   if (active_task_ == ActiveTask::kTakeoff) {
-    const double threshold = std::max(0.1, takeoff_altitude_ - 0.1);
-    if (armed_ && pose_valid_ && vehicle_.position.z() >= threshold) {
+    if (takeoff_waiting_for_height_ && armed_ &&
+      last_pose_time_ > takeoff_height_wait_started_ &&
+      last_relative_altitude_time_ > takeoff_height_wait_started_)
+    {
+      takeoff_waiting_for_height_ = false;
+      send_takeoff_request(active_command_);
+    }
+    const double threshold = std::max(
+      takeoff_start_z_ + minimum_takeoff_rise_m_,
+      takeoff_target_local_z_ - kTakeoffHandoverAllowanceMeters);
+    if (active_task_ == ActiveTask::kTakeoff && takeoff_request_accepted_ &&
+      armed_ && pose_valid_ && vehicle_.position.z() + kTakeoffHeightEpsilonMeters >= threshold)
+    {
       const CommandIdentity completed = active_command_;
       active_task_ = ActiveTask::kNone;
       enter_hover("起飞完成，机载 PD+DOB 已进入悬停");
       // 起飞服务只负责把飞机送入安全高度，最终请求高度仍由同一 PD+DOB 精确保持。
-      reference_.position.z() = takeoff_altitude_;
+      reference_.position.z() = takeoff_target_local_z_;
       publish_result(
         completed, guided_interfaces::msg::CommandResult::STATUS_SUCCEEDED, true,
         "起飞成功，机载 PD+DOB 已进入悬停");
-    } else if (
+    } else if (active_task_ == ActiveTask::kTakeoff &&
       std::chrono::duration<double>(now - active_task_started_).count() >
       takeoff_timeout_seconds_)
     {

@@ -37,6 +37,7 @@
 #include <guided_interfaces/srv/set_navigation_mode.hpp>
 #include <correction_interfaces/msg/extnav_correction_status.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 #include <mavros_msgs/msg/attitude_target.hpp>
 #include <mavros_msgs/msg/extended_state.hpp>
@@ -171,6 +172,8 @@ private:
   bool has_control_locked(const std::string & source) const;
   bool lease_active_locked() const;
   std::uint32_t lease_remaining_ms_locked() const;
+  /** Resolve task-frame Z along the local vertical and validate the actual climb. */
+  bool resolve_takeoff_height(double altitude, double & local_z, std::string & reason) const;
   void start_takeoff(const CommandIdentity & command, double altitude);
   void start_waypoint_task(
     const CommandIdentity & command,
@@ -312,6 +315,7 @@ private:
   double fcu_parameter_check_initial_delay_seconds_{2.0};
   double link_loss_land_timeout_seconds_{10.0};
   double takeoff_timeout_seconds_{45.0};
+  double minimum_takeoff_rise_m_{0.2};  // Minimum actual vertical climb for a takeoff request.
   double land_confirmation_timeout_seconds_{120.0};
   double waypoint_tolerance_{0.3};
   double waypoint_hold_seconds_{1.0};
@@ -391,6 +395,11 @@ private:
   ActiveTask active_task_{ActiveTask::kNone};
   SteadyTime active_task_started_{};
   double takeoff_altitude_{0.0};
+  // The requested task Z, resolved local target and Home-relative command are distinct.
+  double takeoff_start_z_{0.0}, takeoff_target_local_z_{0.0};
+  double relative_home_altitude_{0.0};
+  SteadyTime last_relative_altitude_time_{}, takeoff_height_wait_started_{};
+  bool takeoff_waiting_for_height_{false}, takeoff_request_accepted_{false};
 
   // Waypoint queue and arrival dwell state live onboard, never in the GUI process.
   std::vector<guided_interfaces::msg::Waypoint> waypoints_;
@@ -519,6 +528,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr velocity_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::BatteryState>::SharedPtr battery_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr relative_altitude_subscription_;
   rclcpp::Subscription<geographic_msgs::msg::GeoPointStamped>::SharedPtr
     global_origin_subscription_;
   rclcpp::Subscription<guided_interfaces::msg::ControlHeartbeat>::SharedPtr heartbeat_subscription_;

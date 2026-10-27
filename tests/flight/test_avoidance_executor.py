@@ -624,7 +624,10 @@ def test_takeoff_preserves_preflight_configuration_and_failure_unlocks(avoidance
     from mavros_msgs.srv import SetMode, CommandBool, CommandTOL
     from guided_interfaces.msg import ControlStatus, CommandResult
     from guided_interfaces.srv import FlightCommand
+    from std_msgs.msg import Float64
     h = avoidance_node
+    altitude_pub = h.node.create_publisher(Float64, h.mavros + "/global_position/rel_alt", 10)
+    h.node.create_timer(.025, lambda: altitude_pub.publish(Float64(data=h.height)))
     h.state.armed, h.state.mode = False, "STABILIZE"
     h.height = 0.
     h.until(lambda: not h.status[-1].armed and h.status[-1].autopilot_mode == "STABILIZE")

@@ -388,13 +388,14 @@ class OperationsPanel(QWidget):
         takeoff_row.setSpacing(5)
         self.takeoff_button = self._button("起飞", "success", "takeoffButton")
         self.takeoff_button.clicked.connect(self.takeoff_requested)
-        altitude_label = QLabel("高度")
+        altitude_label = QLabel("目标Z")
         altitude_label.setObjectName("mutedLabel")
-        self.takeoff_altitude_input = self._spin_box(0.1, 50.0, 1, "m")
+        # Task coordinates may be negative or far from zero; onboard validates the actual climb.
+        self.takeoff_altitude_input = self._spin_box(-1000.0, 1000.0, 1, "m")
         self.takeoff_altitude_input.setObjectName("takeoffAltitudeInput")
         self.takeoff_altitude_input.setValue(TAKEOFF_ALTITUDE)
         self.takeoff_altitude_input.setSingleStep(0.1)
-        self.takeoff_altitude_input.setToolTip("起飞目标高度（相对起飞点，单位：m）")
+        self.takeoff_altitude_input.setToolTip("起飞目标 Z（当前 map/odom 坐标系，单位：m）")
         self.takeoff_altitude_input.setMinimumWidth(68)
         self.takeoff_altitude_input.setMaximumWidth(76)
         speed_label = QLabel("速度")
@@ -1108,6 +1109,10 @@ class OperationsPanel(QWidget):
         x, y, z, task_yaw = snapshot.task_pose
         vx, vy, vz = snapshot.task_velocity_values
         task_pose_ready = snapshot.navigation_frame == "odom" or snapshot.navigation_ready
+        set_tooltip_if_changed(
+            self.takeoff_altitude_input,
+            f"起飞目标 Z（{snapshot.navigation_frame} 坐标系，单位：m）；最小实际上升量由机载参数决定",
+        )
         self._latest_yaw = snapshot.yaw
         set_tooltip_if_changed(self.altitude_summary_value, f"{snapshot.navigation_frame} 坐标系 Z（m）")
         set_tooltip_if_changed(self.heading_summary_value, f"{snapshot.navigation_frame} 坐标系航向（°）")
