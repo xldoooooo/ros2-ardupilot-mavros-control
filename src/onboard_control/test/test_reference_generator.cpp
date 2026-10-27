@@ -1,11 +1,12 @@
 /**
  * @file test_reference_generator.cpp
- * @brief 航点命令生成器限速、连续性、匀速阶段与短航段回归测试。
+ * @brief 平移限额、统一偏航限速与原地/短航段参考完成判定。
  */
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "onboard_control/reference_generator.hpp"
@@ -33,7 +34,7 @@ std::vector<GeneratedReference> run_segment(
 
 }  // namespace
 
-TEST(ReferenceGenerator, StepPositionPreservesExistingReferenceSemantics)
+TEST(ReferenceGenerator, StepPositionPreservesPositionStepWhileYawSlews)
 {
   ReferenceGeneratorParameters parameters;
   auto generator = make_reference_generator(
@@ -43,12 +44,83 @@ TEST(ReferenceGenerator, StepPositionPreservesExistingReferenceSemantics)
     Eigen::Vector3d(8.0, -1.0, 4.0), -0.3);
 
   const GeneratedReference output = generator->sample();
-  EXPECT_TRUE(output.finished);
+  EXPECT_FALSE(output.finished);
   EXPECT_EQ(output.phase, ReferencePhase::kStep);
   EXPECT_TRUE(output.control.position.isApprox(Eigen::Vector3d(8.0, -1.0, 4.0)));
   EXPECT_DOUBLE_EQ(output.control.velocity.norm(), 0.0);
   EXPECT_DOUBLE_EQ(output.control.acceleration.norm(), 0.0);
-  EXPECT_DOUBLE_EQ(output.control.yaw, -0.3);
+  EXPECT_DOUBLE_EQ(output.control.yaw, 0.2);
+}
+
+TEST(ReferenceGenerator, AllMethodsBoundYawForStationaryAndShortSegments)
+{
+  ReferenceGeneratorParameters parameters;
+  parameters.max_yaw_rate = 0.7;
+  const double pi = std::acos(-1.0);
+  for (int method = 0; method < 4; ++method) {
+    for (double distance : {0.0, 0.01, 1.0}) {
+      SCOPED_TRACE(::testing::Message() << "method=" << method << ", distance=" << distance);
+      auto generator = make_reference_generator(static_cast<ReferenceGeneratorType>(method), parameters);
+      const Eigen::Vector3d target(distance, 0.0, 0.0);
+      generator->reset(Eigen::Vector3d::Zero(), 0.0, target, pi);
+      auto sample = generator->sample();
+      EXPECT_DOUBLE_EQ(sample.control.yaw, 0.0);
+      EXPECT_FALSE(sample.finished);
+      double previous_yaw = sample.control.yaw;
+      double elapsed = 0.0;
+      for (int tick = 0; tick < 12000 && !sample.finished; ++tick) {
+        sample = generator->update(0.01);
+        elapsed += 0.01;
+        const double delta = std::remainder(sample.control.yaw - previous_yaw, 2.0 * pi);
+        EXPECT_LE(std::abs(delta), parameters.max_yaw_rate * 0.01 + 1.0e-12);
+        EXPECT_NEAR(sample.yaw_rate, delta / 0.01, 1.0e-10);
+        if (elapsed < pi / parameters.max_yaw_rate - 1.0e-9) {
+          EXPECT_FALSE(sample.finished);
+        }
+        previous_yaw = sample.control.yaw;
+      }
+      EXPECT_TRUE(sample.finished);
+      EXPECT_TRUE(sample.control.position.isApprox(target));
+      EXPECT_NEAR(std::remainder(sample.control.yaw - pi, 2.0 * pi), 0.0, 1.0e-9);
+    }
+  }
+}
+
+TEST(ReferenceGenerator, YawUsesShortestPathAndContinuesFromLastOutput)
+{
+  ReferenceGeneratorParameters parameters;
+  const double pi = std::acos(-1.0);
+  for (int method = 0; method < 4; ++method) {
+    auto generator = make_reference_generator(static_cast<ReferenceGeneratorType>(method), parameters);
+    const double start = 179.0 * pi / 180.0;
+    generator->reset(Eigen::Vector3d::Zero(), start, Eigen::Vector3d::Zero(), -start);
+    EXPECT_DOUBLE_EQ(generator->update(0.0).control.yaw, start);
+    const auto first = generator->update(0.01);
+    EXPECT_NEAR(first.yaw_rate, parameters.max_yaw_rate, 1.0e-12);
+    generator->reset(Eigen::Vector3d::Zero(), first.control.yaw, Eigen::Vector3d::Zero(), 0.0);
+    EXPECT_DOUBLE_EQ(generator->sample().control.yaw, first.control.yaw);
+    EXPECT_NEAR(generator->update(0.01).yaw_rate, -parameters.max_yaw_rate, 1.0e-12);
+  }
+}
+
+TEST(ReferenceGenerator, CommonYawLimiterBoundsJoinedHeadingAndValidatesRate)
+{
+  const auto waiting = limit_yaw_reference(0.0, 0.2, 0.01, 1.0);
+  EXPECT_NEAR(waiting.yaw, 0.01, 1.0e-12);
+  EXPECT_DOUBLE_EQ(waiting.yaw_rate, 1.0);
+  EXPECT_FALSE(waiting.finished);
+  const auto stationary = limit_yaw_reference(waiting.yaw, 0.2, 0.0, 1.0);
+  EXPECT_DOUBLE_EQ(stationary.yaw, waiting.yaw);
+  EXPECT_DOUBLE_EQ(stationary.yaw_rate, 0.0);
+  EXPECT_FALSE(stationary.finished);
+  const auto arrived = limit_yaw_reference(0.195, 0.2, 0.01, 1.0);
+  EXPECT_NEAR(arrived.yaw, 0.2, 1.0e-12);
+  EXPECT_TRUE(arrived.finished);
+  ReferenceGeneratorParameters parameters;
+  for (double rate : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+    parameters.max_yaw_rate = rate;
+    EXPECT_FALSE(valid_reference_generator_parameters(parameters));
+  }
 }
 
 TEST(ReferenceGenerator, TrapezoidalProfileHasBoundedLongCruise)

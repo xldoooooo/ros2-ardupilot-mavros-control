@@ -118,6 +118,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   max_velocity_xy_ = declare_parameter<double>("max_velocity_xy", 1.5);
   max_velocity_z_ = declare_parameter<double>("max_velocity_z", 0.8);
   max_yaw_rate_ = declare_parameter<double>("max_yaw_rate", 1.0);
+  reference_generator_parameters_.max_yaw_rate = max_yaw_rate_;
   max_reference_error_xy_ = declare_parameter<double>("max_reference_error_xy", 0.8);
   max_reference_error_z_ = declare_parameter<double>("max_reference_error_z", 0.5);
   waypoint_start_speed_tolerance_ =
@@ -2088,6 +2089,7 @@ void OnboardControlNode::update_waypoint_executor(
     return;
   }
 
+  const double previous_yaw = reference_.yaw;
   bool reference_finished = false;
   if (waypoint_flight_strategy_ == 0) {
     // 原直线数值路径保持原样，不依赖规划器、点云、结果年龄或等待状态。
@@ -2099,19 +2101,24 @@ void OnboardControlNode::update_waypoint_executor(
     reference_finished = generated.finished;
   } else {
     if (!update_avoidance_reference(now, dt_seconds)) {return;}
-    reference_finished = waypoint_flight_strategy_ == 1 ?
-      (avoidance_trajectory_.reaches_goal() && avoidance_trajectory_started_ &&
-      std::chrono::duration<double>(now - *avoidance_trajectory_started_).count() >=
-      avoidance_trajectory_.duration()) : active_reference_phase_ == ReferencePhase::kComplete;
+    reference_finished = active_reference_phase_ == ReferencePhase::kComplete;
+  }
+  // Map joins can add heading motion to a generator already at the yaw rate limit.
+  const auto limited_yaw = limit_yaw_reference(
+    previous_yaw, reference_.yaw, dt_seconds, max_yaw_rate_);
+  reference_.yaw = limited_yaw.yaw;
+  target_yaw_rate_ = limited_yaw.yaw_rate;
+  reference_finished = reference_finished && limited_yaw.finished;
+  if (!reference_finished && active_reference_phase_ == ReferencePhase::kComplete) {
+    active_reference_phase_ = ReferencePhase::kCruising;
   }
   const auto & waypoint = waypoints_[waypoint_index_];
   const Eigen::Vector3d target(
     waypoint.position.x, waypoint.position.y, waypoint.position.z);
 
   const double distance = (vehicle_.position - target).norm();
-  const bool baseline = active_reference_generator_ == ReferenceGeneratorType::kStepPosition;
-  const bool reference_ready = baseline || reference_finished;
-  const bool attempt_candidate = reference_ready && distance < waypoint_tolerance_;
+  // A position step must also finish its reference turn before arrival/capture can start.
+  const bool attempt_candidate = reference_finished && distance < waypoint_tolerance_;
   const bool arrival_satisfied = attempt_candidate &&
     vehicle_.velocity.norm() <= waypoint_arrival_speed_tolerance_;
   const int previous_failures = waypoint_arrival_tracker_.failure_count();

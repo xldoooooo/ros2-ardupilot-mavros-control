@@ -101,4 +101,29 @@ TEST(NavigationFrame, SmallForwardAndBackwardCorrectionsKeepOneMetrePerSecondCru
   }
 }
 
+/** A map heading correction cannot add excess yaw rate or skip the final catch-up. */
+TEST(NavigationFrame, JoinedYawRemainsBoundedWhenBaseAlreadyTurnsAtTheLimit)
+{
+  ReferenceGeneratorParameters parameters;
+  auto generator = make_reference_generator(ReferenceGeneratorType::kStepPosition, parameters);
+  generator->reset(Eigen::Vector3d::Zero(), 0.0, Eigen::Vector3d::Zero(), 0.5);
+  NavigationReferenceJoin correction;
+  correction.retarget(Eigen::Vector3d::Zero(), 0.2, 0.2);
+  double previous_yaw = 0.0;
+  bool caught_up = false;
+  bool delayed_completion = false;
+  for (int tick = 0; tick < 100; ++tick) {
+    const auto joined = correction.update(generator->update(0.01), 0.01);
+    const auto limited = limit_yaw_reference(previous_yaw, joined.control.yaw, 0.01, parameters.max_yaw_rate);
+    EXPECT_LE(std::abs(limited.yaw - previous_yaw), parameters.max_yaw_rate * 0.01 + 1.0e-12);
+    if (joined.finished && !limited.finished) {delayed_completion = true;}
+    caught_up = joined.finished && limited.finished;
+    previous_yaw = limited.yaw;
+    if (caught_up) {break;}
+  }
+  EXPECT_TRUE(delayed_completion);
+  EXPECT_TRUE(caught_up);
+  EXPECT_NEAR(previous_yaw, 0.7, 1.0e-12);
+}
+
 }  // namespace onboard_control

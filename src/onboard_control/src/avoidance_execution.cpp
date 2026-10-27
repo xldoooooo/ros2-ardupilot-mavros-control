@@ -465,7 +465,9 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
     const auto generated = navigation_reference_join_.update(reference_generator_->update(dt), dt);
     reference_ = generated.control;
     target_yaw_rate_ = generated.yaw_rate;
-    active_reference_phase_ = generated.phase;
+    // A map join may outlast the underlying position/yaw generator.
+    active_reference_phase_ = !generated.finished && generated.phase == ReferencePhase::kComplete ?
+      ReferencePhase::kCruising : generated.phase;
   } else if (avoidance_trajectory_started_ && !avoidance_trajectory_.empty()) {
     const double elapsed = std::chrono::duration<double>(now - *avoidance_trajectory_started_).count();
     if (!avoidance_trajectory_.reaches_goal()) {
@@ -483,11 +485,12 @@ bool OnboardControlNode::update_avoidance_reference(const SteadyTime & now, doub
     }
     const double previous_yaw = reference_.yaw;
     reference_ = avoidance_trajectory_.sample(elapsed);
-    const double difference = normalize_angle(waypoints_[waypoint_index_].yaw - previous_yaw);
-    target_yaw_rate_ = std::clamp(difference / std::max(dt, 1e-6), -max_yaw_rate_, max_yaw_rate_);
-    reference_.yaw = normalize_angle(previous_yaw + target_yaw_rate_ * dt);
+    const auto limited_yaw = limit_yaw_reference(
+      previous_yaw, waypoints_[waypoint_index_].yaw, dt, max_yaw_rate_);
+    target_yaw_rate_ = limited_yaw.yaw_rate;
+    reference_.yaw = limited_yaw.yaw;
     active_reference_phase_ = avoidance_trajectory_.reaches_goal() &&
-      elapsed >= avoidance_trajectory_.duration() ?
+      elapsed >= avoidance_trajectory_.duration() && limited_yaw.finished ?
       ReferencePhase::kComplete : ReferencePhase::kCruising;
   } else {
     begin_avoidance_wait(now, "无完整可执行轨迹");

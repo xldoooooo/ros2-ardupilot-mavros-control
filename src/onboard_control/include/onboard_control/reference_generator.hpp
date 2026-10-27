@@ -1,6 +1,6 @@
 /**
  * @file reference_generator.hpp
- * @brief 可插拔航点参考生成器、独立参数组与低成本工厂接口。
+ * @brief 航点参考生成器、统一偏航限速与独立平移参数组。
  */
 #pragma once
 
@@ -84,6 +84,7 @@ struct JerkLimitedSCurveParameters
 /** 参考方法配置集合；各方法保留形状参数，运动限额按飞行策略选择。 */
 struct ReferenceGeneratorParameters
 {
+  double max_yaw_rate{1.0};  // 所有参考方法共用的偏航角速率上限，rad/s。
   SecondOrderFilterParameters second_order;
   TrapezoidalProfileParameters trapezoidal;
   JerkLimitedSCurveParameters s_curve;
@@ -97,6 +98,18 @@ struct GeneratedReference
   ReferencePhase phase{ReferencePhase::kIdle};
   bool finished{false};
 };
+
+/** 一次最短路径偏航更新；finished 仅表示参考角已到达目标。 */
+struct YawReference
+{
+  double yaw{0.0};
+  double yaw_rate{0.0};
+  bool finished{true};
+};
+
+/** 按实际周期限制偏航角增量；不限制角加速度。 */
+YawReference limit_yaw_reference(
+  double previous_yaw, double target_yaw, double dt_seconds, double max_yaw_rate);
 
 /** 所有航点命令生成方法共用的最小接口。 */
 class ReferenceGenerator

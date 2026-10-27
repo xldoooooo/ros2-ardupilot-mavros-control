@@ -209,13 +209,15 @@ def avoidance_node(tmp_path, monkeypatch, request):
             self.until(future.done)
             return future.result()
 
-        def execute(self, strategy=2, generator=2, tracking=1, goal_x=4.):
+        def execute(self, strategy=2, generator=2, tracking=1, goal_x=4., goal_yaw=0.):
+            """Submit a waypoint to the real executor through its isolated command service."""
             request = self.request(ExecuteWaypoints)
             request.ttl_ms = 3000
             request.flight_strategy = strategy
             request.reference_generator, request.tracking_controller = generator, tracking
             waypoint = Waypoint()
             waypoint.position.x, waypoint.position.z = goal_x, 1.
+            waypoint.yaw = goal_yaw
             request.waypoints = [waypoint]
             return self.call(self.waypoints, request)
 
@@ -255,6 +257,48 @@ def avoidance_node(tmp_path, monkeypatch, request):
             executor.shutdown(timeout_sec=1.)
             node.destroy_node()
             rclpy.shutdown(context=context)
+
+
+@pytest.mark.parametrize("avoidance_node,strategy,generator", [
+    pytest.param({"max_yaw_rate": .7, "waypoint_hold_seconds": .1}, strategy, generator,
+                 id=f"strategy-{strategy}-generator-{generator}")
+    for strategy, generator in [(0, 0), (0, 1), (0, 2), (0, 3), (1, 2), (2, 2)]
+], indirect=["avoidance_node"])
+def test_short_segment_yaw_rate_and_arrival_wait(avoidance_node, strategy, generator):
+    """Check actual attitude messages and prevent completion/capture while a 180-degree reference turns."""
+    import math
+    from guided_interfaces.msg import CommandResult, VideoCapture
+    from guided_interfaces.srv import FlightCommand
+    h = avoidance_node
+    captures = []
+    subscription = h.node.create_subscription(VideoCapture, "/video_service/capture", captures.append, 10)
+    h.policy = "clear"
+    assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
+    h.spin(.1)
+    checkpoint = len(h.attitudes)
+    assert h.execute(strategy=strategy, generator=generator, goal_x=.01, goal_yaw=math.pi).accepted
+    h.until(lambda: h.status[-1].target_yaw > .1)
+    if strategy == 1:
+        # The real planner stops refreshing a near-goal curve; keep its last accepted result.
+        h.policy, h.active_plan = "silent", None
+    h.spin(.3)
+    assert not captures
+    assert not any(result.final and result.command == "waypoints" for result in h.results)
+    h.until(lambda: any(result.final and result.command == "waypoints" and
+            result.status == CommandResult.STATUS_SUCCEEDED for result in h.results), 8.)
+    h.until(lambda: bool(captures))
+    messages = h.attitudes[checkpoint:]
+    assert len(messages) > 50
+    for previous, current in zip(messages, messages[1:]):
+        q0, q1 = previous.orientation, current.orientation
+        yaw0 = math.atan2(2. * (q0.w * q0.z + q0.x * q0.y), 1. - 2. * (q0.y ** 2 + q0.z ** 2))
+        yaw1 = math.atan2(2. * (q1.w * q1.z + q1.x * q1.y), 1. - 2. * (q1.y ** 2 + q1.z ** 2))
+        interval = ((current.header.stamp.sec - previous.header.stamp.sec) +
+                    (current.header.stamp.nanosec - previous.header.stamp.nanosec) * 1.e-9)
+        # Publication timestamps can differ slightly from the control-loop measurement point.
+        assert abs(math.remainder(yaw1 - yaw0, 2. * math.pi)) <= .7 * interval + .005
+    assert abs(math.remainder(h.status[-1].target_yaw - math.pi, 2. * math.pi)) < 1.e-6
+    h.node.destroy_subscription(subscription)
 
 
 def _issued_acceleration(message):

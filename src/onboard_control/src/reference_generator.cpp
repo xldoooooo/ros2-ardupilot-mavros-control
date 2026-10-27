@@ -1,6 +1,6 @@
 /**
  * @file reference_generator.cpp
- * @brief 位置阶跃、二阶滤波、梯形速度和限 jerk S 曲线解析实现。
+ * @brief 四种平移参考与独立于位置距离的统一偏航限速。
  */
 #include "onboard_control/reference_generator.hpp"
 
@@ -16,9 +16,10 @@ namespace onboard_control
 namespace
 {
 
-constexpr double kEpsilon = 1.0e-9;
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kEpsilon = 1.0e-9;  // 浮点完成判定与零长度保护。
+constexpr double kPi = 3.14159265358979323846;  // 最短偏航角差的半周边界。
 
+/** 把角度归一化到正负半周。 */
 double normalize_angle(double angle)
 {
   while (angle > kPi) {
@@ -30,6 +31,7 @@ double normalize_angle(double angle)
   return angle;
 }
 
+/** 校验需要启用的正数限制。 */
 bool finite_positive(const double value)
 {
   return std::isfinite(value) && value > 0.0;
@@ -56,6 +58,11 @@ double path_limit(
 class StraightSegmentGenerator : public ReferenceGenerator
 {
 public:
+  /** 平移方法共用同一偏航速率配置。 */
+  explicit StraightSegmentGenerator(const double max_yaw_rate)
+  : max_yaw_rate_(max_yaw_rate) {}
+
+  /** 新航段从上一输出参考角开始，初始化不消耗控制周期。 */
   void reset_geometry(
     const Eigen::Vector3d & start_position,
     const double start_yaw,
@@ -73,9 +80,18 @@ public:
     }
     start_yaw_ = normalize_angle(start_yaw);
     yaw_delta_ = normalize_angle(target_yaw - start_yaw_);
+    yaw_reference_ = limit_yaw_reference(start_yaw_, start_yaw_ + yaw_delta_, 0.0, max_yaw_rate_);
   }
 
 protected:
+  /** 即使平移已结束，原地转向仍须按周期继续推进。 */
+  void advance_yaw(const double dt_seconds)
+  {
+    yaw_reference_ = limit_yaw_reference(
+      yaw_reference_.yaw, start_yaw_ + yaw_delta_, dt_seconds, max_yaw_rate_);
+  }
+
+  /** 合成平移与偏航参考，两者均结束才允许航点完成。 */
   GeneratedReference make_sample(
     const double path_position,
     const double path_velocity,
@@ -84,21 +100,19 @@ protected:
     const bool finished) const
   {
     const double bounded_position = std::clamp(path_position, 0.0, distance_);
-    const double ratio = distance_ > kEpsilon ? bounded_position / distance_ : 1.0;
     GeneratedReference output;
     output.control.position = start_position_ + direction_ * bounded_position;
     output.control.velocity = direction_ * path_velocity;
     output.control.acceleration = direction_ * path_acceleration;
-    output.control.yaw = normalize_angle(start_yaw_ + yaw_delta_ * ratio);
-    output.yaw_rate = distance_ > kEpsilon ? yaw_delta_ * path_velocity / distance_ : 0.0;
-    output.phase = phase;
-    output.finished = finished;
+    output.control.yaw = yaw_reference_.yaw;
+    output.yaw_rate = yaw_reference_.yaw_rate;
+    output.finished = finished && yaw_reference_.finished;
+    output.phase = phase == ReferencePhase::kComplete && !output.finished ?
+      ReferencePhase::kCruising : phase;
     if (finished) {
       output.control.position = target_position_;
       output.control.velocity.setZero();
       output.control.acceleration.setZero();
-      output.control.yaw = normalize_angle(start_yaw_ + yaw_delta_);
-      output.yaw_rate = 0.0;
     }
     return output;
   }
@@ -109,11 +123,15 @@ protected:
   double distance_{0.0};
   double start_yaw_{0.0};
   double yaw_delta_{0.0};
+  double max_yaw_rate_{1.0};
+  YawReference yaw_reference_;
 };
 
 class StepPositionGenerator final : public StraightSegmentGenerator
 {
 public:
+  using StraightSegmentGenerator::StraightSegmentGenerator;
+
   void reset(
     const Eigen::Vector3d & start_position,
     const double start_yaw,
@@ -123,7 +141,12 @@ public:
     reset_geometry(start_position, start_yaw, target_position, target_yaw);
   }
 
-  GeneratedReference update(const double) override {return sample();}
+  /** 位置保持阶跃，偏航仍按统一角速率推进。 */
+  GeneratedReference update(const double dt_seconds) override
+  {
+    advance_yaw(dt_seconds);
+    return sample();
+  }
 
   GeneratedReference sample() const override
   {
@@ -134,8 +157,9 @@ public:
 class SecondOrderFilterGenerator final : public StraightSegmentGenerator
 {
 public:
-  explicit SecondOrderFilterGenerator(const SecondOrderFilterParameters & parameters)
-  : parameters_(parameters) {}
+  explicit SecondOrderFilterGenerator(
+    const SecondOrderFilterParameters & parameters, const double max_yaw_rate)
+  : StraightSegmentGenerator(max_yaw_rate), parameters_(parameters) {}
 
   void reset(
     const Eigen::Vector3d & start_position,
@@ -164,6 +188,7 @@ public:
 
   GeneratedReference update(const double dt_seconds) override
   {
+    advance_yaw(dt_seconds);
     if (finished_) {
       return sample();
     }
@@ -211,8 +236,9 @@ private:
 class TrapezoidalProfileGenerator final : public StraightSegmentGenerator
 {
 public:
-  explicit TrapezoidalProfileGenerator(const TrapezoidalProfileParameters & parameters)
-  : parameters_(parameters) {}
+  explicit TrapezoidalProfileGenerator(
+    const TrapezoidalProfileParameters & parameters, const double max_yaw_rate)
+  : StraightSegmentGenerator(max_yaw_rate), parameters_(parameters) {}
 
   void reset(
     const Eigen::Vector3d & start_position,
@@ -246,6 +272,7 @@ public:
 
   GeneratedReference update(const double dt_seconds) override
   {
+    advance_yaw(dt_seconds);
     elapsed_ = std::min(total_time_, elapsed_ + std::clamp(dt_seconds, 0.0, 0.05));
     return sample();
   }
@@ -335,8 +362,9 @@ double transition_distance(
 class JerkLimitedSCurveGenerator final : public StraightSegmentGenerator
 {
 public:
-  explicit JerkLimitedSCurveGenerator(const JerkLimitedSCurveParameters & parameters)
-  : parameters_(parameters) {}
+  explicit JerkLimitedSCurveGenerator(
+    const JerkLimitedSCurveParameters & parameters, const double max_yaw_rate)
+  : StraightSegmentGenerator(max_yaw_rate), parameters_(parameters) {}
 
   void reset(
     const Eigen::Vector3d & start_position,
@@ -399,6 +427,7 @@ public:
 
   GeneratedReference update(const double dt_seconds) override
   {
+    advance_yaw(dt_seconds);
     elapsed_ = std::min(total_time_, elapsed_ + std::clamp(dt_seconds, 0.0, 0.05));
     return sample();
   }
@@ -469,13 +498,26 @@ private:
 
 }  // namespace
 
+/** 约束实际角增量，同时回报对应角速率与偏航完成状态。 */
+YawReference limit_yaw_reference(
+  const double previous_yaw, const double target_yaw,
+  const double dt_seconds, const double max_yaw_rate)
+{
+  const double dt = std::clamp(dt_seconds, 0.0, 0.05);
+  const double difference = normalize_angle(target_yaw - previous_yaw);
+  const double step = std::clamp(difference, -max_yaw_rate * dt, max_yaw_rate * dt);
+  return {normalize_angle(previous_yaw + step), dt > 0.0 ? step / dt : 0.0,
+    std::abs(difference - step) <= kEpsilon};
+}
+
 bool valid_reference_generator_parameters(
   const ReferenceGeneratorParameters & parameters) noexcept
 {
   const auto & filter = parameters.second_order;
   const auto & trapezoidal = parameters.trapezoidal;
   const auto & s_curve = parameters.s_curve;
-  const std::array<double, 24> values{{
+  const std::array<double, 25> values{{
+    parameters.max_yaw_rate,
     filter.wn_xy, filter.zeta_xy, filter.wn_z, filter.zeta_z,
     filter.max_velocity_xy, filter.max_velocity_z,
     filter.max_acceleration_xy, filter.max_acceleration_z,
@@ -500,13 +542,13 @@ std::unique_ptr<ReferenceGenerator> make_reference_generator(
   }
   switch (type) {
     case ReferenceGeneratorType::kStepPosition:
-      return std::make_unique<StepPositionGenerator>();
+      return std::make_unique<StepPositionGenerator>(parameters.max_yaw_rate);
     case ReferenceGeneratorType::kSecondOrderFilter:
-      return std::make_unique<SecondOrderFilterGenerator>(parameters.second_order);
+      return std::make_unique<SecondOrderFilterGenerator>(parameters.second_order, parameters.max_yaw_rate);
     case ReferenceGeneratorType::kTrapezoidalProfile:
-      return std::make_unique<TrapezoidalProfileGenerator>(parameters.trapezoidal);
+      return std::make_unique<TrapezoidalProfileGenerator>(parameters.trapezoidal, parameters.max_yaw_rate);
     case ReferenceGeneratorType::kJerkLimitedSCurve:
-      return std::make_unique<JerkLimitedSCurveGenerator>(parameters.s_curve);
+      return std::make_unique<JerkLimitedSCurveGenerator>(parameters.s_curve, parameters.max_yaw_rate);
     default:
       throw std::invalid_argument("未知航点参考生成方法");
   }

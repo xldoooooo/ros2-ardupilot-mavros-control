@@ -189,7 +189,7 @@ def test_map_endpoint_and_ordinary_relocalization(navigation_node, strategy):
         before = h.status[-1]
         assert (before.target_position.x, before.target_position.y,
                 before.target_position.z) == pytest.approx((4., 0., 1.2))
-        assert before.target_yaw == pytest.approx(math.pi / 2 - .5)
+        h.until(lambda: abs(h.status[-1].target_yaw - (math.pi / 2 - .5)) < 1.e-6)
     else:
         h.until(lambda: any(request.mode != request.CANCEL for _, request in h.requests))
         old = next(request for _, request in h.requests if request.mode != request.CANCEL)
@@ -257,7 +257,7 @@ def test_unlocalized_map_rejects_takeoff_and_local_return(navigation_node):
     h.until(lambda: h.status[-1].target_position.x > 3.99)
     assert (h.status[-1].target_position.x, h.status[-1].target_position.y,
             h.status[-1].target_position.z) == pytest.approx((4., 0., 1.2))
-    assert h.status[-1].target_yaw == pytest.approx(-.5)
+    h.until(lambda: abs(h.status[-1].target_yaw + .5) < 1.e-6)
 
 
 @pytest.mark.parametrize("fault", ["jump", "timeout", "session"])
@@ -302,7 +302,7 @@ def test_odom_without_driver_preserves_local_waypoints(navigation_node):
     h.until(lambda: h.status[-1].target_position.x > 3.99)
     assert (h.status[-1].target_position.x, h.status[-1].target_position.y,
             h.status[-1].target_position.z) == pytest.approx((4., 0., 1.2))
-    assert h.status[-1].target_yaw == pytest.approx(-.5)
+    h.until(lambda: abs(h.status[-1].target_yaw + .5) < 1.e-6)
 
 
 def test_ground_navigation_switch_failure_restores_readiness(navigation_node):

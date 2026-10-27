@@ -40,7 +40,7 @@
     avoidance_join_velocity_tolerance: 0.08  # Base velocity mismatch in m/s, plus native delay allowance.
     max_velocity_xy: 1.5  # 键盘运动模式的最大水平参考速度，单位：米/秒。
     max_velocity_z: 0.8  # 键盘运动模式的最大垂直参考速度，单位：米/秒。
-    max_yaw_rate: 1.0  # 键盘运动模式的最大偏航角速度，单位：弧度/秒。
+    max_yaw_rate: 1.0  # 键盘、航点及避障参考共用的最大偏航角速率，单位：弧度/秒；不限制角加速度。
     max_reference_error_xy: 0.8  # 键盘虚拟参考允许领先飞机的最大水平距离，单位：米。
     max_reference_error_z: 0.5  # 键盘虚拟参考允许领先飞机的最大垂直距离，单位：米。
 
