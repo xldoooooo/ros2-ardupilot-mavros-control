@@ -31,6 +31,7 @@ class OnboardMedia:
         self.session = None
         self._last_session = None
         self.error = ''
+        self._upload_error = ''
         self._forward = None
         self._lock = threading.RLock()
         self._shutdown = threading.Event()
@@ -132,10 +133,14 @@ class OnboardMedia:
                 if time.monotonic() - notified > 5:
                     self._notify('update')
                     notified = time.monotonic()
-                for record in self.queue.records():
-                    if record.get('error'):
-                        self.error = str(record.get('error', '媒体上传失败，等待重试'))
-                        break
+                upload_error = next((str(record['error']) for record in self.queue.records()
+                                     if record.get('error')), '')
+                if upload_error:
+                    self.error = upload_error
+                elif self.error == self._upload_error:
+                    # Clear only the recovered queue warning, preserving unrelated failures.
+                    self.error = ''
+                self._upload_error = upload_error
             except Exception as exc:
                 self.error = str(exc)
                 logging.exception('Onboard media background error')

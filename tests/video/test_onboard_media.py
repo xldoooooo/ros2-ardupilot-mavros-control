@@ -32,6 +32,30 @@ def _ground(tmp_path):
     })
 
 
+def test_recovered_upload_clears_its_old_error_without_hiding_other_failures():
+    """Recovered queue errors disappear while a newer unrelated warning remains visible."""
+    media = _onboard()
+    media.controller.status.return_value = {'state': 'stopped'}
+    media.error = ''
+    media._upload_error = ''
+    media._shutdown = Mock()
+    old_error = 'ssh: connect to host 192.168.112.111 port 22: Connection timed out'
+    notice_error = '地面媒体通知失败'
+    media.queue.records.side_effect = [[{'error': old_error}], [], [{'error': old_error}], []]
+    observed = []
+
+    def next_iteration(_timeout):
+        """Advance four worker iterations without real threads or network activity."""
+        observed.append(media.error)
+        if len(observed) == 4:
+            media.error = notice_error
+        return len(observed) > 4
+
+    media._shutdown.wait.side_effect = next_iteration
+    media._loop()
+    assert observed == ['', old_error, '', old_error, notice_error]
+
+
 def test_failed_new_session_does_not_upload_previous_recording(tmp_path):
     """A camera startup failure must not relabel the previous task's finalized original."""
     previous = tmp_path / 'previous.mp4'
