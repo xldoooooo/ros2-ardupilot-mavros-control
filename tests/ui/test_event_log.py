@@ -44,6 +44,18 @@ def test_event_log_file_error_keeps_in_memory_logging_available(tmp_path, capsys
     assert "地面站日志落盘失败" in capsys.readouterr().err
 
 
+def test_event_log_rotates_bounded_history(tmp_path, monkeypatch) -> None:
+    """长期落盘超限后保留最新内容，历史文件数量受控。"""
+    monkeypatch.setattr("ground_station_core.event_log._LOG_MAX_BYTES", 150)
+    path = tmp_path / "events.log"
+    events = EventLog(log_path=path)
+    for index in range(20):
+        events.info("test", f"巡检状态 {index:02d}")
+    assert "巡检状态 19" in path.read_text()
+    assert len(list(tmp_path.glob("events.log*"))) == 6
+    assert "巡检状态 17" in (tmp_path / "events.log.1").read_text()
+
+
 def test_process_output_is_teed_to_file_and_structured_log() -> None:
     """外部进程输出应实时进入统一日志，并保留其显式 WARN 标记。"""
     events = EventLog()

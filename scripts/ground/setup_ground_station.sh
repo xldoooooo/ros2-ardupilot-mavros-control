@@ -82,4 +82,5 @@ colcon test \
 colcon test-result --verbose
 
 "${project_root}/.venv/bin/python3" ground_station.py --check-environment
+"${project_root}/.venv/bin/python3" -m ground_station_core.startup
 echo "[ground-setup] setup passed; run: bash scripts/ground/start_ground_all.sh"

@@ -215,6 +215,7 @@ class OperationsPanel(QWidget):
     hover_requested = Signal()
     motion_requested = Signal(float, float, float, float)
     coordinate_mode_changed = Signal(str, str)
+    origin_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """构建上排双卡片与下排手动操纵卡片。"""
@@ -1090,8 +1091,13 @@ class OperationsPanel(QWidget):
         """打开原点配置对话框；确认后只更新本地缓存。"""
         dialog = OriginConfigDialog(self._origin, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._origin = dialog.origin()
-            self._refresh_origin_summary()
+            self.set_origin(dialog.origin())
+
+    def set_origin(self, origin: tuple[float, float, float]) -> None:
+        """应用本机已保存或人工修改的原点，并通知启动偏好保存。"""
+        self._origin = tuple(origin)
+        self._refresh_origin_summary()
+        self.origin_changed.emit(self._origin)
 
     def update_snapshot(
         self,

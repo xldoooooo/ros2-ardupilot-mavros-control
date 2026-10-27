@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -227,7 +228,9 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose(navigation_
     assert [marker_array.markers[index].text for index in (2, 4)] == ["1", "2"]
     path = path_publisher.messages[-1]
     assert path.header.frame_id == expected_frame
+    assert path.header.stamp == Time()
     assert all(marker.header.frame_id == expected_frame for marker in marker_array.markers)
+    assert all(marker.header.stamp == Time() for marker in marker_array.markers)
     assert all(pose.header.frame_id == expected_frame for pose in path.poses)
     assert len(path.poses) == 2
     assert path.poses[0].pose.position.x == (11.0 if navigation_frame == "map" else 1.0)
@@ -235,6 +238,7 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose(navigation_
     assert math.isclose(path.poses[1].pose.orientation.w, math.sqrt(0.5))
 
     status = SimpleNamespace(
+        header=SimpleNamespace(stamp=Time(sec=8141, nanosec=123)),
         local_position_valid=True,
         navigation_frame=navigation_frame,
         navigation_ready=True,
@@ -246,6 +250,7 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose(navigation_
     controller._publish_vehicle_preview_pose(entities, status)
     pose = pose_publisher.messages[-1]
     assert pose.header.frame_id == expected_frame
+    assert pose.header.stamp == status.header.stamp
     assert (pose.pose.position.x, pose.pose.position.y, pose.pose.position.z) == (
         7.0,
         8.0,
@@ -253,6 +258,66 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose(navigation_
     )
     assert math.isclose(pose.pose.orientation.z, math.sqrt(0.5))
     assert math.isclose(pose.pose.orientation.w, math.sqrt(0.5))
+
+    # 地图 TF 用 Odin 设备秒；静态航点不能按地面 wall-clock 查询造成外推失败。
+    if navigation_frame == "map":
+        from geometry_msgs.msg import TransformStamped
+        from rclpy.time import Time as RosTime
+        from tf2_ros import Buffer, ExtrapolationException
+
+        buffer = Buffer()
+        transform = TransformStamped(child_frame_id="map")
+        transform.header.frame_id = "odom"
+        transform.transform.translation.x = 10.0
+        transform.transform.rotation.w = 1.0
+        for second in (8140, 8141):
+            transform.header.stamp.sec = second
+            buffer.set_transform(transform, "odin")
+        transform = TransformStamped(child_frame_id="fcu_local")
+        transform.header.frame_id = "odom"
+        transform.transform.rotation.w = 1.0
+        buffer.set_transform_static(transform, "onboard_control")
+        with pytest.raises(ExtrapolationException):
+            buffer.lookup_transform("map", expected_frame, RosTime(seconds=1793093372))
+        display_transform = buffer.lookup_transform(
+            "map", expected_frame, RosTime.from_msg(path.header.stamp)
+        )
+        assert display_transform.transform.translation.x + path.poses[0].pose.position.x == 1.0
+
+        # 设备重启归零后旧 Buffer 拒收新地图；重开显示进程的全新缓存才能采用该变换。
+        rebooted_map = TransformStamped(child_frame_id="map")
+        rebooted_map.header.frame_id = "odom"
+        rebooted_map.header.stamp.sec = 1
+        rebooted_map.transform.translation.x = 20.0
+        rebooted_map.transform.rotation.w = 1.0
+        buffer.set_transform(rebooted_map, "odin")
+        assert buffer.lookup_transform("map", expected_frame, RosTime()).transform.translation.x == -10.0
+        fresh_buffer = Buffer()
+        fresh_buffer.set_transform(rebooted_map, "odin")
+        fresh_buffer.set_transform_static(transform, "onboard_control")
+        assert fresh_buffer.lookup_transform("map", expected_frame, RosTime()).transform.translation.x == -20.0
+
+    # TF 持续微调会更新坐标，但不把相同航点按 10 Hz 写入事件日志。
+    event_count = len(controller._events.snapshot())
+    assert controller.publish_waypoint_preview(waypoints)
+    controller._process_one_waypoint_preview(entities)
+    assert len(controller._events.snapshot()) == event_count
+
+    if navigation_frame == "map":
+        # 重启后尚未定位时，清屏必须在固定系完成；恢复定位仍按 FCU 坐标显示。
+        controller._state._snapshot = replace(controller._state._snapshot, navigation_ready=False)
+        assert controller.publish_waypoint_preview(waypoints)
+        controller._process_one_waypoint_preview(entities)
+        assert path_publisher.messages[-1].header.frame_id == PREVIEW_FRAME_ID
+        assert not path_publisher.messages[-1].poses
+        markers = marker_publisher.messages[-1].markers
+        assert len(markers) == 1 and markers[0].action == Marker.DELETEALL
+        assert markers[0].header.frame_id == PREVIEW_FRAME_ID
+        controller._state._snapshot = replace(controller._state._snapshot, navigation_ready=True)
+        assert controller.publish_waypoint_preview(waypoints)
+        controller._process_one_waypoint_preview(entities)
+        assert path_publisher.messages[-1].header.frame_id == expected_frame
+        assert len(path_publisher.messages[-1].poses) == len(waypoints)
 
     # 空快照显式删除旧 Marker 并覆盖为空 Path，不会留下上一次较长列表。
     assert controller.publish_waypoint_preview(())

@@ -61,6 +61,7 @@ def executing_status():
 
 @pytest.mark.parametrize('frame', ['map', 'fcu_local'])
 def test_preview_requires_fresh_execution_status_and_preserves_source_path(preview, frame):
+    """显示副本按最新 TF 变换，同时保留源轨迹时间和坐标。"""
     node, output, clock = preview
     path = trajectory()
     path.header.frame_id = frame
@@ -68,8 +69,11 @@ def test_preview_requires_fresh_execution_status_and_preserves_source_path(previ
     assert not output[-1].poses
     node.status_callback(executing_status())
     node.path_callback(path)
-    assert output[-1] is path
-    assert output[-1].header.stamp.sec == 123
+    assert output[-1] is not path
+    assert output[-1].header.stamp.sec == 0
+    assert output[-1].header.stamp.nanosec == 0
+    assert output[-1].poses[0].pose == path.poses[0].pose
+    assert path.header.stamp.sec == 123
     assert output[-1].header.frame_id == frame
     assert node.path_subscription.qos_profile.reliability == ReliabilityPolicy.RELIABLE
     assert node.path_subscription.qos_profile.durability == DurabilityPolicy.VOLATILE

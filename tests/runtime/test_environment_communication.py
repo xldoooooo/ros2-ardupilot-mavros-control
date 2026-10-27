@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import threading
 import time
@@ -106,6 +107,7 @@ class _PreviewSupervisor(_TrackingSupervisor):
         super().__init__()
         self.records: dict[str, object] = {}
         self.start_calls: list[tuple[str, tuple[str, ...], dict[str, object]]] = []
+        self.named_terminate_calls: list[str] = []
 
     def get(self, name: str) -> object | None:
         """返回指定模拟进程记录。"""
@@ -123,6 +125,11 @@ class _PreviewSupervisor(_TrackingSupervisor):
             (str(name), tuple(str(part) for part in command), dict(kwargs))
         )
         return record
+
+    def terminate(self, name: str) -> None:
+        """只删除选定预览记录，保留其他受管进程。"""
+        self.named_terminate_calls.append(name)
+        self.records.pop(name, None)
 
 
 class _DiagnosticRos:
@@ -520,6 +527,55 @@ def test_hardware_waypoint_preview_starts_one_isolated_local_rviz(
     assert supervisor.run_calls == 2
 
 
+@pytest.mark.parametrize("has_preview", [False, True])
+def test_remote_recovery_restarts_existing_preview_once_after_maintenance(has_preview) -> None:
+    """一次恢复重开既有预览以清空 TF；随后普通维护不重开，也不新建未用窗口。"""
+    events = EventLog()
+    ros = _FullConnectionRos(events)
+    ros._snapshot = replace(ros._snapshot, on_ground=True)
+    ros.discovery_range = HARDWARE_DISCOVERY_RANGE
+    ros.control_enabled = True
+    ros.remote_logs_enabled = True
+    supervisor = _PreviewSupervisor()
+    simulation_record = SimpleNamespace(running=True)
+    supervisor.records["rviz"] = simulation_record
+    if has_preview:
+        supervisor.records["rviz_hardware_preview"] = SimpleNamespace(running=True)
+    initializer = EnvironmentInitializer(ros, supervisor=supervisor, event_log=events)
+    release = threading.Event()
+    foreign_worker = threading.Thread(target=release.wait)
+    initializer._workflow_thread = foreign_worker
+    foreign_worker.start()
+    try:
+        with pytest.raises(RuntimeError, match="环境工作流仍在执行"):
+            initializer.ensure_waypoint_preview("hardware")
+        assert not supervisor.start_calls
+    finally:
+        release.set()
+        foreign_worker.join(timeout=2.0)
+        initializer._workflow_thread = None
+    for recovering in (True, False):
+        finished = threading.Event()
+        outcomes = []
+
+        def done(success: bool, message: str) -> None:
+            """记录后台连接维护终态，测试等待真实工作线程完成。"""
+            outcomes.append(success)
+            finished.set()
+
+        assert initializer.maintain_hardware_connection(
+            (31.0, 121.0, 10.0), lambda *_args: None, done, restart_preview=recovering,
+        )
+        assert finished.wait(timeout=3.0)
+        initializer._workflow_thread.join(timeout=2.0)
+        assert outcomes == [True]
+    assert supervisor.named_terminate_calls == (["rviz_hardware_preview"] if has_preview else [])
+    assert len(supervisor.start_calls) == int(has_preview)
+    assert supervisor.terminate_calls == 0
+    assert supervisor.records["rviz"] is simulation_record
+    assert ros.ready and ros.control_enabled and ros.remote_logs_enabled
+
+
 def test_waypoint_preview_rejects_transport_mismatch_before_process_access() -> None:
     """会话模式与当前 DDS domain 不一致时不得尝试打开 RViz。"""
     events = EventLog()
@@ -734,3 +790,43 @@ def test_full_hardware_connection_restores_control_rates_and_origin() -> None:
     assert ("set_gp_origin", origin) in ros.calls
     assert supervisor.run_calls == 1
     assert supervisor.terminate_calls == 1
+
+
+@pytest.mark.parametrize("outcome", ["success", "rates_failure", "armed_after_rates"])
+def test_existing_hardware_maintenance_never_cleans_live_session(outcome) -> None:
+    """已有会话维护成功、失败或期间解锁均保留租约、context、日志与 RViz。"""
+    events = EventLog()
+    ros = _FullConnectionRos(events)
+    ros._snapshot = replace(ros._snapshot, on_ground=True)
+    ros.control_enabled = True
+    ros.remote_logs_enabled = True
+    supervisor = _TrackingSupervisor(forbid_process_calls=True)
+    initializer = EnvironmentInitializer(ros, supervisor=supervisor, event_log=events)
+    original_wait = ros.wait_for_result
+
+    def result(ticket: int, timeout: float) -> object:
+        """模拟第一项维护失败或等待期间操作者解锁。"""
+        if outcome == "rates_failure":
+            return SimpleNamespace(success=False, message="rates failed")
+        if outcome == "armed_after_rates":
+            ros._snapshot = replace(ros._snapshot, armed=True)
+        return original_wait(ticket, timeout)
+
+    ros.wait_for_result = result
+    finished = threading.Event()
+    results = []
+
+    def done(success: bool, message: str) -> None:
+        """记录异步维护的真实终态。"""
+        results.append((success, message))
+        finished.set()
+
+    assert initializer.maintain_hardware_connection((31.0, 121.0, 10.0), lambda *_args: None, done)
+    assert finished.wait(timeout=2)
+    initializer._workflow_thread.join(timeout=2)
+    assert results[0][0] == (outcome == "success")
+    expected = ["set_rates", "set_gp_origin"] if outcome == "success" else ["set_rates"]
+    assert [name for name, _argument in ros.calls] == expected
+    assert ros.ready and ros.domain_id == HARDWARE_DOMAIN_ID
+    assert ros.control_enabled and ros.remote_logs_enabled
+    assert supervisor.terminate_calls == supervisor.run_calls == 0

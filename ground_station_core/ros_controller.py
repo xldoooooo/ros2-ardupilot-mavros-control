@@ -337,6 +337,7 @@ class GroundStationRosController:
         self._waypoint_preview_enabled = threading.Event()
         self._last_preview_waypoints: tuple = ()
         self._last_preview_transform: tuple = ()
+        self._last_preview_log_key: tuple | None = None
         self._ticket_lock = threading.Lock()
         self._next_ticket = 1
         # source_id 在一个 GUI 进程内稳定，因此租约序号也必须跨 ROS context
@@ -753,9 +754,6 @@ class GroundStationRosController:
                 except queue.Empty:
                     continue
         self._waypoint_preview_enabled.set()
-        self._events.debug(
-            "visualization", f"航点预览已排队：{len(normalized)} 个航点"
-        )
         return True
 
     def request_set_gp_origin(
@@ -775,6 +773,8 @@ class GroundStationRosController:
 
     def _discard_waypoint_preview_requests(self) -> None:
         """在 context 切换/停止时丢弃旧域中的本地预览快照。"""
+        self._last_preview_transform = ()
+        self._last_preview_log_key = None
         while True:
             try:
                 self._waypoint_preview_queue.get_nowait()
@@ -962,7 +962,8 @@ class GroundStationRosController:
                 self._state.update(message)
                 snapshot = self.snapshot()
                 transform_key = (snapshot.navigation_frame, snapshot.navigation_ready, snapshot.task_to_local)
-                if self._waypoint_preview_enabled.is_set() and transform_key != self._last_preview_transform:
+                if (self._waypoint_preview_enabled.is_set() and self._last_preview_waypoints
+                        and transform_key != self._last_preview_transform):
                     self._last_preview_transform = transform_key
                     self.publish_waypoint_preview(self._last_preview_waypoints)
                 # 仿真直接复用同域 MAVROS 位姿；只有实机预览需要地面聚合位姿。
@@ -1186,17 +1187,23 @@ class GroundStationRosController:
 
         try:
             self._ensure_waypoint_visualization_entities(entities)
-            node = entities["node"]
             marker_type = entities["Marker"]
             marker_array = entities["MarkerArray"]()
             path = entities["Path"]()
             pose_type = entities["PoseStamped"]
-            stamp = node.get_clock().now().to_msg()
+            # 保留型航点是静态标注，用最新 TF；地面时钟/旧发布时间不能作为机载 TF 查询时刻。
+            stamp = path.header.stamp
             snapshot = self.snapshot()
+            self._last_preview_transform = (
+                snapshot.navigation_frame, snapshot.navigation_ready, snapshot.task_to_local
+            )
             frame_id = (
-                MAP_PREVIEW_FRAME_ID if snapshot.navigation_frame == "map" else PREVIEW_FRAME_ID
+                MAP_PREVIEW_FRAME_ID
+                if snapshot.navigation_frame == "map" and snapshot.navigation_ready
+                else PREVIEW_FRAME_ID
             )
 
+            # 未定位时只清屏；使用固定显示系，避免缺少地图 TF 时清空消息反而积压。
             # DELETEALL 与新 ADD 放在同一有序 MarkerArray，缩短列表时不会残留旧编号。
             clear_marker = marker_type()
             clear_marker.header.frame_id = frame_id
@@ -1264,11 +1271,15 @@ class GroundStationRosController:
 
             entities["marker_publisher"].publish(marker_array)
             entities["path_publisher"].publish(path)
-            self._events.debug(
-                "visualization",
-                f"RViz 航点预览已发布：{len(waypoints)} 个航点、"
-                f"{max(0, len(waypoints) - 1)} 段直线",
-            )
+            log_key = (waypoints, frame_id, snapshot.navigation_ready)
+            if log_key != self._last_preview_log_key:
+                self._last_preview_log_key = log_key
+                self._events.info(
+                    "visualization",
+                    f"RViz 航点预览已发布：{len(local_waypoints)} 个航点、"
+                    f"{max(0, len(local_waypoints) - 1)} 段直线；frame={frame_id}，"
+                    f"定位{'就绪' if snapshot.navigation_ready else '未就绪'}",
+                )
         except Exception as exc:
             self._waypoint_preview_enabled.clear()
             self._events.error("visualization", f"航点预览发布失败：{exc}")
@@ -1316,7 +1327,11 @@ class GroundStationRosController:
             if getattr(status_message, "navigation_frame", "odom") == "map"
             else PREVIEW_FRAME_ID
         )
-        pose.header.stamp = entities["node"].get_clock().now().to_msg()
+        # 保留机载状态源时刻，避免地面接收时刻替换采样时刻。
+        header = getattr(status_message, "header", None)
+        pose.header.stamp = (
+            header.stamp if header is not None else entities["node"].get_clock().now().to_msg()
+        )
         (
             pose.pose.position.x,
             pose.pose.position.y,

@@ -19,7 +19,7 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
     from geographic_msgs.msg import GeoPointStamped
     from geometry_msgs.msg import PoseStamped, TwistStamped
     from mavros_msgs.msg import State
-    from mavros_msgs.srv import MessageInterval, SetMode
+    from mavros_msgs.srv import CommandLong, MessageInterval, SetMode
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -80,8 +80,17 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
     interval_requests: list[tuple[int, float]] = []
     land_requests: list[str] = []
     origin_requests: list[GeoPointStamped] = []
+    origin_readbacks: list[tuple[int, float]] = []
     statuses: list[ControlStatus] = []
     results: list[CommandResult] = []
+
+    def request_origin_readback(request, response):
+        """接受主动回读请求，但 ACK 本身不构成原点确认。"""
+        origin_readbacks.append((request.command, request.param1))
+        response.success = True
+        return response
+
+    node.create_service(CommandLong, "/truth_mavros/cmd/command", request_origin_readback)
 
     def configure_interval(request, response):
         interval_requests.append((request.message_id, request.message_rate))
@@ -285,6 +294,7 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         origin.origin.altitude = 18.5
         assert call(origin_client, origin).accepted
         assert spin_until(lambda: bool(origin_requests))
+        assert spin_until(lambda: origin_readbacks == [(512, 49.0)])
         assert spin_until(
             lambda: any(
                 result.command == "set_gp_origin"

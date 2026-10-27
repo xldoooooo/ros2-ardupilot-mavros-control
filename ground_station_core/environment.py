@@ -152,6 +152,25 @@ class EnvironmentInitializer:
             operation_label="通讯检测",
         )
 
+    def maintain_hardware_connection(
+        self,
+        origin: tuple[float, float, float],
+        status: StatusCallback,
+        done: DoneCallback,
+        *,
+        restart_preview: bool = False,
+    ) -> bool:
+        """补齐已有实机会话；掉线恢复可重开已用的 RViz 以清理设备时间缓存。"""
+        return self._start_workflow(
+            "hardware-maintenance",
+            lambda: self._hardware_maintenance_workflow(origin, restart_preview=restart_preview),
+            status,
+            done,
+            cleanup_on_failure=False,
+            preserve_session_on_failure=True,
+            operation_label="实机连接维护",
+        )
+
     def cancel_hardware_communication_test(self) -> bool:
         """只请求结束纯订阅检测，不释放租约或触碰任何受管进程。"""
         with self._state_lock:
@@ -174,9 +193,10 @@ class EnvironmentInitializer:
         done: DoneCallback,
         *,
         cleanup_on_failure: bool = True,
+        preserve_session_on_failure: bool = False,
         operation_label: str = "初始化/连接",
     ) -> bool:
-        """保证工作流互斥，并让纯诊断失败时跳过任何环境清理动作。"""
+        """保证工作流互斥；诊断与已有会话维护各自保留原有生命周期。"""
         with self._state_lock:
             if self._workflow_thread is not None and self._workflow_thread.is_alive():
                 self._events.warn("environment", "已有初始化/连接流程正在执行")
@@ -189,7 +209,9 @@ class EnvironmentInitializer:
                 try:
                     message = workflow()
                 except _PreflightFailed as exc:
-                    if cleanup_on_failure:
+                    if preserve_session_on_failure:
+                        message = f"{operation_label}前检查失败: {exc}；保留当前会话"
+                    elif cleanup_on_failure:
                         report = self._terminate_environment_session()
                         message = (
                             f"{operation_label}前检查失败: {exc}"
@@ -201,7 +223,10 @@ class EnvironmentInitializer:
                     self._events.error("environment", message)
                     done(False, message)
                 except _WorkflowCancelled:
-                    if cleanup_on_failure:
+                    if preserve_session_on_failure:
+                        message = f"{operation_label}已取消；保留当前会话"
+                        level = LogLevel.WARN
+                    elif cleanup_on_failure:
                         report = self._terminate_environment_session()
                         message = (
                             "操作已取消，本地 ROS 连接、仿真进程与控制租约已清理"
@@ -220,7 +245,9 @@ class EnvironmentInitializer:
                     self._events.emit(level, "environment", message)
                     done(False, message)
                 except Exception as exc:
-                    if cleanup_on_failure:
+                    if preserve_session_on_failure:
+                        message = f"{operation_label}失败: {exc}；保留当前会话，稍后重试"
+                    elif cleanup_on_failure:
                         self._publish_status(
                             status,
                             LogLevel.WARN,
@@ -292,7 +319,8 @@ class EnvironmentInitializer:
 
         with self._state_lock:
             workflow_thread = self._workflow_thread
-            if workflow_thread is not None and workflow_thread.is_alive():
+            if (workflow_thread is not None and workflow_thread.is_alive()
+                    and workflow_thread is not threading.current_thread()):
                 raise RuntimeError("环境工作流仍在执行，暂不能启动航点预览")
         with self._cleanup_condition:
             if self._cleanup_running:
@@ -350,6 +378,17 @@ class EnvironmentInitializer:
             f"{message}（domain={domain_id}，发现={discovery_range}）",
         )
         return message
+
+    def restart_hardware_preview(self) -> None:
+        """恢复远端连接后仅重开已有硬件预览，清空 RViz 与位姿桥的原生 TF 缓存。"""
+        process = self._supervisor.get("rviz_hardware_preview")
+        if process is None or not process.running:
+            return
+        self._check_cancelled()
+        self._supervisor.terminate("rviz_hardware_preview")
+        self._check_cancelled()
+        self.ensure_waypoint_preview("hardware")
+        self._events.info("visualization", "远端连接已恢复，已重开原有 RViz 预览并清除旧设备时间缓存")
 
     def _simulation_workflow(self, status: StatusCallback, *, avoidance_demo: bool = True) -> str:
         """执行可取消的完整闭环仿真初始化（不写 GPS 原点，沿用 SITL Home）。"""
@@ -623,6 +662,43 @@ class EnvironmentInitializer:
             "实机机载服务连接完成；地面站已持有高层命令租约，"
             "MAVROS/驱动/控制循环均在无人机上运行"
         )
+
+    def _check_hardware_maintenance_ready(self) -> None:
+        """每次维护请求前重新确认当前实机会话在线、持权且未解锁落地。"""
+        self._check_cancelled()
+        snapshot = self._ros.snapshot()
+        if (
+            not self._ros.ready or self._ros.domain_id != HARDWARE_DOMAIN_ID
+            or not snapshot.onboard_available or not snapshot.connected
+            or not snapshot.control_authority or snapshot.interface_version != INTERFACE_VERSION
+            or snapshot.armed or not snapshot.on_ground or snapshot.controller_active
+            or snapshot.reboot_in_progress
+        ):
+            raise RuntimeError("等待实机会话在线、持权、未解锁且落地后再维护")
+
+    def _hardware_maintenance_workflow(
+        self, origin: tuple[float, float, float], *, restart_preview: bool = False,
+    ) -> str:
+        """维护控制连接；只有已识别的掉线恢复才重开既有预览窗口。"""
+        self._check_hardware_maintenance_ready()
+        self._wait_thrust_mode(60.0)
+        self._check_hardware_maintenance_ready()
+        rate_result = self._wait_ticket(self._ros.request_set_rates(), 25.0)
+        if rate_result is None or not rate_result.success:
+            raise RuntimeError(rate_result.message if rate_result is not None else "消息频率配置超时")
+        self._check_hardware_maintenance_ready()
+        origin_result = self._wait_ticket(self._ros.request_set_gp_origin(*origin), 10.0)
+        if origin_result is None or not origin_result.success:
+            raise RuntimeError(origin_result.message if origin_result is not None else "飞控原点设置超时")
+        self._wait_local_position(40.0)
+        if restart_preview:
+            try:
+                self.restart_hardware_preview()
+            except _WorkflowCancelled:
+                raise
+            except Exception as exc:
+                self._events.warn("visualization", f"连接已恢复，RViz 预览重开失败：{exc}")
+        return "实机连接维护完成；原 ROS 会话与控制租约保持"
 
     def _communication_workflow(self, status: StatusCallback) -> str:
         """仅订阅并测量实机状态/日志链路，禁止任何控制或进程生命周期调用。"""

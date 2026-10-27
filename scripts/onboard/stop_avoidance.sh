@@ -2,6 +2,11 @@
 # Stop avoidance launchers, nodes and residual descendants without stopping the flight stack.
 set -Eeuo pipefail
 
+# Stop the supervisor before collecting processes, so it cannot restart them.
+if systemctl is-active --quiet ros2-ardupilot-avoidance.service; then
+  sudo systemctl stop ros2-ardupilot-avoidance.service
+fi
+
 # Cover direct nodes, the operator entry, package launches and launch-file paths.
 readonly process_pattern='(^|[[:space:]])([^[:space:]]*/)?(start_avoidance\.sh|avoidance_bridge_node|path_planning_node)([[:space:]]|$)|(^|/)ros2[[:space:]]+launch[[:space:]]+((avoidance_bridge[[:space:]]+|[^[:space:]]*/)?avoidance\.launch\.py|(path_planning[[:space:]]+|[^[:space:]]*/)(odin|planner)\.launch\.py|(guided_sim[[:space:]]+|[^[:space:]]*/)?avoidance_demo\.launch\.py)([[:space:]]|$)'
 # Match the graceful/forced shutdown windows used by stop_onboard_control.sh.

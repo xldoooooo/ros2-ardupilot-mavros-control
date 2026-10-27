@@ -1,6 +1,6 @@
 """Forward onboard video and persist uploads without changing the flight lifecycle."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 import json
 import logging
 from pathlib import Path
@@ -9,7 +9,6 @@ import subprocess
 import threading
 import time
 from urllib.request import Request, urlopen
-from uuid import uuid4
 
 from video_service.media_transfer import UploadQueue
 
@@ -28,6 +27,7 @@ class OnboardMedia:
                                  settings['upload_root'], float(settings.get('retain_seconds', 86400)),
                                  int(settings.get('bwlimit_kib', 2048)))
         self.queue.start()
+        self._session_ids = {record['session_id'] for record in self.queue.records()}
         self.session = None
         self._last_session = None
         self.error = ''
@@ -43,11 +43,19 @@ class OnboardMedia:
         with self._lock:
             if self.session:
                 return
-            self.session = {'session_id': datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S-') + uuid4().hex[:8],
+            stamp = datetime.now().replace(microsecond=0)
+            session_id = stamp.strftime('mission-%Y%m%d-%H%M%S')
+            # Keep same-second restarts readable without merging their session identities.
+            while session_id in self._session_ids:
+                stamp += timedelta(seconds=1)
+                session_id = stamp.strftime('mission-%Y%m%d-%H%M%S')
+            self._session_ids.add(session_id)
+            self.session = {'session_id': session_id,
                             'source_id': source_id, 'started_at': time.time(), 'mission_sequence': 0}
             self._previous_recording = self.controller.status().get('last_recording_file', '')
             self._last_session = dict(self.session)
             self.queue.enqueue_event('session_start', self.session['session_id'], dict(self.session))
+            logging.info('Media session started: session=%s source=%s', session_id, source_id)
         self._notify('start')
 
     def update_mission(self, source_id, sequence):
@@ -66,6 +74,9 @@ class OnboardMedia:
             identity = dict(self.session)
             identity.update(metadata)
             media_id = self.queue.enqueue(Path(path), 'image', self.session['session_id'], identity)
+            logging.info('Photo queued: id=%s session=%s source=%s mission=%s waypoint=%s file=%s',
+                         media_id, self.session['session_id'], identity.get('source_id'),
+                         identity.get('mission_sequence'), identity.get('waypoint_index'), Path(path).name)
         self._notify('update')
         return media_id
 
@@ -80,6 +91,9 @@ class OnboardMedia:
             if path and path != self._previous_recording and Path(path).is_file():
                 self.queue.enqueue(Path(path), 'video', self.session['session_id'], metadata)
             self.queue.enqueue_event('session_end', self.session['session_id'], metadata)
+            logging.info('Media session ended: session=%s source=%s mission=%s error=%s',
+                         self.session['session_id'], metadata.get('source_id'),
+                         metadata.get('mission_sequence'), error)
             self._notify('end', metadata)
             self.session = None
         self._stop_forward()

@@ -22,6 +22,8 @@ p_map   = inverse(R_OM) * (p_local - t_OM - b)
 MAVROS 消息原有的 `map` 名称仍表示 FCU 本地值；不能用于推断 Odin 地图坐标。
 map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fcu_local`、平移 `-b`，
 避免与 Odin 的真实 map TF 同名。odom 模式保留原显示行为。
+航点与轨迹显示使用零时间戳查询最新 TF；MAP 机体位姿先按最新 `map ← fcu_local` 转入显示系，
+模型 TF 保留状态源时刻，兼容 Odin 设备启动秒与控制状态墙钟不同的配置，不改写原生 TF 或控制输入。
 
 ## 配置与切换
 
@@ -54,6 +56,11 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 | 姿态、杆臂及自动安装俯仰 | `correction_service/extnav_patch/src/extnav_to_vision_pose.cpp`、`include/extnav_bridge/math.hpp` |
 | 地面重启事务 | `scripts/onboard/switch_navigation_mode.sh` |
 | GUI / 上位机坐标适配 | `ground_station_core/ros_controller.py`、`qt_ui/`、`upstream/` |
+| RViz 机体时间与轨迹显示 | `src/guided_sim/scripts/pose_to_tf.py`、`avoidance_preview.py` |
+
+修改 RViz 桥脚本后，地面站需重新构建 `guided_sim` 并重启预览进程；运行依赖由包内 `tf2_geometry_msgs`、`tf2_ros` 声明。
+飞机掉线恢复并完成连接维护后，地面站只重开已打开的硬件 RViz 进程组，清除 Odin 设备秒归零前的显示缓存；
+控制租约、ROS 会话及其他本地进程保持，未使用预览时不会自动打开窗口。
 
 地图原航点始终保留，机载转换后检查本地 Z `[0.1,50]m`。正常小修正累计到配置精度后，
 直线叠加连续位置/速度/加速度偏移，自主避障撤销旧目标再规划，遇障悬停先重新检查新通道再应用偏移。

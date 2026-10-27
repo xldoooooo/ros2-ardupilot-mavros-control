@@ -5,7 +5,7 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -49,9 +49,11 @@ def _nodes(context):
     return [
         Node(package='path_planning', executable='path_planning_node', namespace='avoidance',
              name='path_planning', output='screen', parameters=[parameters],
+             on_exit=Shutdown(reason='Native planner exited'),
              remappings=[('cloud', cloud), ('odom', '/avoidance/odom'),
                          ('goal', '/avoidance/goal')]),
         Node(package='avoidance_bridge', executable='avoidance_bridge_node', output='screen',
+             on_exit=Shutdown(reason='Avoidance bridge exited'),
              parameters=[bridge]),
     ]
 

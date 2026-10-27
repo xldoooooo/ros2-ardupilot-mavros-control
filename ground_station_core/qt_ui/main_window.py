@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QAction,
     QCloseEvent,
     QColor,
+    QIcon,
     QKeySequence,
     QMouseEvent,
     QResizeEvent,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractSpinBox,
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -41,7 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import INTERFACE_VERSION, MAX_WAYPOINT_COUNT, PROJECT_ROOT
+from ..config import HARDWARE_DOMAIN_ID, INTERFACE_VERSION, MAX_WAYPOINT_COUNT, PROJECT_ROOT
 from ..environment import EnvironmentInitializer
 from ..event_log import EventLog, LogLevel
 from ..models import (
@@ -53,6 +55,14 @@ from ..models import (
 )
 from ..process_manager import CleanupReport
 from ..ros_controller import GroundStationRosController
+from ..startup import (
+    ICON_PATH,
+    PREFERENCES_PATH,
+    autostart_path,
+    load_preferences,
+    save_preferences,
+    set_login_autostart,
+)
 from ..upstream import (
     UpstreamAction,
     UpstreamCommand,
@@ -123,6 +133,8 @@ class GroundStationWindow(QMainWindow):
     _NAVIGATION_RESTART_TIMEOUT_SECONDS = 120.0
     # 上位机操作保留取消机会，超时后自动执行。
     _UPSTREAM_COUNTDOWN_SECONDS = 3
+    # 自动连接仅低频重试；每次完整工作流自身已有逐步超时和状态日志。
+    _AUTO_CONNECT_INTERVAL_MS = 5000
 
     def __init__(
         self,
@@ -132,6 +144,7 @@ class GroundStationWindow(QMainWindow):
         environment: EnvironmentInitializer | None = None,
         upstream_service: UpstreamCommunicationService | None = None,
         auto_start: bool = False,
+        startup_preferences_path: Path = PREFERENCES_PATH,
         parent: QWidget | None = None,
     ) -> None:
         """创建后端依赖、模块化面板、线程桥和周期状态刷新。"""
@@ -150,6 +163,15 @@ class GroundStationWindow(QMainWindow):
             on_command=self._bridge.upstream_command.emit,
         )
         self._upstream_panel: UpstreamCommunicationPanel | None = None
+        self._startup_preferences_path = startup_preferences_path
+        try:
+            self._startup_preferences = load_preferences(startup_preferences_path)
+        except (OSError, ValueError, TypeError) as exc:
+            self._startup_preferences = {}
+            self._events.warn("startup", f"读取启动偏好失败，使用手动连接：{exc}")
+        self._auto_connect_next_attempt = 0.0
+        self._auto_reconnect_required = False
+        self._hardware_maintenance_active = False
 
         self._environment_active = False
         self._connection_mode = "none"
@@ -195,11 +217,14 @@ class GroundStationWindow(QMainWindow):
         )
 
         self.setWindowTitle("ArduPilot ROS 2 工程地面站")
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.setObjectName("groundStationWindow")
         self._configure_window_chrome()
         self.resize(1600, 920)
         self.setMinimumSize(1180, 700)
         self._build_ui()
+        if "origin" in self._startup_preferences:
+            self.operations.set_origin(self._startup_preferences["origin"])
         self._build_menu_bar()
         self._connect_signals()
         self._setup_shortcuts()
@@ -214,11 +239,23 @@ class GroundStationWindow(QMainWindow):
         self._timer.setInterval(self._REFRESH_INTERVAL_MS)
         self._timer.timeout.connect(self._refresh)
         self._timer.start()
+        self._auto_connect_timer = QTimer(self)
+        self._auto_connect_timer.setInterval(self._AUTO_CONNECT_INTERVAL_MS)
+        self._auto_connect_timer.timeout.connect(self._auto_connect_hardware)
+        self._auto_connect_timer.start()
         self._events.info("ui", "Qt 地面站界面已创建")
+        self._events.info(
+            "startup",
+            f"source_id={getattr(self._ros, 'source_id', '--')}；接口={INTERFACE_VERSION}；"
+            f"实机domain={HARDWARE_DOMAIN_ID}；当前domain={getattr(self._ros, 'domain_id', None)}；"
+            f"桌面自启={self.login_autostart_checkbox.isChecked()}；"
+            f"自动连接飞机={self.auto_connect_checkbox.isChecked()}；原点={self.operations.origin()}",
+        )
         self._refresh()
-        # Production stays outside the DDS graph until the operator requests a workflow.
+        # 默认保持手动连接；启用自动连接后复用正式实机工作流。
         if auto_start:
             QTimer.singleShot(0, self._start_ros)
+        QTimer.singleShot(0, self, self._auto_connect_hardware)
 
     @property
     def event_log(self) -> EventLog:
@@ -501,6 +538,26 @@ class GroundStationWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 4, 0)
         controls_layout.setSpacing(3)
+        self.login_autostart_checkbox = QCheckBox("开机自启")
+        self.login_autostart_checkbox.setObjectName("loginAutostartCheckbox")
+        self.login_autostart_checkbox.setToolTip(
+            "当前用户登录 Ubuntu 桌面后自动启动地面站；无人值守开机需系统已配置自动登录。"
+        )
+        self.login_autostart_checkbox.setChecked(autostart_path().is_file())
+        self.login_autostart_checkbox.toggled.connect(self._set_login_autostart)
+        controls_layout.addWidget(self.login_autostart_checkbox)
+        self.auto_connect_checkbox = QCheckBox("自动连接飞机")
+        self.auto_connect_checkbox.setObjectName("autoConnectAircraftCheckbox")
+        self.auto_connect_checkbox.setToolTip(
+            "启动及运行期间自动连接实机，使用原点齿轮中的坐标申请控制租约、配置消息频率和原点；"
+            "连接动作不会解锁或起飞。手动断开会关闭此选项。"
+        )
+        self.auto_connect_checkbox.setChecked(
+            self._startup_preferences.get("auto_connect_aircraft") is True
+        )
+        self.auto_connect_checkbox.toggled.connect(self._set_auto_connect_hardware)
+        self.operations.origin_changed.connect(self._save_startup_preferences)
+        controls_layout.addWidget(self.auto_connect_checkbox)
         self.upstream_panel_button = QPushButton("上位机通讯面板")
         self.upstream_panel_button.setObjectName("upstreamPanelButton")
         self.upstream_panel_button.setProperty("compact", True)
@@ -795,6 +852,89 @@ class GroundStationWindow(QMainWindow):
 
     # ---- 环境工作流 ----
 
+    def _set_login_autostart(self, enabled: bool) -> None:
+        """同步当前用户的桌面自启项，失败时保留其实际开关状态。"""
+        try:
+            set_login_autostart(enabled)
+        except OSError as exc:
+            self.login_autostart_checkbox.blockSignals(True)
+            self.login_autostart_checkbox.setChecked(autostart_path().is_file())
+            self.login_autostart_checkbox.blockSignals(False)
+            self._events.error("startup", f"设置地面站开机自启失败：{exc}")
+            self.activity_banner.set_message(str(exc), LogLevel.ERROR)
+            return
+        self._events.info("startup", f"地面站桌面登录自启已{'开启' if enabled else '关闭'}")
+
+    def _save_startup_preferences(self, _origin: object = None) -> None:
+        """保存自动连接与原点，写盘失败只告警而不阻断当前手动功能。"""
+        try:
+            save_preferences(
+                self.auto_connect_checkbox.isChecked(),
+                self.operations.origin(),
+                self._startup_preferences_path,
+            )
+        except OSError as exc:
+            self._events.warn("startup", f"保存启动偏好失败：{exc}")
+
+    def _set_auto_connect_hardware(self, enabled: bool) -> None:
+        """保存用户选择，并在开启后从正式实机连接入口开始尝试。"""
+        self._save_startup_preferences()
+        self._auto_connect_next_attempt = 0.0
+        self._events.info(
+            "startup", f"自动连接飞机已{'开启' if enabled else '关闭'}；原点={self.operations.origin()}"
+        )
+        if enabled:
+            QTimer.singleShot(0, self, self._auto_connect_hardware)
+
+    def _auto_connect_hardware(self) -> None:
+        """补齐首次/失败连接与未解锁时的重启维护，不发送任何飞行动作。"""
+        if (
+            not self.auto_connect_checkbox.isChecked()
+            or self._shutting_down
+            or self._workflow_busy
+            or self._communication_busy
+            or self._navigation_switch_target is not None
+            or bool(getattr(self._environment, "busy", False))
+            or (self._cleanup_thread is not None and self._cleanup_thread.is_alive())
+            or self._connection_mode == "simulation"
+            or self._pending_commands
+            or self._upstream_sequence is not None
+            or time.monotonic() < self._auto_connect_next_attempt
+        ):
+            return
+        snapshot = self._ros.snapshot()
+        if self._environment_active and self._connection_mode == "hardware":
+            if not snapshot.onboard_available or not snapshot.connected:
+                self._auto_reconnect_required = True
+                return
+            # 已连接会话的租约重获沿用 ROS 线程；只补齐掉线/重启后的连接维护。
+            maintenance_ready = (
+                snapshot.message_rates_configured
+                and snapshot.local_position_valid
+                and snapshot.thrust_mode_verified
+            )
+            if snapshot.armed or not snapshot.on_ground or snapshot.controller_active or (
+                maintenance_ready and not self._auto_reconnect_required
+            ):
+                return
+            self._auto_connect_next_attempt = time.monotonic() + self._AUTO_CONNECT_INTERVAL_MS / 1000
+            self._hardware_maintenance_active = True
+            self._events.info("startup", "自动维护已恢复的实机连接；保留租约，恢复已有预览")
+            self._begin_environment_workflow("hardware", "正在补齐实机消息频率与原点…")
+            started = self._environment.maintain_hardware_connection(
+                self.operations.origin(), self._queue_environment_status, self._queue_environment_done,
+                restart_preview=self._auto_reconnect_required,
+            )
+            if not started:
+                self._hardware_maintenance_active = False
+                self._workflow_busy = False
+                self._pending_environment_mode = "none"
+                self._refresh()
+            return
+        self._auto_connect_next_attempt = time.monotonic() + self._AUTO_CONNECT_INTERVAL_MS / 1000
+        self._events.info("startup", f"自动尝试连接实机服务；原点={self.operations.origin()}")
+        self._connect_hardware_workflow()
+
     def _initialize_simulation(self) -> None:
         """选择本地仿真工作流；SITL 使用自身 Home，不写 GUI 缓存原点。"""
         if self._environment_active and not self._confirm_action(
@@ -825,9 +965,13 @@ class GroundStationWindow(QMainWindow):
         if not self._confirm_action("连接实机服务", message, critical=True):
             return
         self._events.warn("operator", "操作者确认完整连接实机机载服务")
+        self._connect_hardware_workflow()
+
+    def _connect_hardware_workflow(self) -> None:
+        """让人工和已启用的自动连接共用同一原点及完整连接流程。"""
         self._begin_environment_workflow("hardware", "正在连接实机机载服务…")
         started = self._environment.initialize_hardware(
-            origin, self._queue_environment_status, self._queue_environment_done
+            self.operations.origin(), self._queue_environment_status, self._queue_environment_done
         )
         if not started:
             self._workflow_busy = False
@@ -901,12 +1045,23 @@ class GroundStationWindow(QMainWindow):
     def _on_environment_done(self, success: bool, message: str) -> None:
         """完成环境切换并解除互斥锁。"""
         self._workflow_busy = False
+        if self._hardware_maintenance_active:
+            self._hardware_maintenance_active = False
+            self._pending_environment_mode = "none"
+            self._auto_connect_next_attempt = time.monotonic() + self._AUTO_CONNECT_INTERVAL_MS / 1000
+            self._auto_reconnect_required = not success
+            self.activity_banner.set_message(message, LogLevel.INFO if success else LogLevel.WARN)
+            self._refresh()
+            return
         self._waypoint_preview_active = False
         self._hardware_low_power_notice_latched = False
         self._hardware_abnormal_notice_latched = False
         self._environment_active = success
         self._connection_mode = self._pending_environment_mode if success else "none"
         self._pending_environment_mode = "none"
+        self._auto_connect_next_attempt = time.monotonic() + self._AUTO_CONNECT_INTERVAL_MS / 1000
+        if success:
+            self._auto_reconnect_required = False
         if not success:
             self._upstream_sequence = None
             self._abnormal_return_latched = False
@@ -990,6 +1145,8 @@ class GroundStationWindow(QMainWindow):
         ):
             return
         self._events.warn("operator", f"操作者确认：{title}")
+        if kind == "hardware":
+            self.auto_connect_checkbox.setChecked(False)
         self._workflow_busy = True
         self.activity_banner.set_message(progress, LogLevel.WARN, state="busy")
 

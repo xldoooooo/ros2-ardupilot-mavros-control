@@ -1,0 +1,12 @@
+<!-- 地面站桌面与窗口图标：俯视四旋翼与定位环。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#18394d"/>
+  <circle cx="64" cy="64" r="43" fill="none" stroke="#52c8cc" stroke-width="3" opacity=".45"/>
+  <g fill="none" stroke="#dff9fa" stroke-width="8" stroke-linecap="round">
+    <path d="M45 45 83 83M83 45 45 83"/>
+    <circle cx="35" cy="35" r="15"/><circle cx="93" cy="35" r="15"/>
+    <circle cx="35" cy="93" r="15"/><circle cx="93" cy="93" r="15"/>
+  </g>
+  <path d="M64 43 77 64 64 77 51 64Z" fill="#52c8cc"/>
+  <path d="m64 47 5 12H59Z" fill="#18394d"/>
+</svg>

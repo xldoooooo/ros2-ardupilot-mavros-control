@@ -1,7 +1,9 @@
 """Persistent ground media inventory, verified inbox ingestion and photo correction."""
 
 import hashlib
+from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -32,6 +34,15 @@ def file_hash(path):
         for block in iter(lambda: source.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def safe_media_filename(value):
+    """Preserve camera photoNo percent encoding while excluding path syntax."""
+    value = str(value)
+    if (not value or value in {'.', '..'} or len(value.encode('utf-8')) > 255
+            or re.search(r'[/\\\x00-\x1f\x7f]', value)):
+        raise ValueError(f'Invalid media filename: {value!r}')
+    return value
 
 
 def atomic_json(path, value):
@@ -141,6 +152,24 @@ class MediaStore:
                         processed_size=0, cache_state='unknown', error=''))
         return record_id
 
+    def _media_path(self, prefix, record, suffix):
+        """Use the original camera name, or the same timestamp format for live fragments."""
+        filename = record.get('filename')
+        if not filename:
+            stamp = datetime.fromtimestamp(record['created_at']).strftime('%Y%m%d-%H%M%S-%f')
+            filename = ('snapshot-' if record['kind'] in {'image', 'photo'} else 'recording-') + stamp + suffix
+        filename = safe_media_filename(str(Path(filename).with_suffix(suffix)))
+        directory = self.root / prefix / record['aircraft_id'] / record['session_id']
+        destination = directory / filename
+        # Distinct records may be rebuilt or uploaded with the same human filename.
+        occupied = {row.get('original_path' if prefix == 'internal' else 'path')
+                    for row in self.records() if row['id'] != record['id']}
+        number = 2
+        while str(destination) in occupied:
+            destination = directory / f'{Path(filename).stem}-{number}{suffix}'
+            number += 1
+        return destination
+
     def register_processed(self, path, aircraft_id, session_id, metadata=None, kind='video',
                            record_id=None):
         """Move a finalized corrected recording into public storage and publish its record."""
@@ -155,7 +184,7 @@ class MediaStore:
             suffix = source.suffix.lower()
             if suffix not in {'.mp4', '.mkv', '.avi', '.mov', '.ts', '.jpg', '.jpeg', '.png'}:
                 raise ValueError('Finalized media needs its real media extension')
-            destination = self.root / 'public' / record['aircraft_id'] / record['session_id'] / (record_id + suffix)
+            destination = self._media_path('public', record, suffix)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source != destination:
                 staged = self.root / 'staging' / (record_id + suffix)
@@ -239,11 +268,15 @@ class MediaStore:
             raise FileNotFoundError('Original is absent; awaiting payload retransmission')
         if candidate.stat().st_size != int(manifest['size']) or file_hash(candidate) != manifest['sha256']:
             raise ValueError('Payload size or SHA-256 mismatch')
-        destination = self.root / 'internal' / aircraft / session / (record_id + source.suffix.lower())
+        record_name = safe_media_filename(manifest.get('original_filename', filename))
+        descriptor = dict(id=record_id, aircraft_id=aircraft, session_id=session,
+                          filename=record_name, kind=manifest['kind'])
+        destination = self._media_path('internal', descriptor, source.suffix.lower())
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not existing:
             now = time.time()
             self._save(dict(id=record_id, aircraft_id=aircraft, session_id=session,
+                            filename=record_name,
                             kind='image' if manifest['kind'] == 'photo' else manifest['kind'], variant='original',
                             state='pending' if manifest['kind'] in {'image', 'photo'} else 'original_ready',
                             original_path=str(destination), path='', processed_path='',
@@ -260,6 +293,9 @@ class MediaStore:
             source.replace(destination)
         with Path(self.get(record_id)['original_path']).open('rb') as original:
             os.fsync(original.fileno())
+        if not existing:
+            logging.info('Media original received: id=%s aircraft=%s session=%s file=%s',
+                         record_id, aircraft, session, destination.name)
 
     def process_pending(self):
         """Correct queued still images using the relay's five coefficients and alpha zero."""
@@ -288,7 +324,7 @@ class MediaStore:
                         raise ValueError('Photo resolution differs from camera intrinsics')
                     corrected = cv2.remap(image, *self.photo_maps, cv2.INTER_LINEAR,
                                           borderMode=cv2.BORDER_REPLICATE)
-                    destination = self.root / 'public' / record['aircraft_id'] / record['session_id'] / (record['id'] + '.jpg')
+                    destination = self._media_path('public', record, '.jpg')
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     temporary = self.root / 'staging' / (record['id'] + '.jpg')
                     if not cv2.imwrite(str(temporary), corrected, [cv2.IMWRITE_JPEG_QUALITY, 95]):
@@ -297,8 +333,13 @@ class MediaStore:
                     results.append(self.update(record['id'], path=str(destination),
                                                processed_size=destination.stat().st_size,
                                                state='ready', variant='experiment', error=''))
+                    logging.info('Photo ready: id=%s session=%s mission=%s waypoint=%s file=%s',
+                                 record['id'], record['session_id'], record['metadata'].get('mission_sequence'),
+                                 record['metadata'].get('waypoint_index'), destination.name)
                 except (ValueError, OSError, cv2.error) as error:
                     results.append(self.update(record['id'], state='processing_error', error=str(error)))
+                    logging.error('Photo processing failed: id=%s session=%s error=%s',
+                                  record['id'], record['session_id'], error)
         finally:
             self.photo_lock.release()
         return results

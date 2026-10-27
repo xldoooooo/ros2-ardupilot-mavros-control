@@ -393,13 +393,23 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 
 void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr message)
 {
+  // 只记录实际状态变化，避免按遥测频率写日志。
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const bool was_connected = fcu_connected_;
   const bool was_armed = armed_;
+  const std::string previous_mode = autopilot_mode_;
   fcu_connected_ = message->connected;
   armed_ = message->armed;
   autopilot_mode_ = message->mode;
   last_state_time_ = SteadyClock::now();
+  if (was_connected != fcu_connected_ || was_armed != armed_ ||
+    previous_mode != autopilot_mode_)
+  {
+    RCLCPP_INFO(
+      get_logger(), "FCU状态：connected=%s armed=%s mode=%s position=(%.3f,%.3f,%.3f)",
+      fcu_connected_ ? "true" : "false", armed_ ? "true" : "false",
+      autopilot_mode_.c_str(), vehicle_.position.x(), vehicle_.position.y(), vehicle_.position.z());
+  }
   if (!was_armed && armed_) {
     armed_navigation_identity_ = navigation_frame_ + "\n" + navigation_map_ + "\n" + navigation_session_;
   }
@@ -1203,6 +1213,11 @@ void OnboardControlNode::on_set_gps_origin(
   for (int attempt = 0; attempt < 5; ++attempt) {
     message.header.stamp = get_clock()->now();
     origin_publisher_->publish(message);
+  }
+  // MAVROS 重启后可能没有原点缓存；相同原点写入不保证触发飞控再次广播。
+  // 复用现有只读 message 49 请求，仍由 on_global_origin 的真实回读确认成功。
+  if (reboot_client_->service_is_ready()) {
+    query_reboot_origin();
   }
   std::ostringstream stream;
   stream << "GPS 原点请求已发布，等待飞控回读确认 (lat=" << origin.latitude
@@ -2449,6 +2464,7 @@ void OnboardControlNode::publish_result(
   const std::uint32_t waypoint_index,
   const std::uint32_t waypoint_count)
 {
+  // 结果带完整命令身份落盘，断线后仍可关联请求、航点和终态。
   guided_interfaces::msg::CommandResult result;
   result.header.stamp = get_clock()->now();
   result.source_id = command.source;
@@ -2460,6 +2476,14 @@ void OnboardControlNode::publish_result(
   result.waypoint_index = waypoint_index;
   result.waypoint_count = waypoint_count;
   result_publisher_->publish(result);
+  if (command.name != "motion") {
+    RCLCPP_INFO(
+      get_logger(), "命令结果：source=%s sequence=%llu command=%s status=%u "
+      "final=%s waypoint=%u/%u detail=%s",
+      command.source.c_str(), static_cast<unsigned long long>(command.sequence),
+      command.name.c_str(), static_cast<unsigned>(status), final ? "true" : "false",
+      waypoint_index, waypoint_count, message.c_str());
+  }
 }
 
 void OnboardControlNode::publish_video_control(
@@ -2480,6 +2504,7 @@ void OnboardControlNode::publish_video_control(
 void OnboardControlNode::publish_waypoint_capture(
   const guided_interfaces::msg::Waypoint & waypoint)
 {
+  // 每个实际到点只记录一次投递，供照片缺失时关联媒体服务接收日志。
   guided_interfaces::msg::VideoCapture message;
   message.header.stamp = get_clock()->now();
   message.source_id = active_command_.source;
@@ -2491,6 +2516,11 @@ void OnboardControlNode::publish_waypoint_capture(
   message.waypoint_index = static_cast<std::uint32_t>(waypoint_index_ + 1);
   message.photo_no = waypoint.has_photo_no ? waypoint.photo_no : "";
   video_capture_publisher_->publish(message);
+  RCLCPP_INFO(
+    get_logger(), "航点抓拍已发布：source=%s mission=%llu sequence=%llu waypoint=%u photo=%s",
+    message.source_id.c_str(), static_cast<unsigned long long>(message.mission_sequence),
+    static_cast<unsigned long long>(message.sequence), message.waypoint_index,
+    message.photo_no.c_str());
 }
 
 void OnboardControlNode::check_origin_confirmation_timeout(const SteadyTime & now)

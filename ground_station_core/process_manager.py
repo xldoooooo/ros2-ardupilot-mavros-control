@@ -224,6 +224,33 @@ class ProcessSupervisor:
         with self._lock:
             return self._managed.get(name)
 
+    def terminate(self, name: str) -> None:
+        """只结束指定受管进程组及其后代，保留其他会话且不扫描历史进程。"""
+        with self._lock:
+            record = self._managed.get(name)
+        if record is None:
+            return
+        groups = {record.process_group_id}
+        pids = self._with_descendants({record.process.pid})
+        errors: list[str] = []
+        for signum, grace in (
+            (signal.SIGINT, 2.0), (signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0),
+        ):
+            if not self._targets_alive(groups, pids):
+                break
+            self._signal_targets(groups, pids, signum, errors)
+            self._wait_targets(groups, pids, grace)
+        if self._targets_alive(groups, pids):
+            errors.append(f"{name}: 进程组仍有活动后代")
+        if errors:
+            raise RuntimeError("；".join(errors))
+        record.process.wait(timeout=0.1)
+        if not self._close_record(record):
+            raise RuntimeError(f"{name}: 日志线程尚未退出")
+        with self._lock:
+            self._managed.pop(name, None)
+        self._events.info("process", f"已停止受管进程组 {name}，其余会话保持")
+
     def terminate_all(self) -> CleanupReport:
         """分三阶段结束受管进程及历史残留，并在返回前再次扫描验证。"""
         self._events.info("process", "开始清理本项目本地仿真与 RViz 预览进程")

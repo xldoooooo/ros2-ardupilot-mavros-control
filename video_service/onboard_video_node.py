@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -28,7 +29,9 @@ from guided_interfaces.msg import (
 )
 from guided_interfaces.srv import SetVideoState
 
+# 独立媒体协议版本，与飞行接口分开维护。
 VIDEO_INTERFACE_VERSION = "3.2"
+# 独立视频节点的固定 ROS 接口前缀。
 VIDEO_PREFIX = "/video_service"
 
 
@@ -74,8 +77,8 @@ class OnboardVideoNode(Node):
         self._last_state_sequence: dict[str, int] = {}
         # 每个面板进程以首条命令建立发送端本地时间基准，绝不比较两机绝对墙钟。
         self._state_clock_anchors: dict[str, tuple[int, int]] = {}
-        self._seen_capture_keys: set[tuple[str, int]] = set()
-        self._seen_capture_order: deque[tuple[str, int]] = deque(maxlen=1024)
+        self._seen_capture_keys: set[tuple[str, int, int]] = set()
+        self._seen_capture_order: deque[tuple[str, int, int]] = deque(maxlen=1024)
 
         transient_status = QoSProfile(
             depth=1,
@@ -218,7 +221,8 @@ class OnboardVideoNode(Node):
 
     def _on_capture(self, message: VideoCapture) -> None:
         """每条截图命令独立排队；队列满也逐条发布明确失败结果。"""
-        key = (str(message.source_id), int(message.sequence))
+        # 飞控节点重启后抓拍计数从零开始，新任务不能被上一轮计数去重。
+        key = (str(message.source_id), int(message.mission_sequence), int(message.sequence))
         if key in self._seen_capture_keys:
             return
         if len(self._seen_capture_order) == self._seen_capture_order.maxlen:
@@ -318,6 +322,13 @@ class OnboardVideoNode(Node):
         result.path = path
         result.message = message
         self._capture_result_publisher.publish(result)
+        detail = (f"抓拍结果：source={command.source_id} mission={command.mission_sequence} "
+                  f"capture={command.sequence} waypoint={command.waypoint_index} "
+                  f"photoNo={command.photo_no} success={success} detail={message}")
+        if success:
+            self.get_logger().info(detail)
+        else:
+            self.get_logger().error(detail)
 
     def _publish_status(self) -> None:
         """周期发布 RTSP 发现与媒体路径；错误信息不进入飞控 ControlStatus。"""
@@ -360,6 +371,7 @@ class OnboardVideoNode(Node):
 
 def main() -> int:
     """运行独立 ROS executor；退出不调用或停止 onboard_control。"""
+    logging.basicConfig(level=logging.INFO, format='[onboard-media] %(message)s')
     rclpy.init()
     node = OnboardVideoNode()
     try:

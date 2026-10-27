@@ -213,6 +213,25 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         ]
         assert "模拟抓拍失败" in results[1].message
 
+        # 飞控进程重启会复用抓拍计数；新任务的相同点位必须继续出结果。
+        for sequence, photo_no in enumerate(("A", "fail", "C"), start=10):
+            message = VideoCapture()
+            message.source_id = "pytest"
+            message.sequence = sequence
+            message.kind = VideoCapture.KIND_UPSTREAM_WAYPOINT
+            message.mission_sequence = 78
+            message.waypoint_index = sequence - 9
+            message.photo_no = photo_no
+            captures.publish(message)
+            captures.publish(message)
+        assert spin_until(lambda: len(results) == 6)
+        assert [item.mission_sequence for item in results] == [77, 77, 77, 78, 78, 78]
+        assert [item.success for item in results[3:]] == [True, False, True]
+        assert [item.waypoint_index for item in results[3:]] == [1, 2, 3]
+        assert fake.capture_calls[3:] == [
+            ("upstream", "A"), ("upstream", "fail"), ("upstream", "C"),
+        ]
+
         stop = VideoControl()
         stop.source_id = "pytest"
         stop.sequence = 2
@@ -220,6 +239,7 @@ def test_video_node_processes_every_capture_and_survives_media_failure() -> None
         controls.publish(stop)
         assert spin_until(lambda: fake.stop_calls == 1)
         assert spin_until(lambda: statuses and not statuses[-1].running)
+        assert len(results) == 6 and len(fake.capture_calls) == 6
         assert statuses[-1].interface_version == "3.2"
         assert statuses[-1].rtsp_url == "rtsp://aircraft.test:8554/camera"
     finally:

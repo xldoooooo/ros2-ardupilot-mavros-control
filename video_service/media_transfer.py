@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 
-from .media_store import atomic_json, file_hash, safe_component
+from .media_store import atomic_json, file_hash, safe_component, safe_media_filename
 
 
 class UploadQueue:
@@ -165,7 +165,8 @@ class UploadQueue:
             safe_component(filename)
             record.update(size=after.st_size, sha256=sha256, source_mtime_ns=after.st_mtime_ns)
             self._save(record)
-            manifest.update(size=record['size'], sha256=sha256, filename=filename)
+            manifest.update(size=record['size'], sha256=sha256, filename=filename,
+                            original_filename=safe_media_filename(source.name))
             self._rsync(source, f'{self.ssh_target}:{inbox}/{filename}')
             final = source.stat()
             if (final.st_size, final.st_mtime_ns) != (after.st_size, after.st_mtime_ns):

@@ -10,6 +10,10 @@ from datetime import datetime
 from enum import IntEnum
 from pathlib import Path
 
+# 长期无人值守时保留最多约 120 MiB 的地面事件历史。
+_LOG_MAX_BYTES = 20 * 1024 * 1024
+_LOG_BACKUP_COUNT = 5
+
 
 class LogLevel(IntEnum):
     """地面站统一使用的四级日志严重度。"""
@@ -69,16 +73,32 @@ class EventLog:
             if self._log_path is not None:
                 try:
                     self._log_path.parent.mkdir(parents=True, exist_ok=True)
+                    line = (
+                        f"{event.timestamp.isoformat(timespec='milliseconds')} "
+                        f"[{event.level.label}] [{event.source}] {event.message}\n"
+                    )
+                    if self._log_path.exists() and (
+                        self._log_path.stat().st_size + len(line.encode("utf-8"))
+                        > _LOG_MAX_BYTES
+                    ):
+                        self._rotate_file()
                     with self._log_path.open("a", encoding="utf-8") as stream:
-                        stream.write(
-                            f"{event.timestamp.isoformat(timespec='milliseconds')} "
-                            f"[{event.level.label}] [{event.source}] {event.message}\n"
-                        )
+                        stream.write(line)
                 except OSError as exc:
                     # 日志磁盘故障不阻断控制；避免后续事件反复报同一写入错误。
                     print(f"地面站日志落盘失败 {self._log_path}：{exc}", file=sys.stderr)
                     self._log_path = None
             return event
+
+    def _rotate_file(self) -> None:
+        """在现有写锁内轮转历史文件，保留最近五份完整日志。"""
+        for index in range(_LOG_BACKUP_COUNT, 0, -1):
+            source = (
+                self._log_path if index == 1
+                else Path(f"{self._log_path}.{index - 1}")
+            )
+            if source.exists():
+                source.replace(Path(f"{self._log_path}.{index}"))
 
     def debug(self, source: str, message: str) -> LogEvent:
         """记录调试事件。"""

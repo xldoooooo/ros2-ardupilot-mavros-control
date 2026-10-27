@@ -1,10 +1,12 @@
 """Exercise media session identity without cameras, network calls or flight commands."""
 
 import threading
+from datetime import datetime
 from unittest.mock import Mock
 
 from video_service.ground_media import GroundMedia
 from video_service.onboard_media import OnboardMedia
+import video_service.onboard_media as onboard_module
 
 
 def _onboard(last_recording=''):
@@ -16,10 +18,28 @@ def _onboard(last_recording=''):
     media.queue.enqueue.return_value = 'queued-file'
     media.session = None
     media._last_session = None
+    media._session_ids = set()
     media._lock = threading.RLock()
     media._notify = Mock()
     media._stop_forward = Mock()
     return media
+
+
+def test_same_second_sessions_keep_readable_unique_names(monkeypatch):
+    """Consecutive rounds never share a directory even when started in the same second."""
+    media = _onboard()
+    clock = Mock(wraps=datetime)
+    clock.now.return_value = datetime(2026, 10, 27, 12, 34, 56)
+    monkeypatch.setattr(onboard_module, 'datetime', clock)
+    # This identity may already exist in the persistent queue after a restart.
+    media._session_ids.add('mission-20261027-123456')
+    media.begin('gui-one')
+    first = dict(media.session)
+    media.finish()
+    media.begin('gui-one')
+    second = dict(media.session)
+    assert first['session_id'] == 'mission-20261027-123457'
+    assert second['session_id'] == 'mission-20261027-123458'
 
 
 def _ground(tmp_path):

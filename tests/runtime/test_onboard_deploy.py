@@ -665,7 +665,8 @@ def test_synced_split_launchers_and_local_ground_launcher_are_well_scoped() -> N
     assert syntax.returncode == 0, syntax.stderr
 
     script = GROUND_START.read_text(encoding="utf-8")
-    assert 'export ROS_DOMAIN_ID="0"' in script
+    assert 'GROUND_STATION_HARDWARE_DOMAIN_ID:-0' in script
+    assert 'export ROS_DOMAIN_ID="$((10#${hardware_domain}))"' in script
     assert "unset ROS_LOCALHOST_ONLY" in script
     assert "ROS_AUTOMATIC_DISCOVERY_RANGE" in script
     assert 'ground_station.py" "$@"' in script
@@ -707,7 +708,7 @@ def test_ground_setup_is_checkout_relative_and_never_contacts_hardware() -> None
         "ffprobe",
         "v4l2-ctl",
         "/usr/local/bin/mediamtx",
-        "mediamtx --version",
+        '"${mediamtx_binary}" --version',
         "video_service/README.md",
     ):
         assert media_dependency in script

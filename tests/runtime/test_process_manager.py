@@ -7,6 +7,39 @@ import time
 from ground_station_core.process_manager import ProcessSupervisor
 
 
+def test_named_termination_stops_only_selected_process_and_descendants() -> None:
+    """重开 RViz 时只回收对应启动器及其子进程，另一会话继续运行。"""
+    supervisor = ProcessSupervisor()
+    parent_code = (
+        "import subprocess,sys,time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "time.sleep(60)\n"
+    )
+    preview = supervisor.start(
+        "pytest_preview_probe",
+        [sys.executable, "-c", parent_code],
+    )
+    retained = supervisor.start(
+        "pytest_retained_probe", [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    try:
+        deadline = time.monotonic() + 2.0
+        pids = {preview.process.pid}
+        while time.monotonic() < deadline and len(pids) < 2:
+            pids = supervisor._with_descendants({preview.process.pid})
+            time.sleep(.01)
+        assert len(pids) >= 2
+        supervisor.terminate("pytest_preview_probe")
+        assert preview.process.poll() is not None
+        assert not any(supervisor._pid_alive(pid) for pid in pids)
+        assert retained.running
+        assert supervisor.get("pytest_preview_probe") is None
+        assert supervisor.get("pytest_retained_probe") is retained
+    finally:
+        supervisor.terminate("pytest_preview_probe")
+        supervisor.terminate("pytest_retained_probe")
+
+
 def test_managed_process_is_reaped_and_verified() -> None:
     """受管进程必须在 terminate_all 返回前被 wait 回收。"""
     supervisor = ProcessSupervisor()

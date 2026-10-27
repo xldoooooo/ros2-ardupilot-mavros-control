@@ -2,6 +2,7 @@
 """地面规划轨迹预览转发；撤销失效轨迹只影响 RViz，不发布控制请求。"""
 
 import time
+from copy import deepcopy
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -51,12 +52,11 @@ class AvoidancePreview(Node):
         if self.visible or force:
             empty = Path()
             empty.header.frame_id = self.frame_id
-            empty.header.stamp = self.get_clock().now().to_msg()
             self.publisher.publish(empty)
         self.visible = False
 
     def path_callback(self, message):
-        """Forward map or FCU-local paths with their original coordinates and header."""
+        """转发现有轨迹坐标，以最新 TF 显示，保留源消息供其他消费者使用。"""
         now = time.monotonic()
         accepted_frame = message.header.frame_id in {'map', 'fcu_local'}
         if accepted_frame:
@@ -68,7 +68,13 @@ class AvoidancePreview(Node):
             return
         self.last_path_at = now
         self.visible = True
-        self.publisher.publish(message)
+        # 这是当前执行曲线的只读显示，墙钟时间不能查询使用设备秒的地图 TF。
+        display_path = deepcopy(message)
+        display_path.header.stamp.sec = 0
+        display_path.header.stamp.nanosec = 0
+        for pose in display_path.poses:
+            pose.header.stamp = display_path.header.stamp
+        self.publisher.publish(display_path)
 
     def status_callback(self, message):
         """只有机载明确 EXECUTING 才允许显示轨迹；制动/等待/降落清屏。"""

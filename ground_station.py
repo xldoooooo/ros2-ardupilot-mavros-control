@@ -107,6 +107,7 @@ def main() -> None:
     _configure_wayland_window_decorations()
     try:
         from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication
     except ModuleNotFoundError as error:
         print(
@@ -119,10 +120,13 @@ def main() -> None:
 
     from ground_station_core.qt_ui import GroundStationWindow
     from ground_station_core.qt_ui.theme import apply_theme
+    from ground_station_core.startup import DESKTOP_ID, ICON_PATH
 
     application = QApplication(sys.argv)
     application.setApplicationName("ArduPilot ROS 2 Ground Station")
     application.setOrganizationName("ros2-ardupilot-mavros-control")
+    application.setDesktopFileName(DESKTOP_ID)
+    application.setWindowIcon(QIcon(str(ICON_PATH)))
     apply_theme(application)
     window = GroundStationWindow()
     window.show()

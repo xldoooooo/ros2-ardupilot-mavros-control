@@ -1,0 +1,22 @@
+# Independent planner/bridge service; failures do not stop flight control or video.
+[Unit]
+Description=ROS 2 ArduPilot independent avoidance service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ONBOARD_USER
+Group=ONBOARD_USER
+WorkingDirectory=ONBOARD_WORKSPACE_PATH
+Environment=HOME=ONBOARD_HOME_PATH
+Environment=ONBOARD_WORKSPACE=ONBOARD_WORKSPACE_PATH
+ExecStart=/bin/bash -lc 'exec "${ONBOARD_WORKSPACE}/scripts/onboard/start_avoidance.sh"'
+# ros2 launch can exit successfully after a child failure triggers Shutdown.
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
