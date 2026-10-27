@@ -132,10 +132,7 @@ def test_video_service_has_an_independent_lifecycle() -> None:
     assert "project_config_load" in launcher
     assert "/etc/ros2-ardupilot" not in launcher
     assert "/etc/ros2-ardupilot" not in service
-    assert "LAN_ROUTE_TIMEOUT_SECONDS=30" in launcher
-    assert "ip -4 route show default" in launcher
-    assert "!/linkdown/" in launcher
-    assert "wait_for_lan_route" in launcher
+    assert "runtime_wait_for_lan_ipv4" in launcher
     assert not any(
         line.startswith(("Requires=", "PartOf=", "BindsTo="))
         for line in active_directives

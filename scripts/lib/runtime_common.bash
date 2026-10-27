@@ -7,6 +7,44 @@ runtime_die() {
   return 1
 }
 
+# Give cold-boot LAN setup up to 30 seconds before DDS enumerates interfaces.
+runtime_wait_for_lan_ipv4() {
+  local timeout_seconds="${1:-30}"
+  local attempt source_ip interface address unused
+  if [[ "${ROS_LOCALHOST_ONLY:-0}" == 1 ||
+        "${ROS_AUTOMATIC_DISCOVERY_RANGE:-}" == LOCALHOST ]]; then
+    return 0
+  fi
+  if ! command -v ip >/dev/null 2>&1; then
+    printf '[runtime-discovery] WARN: ip unavailable; starting without LAN readiness check\n' >&2
+    return 0
+  fi
+  printf '[runtime-discovery] waiting up to %ss for LAN IPv4 before creating DDS participants\n' \
+    "${timeout_seconds}"
+  for ((attempt = 0; attempt <= timeout_seconds * 4; attempt++)); do
+    source_ip="$(ip -4 route show default 2>/dev/null | awk '
+      !/linkdown/ { for (i = 1; i < NF; i++) {
+        if ($i == "src" && $(i + 1) !~ /^127\./) { print $(i + 1); exit }
+      } }')"
+    # A LAN without a gateway is valid; virtual bridges must not mask Wi-Fi startup.
+    if [[ -z "${source_ip}" ]]; then
+      while read -r unused interface unused address unused; do
+        if [[ -e "/sys/class/net/${interface%%@*}/device" ]]; then
+          source_ip="${address%/*}"
+          break
+        fi
+      done < <(ip -4 -o addr show up scope global 2>/dev/null)
+    fi
+    if [[ -n "${source_ip}" ]]; then
+      printf '[runtime-discovery] LAN IPv4 ready: %s\n' "${source_ip}"
+      return 0
+    fi
+    ((attempt < timeout_seconds * 4)) && sleep 0.25
+  done
+  printf '[runtime-discovery] WARN: no LAN IPv4 after %ss; continuing offline; restart services after LAN returns to restore DDS discovery\n' \
+    "${timeout_seconds}" >&2
+}
+
 # ROS-generated setup files may inspect optional unset variables.
 runtime_source_setup() {
   local setup_file="$1"

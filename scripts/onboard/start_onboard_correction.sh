@@ -92,5 +92,6 @@ export PYTHONPATH="${WORKSPACE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 printf '[correction-start] workspace=%s domain=%s config=%s\n' \
   "${WORKSPACE_ROOT}" "${ROS_DOMAIN_ID}" "${CONFIG_DIR}"
 printf '[correction-start] starting idle correction node; no flight command is sent\n'
+runtime_wait_for_lan_ipv4
 exec ros2 run correction_service correction_node --ros-args \
   -p "config_dir:=${CONFIG_DIR}"

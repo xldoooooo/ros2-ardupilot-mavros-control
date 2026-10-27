@@ -112,6 +112,8 @@ if ((odin_check)); then
   exit 0
 fi
 
+runtime_wait_for_lan_ipv4
+
 readonly run_stamp="$(date '+%Y%m%d-%H%M%S')"
 readonly run_directory="${log_root}/${run_stamp}"
 mkdir -p "${run_directory}"

@@ -459,7 +459,11 @@ extnav 现为单线程 C++ `ament_cmake` 包，启动命令和 correction 2.0 �
 配置复制、ARM64 摘要校验、systemd 命令、QoS 和隔离验收步骤见 `video_service/README.md`。
 
 服务只排在 `network-online.target` 之后，不依赖 `systemd-time-wait-sync.service` 或
-`time-sync.target`。控制租约以地面站首个请求和后续有序心跳建立相对时间基准，机载安全超时使用
+`time-sync.target`。四个机载入口创建 DDS participant 前共用 `runtime_wait_for_lan_ipv4`，
+最多等待 30 秒让局域网 IPv4 就绪，避免冷启动时只枚举到回环网卡；不等待外网或 NTP。
+无默认网关时也接受已启用的物理网卡 IPv4；超时只告警并离线继续。
+若网络在超时后才恢复，应在未解锁时重启受影响服务以恢复跨机发现；不会自动重启飞控栈。
+控制租约以地面站首个请求和后续有序心跳建立相对时间基准，机载安全超时使用
 单调时钟，因此自带路由器没有外网时也必须能启动和作业；不得重新加入外网 NTP 完成门槛，也不要
 用固定秒数 `sleep` 伪装就绪。若离线开机后再接入互联网，应在人工解锁前等待系统校时与 MAVROS
 TIMESYNC 重新稳定，并重新核对 FCU、本地位置和推力语义。

@@ -36,4 +36,5 @@ if [[ "${1:-}" == '--check' ]]; then
   echo 'Avoidance overlays and source/install manifests verified; no process started.'
   exit 0
 fi
+runtime_wait_for_lan_ipv4
 exec ros2 launch avoidance_bridge avoidance.launch.py "config:=${AVOIDANCE_CONFIG_FILE}" "$@"

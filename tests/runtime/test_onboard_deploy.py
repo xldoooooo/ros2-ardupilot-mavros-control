@@ -36,6 +36,44 @@ def run_bash(script: str, environment: dict[str, str] | None = None):
     )
 
 
+@pytest.mark.parametrize("scenario", ["delayed", "offline", "localhost"])
+def test_lan_wait_handles_cold_start_without_blocking_offline(scenario, tmp_path) -> None:
+    """等待后出现的路由可被发现；离线超时继续，LOCALHOST 不查询网络。"""
+    environment = dict(os.environ, RUNTIME_HELPERS=str(RUNTIME_HELPERS), SCENARIO=scenario,
+                       PROBE_COUNTER=str(tmp_path / "attempts"))
+    result = run_bash('''
+set -euo pipefail
+source "$RUNTIME_HELPERS"
+export ROS_LOCALHOST_ONLY=0 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+[[ "$SCENARIO" != localhost ]] || export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+ip() {
+  # A physical LAN address is not present yet; only the third route probe succeeds.
+  [[ "$*" == '-4 route show default' ]] || return 0
+  local count=0
+  [[ ! -f "$PROBE_COUNTER" ]] || read -r count < "$PROBE_COUNTER"
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$PROBE_COUNTER"
+  if [[ "$SCENARIO" == delayed && "$count" -ge 3 ]]; then
+    printf 'default via 192.168.1.1 dev wlan0 src 192.168.1.186\\n'
+  fi
+}
+sleep() { :; }
+timeout_seconds=0
+[[ "$SCENARIO" != delayed ]] || timeout_seconds=1
+runtime_wait_for_lan_ipv4 "$timeout_seconds"
+printf 'launcher-continued\\n'
+''', environment)
+    assert result.returncode == 0, result.stderr
+    assert "launcher-continued" in result.stdout
+    if scenario == "delayed":
+        assert "LAN IPv4 ready: 192.168.1.186" in result.stdout
+        assert (tmp_path / "attempts").read_text().strip() == "3"
+    elif scenario == "offline":
+        assert "continuing offline" in result.stderr
+    else:
+        assert not (tmp_path / "attempts").exists()
+
+
 @pytest.mark.parametrize("missing_json,update_failure", [(False, False), (True, False), (True, True)])
 def test_control_build_dependencies_install_only_missing_packages(
     tmp_path, missing_json: bool, update_failure: bool,
