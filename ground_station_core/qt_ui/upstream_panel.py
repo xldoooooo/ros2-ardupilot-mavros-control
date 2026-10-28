@@ -83,7 +83,7 @@ class UpstreamCommunicationPanel(ShadowWindowChromeMixin, QWidget):
         snapshot = self._service.snapshot()
         self.url_input = QLineEdit(snapshot.url)
         self.url_input.setObjectName("upstreamUrlInput")
-        self.url_input.setPlaceholderText("ws://127.0.0.1:8581/ws")
+        self.url_input.setPlaceholderText("ws://192.168.80.84:8501/s12-websocket/ws")
         self.client_no_input = QLineEdit(snapshot.client_no)
         self.client_no_input.setObjectName("upstreamClientNoInput")
         self.client_no_input.setPlaceholderText("UAV01001")

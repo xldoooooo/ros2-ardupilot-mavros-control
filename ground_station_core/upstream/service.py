@@ -50,7 +50,8 @@ class UpstreamCommunicationService:
     _HANDSHAKE_TIMEOUT_STEP_SECONDS = 5.0
     _HANDSHAKE_TIMEOUT_MAX_SECONDS = 30.0
     _OUTBOUND_LIMIT = 256
-    _DEFAULT_URL = "ws://127.0.0.1:8581/ws"
+    # 现场上位机入口；面板保存值及环境变量仍可覆盖。
+    _DEFAULT_URL = "ws://192.168.80.84:8501/s12-websocket/ws"
     _DEFAULT_CLIENT_NO = "UAV01001"
 
     def __init__(

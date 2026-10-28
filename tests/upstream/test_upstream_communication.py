@@ -416,6 +416,7 @@ def test_connection_configuration_persists_between_service_instances(
         auto_connect=False,
         config_path=config_path,
     )
+    assert first.snapshot().url == "ws://192.168.80.84:8501/s12-websocket/ws"
     first.save_configuration("wss://example.test:9443/ws", "UAV02002")
 
     restored = UpstreamCommunicationService(
