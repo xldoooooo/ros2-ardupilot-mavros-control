@@ -79,7 +79,7 @@ from ..waypoint_io import (
 )
 from .log_panel import LogPanel
 from .operations_panel import OperationsPanel
-from .state import derive_availability
+from .state import derive_availability, takeoff_voltage_reason
 from .upstream_panel import UpstreamCommunicationPanel
 from .waypoint_panel import WaypointPanel
 from .widgets import (
@@ -190,6 +190,7 @@ class GroundStationWindow(QMainWindow):
         self._upstream_countdown: ShadowMessageBox | None = None
         self._abnormal_return_latched = False
         self._hardware_low_power_notice_latched = False
+        self._low_voltage_takeoff_blocked = False
         self._hardware_abnormal_notice_latched = False
         self._pending_commands: set[str] = set()
         self._active_waypoint_ticket: int | None = None
@@ -1821,10 +1822,22 @@ class GroundStationWindow(QMainWindow):
         self._ros.request_reboot_fcu()
         self._refresh()
 
+    def _takeoff_voltage_allowed(self) -> bool:
+        """发送起飞前复核落地电压；拒绝时记录日志并提示操作者。"""
+        reason = takeoff_voltage_reason(self._ros.snapshot(), self._connection_mode)
+        if not reason:
+            return True
+        self._events.warn("takeoff", f"拒绝起飞：{reason}")
+        self.activity_banner.set_message(reason, LogLevel.WARN)
+        self._refresh()
+        return False
+
     def _takeoff(
         self, *, refresh_after_queue: bool = True, upstream: bool = False
     ) -> int | None:
         """复用起飞入口；实机人工确认，上位机倒计时后执行。"""
+        if not self._takeoff_voltage_allowed():
+            return None
         altitude = self.operations.takeoff_altitude()
         strategy = self.waypoints.selected_strategy()
         snapshot = self._ros.snapshot()
@@ -1844,6 +1857,9 @@ class GroundStationWindow(QMainWindow):
                 critical=True,
                 auto_execute=upstream,
             ):
+                return None
+            # 确认/倒计时期间仍在接收遥测，须按最新落地状态和电压复核。
+            if not self._takeoff_voltage_allowed():
                 return None
             actor = "上位机倒计时结束，自动" if upstream else "操作者确认"
             self._events.warn(
@@ -2266,6 +2282,11 @@ class GroundStationWindow(QMainWindow):
             flight_sequence_active=self._upstream_sequence is not None,
             selected_strategy=self.waypoints.selected_strategy(),
         )
+        voltage_reason = takeoff_voltage_reason(snapshot, self._connection_mode)
+        if voltage_reason and not self._low_voltage_takeoff_blocked:
+            self._events.warn("takeoff", voltage_reason)
+            self.activity_banner.set_message(voltage_reason, LogLevel.WARN)
+        self._low_voltage_takeoff_blocked = bool(voltage_reason)
         render_key = (
             self._availability,
             self._shutting_down,

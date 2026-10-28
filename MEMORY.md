@@ -71,6 +71,8 @@
 
 ## 逐机部署差异与待同步项
 
+- **落地低电压起飞门控**：实机会话仅在机载 `on_ground=true`、电池遥测有效且整组电压低于22.2 V时禁用起飞按钮，拒绝人工及上位机01/03起飞并记日志；确认/倒计时结束复核最新值。唯一阈值已移至 `ground_station_core/config.py:HARDWARE_LOW_VOLTAGE`，与上位机0C告警共用。离地不增加电压干预，不修改飞控自身电池保护；仿真百分比策略保持。仅开发机源码已更新，mini-ground、hp及两架飞机源码待下次同步；地面站重开生效，无需机载重建。
+
 - 开发机源码已增加地面 `config/host.local.env` 的实机 ROS domain 和默认 GPS 原点入口，地面与机载视频安装器使用运行时选定的 MediaMTX 路径。refresh、new、hp-desktop、mini-ground 尚未同步；部署时保留各机配置并核对两端 ROS domain 一致，服务重启后才生效。详见[配置审查报告](agent/report/report-2026-10-23-configurability-audit.md)。
 默认连接 `ssh drone-refresh`；不可达时停止并询问用户，不自行切换飞机。
 最近核对别名为 refresh → `.186`、new → `.169`；历史名称/IP 曾变化，连接时核对目标。

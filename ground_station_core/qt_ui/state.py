@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
+from ..config import HARDWARE_LOW_VOLTAGE
 from ..models import FlightMode, VehicleSnapshot, WaypointFlightStrategy
+
+
+def takeoff_voltage_reason(snapshot: VehicleSnapshot, connection_mode: str) -> str:
+    """仅对落地实机的有效低电压生成起飞拒绝原因。"""
+    voltage = snapshot.battery_voltage
+    if (
+        connection_mode == "hardware"
+        and snapshot.on_ground
+        and snapshot.battery_valid
+        and math.isfinite(voltage)
+        and 0.0 < voltage < HARDWARE_LOW_VOLTAGE
+    ):
+        return (
+            f"电池电压 {voltage:.2f} V 低于阈值 {HARDWARE_LOW_VOLTAGE:.2f} V，"
+            "落地状态禁止起飞"
+        )
+    return ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +144,10 @@ def derive_availability(
             snapshot.avoidance_detail or "等待规划器、点云和坐标对齐"
         )
 
+    voltage_reason = takeoff_voltage_reason(snapshot, mode)
+    if voltage_reason and reason == "飞行控制链路已就绪":
+        reason = voltage_reason
+
     return UiAvailability(
         start_environment=start_environment,
         stop_simulation=stop_simulation,
@@ -134,6 +157,7 @@ def derive_availability(
         takeoff=(
             control_ready
             and avoidance_available
+            and not voltage_reason
             and not snapshot.vehicle_abnormal
             and not flight_sequence_active
             and not snapshot.armed

@@ -41,6 +41,9 @@ INTERFACE_VERSION = "3.5"
 # 视频服务使用独立接口，不能随飞行协议升级而失配。
 VIDEO_INTERFACE_VERSION = "3.2"
 
+# 实机整组电池低电压阈值（V），共用于落地起飞门控与上位机告警。
+HARDWARE_LOW_VOLTAGE = 22.2
+
 # 手动操纵状态块的可调告警阈值；展示层不再散落硬编码数值。
 STATUS_RATE_TARGET_HZ = 10.0
 STATUS_RATE_TOLERANCE_HZ = 1.0

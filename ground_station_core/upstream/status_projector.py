@@ -12,6 +12,7 @@ from typing import Any
 
 from .models import UpstreamStandbyPolicy
 from .protocol import make_status
+from ..config import HARDWARE_LOW_VOLTAGE
 from ..event_log import EventLog
 from ..ground_media_reader import processed_download
 from ..models import (
@@ -48,10 +49,9 @@ class _MissionState:
 class UpstreamStatusProjector:
     """用锁保护 GUI 飞行事件与后台地面媒体快照，发送独立 JSON 副本。"""
 
-    # 遥测上报周期，以及仿真百分比/实机电压的低电量阈值。
+    # 遥测上报周期及仿真百分比低电量阈值；实机电压阈值与起飞门控共用。
     TELEMETRY_PERIOD_SECONDS = 1.0
     SIMULATION_LOW_PERCENTAGE = 20.0
-    HARDWARE_LOW_VOLTAGE = 22.2
 
     def __init__(
         self,
@@ -462,7 +462,7 @@ class UpstreamStatusProjector:
                 voltage = snapshot.battery_voltage
                 if math.isfinite(voltage) and voltage > 0.0:
                     self._send("0A", {"uavPower": round(voltage, 2)})
-                    low_power = voltage < self.HARDWARE_LOW_VOLTAGE
+                    low_power = voltage < HARDWARE_LOW_VOLTAGE
         x, y, z, _ = snapshot.task_pose
         if snapshot.local_position_valid and snapshot.navigation_ready and all(
             math.isfinite(value) for value in (x, y, z)
