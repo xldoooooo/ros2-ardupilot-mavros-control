@@ -27,16 +27,19 @@ _DEFAULT_API_URL = "http://127.0.0.1:8090"
 # 轮询与网络超时仅影响媒体功能，不阻塞 Qt 或飞控。
 _REFRESH_INTERVAL_MS = 4000
 _HTTP_TIMEOUT_SECONDS = 10
+# 初始列宽允许手动调整，避免每个单元格变化都触发全表内容测量。
+_TABLE_COLUMN_WIDTHS = (90, 240, 65, 75, 65, 110, 110, 260, 165, 100, 320)
 # 显示实际记录状态，不把缓存清理等同于地面缺失。
 _STATE_LABELS = {
     "pending": "待上传", "queued": "待上传", "uploading": "上传中",
     "uploaded": "已上传", "awaiting_ack": "等待入库确认", "confirmed": "已确认入库",
+    "held": "原片暂存，按需上传", "needs_attention": "交付终止，需人工处理",
     "processing": "处理中", "rebuilding": "原片重建中", "recording": "录制中",
     "starting": "启动中", "saving": "封装保存中",
     "ready": "保存完成", "completed": "保存完成", "failed": "失败",
     "error": "异常", "interrupted": "录像已知中断", "missing": "文件缺失",
     "deleted": "已删除", "cleaned": "按策略清理", "expired": "按策略清理",
-    "retained": "机载保留", "present": "存在", "unknown": "未知",
+    "retained": "无需上传，保留原片", "present": "存在", "unknown": "未知",
     "incomplete": "录像已知不完整", "original_ready": "原片已入库",
     "processing_error": "处理失败", "retry": "上传失败待重试",
     "acknowledged": "已确认入库", "cache_deleted": "按策略清理",
@@ -105,11 +108,12 @@ def record_basis(record: dict[str, Any]) -> str:
     state = str(record.get("state", "unknown"))
     if state in (
         "pending", "queued", "uploading", "failed", "error", "interrupted", "missing",
-        "deleted", "incomplete", "processing_error", "retry",
+        "deleted", "incomplete", "processing_error", "retry", "needs_attention",
     ):
         details.append(state_label(state))
     cache = str(record.get("cache_state", "unknown"))
-    cache_label = "按策略清理" if cache == "deleted" else state_label(cache)
+    # 缓存是否保留与上传是否需要是两种状态，兼容旧库存记录。
+    cache_label = {"deleted": "按策略清理", "retained": "机载保留"}.get(cache, state_label(cache))
     details.append(f"机载缓存：{cache_label}")
     return "；".join(dict.fromkeys(details))
 
@@ -222,7 +226,10 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setWordWrap(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for column, width in enumerate(_TABLE_COLUMN_WIDTHS):
+            self.table.setColumnWidth(column, width)
         self.table.horizontalHeader().setStretchLastSection(True)
         split.addWidget(self.table)
         side = QWidget()
@@ -318,6 +325,9 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         elif name == "open":
             QDesktopServices.openUrl(QUrl.fromLocalFile(result))
             self.message.setText(f"已打开处理版录像：{result}")
+        elif name == "directory":
+            QDesktopServices.openUrl(QUrl.fromLocalFile(result))
+            self.message.setText(f"已打开本机目录：{result}")
         elif name == "save":
             self.message.setText(f"已下载：{result}")
         else:
@@ -329,13 +339,16 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         """更新飞机及任务选项并保留用户选择。"""
         for combo, key in ((self.aircraft, "aircraft_id"), (self.mission, "session_id")):
             previous = combo.currentData() or self._initial_filters.pop(key, "") or None
+            values = sorted({str(record.get(key) or "未知") for record in self._records})
+            if previous and previous not in values:
+                values.append(previous)
+            if [combo.itemData(index) for index in range(combo.count())] == [None, *values]:
+                continue
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("全部", None)
-            for value in sorted({str(record.get(key) or "未知") for record in self._records}):
+            for value in values:
                 combo.addItem(value, value)
-            if previous and combo.findData(previous) < 0:
-                combo.addItem(str(previous), previous)
             index = combo.findData(previous)
             combo.setCurrentIndex(max(index, 0))
             combo.blockSignals(False)
@@ -344,30 +357,43 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
     def _filter_records(self) -> None:
         """按飞机、任务和日期过滤，刷新时保留选择。"""
         selected_id = (self.selected_record() or {}).get("id")
-        self._visible = [record for record in self._records if
+        visible = [record for record in self._records if
             (self.aircraft.currentData() is None or str(record.get("aircraft_id") or "未知") == self.aircraft.currentData())
             and (self.mission.currentData() is None or str(record.get("session_id") or "未知") == self.mission.currentData())
             and self.date.text().strip() in format_created_at(record.get("created_at"))]
+        if visible == self._visible:
+            # 后台轮询无变化时保留表格、滚动位置及用户调整的列宽。
+            self._visible = visible
+            return
+        self._visible = visible
+        self.table.setUpdatesEnabled(False)
         self.table.blockSignals(True)
         self.table.setCurrentCell(-1, -1)
         self.table.setRowCount(len(self._visible))
         selected_row = -1
         for row, record in enumerate(self._visible):
-            variant = {"original": "原始缓存", "experiment": "实验处理版", "rebuilt": "原片重建版"}.get(record.get("variant"), "未知")
+            variant = {"original": "原始缓存", "experiment": "实时处理版", "rebuilt": "原片重建版"}.get(record.get("variant"), "未知")
             values = [record.get("aircraft_id", "未知"), f"{record.get('mission_sequence', '未知')} / {record.get('session_id', '未知')}",
                 record.get("waypoint_index", "未知"), record.get("photo_no", "未知"), record.get("kind", "未知"), variant,
                 state_label(record.get("state")), record_basis(record), format_created_at(record.get("created_at")),
                 human_size(record.get("size") if record.get("variant") == "original"
                            else record.get("processed_size", record.get("size"))), record.get("path", "")]
             for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
-                item.setToolTip(str(value))
-                self.table.setItem(row, column, item)
+                text = str(value)
+                item = self.table.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem(text)
+                    item.setToolTip(text)
+                    self.table.setItem(row, column, item)
+                elif item.text() != text:
+                    item.setText(text)
+                    item.setToolTip(text)
             if record.get("id") == selected_id:
                 selected_row = row
         if selected_row >= 0:
             self.table.selectRow(selected_row)
         self.table.blockSignals(False)
+        self.table.setUpdatesEnabled(True)
         self._selection_changed()
 
     def selected_record(self) -> dict[str, Any] | None:
@@ -384,7 +410,7 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         self.preview_button.setEnabled(available and record.get("kind") == "image" and "preview" not in self._busy)
         self.open_button.setEnabled(available and record.get("kind") == "video" and not action_busy)
         self.save_button.setEnabled(available and not action_busy)
-        self.directory_button.setEnabled(bool(record.get("path")) and Path(str(record["path"])).parent.is_dir())
+        self.directory_button.setEnabled(bool(record.get("path")) and not action_busy)
         self.delete_button.setEnabled(bool(record.get("id")) and not action_busy)
         self.rebuild_button.setEnabled(bool(record.get("id")) and record.get("kind") == "video" and record.get("variant") == "original" and not action_busy)
         if record:
@@ -426,10 +452,18 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         self._run("open", lambda: self._client.download(record, cache / f"{prefix}-{name}"))
 
     def _open_directory(self) -> None:
-        """在服务与 GUI 同机时打开地面文件目录。"""
+        """后台核验本机目录后打开，选中行不访问可能阻塞的挂载点。"""
         record = self.selected_record()
         if record and record.get("path"):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(record["path"]).parent)))
+            directory = Path(record["path"]).parent
+
+            def check_directory() -> str:
+                """只检查当前 GUI 机器的路径，远端后台路径不作本地猜测。"""
+                if not directory.is_dir():
+                    raise RuntimeError("本机不存在该目录；后台在其他机器时请使用另存下载")
+                return str(directory)
+
+            self._run("directory", check_directory)
 
     def _save_file(self) -> None:
         """选择保存路径后在后台下载处理版。"""

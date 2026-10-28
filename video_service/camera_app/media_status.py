@@ -209,7 +209,7 @@ class GroundMediaStatus(QWidget):
         self.stream_status.setText("地面处理流：\n" + ("\n".join(stream_lines) or "当前无活动流；已存文件仍可浏览"))
         video_lines = []
         for video in videos[:3]:
-            variant = {"original": "原片缓存", "experiment": "实验处理版", "rebuilt": "原片重建版"}.get(video.get("variant"), "未知版本")
+            variant = {"original": "原片缓存", "experiment": "实时处理版", "rebuilt": "原片重建版"}.get(video.get("variant"), "未知版本")
             video_lines.append(
                 f"{video.get('aircraft_id', '未知飞机')} / {video.get('session_id', '未知任务')} "
                 f"{variant}：{state_label(video.get('state'))}；{record_basis(video)}"
@@ -220,7 +220,7 @@ class GroundMediaStatus(QWidget):
         video_summary = state_label(recent.get("state")) if recent else "暂无处理版录像"
         stream_summary = f"{len(streams)} 路处理流" if streams else "无活动流"
         abnormal = sum(
-            video.get("state") in ("incomplete", "interrupted", "processing_error", "failed", "error")
+            video.get("state") in ("incomplete", "interrupted", "processing_error", "failed", "error", "needs_attention")
             for video in videos
         )
         warning = f" · {abnormal} 条录像异常" if abnormal else ""

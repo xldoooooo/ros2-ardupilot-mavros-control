@@ -1,8 +1,12 @@
 """Persistent aircraft uploads with resumable SSH transfer and ground-confirmed retention."""
 
+import errno
 import json
+import logging
+import os
 from pathlib import Path, PurePosixPath
 import shlex
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -35,9 +39,11 @@ class UploadQueue:
         self.wake = threading.Event()
         self.worker = None
         self.current_process = None
+        self._active_record_id = None
         self.db = sqlite3.connect(self.root / 'uploads.sqlite3', check_same_thread=False)
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS delivery (session_id TEXT PRIMARY KEY, state TEXT, error TEXT)')
         self.db.commit()
         for name in ('manifests', 'acks'):
             (self.root / name).mkdir(exist_ok=True)
@@ -49,6 +55,14 @@ class UploadQueue:
     def _save(self, record):
         """Persist a whole queue record in one SQLite transaction."""
         with self.lock, self.db:
+            delivery = self.db.execute('SELECT state, error FROM delivery WHERE session_id=?',
+                                       (record['session_id'],)).fetchone()
+            if delivery and record['kind'] != 'event' and record['state'] != 'cache_deleted':
+                if delivery[0] == 'failed':
+                    record.update(state='needs_attention', error=delivery[1], retry_at=0)
+                elif delivery[0] == 'ready' and record['kind'] == 'video':
+                    record.update(state='retained', error='', retry_at=0,
+                                  acknowledged_at=record.get('acknowledged_at') or time.time())
             self.db.execute('INSERT OR REPLACE INTO uploads VALUES (?, ?)',
                             (record['id'], json.dumps(record, ensure_ascii=False)))
 
@@ -71,7 +85,7 @@ class UploadQueue:
             rows.append(row)
         return rows
 
-    def enqueue(self, path, kind, session_id, metadata=None):
+    def enqueue(self, path, kind, session_id, metadata=None, held=False):
         """Persist a finalized file reference quickly; hashing happens on the worker."""
         kind = 'image' if kind == 'photo' else kind
         if kind not in {'image', 'video'}:
@@ -88,11 +102,90 @@ class UploadQueue:
                     return record['id']
             record_id = uuid.uuid4().hex
             self._save(dict(id=record_id, aircraft_id=self.aircraft_id, session_id=session_id,
-                            kind=kind, path=str(path), metadata=metadata or {}, state='queued',
+                            kind=kind, path=str(path), metadata=metadata or {}, state='held' if held else 'queued',
                             created_at=time.time(), attempts=0, retry_at=0, error='',
                             size=0, sha256='', acknowledged_at=None))
         self.wake.set()
         return record_id
+
+    def hold_pending_videos(self):
+        """Require a fresh ground decision for originals recovered by the onboard service."""
+        for record in self.records():
+            if record['kind'] == 'video' and record['state'] in {'queued', 'retry', 'uploading', 'awaiting_ack'}:
+                record.update(state='held', retry_at=0)
+                self._save(record)
+
+    def unavailable_video(self, session_id, metadata=None):
+        """Persist a missing-source placeholder until ground decides whether fallback is needed."""
+        self._save(dict(id=uuid.uuid4().hex, aircraft_id=self.aircraft_id,
+                        session_id=safe_component(session_id), kind='video', path='',
+                        metadata=metadata or {}, state='held', created_at=time.time(),
+                        attempts=0, retry_at=0, error='', size=0, sha256='', acknowledged_at=None))
+
+    def delivery_sessions(self):
+        """Return unfinished video sessions, newest first, without polling historical deliveries."""
+        with self.lock:
+            decisions = dict(self.db.execute('SELECT session_id, state FROM delivery').fetchall())
+            pending = {}
+            for record in self.records():
+                if record['kind'] != 'video' or decisions.get(record['session_id']) == 'ready':
+                    continue
+                unfinished = record['state'] in {'held', 'queued', 'retry', 'uploading',
+                                                  'awaiting_ack', 'needs_attention'}
+                awaiting_decision = (record['state'] == 'acknowledged'
+                                     and decisions.get(record['session_id']) in {'waiting', 'fallback'})
+                if unfinished or awaiting_decision:
+                    pending[record['session_id']] = record['created_at']
+        return sorted(pending, key=pending.get, reverse=True)
+
+    def set_delivery(self, session_id, state, reason=''):
+        """Persist delivery decisions and stop only the affected session's active transfer."""
+        if state not in {'waiting', 'fallback', 'ready', 'failed'}:
+            raise ValueError(f'Unknown video delivery state: {state}')
+        with self.lock:
+            previous = self.db.execute('SELECT state FROM delivery WHERE session_id=?', (session_id,)).fetchone()
+            # Local and ground terminal decisions never resume work after a restart.
+            if previous and previous[0] in {'ready', 'failed'}:
+                return
+            with self.db:
+                self.db.execute('INSERT OR REPLACE INTO delivery VALUES (?, ?, ?)',
+                                (session_id, state, str(reason)))
+            if state == 'failed':
+                logging.error('Media delivery stopped: session=%s reason=%s', session_id, reason)
+            for record in self.records():
+                if record['session_id'] != session_id or record['kind'] == 'event':
+                    continue
+                if state == 'fallback' and record['kind'] == 'video' and record['state'] == 'held':
+                    record.update(state='queued', retry_at=0)
+                self._save(record)
+            active = next((record for record in self.records() if record['id'] == self._active_record_id), None)
+            should_stop = (active and active['session_id'] == session_id and
+                           (state == 'failed' or state == 'ready' and active['kind'] == 'video'))
+            if should_stop and self.current_process and self.current_process.poll() is None:
+                self._stop_process(self.current_process)
+        self.wake.set()
+
+    def _check_active(self):
+        """Observe persisted cancellation before launching commands or publishing a manifest."""
+        if self.stop.is_set():
+            raise RuntimeError('Upload queue is stopping')
+        if self._active_record_id:
+            active = next((record for record in self.records() if record['id'] == self._active_record_id), None)
+            if active and active['state'] in {'needs_attention', 'retained', 'cache_deleted'}:
+                raise RuntimeError('Session media upload stopped by delivery decision')
+
+    @staticmethod
+    def _needs_attention(error):
+        """Separate actionable configuration/source faults from recoverable network failures."""
+        if isinstance(error, OSError) and error.errno in {errno.ENOENT, errno.EACCES, errno.EPERM,
+                                                       errno.ENOSPC, errno.EROFS, errno.ENOTDIR}:
+            return True
+        message = str(error).lower()
+        return any(text in message for text in (
+            'permission denied', 'authentication failed', 'host key verification failed',
+            'no space left on device', 'disk quota exceeded', 'read-only file system',
+            'no such file or directory', 'not a directory', 'bad configuration option',
+            'unknown option', 'identity file', 'source changed', 'media changed'))
 
     def enqueue_event(self, event, session_id, metadata=None):
         """Persist a session notification through the same atomic manifest protocol."""
@@ -106,20 +199,29 @@ class UploadQueue:
 
     def _run(self, args, timeout=900):
         """Run a bounded transfer command, allowing close to terminate its child."""
-        if self.stop.is_set():
-            raise RuntimeError('Upload queue is stopping')
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.current_process = process
+        with self.lock:
+            self._check_active()
+            process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True, start_new_session=True)
+            self.current_process = process
         try:
             _, error = process.communicate(timeout=timeout)
             if process.returncode:
                 raise OSError(error.strip() or f'{args[0]} exited {process.returncode}')
         except subprocess.TimeoutExpired:
-            process.kill()
+            self._stop_process(process, force=True)
             process.communicate()
             raise OSError(f'{args[0]} timed out') from None
         finally:
             self.current_process = None
+
+    @staticmethod
+    def _stop_process(process, force=False):
+        """Stop the transfer group so rsync cannot leave an SSH child uploading."""
+        try:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
     def _ssh(self, command):
         """Execute an SSH command without interactive password prompts."""
@@ -144,6 +246,9 @@ class UploadQueue:
         """Copy the complete payload first and publish its manifest with remote rename."""
         record.update(state='uploading', attempts=record['attempts'] + 1, error='')
         self._save(record)
+        self._check_active()
+        if record['kind'] != 'event' and (not record['path'] or not Path(record['path']).is_file()):
+            raise FileNotFoundError(errno.ENOENT, 'Aircraft original/source is unavailable', record['path'])
         inbox = self._remote('inbox', self.aircraft_id)
         ack = self._remote('ack', self.aircraft_id)
         self._ssh(f'mkdir -p -- {shlex.quote(inbox)} {shlex.quote(ack)}')
@@ -172,6 +277,7 @@ class UploadQueue:
             if (final.st_size, final.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 raise OSError('Media changed during upload; manifest withheld')
         local = self.root / 'manifests' / (record['id'] + '.json')
+        self._check_active()
         atomic_json(local, manifest)
         remote = f'{inbox}/{record["id"]}.json'
         self._rsync(local, f'{self.ssh_target}:{remote}.tmp')
@@ -211,9 +317,9 @@ class UploadQueue:
                 self._save(record)
 
     def _cleanup(self):
-        """Delete only confirmed aircraft originals after their configured retention."""
+        """Delete originals only after ground delivery or upload ACK and configured retention."""
         for record in self.records():
-            if record['state'] != 'acknowledged' or time.time() - record['acknowledged_at'] < self.retain_seconds:
+            if record['state'] not in {'acknowledged', 'retained'} or time.time() - record['acknowledged_at'] < self.retain_seconds:
                 continue
             try:
                 if record['path']:
@@ -243,12 +349,18 @@ class UploadQueue:
                                         row['created_at']))
             if ready and not self.stop.is_set():
                 record = ready[0]
+                self._active_record_id = record['id']
                 try:
                     self._upload(record)
                 except (OSError, ValueError, RuntimeError) as error:
-                    record.update(state='retry', error=str(error),
-                                  retry_at=time.time() + min(300, 2 ** min(record['attempts'], 8)))
-                    self._save(record)
+                    if record['kind'] != 'event' and self._needs_attention(error):
+                        self.set_delivery(record['session_id'], 'failed', str(error))
+                    else:
+                        record.update(state='retry', error=str(error),
+                                      retry_at=time.time() + min(300, 2 ** min(record['attempts'], 8)))
+                        self._save(record)
+                finally:
+                    self._active_record_id = None
         finally:
             self.tick_lock.release()
 
@@ -277,7 +389,7 @@ class UploadQueue:
         self.wake.set()
         process = self.current_process
         if process and process.poll() is None:
-            process.terminate()
+            self._stop_process(process)
         if self.worker:
             self.worker.join(timeout=5)
         if not self.worker or not self.worker.is_alive():

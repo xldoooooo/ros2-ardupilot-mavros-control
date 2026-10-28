@@ -131,14 +131,15 @@ class UpstreamCommunicationService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake_event: asyncio.Event | None = None
         self._outbound: asyncio.Queue[dict[str, Any]] | None = None
+        self._media_warning = ""
+        self._media_reader = GroundMediaReader(self._observe_ground_media)
         self._projector = UpstreamStatusProjector(
             self._current_client_no,
             self.publish_status,
             self._events,
             standby_policy,
+            fail_delivery=self._media_reader.fail_delivery,
         )
-        self._media_warning = ""
-        self._media_reader = GroundMediaReader(self._observe_ground_media)
 
     @property
     def journal(self) -> RawFrameJournal:

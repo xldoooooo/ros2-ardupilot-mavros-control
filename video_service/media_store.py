@@ -70,6 +70,7 @@ class MediaStore:
         self.calibration = None
         self.photo_maps = None
         self.photo_session = None
+        self.stopped_sessions = set()
         for name in ('inbox', 'internal', 'public', 'ack', 'staging'):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / 'media.sqlite3', check_same_thread=False)
@@ -209,6 +210,15 @@ class MediaStore:
             rows = self.db.execute('SELECT data FROM events').fetchall()
         return sorted((json.loads(row[0]) for row in rows), key=lambda event: event['time'])
 
+    def stop_session(self, aircraft, session):
+        """Stop automatic ingestion/photo work while retaining every existing source file."""
+        with self.lock:
+            self.stopped_sessions.add((aircraft, session))
+            for record in self.records():
+                if ((record['aircraft_id'], record['session_id']) == (aircraft, session)
+                        and record['state'] in ACTIVE_STATES):
+                    self.update(record['id'], state='error', error='交付已终止，不再自动处理')
+
     def _event(self, manifest):
         """Persist a session notification and apply cache-deletion state changes."""
         event = dict(id=manifest['id'], time=manifest['created_at'],
@@ -233,6 +243,8 @@ class MediaStore:
                     aircraft = safe_component(manifest['aircraft_id'])
                     session = safe_component(manifest['session_id'])
                     record_id = safe_component(manifest['id'])
+                    if (aircraft, session) in self.stopped_sessions and manifest.get('kind') != 'event':
+                        continue
                     if manifest_path.parent.name != aircraft or manifest_path.stem != record_id:
                         raise ValueError('Manifest location does not match its identity')
                     if manifest.get('kind') == 'event':
@@ -308,6 +320,8 @@ class MediaStore:
             for record in self.records():
                 if record['kind'] not in {'image', 'photo'} or record['state'] != 'pending':
                     continue
+                if (record['aircraft_id'], record['session_id']) in self.stopped_sessions:
+                    continue
                 try:
                     self.update(record['id'], state='processing')
                     calibration_path = self.session_intrinsics(record['aircraft_id'], record['session_id'])
@@ -329,10 +343,13 @@ class MediaStore:
                     temporary = self.root / 'staging' / (record['id'] + '.jpg')
                     if not cv2.imwrite(str(temporary), corrected, [cv2.IMWRITE_JPEG_QUALITY, 95]):
                         raise OSError('Cannot write corrected photo')
-                    temporary.replace(destination)
-                    results.append(self.update(record['id'], path=str(destination),
-                                               processed_size=destination.stat().st_size,
-                                               state='ready', variant='experiment', error=''))
+                    with self.lock:
+                        if (record['aircraft_id'], record['session_id']) in self.stopped_sessions:
+                            continue
+                        temporary.replace(destination)
+                        results.append(self.update(record['id'], path=str(destination),
+                                                   processed_size=destination.stat().st_size,
+                                                   state='ready', variant='experiment', error=''))
                     logging.info('Photo ready: id=%s session=%s mission=%s waypoint=%s file=%s',
                                  record['id'], record['session_id'], record['metadata'].get('mission_sequence'),
                                  record['metadata'].get('waypoint_index'), destination.name)

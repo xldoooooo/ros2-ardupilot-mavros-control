@@ -4,7 +4,6 @@ import json
 import io
 from ftplib import FTP
 from pathlib import Path
-import shlex
 import subprocess
 import time
 
@@ -19,29 +18,7 @@ from video_service.ground_media import GroundMedia
 from ground_station_core.event_log import EventLog
 from ground_station_core.models import CommandResult, VideoCaptureEvent
 from ground_station_core.upstream.status_projector import UpstreamStatusProjector
-
-
-class LocalQueue(UploadQueue):
-    """Use actual rsync and rename commands against local directories without SSH."""
-
-    def _run(self, args, timeout=900):
-        """Translate the SSH command and remote rsync operands into local equivalents."""
-        if args[0] == 'ssh':
-            args = shlex.split(args[-1])
-        else:
-            args = [arg.removeprefix('local:') for arg in args]
-        return super()._run(args, timeout)
-
-
-def calibration_file(tmp_path):
-    """Create a tiny five-coefficient calibration with visible nonzero distortion."""
-    path = tmp_path / 'intrinsics.yaml'
-    path.write_text(yaml.safe_dump({
-        'image_width': 128, 'image_height': 72, 'distortion_model': 'plumb_bob',
-        'camera_matrix': {'data': [100, 0, 63, 0, 101, 35, 0, 0, 1]},
-        'distortion_coefficients': {'data': [-0.2, 0.03, 0.001, -0.002, 0.01]},
-    }))
-    return path
+from tests.video.support import LocalQueue, calibration_file
 
 
 def test_photo_priority_ack_correction_and_cache_retention(tmp_path, monkeypatch):

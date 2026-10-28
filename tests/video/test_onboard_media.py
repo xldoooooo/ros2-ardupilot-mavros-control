@@ -16,6 +16,9 @@ def _onboard(last_recording=''):
     media.controller.status.return_value = {'last_recording_file': str(last_recording)}
     media.queue = Mock()
     media.queue.enqueue.return_value = 'queued-file'
+    media.queue.delivery_sessions.return_value = []
+    media._delivery_terminal = set()
+    media._delivery_poll_offset = 0
     media.session = None
     media._last_session = None
     media._session_ids = set()
@@ -98,6 +101,7 @@ def test_failed_new_session_does_not_upload_previous_recording(tmp_path):
     args = media.queue.enqueue.call_args.args
     assert args[0] == current and args[1] == 'video'
     assert args[3]['mission_sequence'] == 9
+    assert media.queue.enqueue.call_args.kwargs == {'held': True}
 
 
 def test_manual_photo_preserves_video_mission_and_its_own_manual_identity(tmp_path):

@@ -9,8 +9,12 @@ import subprocess
 import threading
 import time
 from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 
 from video_service.media_transfer import UploadQueue
+
+# Bound offline polling so old video rounds cannot delay session notices indefinitely.
+DELIVERY_POLL_BATCH = 5
 
 
 class OnboardMedia:
@@ -26,10 +30,15 @@ class OnboardMedia:
         self.queue = UploadQueue(self.cache, aircraft_id, settings['upload_target'],
                                  settings['upload_root'], float(settings.get('retain_seconds', 86400)),
                                  int(settings.get('bwlimit_kib', 2048)))
+        self.queue.hold_pending_videos()
         self.queue.start()
         self._session_ids = {record['session_id'] for record in self.queue.records()}
         self.session = None
-        self._last_session = None
+        events = [record for record in self.queue.records() if record['kind'] == 'event']
+        self._last_session = ({**events[-1]['metadata'], 'session_id': events[-1]['session_id']}
+                              if events else None)
+        self._delivery_terminal = set()
+        self._delivery_poll_offset = 0
         self.error = ''
         self._upload_error = ''
         self._forward = None
@@ -81,7 +90,7 @@ class OnboardMedia:
         return media_id
 
     def finish(self, error=''):
-        """Upload a finalized original even when its real-time processed version failed."""
+        """Retain an original; ground requests it only when its live recording is unusable."""
         with self._lock:
             if not self.session:
                 return
@@ -89,14 +98,42 @@ class OnboardMedia:
             metadata = {**self.session, 'ended_at': time.time(), 'error': error}
             path = status.get('last_recording_file', '')
             if path and path != self._previous_recording and Path(path).is_file():
-                self.queue.enqueue(Path(path), 'video', self.session['session_id'], metadata)
+                self.queue.enqueue(Path(path), 'video', self.session['session_id'], metadata, held=True)
+            else:
+                self.queue.unavailable_video(self.session['session_id'], metadata)
             self.queue.enqueue_event('session_end', self.session['session_id'], metadata)
+            self._last_session = dict(metadata)
             logging.info('Media session ended: session=%s source=%s mission=%s error=%s',
                          self.session['session_id'], metadata.get('source_id'),
                          metadata.get('mission_sequence'), error)
             self._notify('end', metadata)
             self.session = None
         self._stop_forward()
+
+    def _poll_delivery(self):
+        """Poll the newest round first and rotate a bounded batch of older unfinished rounds."""
+        sessions = [session for session in self.queue.delivery_sessions()
+                    if session not in self._delivery_terminal]
+        if not sessions:
+            return
+        older = sessions[1:]
+        offset = self._delivery_poll_offset % len(older) if older else 0
+        rotated = older[offset:] + older[:offset]
+        batch = [sessions[0], *rotated[:DELIVERY_POLL_BATCH - 1]]
+        self._delivery_poll_offset = offset + max(0, len(batch) - 1)
+        for session_id in batch:
+            query = urlencode({'aircraft_id': self.aircraft_id, 'session_id': session_id})
+            try:
+                with urlopen(self.settings['ground_api'].rstrip('/') + '/api/delivery?' + query,
+                             timeout=2) as response:
+                    decision = json.loads(response.read())
+                state = decision['state']
+                self.queue.set_delivery(session_id, state, decision.get('error', ''))
+                if state in {'ready', 'failed'}:
+                    self._delivery_terminal.add(session_id)
+            except Exception as exc:
+                # Unreachable HTTP never grants permission to send a whole original.
+                self.error = f'等待地面录像交付决策：{exc}'
 
     def _notify(self, action, metadata=None):
         """Best-effort low-latency session notice; the queue provides durable delivery."""
@@ -145,6 +182,7 @@ class OnboardMedia:
                 elif self.session and status['state'] == 'error':
                     self.finish(status.get('last_error', '机载录像中断'))
                 if time.monotonic() - notified > 5:
+                    self._poll_delivery()
                     self._notify('update')
                     notified = time.monotonic()
                 upload_error = next((str(record['error']) for record in self.queue.records()

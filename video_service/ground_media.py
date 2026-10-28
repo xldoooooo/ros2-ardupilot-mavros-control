@@ -3,9 +3,11 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -24,6 +26,9 @@ sys.path.insert(0, str(PROJECT))
 from video_service.media_store import MediaStore, atomic_json, safe_component
 from video_service.camera_app.relay_status import status_path
 from video_service.relay_config import gpu_arguments, project_path
+
+# A landed inspection must finish video delivery within this configurable interval.
+DEFAULT_DELIVERY_TIMEOUT_SECONDS = 600.0
 
 
 def load_settings(path=None):
@@ -69,10 +74,25 @@ class GroundMedia:
         self._catalog = self.root / 'sessions.json'
         self._ended = set()
         self._uploads = {}
+        self._deliveries = {}
+        self._jobs = {}
+        try:
+            timeout = float(settings.get('delivery_timeout_seconds', DEFAULT_DELIVERY_TIMEOUT_SECONDS))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_DELIVERY_TIMEOUT_SECONDS
+            logging.warning('Invalid delivery_timeout_seconds; using 600 seconds')
+        self.delivery_timeout_seconds = (timeout if math.isfinite(timeout) and timeout > 0
+                                         else DEFAULT_DELIVERY_TIMEOUT_SECONDS)
         if self._catalog.exists():
             for session in json.loads(self._catalog.read_text()).values():
                 key = (session['aircraft_id'], session['session_id'])
-                self._ended.add(key)
+                if all(key):
+                    self._ended.add(key)
+                if session.get('delivery'):
+                    delivery = session['delivery']
+                    self._deliveries[self._delivery_key(delivery)] = delivery
+                    if delivery['state'] == 'failed' and all(key):
+                        self.store.stop_session(*key)
         for record in self.store.records():
             if record['kind'] == 'video' and record['state'] in ('recording', 'processing'):
                 self.store.update(record['id'], state='error', error='地面媒体服务曾中断；可从已上传原片重建')
@@ -144,6 +164,21 @@ class GroundMedia:
         key = aircraft, session_id
         with self.lock:
             self._uploads[aircraft] = payload.get('upload_records', self._uploads.get(aircraft, []))
+            delivery = self._deliveries.setdefault('/'.join(key), dict(
+                aircraft_id=aircraft, session_id=session_id, source_id=payload.get('source_id', ''),
+                mission_sequence=payload.get('mission_sequence', 0), state='waiting', error='',
+                ended_at=None, record_id=''))
+            if payload.get('mission_sequence'):
+                delivery.update(source_id=payload['source_id'], mission_sequence=payload['mission_sequence'])
+            failed = next((item for item in self._deliveries.values() if (
+                item['state'] == 'failed' and item.get('source_id') == delivery.get('source_id')
+                and str(item.get('mission_sequence')) == str(delivery.get('mission_sequence'))
+                and item.get('mission_sequence'))), None)
+            if failed:
+                delivery.update(state='failed', error=failed['error'])
+            if delivery['state'] == 'failed':
+                self.fail_delivery(delivery)
+                return
             if payload.get('mission_sequence') and payload.get('source_id'):
                 for record in self.store.records():
                     if (record['aircraft_id'], record['session_id']) == key and record['kind'] == 'video':
@@ -151,6 +186,7 @@ class GroundMedia:
                         metadata.update(source_id=payload['source_id'], mission_sequence=payload['mission_sequence'])
                         self.store.update(record['id'], metadata=metadata)
             if key in self._ended:
+                self._save_sessions()
                 return
             session = self.sessions.get(aircraft)
             if session and session['session_id'] != session_id:
@@ -166,7 +202,11 @@ class GroundMedia:
                                next_retry=0, interruptions=[], last_seen=time.time())
                 self.sessions[aircraft] = session
                 # Freeze the intrinsics and processing settings for this recording and rebuild.
-                calibration = self.store.session_intrinsics(aircraft, session_id)
+                try:
+                    calibration = self.store.session_intrinsics(aircraft, session_id)
+                except OSError as exc:
+                    self.fail_delivery(dict(delivery, error=f'会话内参或保存目录需要人工处理：{exc}'))
+                    return
                 session['intrinsics'] = str(calibration)
                 session['options'] = {key: self.config.get(key, default) for key, default in
                                       [('backend', 'auto'), ('bitrate', '8M'), ('gop', 60),
@@ -181,8 +221,102 @@ class GroundMedia:
 
     def _save_sessions(self):
         """Remember closed identities across restarts to avoid replaying durable events."""
-        atomic_json(self._catalog, {f'{aircraft}/{session}': dict(aircraft_id=aircraft, session_id=session)
-                                   for aircraft, session in self._ended})
+        catalog = {f'{aircraft}/{session}': dict(aircraft_id=aircraft, session_id=session)
+                   for aircraft, session in self._ended}
+        for key, delivery in self._deliveries.items():
+            # Only ended sessions are closed on recovery; an active session may resume notices.
+            if delivery.get('ended_at') or delivery['state'] in {'ready', 'failed'}:
+                catalog[key] = dict(aircraft_id=delivery['aircraft_id'],
+                                    session_id=delivery['session_id'], delivery=delivery)
+        atomic_json(self._catalog, catalog)
+
+    @staticmethod
+    def _delivery_key(delivery):
+        """Use a source/mission tombstone when the recorder never received a session notice."""
+        if delivery.get('aircraft_id') and delivery.get('session_id'):
+            return delivery['aircraft_id'] + '/' + delivery['session_id']
+        return f"mission:{delivery['source_id']}:{delivery['mission_sequence']}"
+
+    def _session_failed(self, aircraft, session):
+        """Check the persisted decision before starting or publishing any more work."""
+        with self.lock:
+            return self._deliveries.get(f'{aircraft}/{session}', {}).get('state') == 'failed'
+
+    def fail_delivery(self, payload):
+        """Persist a terminal failure and cancel this session's active media jobs."""
+        with self.lock:
+            matched = [item for item in self._deliveries.values() if (
+                (payload.get('session_id') and item['session_id'] == payload['session_id']
+                 and item['aircraft_id'] == payload.get('aircraft_id'))
+                or (payload.get('source_id') and item.get('source_id') == payload['source_id']
+                    and str(item.get('mission_sequence')) == str(payload.get('mission_sequence'))))]
+            if not matched:
+                if not payload.get('source_id') or not payload.get('mission_sequence'):
+                    raise ValueError('交付失败缺少source_id/mission_sequence或已知会话')
+                item = dict(aircraft_id=payload.get('aircraft_id', ''),
+                            session_id=payload.get('session_id', ''), source_id=payload['source_id'],
+                            mission_sequence=payload['mission_sequence'], ended_at=time.time(), record_id='')
+                self._deliveries[self._delivery_key(item)] = item
+                matched = [item]
+            for item in matched:
+                if item.get('state') == 'ready':
+                    continue
+                if item.get('state') != 'failed':
+                    item.update(state='failed', error=str(payload.get('error') or '视频交付已终止'))
+                    logging.error('Video delivery failed: aircraft=%s session=%s mission=%s: %s',
+                                  item['aircraft_id'], item['session_id'], item['mission_sequence'], item['error'])
+                if item['aircraft_id'] and item['session_id']:
+                    self.store.stop_session(item['aircraft_id'], item['session_id'])
+                    active = self.sessions.get(item['aircraft_id'])
+                    if active and active['session_id'] == item['session_id']:
+                        process = active.get('relay')
+                        if process and process.poll() is None:
+                            process.terminate()
+                        self.sessions.pop(item['aircraft_id'], None)
+                    self._ended.add((item['aircraft_id'], item['session_id']))
+                for record_id, process in list(self._jobs.items()):
+                    record = self.store.get(record_id)
+                    if (record and record['aircraft_id'] == item['aircraft_id']
+                            and record['session_id'] == item['session_id'] and process.poll() is None):
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+            self._save_sessions()
+            return dict(matched[0])
+
+    def delivery_status(self, aircraft, session):
+        """Tell the aircraft whether its held original is needed or permanently stopped."""
+        safe_component(aircraft)
+        safe_component(session)
+        with self.lock:
+            item = self._deliveries.get(f'{aircraft}/{session}')
+            return dict(item) if item else dict(state='waiting', error='')
+
+    def _run_media_job(self, command, record_id, timeout):
+        """Run a cancellable media command without holding the catalog lock."""
+        record = self.store.get(record_id)
+        with self.lock:
+            if self._session_failed(record['aircraft_id'], record['session_id']):
+                raise RuntimeError('视频交付已终止，不再自动处理')
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True, start_new_session=True)
+            self._jobs[record_id] = process
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            if self._session_failed(record['aircraft_id'], record['session_id']):
+                raise RuntimeError('视频交付已终止，不再自动处理')
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        finally:
+            with self.lock:
+                self._jobs.pop(record_id, None)
 
     def _start_stream(self, session):
         """Write encoded packets to the recording from the first frame while publishing RTSP."""
@@ -268,33 +402,52 @@ class GroundMedia:
             record = self.store.create_record(session['aircraft_id'], session['session_id'], metadata=session['metadata'])
             self.store.update(record, state='error', error=error or '未收到可录制的去畸变视频')
         self._ended.add((session['aircraft_id'], session['session_id']))
+        delivery = self._deliveries.get(f"{session['aircraft_id']}/{session['session_id']}")
+        if delivery is not None:
+            delivery.update(source_id=session['metadata'].get('source_id', ''),
+                            mission_sequence=session['metadata'].get('mission_sequence', 0))
+            if delivery.get('ended_at') is None:
+                delivery['ended_at'] = time.time()
 
     def _validate_recording(self, session):
         """Decode the file and compare approximate duration, retaining all known interruptions."""
         record_id = session['record_id']
         try:
             path = Path(session['partial'])
-            probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                                    '-of', 'json', str(path)], capture_output=True, text=True, timeout=30)
+            probe = self._run_media_job(['ffprobe', '-v', 'error', '-show_entries',
+                                        'format=duration:stream=codec_type', '-of', 'json', str(path)],
+                                       record_id, 30)
             duration = float(json.loads(probe.stdout)['format']['duration'])
-            check = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(path), '-map', '0:v:0',
-                                    '-f', 'null', '-'], capture_output=True, text=True, timeout=max(60, duration * 3))
+            if probe.returncode or duration <= 0 or not any(
+                    row.get('codec_type') == 'video' for row in json.loads(probe.stdout).get('streams', [])):
+                raise ValueError('本地录像没有可播放的视频轨道')
+            check = self._run_media_job(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(path),
+                                        '-map', '0:v:0', '-f', 'null', '-'], record_id, max(60, duration * 3))
             errors = list(session['interruptions'])
             expected = max(0, session['metadata'].get('ended_at', session['finished_at']) -
                            session['metadata'].get('started_at', session['received_at']))
             if abs(duration - expected) > max(3, expected * 0.1):
                 errors.append(f'时长与会话不符：视频{duration:.1f}秒 / 会话约{expected:.1f}秒')
             if check.returncode or check.stderr.strip():
-                errors.append('完整解码检查异常：' + check.stderr[-500:])
+                raise ValueError('本地录像损坏，完整解码失败：' + check.stderr[-500:])
             metadata = {**session['metadata'], 'duration': duration, 'expected_duration': expected,
                         'startup_observed_seconds': (session['record_started'] - session['received_at']
                                                      if session.get('record_started') else None),
                         'processing': session['options'], 'state': 'incomplete' if errors else 'ready',
-                        'error': '；'.join(dict.fromkeys(errors)), 'variant': 'experiment'}
-            self.store.register_processed(path, session['aircraft_id'], session['session_id'], metadata,
-                                          record_id=record_id)
+                        'error': '；'.join(dict.fromkeys(errors)), 'variant': 'experiment', 'playable': True}
+            with self.lock:
+                if self._session_failed(session['aircraft_id'], session['session_id']):
+                    return
+                self.store.register_processed(path, session['aircraft_id'], session['session_id'], metadata,
+                                              record_id=record_id)
+            if errors:
+                logging.warning('Deliverable live recording has gaps: session=%s: %s',
+                                session['session_id'], metadata['error'])
         except Exception as exc:
             self.store.update(record_id, state='error', error=f'录像保存检查失败：{exc}')
+            if isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.ENOSPC, errno.EROFS}:
+                self.fail_delivery(dict(aircraft_id=session['aircraft_id'], session_id=session['session_id'],
+                                        error=f'本地保存需要人工处理：{exc}'))
 
     def _ingest_loop(self):
         """Accept verified uploads and replay durable start/end events independently of previews."""
@@ -319,16 +472,104 @@ class GroundMedia:
                 logging.exception('Media ingestion failed')
 
     def _finalize_uploaded_videos(self):
-        """Create one whole-session task video from each finalized uploaded original."""
-        records = self.store.records()
-        scheduled = {row['metadata'].get('rebuilt_from') for row in records
-                     if row['kind'] == 'video' and row['variant'] == 'rebuilt'}
-        for record in records:
-            if (record['kind'] == 'video' and record['variant'] == 'original'
-                    and record['state'] == 'original_ready'
-                    and record['metadata'].get('mission_sequence')
-                    and record['id'] not in scheduled):
-                self.rebuild(record['id'])
+        """Deliver local recordings first; request originals only when none are playable."""
+        with self.lock:
+            records = self.store.records()
+            for delivery in list(self._deliveries.values()):
+                if delivery['state'] in {'ready', 'failed'} or delivery.get('ended_at') is None:
+                    continue
+                identity = delivery['aircraft_id'], delivery['session_id']
+                if time.time() - delivery['ended_at'] >= self.delivery_timeout_seconds:
+                    self.fail_delivery(dict(delivery, error='落地后视频交付等待超时，停止自动上传和处理'))
+                    continue
+                videos = [row for row in records if row['kind'] == 'video'
+                          and (row['aircraft_id'], row['session_id']) == identity]
+                live = [row for row in videos if row['variant'] == 'experiment']
+                if any(row['state'] in {'recording', 'processing'} for row in live):
+                    continue
+                playable = [row for row in live if row['state'] in {'ready', 'incomplete'}
+                            and self.store.public_url(row)]
+                if playable:
+                    assembled = [row for row in live if row['metadata'].get('assembled')]
+                    if len(playable) > 1 and not assembled:
+                        self._assemble_recordings(playable, delivery)
+                        continue
+                    chosen = max(playable, key=lambda row: (
+                        bool(row['metadata'].get('assembled')), row['metadata'].get('duration', 0)))
+                    self._complete_delivery(delivery, chosen)
+                    continue
+                if delivery['state'] != 'fallback':
+                    delivery.update(state='fallback', error='地面无可播放录像，请求机载原片')
+                    self._save_sessions()
+                    logging.warning('Requesting aircraft original: %s/%s', *identity)
+                rebuilt = [row for row in videos if row['variant'] == 'rebuilt']
+                ready = [row for row in rebuilt if row['state'] == 'ready' and self.store.public_url(row)]
+                if ready:
+                    self._complete_delivery(delivery, ready[-1])
+                    continue
+                if any(row['state'] in {'recording', 'processing'} for row in rebuilt):
+                    continue
+                if rebuilt:
+                    self.fail_delivery(dict(delivery, error=rebuilt[-1].get('error') or '原片处理失败，需要人工处理'))
+                    continue
+                originals = [row for row in videos if row['variant'] == 'original'
+                             and row.get('original_path') and Path(row['original_path']).is_file()]
+                if originals:
+                    try:
+                        self.rebuild(originals[-1]['id'])
+                    except (OSError, ValueError) as exc:
+                        self.fail_delivery(dict(delivery, error=f'原片重建需要人工处理：{exc}'))
+                    continue
+                uploads = [row for row in self._uploads.get(identity[0], [])
+                           if row.get('session_id') == identity[1] and row.get('kind') == 'video']
+                stopped = next((row for row in uploads if row.get('state') in {'needs_attention', 'failed'}), None)
+                if stopped:
+                    self.fail_delivery(dict(delivery, error=stopped.get('error') or '机载原片无法交付，需要人工处理'))
+                elif any(row.get('cache_state') in {'missing', 'deleted'} for row in uploads):
+                    self.fail_delivery(dict(delivery, error='两端均无可用原片，也无可播放地面录像'))
+
+    def _complete_delivery(self, delivery, record):
+        """Freeze the selected local/rebuilt recording; no further original upload is needed."""
+        delivery.update(state='ready', error='', record_id=record['id'])
+        self._save_sessions()
+        logging.info('Video delivery ready: %s/%s record=%s state=%s',
+                     delivery['aircraft_id'], delivery['session_id'], record['id'], record['state'])
+
+    def _assemble_recordings(self, records, delivery):
+        """Concatenate existing corrected fragments without encoding or uploading originals."""
+        records = sorted(records, key=lambda row: row['created_at'])
+        metadata = dict(records[0]['metadata'], assembled=True,
+                        state='incomplete', error='实时录像发生中断，已合并可播放片段')
+        record_id = self.store.create_record(delivery['aircraft_id'], delivery['session_id'], metadata=metadata)
+        self.store.update(record_id, state='processing')
+        self.workers.submit(self._assemble_worker, record_id, records, metadata)
+
+    def _assemble_worker(self, record_id, records, metadata):
+        """Validate a packet-copy assembly; retain playable individual fragments if merging fails."""
+        target = self.root / 'staging' / f'{record_id}.mkv'
+        listing = self.root / 'staging' / f'{record_id}.concat'
+        try:
+            listing.write_text(''.join("file '" + row['path'].replace("'", "'\\''") + "'\n" for row in records))
+            result = self._run_media_job(['ffmpeg', '-v', 'error', '-nostdin', '-f', 'concat', '-safe', '0',
+                                          '-i', str(listing), '-map', '0:v:0', '-c:v', 'copy', str(target)],
+                                         record_id, self.delivery_timeout_seconds)
+            if result.returncode:
+                raise ValueError(result.stderr[-500:])
+            check = self._run_media_job(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(target),
+                                         '-f', 'null', '-'], record_id, self.delivery_timeout_seconds)
+            if check.returncode or check.stderr.strip():
+                raise ValueError(check.stderr[-500:])
+            record = self.store.get(record_id)
+            with self.lock:
+                if self._session_failed(record['aircraft_id'], record['session_id']):
+                    return
+                self.store.register_processed(target, record['aircraft_id'], record['session_id'], metadata,
+                                              record_id=record_id)
+        except Exception as exc:
+            self.store.update(record_id, state='error', error=f'实时片段合并失败，保留单独可播放片段：{exc}')
+            logging.warning('Live fragment assembly failed: %s', exc)
+        finally:
+            listing.unlink(missing_ok=True)
 
     def _photo_loop(self):
         """Process images on a separate worker so acknowledgements remain responsive."""
@@ -374,7 +615,10 @@ class GroundMedia:
                             url=f"rtsp://{public}:{self.config.get('rtsp_port', 8554)}/{aircraft}/rectified",
                             error='；'.join(item['interruptions'])) for aircraft, item in self.sessions.items()]
         storage = self.store.storage()
-        return dict(records=records, storage=storage, streams=streams,
+        with self.lock:
+            deliveries = [dict(item) for item in self._deliveries.values()]
+        return dict(records=records, storage=storage, streams=streams, deliveries=deliveries,
+                    delivery_timeout_seconds=self.delivery_timeout_seconds,
                     error='；'.join(filter(None, [self.error, storage.get('error', '')])))
 
     def rebuild(self, record_id):
@@ -390,6 +634,8 @@ class GroundMedia:
             record = candidates[0]
         if not Path(record['original_path']).is_file():
             raise ValueError('原片已被容量策略清理，暂不能重建')
+        if self._session_failed(record['aircraft_id'], record['session_id']):
+            raise ValueError('该轮交付已终止，不再上传或处理')
         metadata = dict(record['metadata'])
         metadata['variant'] = 'rebuilt'
         # Reserve the source identity before starting work, including failed attempts.
@@ -411,19 +657,25 @@ class GroundMedia:
             options = previous['metadata']['processing'] if previous else self.config
             if not calibration.is_file():
                 raise ValueError('会话固定内参缺失，不能保证重建与实时版一致')
-            process = self._spawn(self.relay_command(record['original_path'], target,
-                self.root / (record_id + '.progress'), calibration, options), record_id + '-rebuild')
-            if process.wait() != 0:
-                raise RuntimeError('原片去畸变进程失败，详见后台日志')
-            check = subprocess.run(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(target),
-                                    '-f', 'null', '-'], capture_output=True, text=True)
+            result = self._run_media_job(self.relay_command(record['original_path'], target,
+                self.root / (record_id + '.progress'), calibration, options),
+                record_id, self.delivery_timeout_seconds)
+            if result.returncode != 0:
+                raise RuntimeError('原片去畸变失败，需要人工处理：' + result.stderr[-500:])
+            check = self._run_media_job(['ffmpeg', '-v', 'error', '-nostdin', '-i', str(target),
+                                         '-f', 'null', '-'], record_id, self.delivery_timeout_seconds)
             if check.returncode or check.stderr.strip():
                 raise RuntimeError('重建文件不能完整解码：' + check.stderr[-500:])
             metadata.update(state='ready', variant='rebuilt', rebuilt_from=record['id'])
-            self.store.register_processed(target, record['aircraft_id'], record['session_id'], metadata,
-                                          record_id=record_id)
+            with self.lock:
+                if self._session_failed(record['aircraft_id'], record['session_id']):
+                    return
+                self.store.register_processed(target, record['aircraft_id'], record['session_id'], metadata,
+                                              record_id=record_id)
         except Exception as exc:
             self.store.update(record_id, state='error', error=str(exc))
+            self.fail_delivery(dict(aircraft_id=record['aircraft_id'], session_id=record['session_id'],
+                                    error=f'原片重建失败，需要人工处理：{exc}'))
             logging.exception('Task video processing failed: %s', record_id)
         finally:
             self.store.update(record['id'], state=original_state)
@@ -459,6 +711,14 @@ class MediaHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == '/api/media':
             self._json(self.server.media.inventory())
+        elif parsed.path == '/api/delivery':
+            query = parse_qs(parsed.query)
+            try:
+                result = self.server.media.delivery_status(query.get('aircraft_id', [''])[0],
+                                                          query.get('session_id', [''])[0])
+                self._json(result)
+            except ValueError as exc:
+                self._json({'error': str(exc)}, 400)
         elif parsed.path == '/api/file':
             record = self.server.media.store.get(parse_qs(parsed.query).get('id', [''])[0])
             if not record or not self.server.media.store.public_url(record):
@@ -488,6 +748,10 @@ class MediaHandler(BaseHTTPRequestHandler):
             if self.path == '/api/session':
                 self.server.media.session(payload)
                 result = {'ok': True}
+            elif self.path == '/api/delivery':
+                if payload.get('action') != 'fail':
+                    raise ValueError('Unsupported delivery action')
+                result = self.server.media.fail_delivery(payload)
             else:
                 if self.client_address[0] not in ('127.0.0.1', '::1'):
                     self._json({'error': '文件管理操作仅供地面本机使用'}, 403)

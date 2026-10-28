@@ -102,6 +102,7 @@ def test_file_window_async_filter_and_close(media_api):
     window.table.selectRow(0)
     assert window.save_button.isEnabled()
     assert not window.rebuild_button.isEnabled()
+    assert window.table.item(0, 5).text() == "实时处理版"
     window.date.setText("2026-10-22")
     assert window.table.rowCount() == 0
     window.close()
@@ -162,11 +163,17 @@ def test_camera_media_status_async_context_and_parent_close(media_api):
         [str(expected), "--aircraft-id", "uav001", "--session-id", "task-a"],
         str(expected.parent),
     )
-    status._completed({"streams": [{"aircraft_id": "uav001", "session_id": "task-a", "state": "recording", "url": "rtsp://ground/uav001/rectified", "error": "已知中断"}], "records": [], "error": "磁盘异常"}, "")
+    status._completed({"streams": [{"aircraft_id": "uav001", "session_id": "task-a", "state": "recording", "url": "rtsp://ground/uav001/rectified", "error": "已知中断"}], "records": [
+        {"aircraft_id": "uav001", "session_id": "task-a", "kind": "video",
+         "variant": "experiment", "state": "needs_attention", "error": "录像交付终止"},
+    ], "error": "磁盘异常"}, "")
     assert "录制中" in status.stream_status.text()
     assert "rtsp://ground" in status.stream_status.text()
     assert "已知中断" in status.error_status.text()
     assert "磁盘异常" in status.error_status.text()
+    assert "实时处理版" in status.video_status.text()
+    assert "交付终止，需人工处理" in status.video_status.text()
+    assert "1 条录像异常" in status.summary.text()
     status._completed({}, "服务离线")
     assert "服务离线" in status.error_status.text()
     assert "录制中" in status.stream_status.text()
@@ -185,6 +192,86 @@ def test_file_window_initial_mission_filter(media_api):
     assert window.mission.currentData() == "task-b"
     assert window.table.rowCount() == 1
     window.close()
+
+
+def test_file_window_refresh_reuses_cells_and_preserves_selection(monkeypatch):
+    """轮询不重建整表，状态变化只更新单元格并保留选择与列宽。"""
+    from PySide6.QtWidgets import QHeaderView
+
+    monkeypatch.setattr(FileManagerWindow, "refresh", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url="http://127.0.0.1:1")
+    records = [
+        {"id": str(index), "aircraft_id": "uav002", "session_id": "task-a",
+         "kind": "video", "variant": "experiment", "state": "recording",
+         "created_at": 1793150000, "path": f"/media/processed/{index}.mp4"}
+        for index in range(300)
+    ]
+    try:
+        window._completed("refresh", {"records": records, "deliveries": [
+            {"aircraft_id": "uav002", "session_id": "task-a", "state": "failed", "error": "已超时"},
+        ]}, "")
+        assert window.table.rowCount() == len(records)
+        window.table.selectRow(150)
+        window.table.setColumnWidth(1, 312)
+        item = window.table.item(150, 6)
+        window._completed("refresh", {"records": [dict(record) for record in records]}, "")
+        assert window.table.item(150, 6) is item
+        updated = [dict(record) for record in records]
+        updated[150]["state"] = "ready"
+        window._completed("refresh", {"records": updated}, "")
+        assert window.table.item(150, 6) is item
+        assert item.text() == "保存完成"
+        assert window.selected_record()["id"] == "150"
+        assert window.table.columnWidth(1) == 312
+        assert window.table.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+        assert window.table.updatesEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_file_window_directory_probe_runs_only_on_click_in_worker(monkeypatch, tmp_path):
+    """选中行不探测文件系统，慢挂载点目录检查不阻塞Qt事件循环。"""
+    from PySide6.QtGui import QDesktopServices
+
+    monkeypatch.setattr(FileManagerWindow, "refresh", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url="http://127.0.0.1:1")
+    entered, release = threading.Event(), threading.Event()
+    opened, probes, heartbeat = [], [], []
+    original_is_dir = Path.is_dir
+
+    def slow_is_dir(path):
+        """让选定目录模拟等待挂载点，记录调用线程。"""
+        if path == tmp_path:
+            probes.append(threading.get_ident())
+            entered.set()
+            release.wait(2)
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", slow_is_dir)
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    try:
+        window._completed("refresh", {"records": [{
+            "id": "video", "variant": "experiment", "kind": "video", "state": "ready",
+            "path": str(tmp_path / "video.mp4"),
+        }]}, "")
+        window.table.selectRow(0)
+        assert not probes
+        window.directory_button.click()
+        QTimer.singleShot(0, lambda: heartbeat.append(True))
+        wait_for(app, lambda: entered.is_set() and bool(heartbeat))
+        assert len(probes) == 1
+        assert probes[0] != threading.get_ident()
+        assert not opened
+        release.set()
+        wait_for(app, lambda: bool(opened))
+        assert opened == [str(tmp_path)]
+    finally:
+        release.set()
+        window.close()
+        app.processEvents()
 
 
 def test_inventory_unix_date_processed_size_and_cache_cleanup(media_api, monkeypatch):
@@ -214,6 +301,13 @@ def test_inventory_unix_date_processed_size_and_cache_cleanup(media_api, monkeyp
             assert "机载缓存：按策略清理" in record_basis(records[1])
             assert "缺失" not in record_basis(records[1])
             assert state_label("incomplete") == "录像已知不完整"
+            assert state_label("held") == "原片暂存，按需上传"
+            assert state_label("retained") == "无需上传，保留原片"
+            assert state_label("needs_attention") == "交付终止，需人工处理"
+            assert "机载缓存：机载保留" in record_basis({"cache_state": "retained"})
+            stopped = record_basis({"state": "needs_attention", "error": "磁盘已满"})
+            assert "交付终止，需人工处理" in stopped
+            assert "磁盘已满" in stopped
             window.date.setText("2026-10-21")
             assert window.table.rowCount() == 0
             window.close()
