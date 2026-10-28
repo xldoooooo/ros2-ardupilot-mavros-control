@@ -46,8 +46,9 @@ COMMAND_MAPPINGS: tuple[CommandMapping, ...] = (
     CommandMapping(
         "05",
         "一键返航",
-        UpstreamAction.RETURN_HOME,
-        "以当前航点配置飞至 (0, 0, 起飞高度)，稳定后降落",
+        # 一键返航尚未完成，暂时复用 07 的紧急原地降落逻辑。
+        UpstreamAction.EMERGENCY_LAND,
+        "暂按紧急降落处理，原地降落",
     ),
     CommandMapping("06", "降落", UpstreamAction.LAND, "执行地面站降落操作"),
     CommandMapping("07", "紧急停机", UpstreamAction.EMERGENCY_LAND, "立即原地降落"),

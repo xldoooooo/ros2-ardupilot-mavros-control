@@ -118,7 +118,7 @@ def test_hardware_inspection_completes_all_countdowns_without_confirmation(monke
 
 
 def test_hardware_upstream_takeoff_return_and_land_commands_run_unattended() -> None:
-    """连续执行 01/05/06/07，返航航点及其降落不等待人工确认。"""
+    """连续执行 01/05/06/07，05 与 07 共用紧急降落入口。"""
     window, ros = _hardware_window(armed=False)
     try:
         window._handle_upstream_command(_command("01"))
@@ -128,11 +128,9 @@ def test_hardware_upstream_takeoff_return_and_land_commands_run_unattended() -> 
         window._refresh()
 
         window._handle_upstream_command(_command("05"))
-        assert ros.calls[-1][0] == "waypoints"
-        ros.results.append(CommandResult(2, 2, "waypoints", True, "返航完成"))
-        window._refresh()
         assert ros.calls[-1][0] == "land"
-        ros.results.append(CommandResult(3, 3, "land", True, "降落完成"))
+        assert window._upstream_sequence.kind == "emergency"
+        ros.results.append(CommandResult(2, 2, "land", True, "降落完成"))
         ros.current_snapshot = _operational_snapshot(armed=False)
         window._refresh()
         assert window._upstream_sequence is None
@@ -142,7 +140,7 @@ def test_hardware_upstream_takeoff_return_and_land_commands_run_unattended() -> 
             window._handle_upstream_command(_command(number))
             assert ros.calls[-1][0] == "land"
         assert [name for name, _args in ros.calls] == [
-            "takeoff", "waypoints", "land", "land", "land",
+            "takeoff", "land", "land", "land",
         ]
         assert window._upstream_sequence.kind == "emergency"
     finally:
@@ -162,7 +160,7 @@ def test_upstream_experimental_waypoint_warning_also_counts_down() -> None:
         ros.current_snapshot = _operational_snapshot(armed=True)
         window._refresh()
         started = time.monotonic()
-        window._handle_upstream_command(_command("05"))
+        window._start_return_sequence("return", ros.current_snapshot)
         assert time.monotonic() - started >= 6.0
         assert [name for name, _args in ros.calls] == ["waypoints"]
         assert ros.calls[0][1][2:4] == (
@@ -202,12 +200,13 @@ def test_cancelled_inspection_countdown_never_sends_or_retries(cancel_kind) -> N
         _close_window(window)
 
 
-def test_emergency_land_preempts_countdown_without_resuming_old_return() -> None:
-    """07 可打断返航倒计时，旧调用不得终止新降落或补发返航航点。"""
+@pytest.mark.parametrize("number", ["05", "07"])
+def test_emergency_land_preempts_countdown_without_resuming_old_land(number) -> None:
+    """05/07 可打断普通降落倒计时，旧调用不得覆盖新紧急降落。"""
     window, ros = _hardware_window(armed=True)
     try:
-        QTimer.singleShot(150, lambda: window._handle_upstream_command(_command("07")))
-        window._handle_upstream_command(_command("05"))
+        QTimer.singleShot(150, lambda: window._handle_upstream_command(_command(number)))
+        window._handle_upstream_command(_command("06"))
         assert ros.calls == [("land", None)]
         assert window._upstream_sequence.kind == "emergency"
         assert window._upstream_sequence.phase == "land"
