@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 import subprocess
+import sys
+import threading
 import time
 
 import pytest
@@ -191,4 +193,37 @@ def test_failed_latest_notice_still_updates_other_session_availability(tmp_path)
             dict(session_id='session-one', kind='video', state='cache_deleted', cache_state='deleted')]))
         assert wait_delivery(media, 'failed')['error'] == '两端均无可用原片，也无可播放地面录像'
     finally:
+        close(media)
+
+
+def test_failed_delivery_terminates_running_processing_job(tmp_path):
+    """A final decision interrupts an actual worker process rather than merely hiding its result."""
+    media = ground(tmp_path)
+    errors = []
+    worker = None
+    try:
+        media.session(notice())
+        record = media.store.create_record('uav002', 'session-one', variant='rebuilt')
+
+        def run():
+            """Exercise the same process ownership used for decoding and fallback encoding."""
+            try:
+                media._run_media_job([sys.executable, '-c', 'import time; time.sleep(60)'], record, 60)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        deadline = time.monotonic() + 3
+        while record not in media._jobs and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert record in media._jobs
+        media.fail_delivery(dict(source_id='delivery-gui', mission_sequence=8, error='等待超时'))
+        worker.join(timeout=3)
+        assert not worker.is_alive() and errors and not media._jobs
+        assert media.store.get(record)['state'] == 'error'
+    finally:
+        if worker and worker.is_alive():
+            media.fail_delivery(dict(source_id='delivery-gui', mission_sequence=8, error='测试清理'))
+            worker.join(timeout=3)
         close(media)
