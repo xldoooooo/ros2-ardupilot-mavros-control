@@ -145,9 +145,12 @@ class OnboardVideoNode(Node):
             self._media.update_mission(message.lease_owner, message.active_command_sequence)
 
     def _on_mission_result(self, message: CommandResult) -> None:
-        """在航点任务接受后建立任务关联，不等待第一张照片。"""
+        """只读可靠任务结果，关联巡检归属并记录实际降落时刻。"""
         if self._media and message.command == "waypoints" and message.status == CommandResult.STATUS_RUNNING:
             self._media.update_mission(message.source_id, message.sequence)
+        if (self._media and message.command == "land" and message.final
+                and message.status == CommandResult.STATUS_SUCCEEDED):
+            self._media.mark_landed()
 
     def _on_control(self, message: VideoControl) -> None:
         """回调只排队最新期望状态，不执行设备或外部进程 I/O。"""

@@ -170,6 +170,9 @@ class GroundMedia:
                 ended_at=None, record_id=''))
             if payload.get('mission_sequence'):
                 delivery.update(source_id=payload['source_id'], mission_sequence=payload['mission_sequence'])
+            if payload.get('landed_at') and not delivery.get('landed_at'):
+                # Camera stop/stream loss can precede landing; it must not start the deadline.
+                delivery['landed_at'] = float(payload['landed_at'])
             failed = next((item for item in self._deliveries.values() if (
                 item['state'] == 'failed' and item.get('source_id') == delivery.get('source_id')
                 and str(item.get('mission_sequence')) == str(delivery.get('mission_sequence'))
@@ -460,7 +463,7 @@ class GroundMedia:
                 for event in self.store.events():
                     if event['id'] in self._seen_events:
                         continue
-                    if event['event'] in ('session_start', 'session_end'):
+                    if event['event'] in ('session_start', 'session_end', 'session_landed'):
                         self.session({**event['metadata'], 'aircraft_id': event['aircraft_id'],
                                       'session_id': event['session_id'],
                                       'action': 'end' if event['event'] == 'session_end' else 'start'})
@@ -479,7 +482,8 @@ class GroundMedia:
                 if delivery['state'] in {'ready', 'failed'} or delivery.get('ended_at') is None:
                     continue
                 identity = delivery['aircraft_id'], delivery['session_id']
-                if time.time() - delivery['ended_at'] >= self.delivery_timeout_seconds:
+                if (delivery.get('landed_at') is not None
+                        and time.time() - delivery['landed_at'] >= self.delivery_timeout_seconds):
                     self.fail_delivery(dict(delivery, error='落地后视频交付等待超时，停止自动上传和处理'))
                     continue
                 videos = [row for row in records if row['kind'] == 'video'

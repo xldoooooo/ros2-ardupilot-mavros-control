@@ -174,3 +174,19 @@ def test_late_api_identity_updates_closed_video_fragments_without_changing_proce
     finally:
         media.close()
         media.store.close()
+
+
+def test_landing_evidence_survives_camera_stop_and_is_only_recorded_once():
+    """Camera finish is distinct from the reliable successful landing notification."""
+    media = _onboard()
+    media.begin('onboard-flight')
+    media.update_mission('mission-gui', 8)
+    media.finish()
+    assert 'landed_at' not in media._last_session
+    media.mark_landed()
+    event = media.queue.enqueue_event.call_args.args
+    assert event[0] == 'session_landed'
+    assert event[2]['landed_at'] >= event[2]['ended_at']
+    count = media.queue.enqueue_event.call_count
+    media.mark_landed()
+    assert media.queue.enqueue_event.call_count == count

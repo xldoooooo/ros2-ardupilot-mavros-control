@@ -23,7 +23,8 @@ def ground(tmp_path, timeout=600):
 def notice(session='session-one', mission=8, action='end'):
     """Identify one ended inspection without any ROS flight command."""
     return dict(aircraft_id='uav002', session_id=session, source_id='delivery-gui',
-                mission_sequence=mission, started_at=time.time() - 5, ended_at=time.time(), action=action)
+                mission_sequence=mission, started_at=time.time() - 5, ended_at=time.time(),
+                landed_at=time.time(), action=action)
 
 
 def video(path, color='red'):
@@ -142,7 +143,7 @@ def test_failure_stops_retry_and_processing_across_restart(tmp_path, cause):
     try:
         media.session(payload)
         if cause == 'timeout':
-            media._deliveries['uav002/session-one']['ended_at'] -= 2
+            media._deliveries['uav002/session-one']['landed_at'] -= 2
         else:
             media._uploads['uav002'] = [dict(session_id='session-one', kind='video',
                                            state='needs_attention', error='Permission denied')]
@@ -226,4 +227,20 @@ def test_failed_delivery_terminates_running_processing_job(tmp_path):
         if worker and worker.is_alive():
             media.fail_delivery(dict(source_id='delivery-gui', mission_sequence=8, error='测试清理'))
             worker.join(timeout=3)
+        close(media)
+
+
+def test_recording_stop_does_not_start_landing_timeout(tmp_path):
+    """A mid-flight stream stop can request fallback but cannot expire before landing."""
+    media = ground(tmp_path, timeout=1)
+    payload = notice()
+    payload.pop('landed_at')
+    try:
+        media.session(payload)
+        media._deliveries['uav002/session-one']['ended_at'] -= 60
+        assert wait_delivery(media, 'fallback')['state'] == 'fallback'
+        # A durable landing event may arrive after the camera session was already closed.
+        media.session({**payload, 'action': 'start', 'landed_at': time.time() - 2})
+        assert wait_delivery(media, 'failed')['state'] == 'failed'
+    finally:
         close(media)

@@ -73,6 +73,16 @@ class OnboardMedia:
             if self.session and sequence:
                 self.session.update(source_id=str(source_id), mission_sequence=int(sequence))
 
+    def mark_landed(self):
+        """Persist reliable landing evidence separately from the camera stop time."""
+        with self._lock:
+            metadata = self.session or self._last_session
+            if not metadata or not metadata.get('mission_sequence') or metadata.get('landed_at'):
+                return
+            metadata['landed_at'] = time.time()
+            self._last_session = dict(metadata)
+            self.queue.enqueue_event('session_landed', metadata['session_id'], dict(metadata))
+
     def capture(self, path, metadata):
         """Queue only the completed original and keep photo number separate from waypoint."""
         with self._lock:
