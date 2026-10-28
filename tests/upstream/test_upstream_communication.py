@@ -581,3 +581,192 @@ def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
     human_messages = "\n".join(event.message for event in events.snapshot())
     assert "收到上位机命令 06" in human_messages
     assert '"type":"PUBLISH"' not in human_messages
+
+
+def test_landing_offline_keeps_notification_after_final_result() -> None:
+    """离线LAND及成功终态不吞掉07，重连时只补发一次。"""
+    sent = []
+    online = False
+
+    def emit(payload):
+        """模拟状态入队暂时被拒绝。"""
+        if online:
+            sent.append(dict(payload))
+        return online
+
+    projector = UpstreamStatusProjector(lambda: 'UAV01001', emit, EventLog())
+    projector.begin_landing(9)
+    landing = VehicleSnapshot(armed=True, active_mode=FlightMode.LAND)
+    projector.observe_vehicle(landing, 'hardware', now=0)
+    projector.observe_result(CommandResult(1, 9, 'land', True, 'landed', True))
+    online = True
+    for _ in range(2):
+        projector.observe_vehicle(VehicleSnapshot(), 'hardware', now=.1)
+    assert [p['uavStatus'] for p in sent] == ['07']
+
+
+@pytest.mark.parametrize("block_during_abnormal", [False, True])
+def test_ground_abnormal_recovery_reports_new_standby_without_arming(block_during_abnormal) -> None:
+    """未解锁地面异常恢复和任务解锁都应重新产生01。"""
+    sent = []
+    projector = UpstreamStatusProjector(
+        lambda: 'UAV01001', lambda payload: not sent.append(dict(payload)), EventLog())
+    ready = VehicleSnapshot(local_position_valid=True)
+    projector.observe_vehicle(ready, 'simulation', now=0, can_takeoff=True)
+    if block_during_abnormal:
+        projector.block_standby()
+    projector.observe_vehicle(replace(ready, vehicle_abnormal=True), 'simulation', now=.1)
+    if block_during_abnormal:
+        projector.release_standby()
+    projector.observe_vehicle(ready, 'simulation', now=.2, can_takeoff=True)
+    projector.observe_vehicle(ready, 'simulation', now=.3, can_takeoff=True)
+    assert [p['uavStatus'] for p in sent] == ['01', '01']
+
+
+@pytest.mark.parametrize("interruption", ["failure", "cancellation"])
+def test_media_send_failure_retains_inflight_and_queued_events(tmp_path, interruption) -> None:
+    """08出队后发送失败、清队列及遥测洪峰均不丢失08/09。"""
+    async def scenario():
+        """只使用本机内存套接字替身，精确打断发送窗口。"""
+        service = UpstreamCommunicationService(
+            event_log=EventLog(), on_command=lambda command: None,
+            url='ws://127.0.0.1:12345/ws', auto_connect=False,
+            config_path=tmp_path / 'upstream.json')
+        service._loop = asyncio.get_running_loop()
+        service._outbound = asyncio.Queue(maxsize=2)
+        service._connected = True
+        sent = []
+        completed = asyncio.Event()
+        sending = asyncio.Event()
+
+        class BrokenSocket:
+            """模拟报文已出队但传输抛错。"""
+
+            async def send(self, raw):
+                """拒绝发送。"""
+                sending.set()
+                if interruption == 'cancellation':
+                    await asyncio.Event().wait()
+                raise OSError('connection lost during send')
+
+        class ReconnectedSocket:
+            """收集新连接上的业务帧。"""
+
+            async def send(self, raw):
+                """取得两条事件后唤醒断言。"""
+                payload = json.loads(raw)['data']
+                if payload.get('uavStatus') in {'08', '09'}:
+                    sent.append(payload)
+                    if len(sent) == 2:
+                        completed.set()
+
+        first = {'clientNo': 'UAV01001', 'uavStatus': '08',
+                 'data': {'videoPath': '', 'JPGPath': ''}}
+        second = {'clientNo': 'UAV01001', 'uavStatus': '09',
+                  'data': {'pointNo': '2', 'pointName': 'point2', 'pointPic': '/uav/photo.jpg'}}
+        assert service.publish_status(first)
+        assert service.publish_status(second)
+        await asyncio.sleep(0)
+        broken_writer = asyncio.create_task(service._writer(BrokenSocket()))
+        await asyncio.wait_for(sending.wait(), 1)
+        if interruption == 'cancellation':
+            broken_writer.cancel()
+        with pytest.raises(asyncio.CancelledError if interruption == 'cancellation' else OSError):
+            await broken_writer
+        service._clear_outbound()
+        for number in range(10):
+            service._queue_outbound({'type': 'PUBLISH', 'data': {'uavStatus': '0B', 'n': number}})
+        writer = asyncio.create_task(service._writer(ReconnectedSocket()))
+        try:
+            await asyncio.wait_for(completed.wait(), 1)
+            assert sent == [first, second]
+        finally:
+            writer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await writer
+    asyncio.run(scenario())
+
+
+def test_local_websocket_replays_events_after_reconnect_and_refreshes_standby(tmp_path) -> None:
+    """本机服务断开后补发07/08/09，并重新判断01，不重放旧遥测。"""
+    import websockets
+
+    async def scenario():
+        """隔离媒体轮询，只在127.0.0.1进行真实WebSocket通信。"""
+        received = [[], []]
+        connections = 0
+        first_standby = asyncio.Event()
+        break_connection = asyncio.Event()
+        second_handshake = asyncio.Event()
+        delivered = asyncio.Event()
+
+        async def handler(socket):
+            """第一次连接主动断开，第二次延迟订阅完成以制造离线窗口。"""
+            nonlocal connections
+            index = connections
+            connections += 1
+            await socket.send('{"type":"SYSTEM"}')
+            subscription = json.loads(await socket.recv())
+            if index == 1:
+                await second_handshake.wait()
+            await socket.send(json.dumps({'type': 'SUB_ACK', 'topic': subscription['topic']}))
+            if index == 0:
+                while not first_standby.is_set():
+                    message = json.loads(await socket.recv())
+                    received[index].append(message['data'])
+                    if message['data'].get('uavStatus') == '01':
+                        first_standby.set()
+                await break_connection.wait()
+                await socket.close()
+                return
+            async for raw in socket:
+                received[index].append(json.loads(raw)['data'])
+                if sum(p.get('uavStatus') in {'07', '08', '09', '01'} for p in received[index]) == 4:
+                    delivered.set()
+
+        async def wait_for_connection(connected):
+            """等通讯线程反映握手状态，不连接外部主机。"""
+            async with asyncio.timeout(5):
+                while service.snapshot().connected is not connected:
+                    await asyncio.sleep(.01)
+
+        server = await websockets.serve(handler, '127.0.0.1', 0)
+        url = f'ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/ws'
+        service = UpstreamCommunicationService(
+            event_log=EventLog(), on_command=lambda command: None, url=url,
+            client_no='UAV01001', auto_connect=True, config_path=tmp_path / 'upstream.json')
+        service._RECONNECT_SECONDS = .05
+        service._media_reader.start = lambda: None
+        service._media_reader.stop = lambda **kwargs: True
+        ready = VehicleSnapshot(local_position_valid=True)
+        service.start()
+        try:
+            await wait_for_connection(True)
+            service.observe_vehicle(ready, 'simulation', can_takeoff=True)
+            await asyncio.wait_for(first_standby.wait(), 3)
+            break_connection.set()
+            await wait_for_connection(False)
+            events = [
+                {'clientNo': 'UAV01001', 'uavStatus': '07'},
+                {'clientNo': 'UAV01001', 'uavStatus': '08',
+                 'data': {'videoPath': '', 'JPGPath': ''}},
+                {'clientNo': 'UAV01001', 'uavStatus': '09',
+                 'data': {'pointNo': '2', 'pointName': 'point2', 'pointPic': '/uav/photo.jpg'}},
+            ]
+            for payload in events:
+                assert service.publish_status(payload)
+            assert not service.publish_status({'clientNo': 'UAV01001', 'uavStatus': '0B',
+                                               'data': {'X': 999}})
+            second_handshake.set()
+            await wait_for_connection(True)
+            service.observe_vehicle(ready, 'simulation', can_takeoff=True)
+            await asyncio.wait_for(delivered.wait(), 3)
+            standby = {'clientNo': 'UAV01001', 'uavStatus': '01'}
+            assert [p for p in received[0] if p.get('uavStatus') == '01'] == [standby]
+            assert [p for p in received[1] if p.get('uavStatus') != '0B'] == [*events, standby]
+            assert not any(p.get('data', {}).get('X') == 999 for p in received[1])
+        finally:
+            assert await asyncio.to_thread(service.stop, 3)
+            server.close()
+            await server.wait_closed()
+    asyncio.run(scenario())

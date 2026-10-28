@@ -76,6 +76,7 @@ class UpstreamStatusProjector:
         self._mission: _MissionState | None = None
         self._landing_ticket: int | None = None
         self._landing_reported = False
+        self._landing_pending = False
         self._standby_blocked = False
         self._standby_reported = False
         self._generic_state_notice_logged = False
@@ -97,6 +98,7 @@ class UpstreamStatusProjector:
         """任务下发或执行期间禁止意外发送 01。"""
         with self._lock:
             self._standby_blocked = True
+            self._standby_reported = False
 
     def release_standby(self) -> None:
         """组合动作完成后重新允许入库待机边沿。"""
@@ -167,14 +169,14 @@ class UpstreamStatusProjector:
                 )
                 self._generic_state_notice_logged = True
             self._observe_mission(snapshot)
-            self._finish_completed_mission()
             if (
                 self._landing_ticket is not None
                 and not self._landing_reported
                 and snapshot.active_mode is FlightMode.LAND
             ):
-                self._send("07")
-                self._landing_reported = True
+                self._landing_pending = True
+            self._flush_landing()
+            self._finish_completed_mission()
             low_power_return_required = False
             if (
                 current_time - self._last_telemetry_at
@@ -184,7 +186,7 @@ class UpstreamStatusProjector:
                 low_power_return_required = self._send_telemetry(
                     snapshot, connection_mode
                 )
-            if snapshot.armed:
+            if snapshot.armed or snapshot.vehicle_abnormal:
                 self._standby_reported = False
             if (
                 can_takeoff
@@ -196,13 +198,24 @@ class UpstreamStatusProjector:
                 self._standby_reported = True
             return low_power_return_required
 
+    def connection_restored(self) -> None:
+        """新订阅建立后由下一帧权威状态重新确认01，不重放旧待机。"""
+        with self._lock:
+            self._standby_reported = False
+
+    def _flush_landing(self) -> None:
+        """07入队失败时保留证据，即使可靠降落终态已清除ticket。"""
+        if self._landing_pending and self._send("07"):
+            self._landing_pending = False
+            self._landing_reported = True
+
     def observe_result(self, result: CommandResult) -> None:
         """用同一可靠终态驱动 GUI 完成态与上位机 08，杜绝推测完成。"""
         with self._lock:
             if result.command == "land" and result.ticket == self._landing_ticket:
                 if result.success and not self._landing_reported:
-                    self._send("07")
-                    self._landing_reported = True
+                    self._landing_pending = True
+                    self._flush_landing()
                 mission = self._mission
                 if (
                     result.final
@@ -260,6 +273,7 @@ class UpstreamStatusProjector:
     ) -> None:
         """接收后台目录，按巡检顺序发送可通过FTP下载的最终结果。"""
         with self._lock:
+            self._flush_landing()
             self._media_records = records
             self._media_error = error
             for record in records:
@@ -309,6 +323,7 @@ class UpstreamStatusProjector:
             self._mission = None
             self._landing_ticket = None
             self._landing_reported = False
+            self._landing_pending = False
             self._last_telemetry_at = 0.0
             self._low_power_reported = False
             self._standby_blocked = False

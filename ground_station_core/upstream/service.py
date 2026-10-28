@@ -37,6 +37,7 @@ from .protocol import (
     command_topic,
     decode_object,
     publish_envelope,
+    status_topic,
     subscribe_envelope,
 )
 from .status_projector import UpstreamStatusProjector
@@ -50,6 +51,8 @@ class UpstreamCommunicationService:
     _HANDSHAKE_TIMEOUT_STEP_SECONDS = 5.0
     _HANDSHAKE_TIMEOUT_MAX_SECONDS = 30.0
     _OUTBOUND_LIMIT = 256
+    # 降落和媒体结果跨WebSocket重连保留，发送成功后才移除；遥测不重放。
+    _RETAINED_STATUSES = frozenset({"07", "08", "09"})
     # 现场上位机入口；面板保存值及环境变量仍可覆盖。
     _DEFAULT_URL = "ws://192.168.80.84:8501/s12-websocket/ws"
     _DEFAULT_CLIENT_NO = "UAV01001"
@@ -131,6 +134,7 @@ class UpstreamCommunicationService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake_event: asyncio.Event | None = None
         self._outbound: asyncio.Queue[dict[str, Any]] | None = None
+        self._pending_events: list[tuple[str, dict[str, Any]]] = []
         self._media_warning = ""
         self._media_reader = GroundMediaReader(self._observe_ground_media)
         self._projector = UpstreamStatusProjector(
@@ -273,16 +277,25 @@ class UpstreamCommunicationService:
             )
 
     def publish_status(self, payload: Mapping[str, Any]) -> bool:
-        """只在当前连接有效时排队状态，防止断线旧消息重新发送。"""
+        """07/08/09进入独立待发列表，其余状态只在当前连接发送。"""
         with self._state_lock:
             loop = self._loop
             queue = self._outbound
-            connected = self._connected
+            retained = payload.get("uavStatus") in self._RETAINED_STATUSES
             client_no = str(payload.get("clientNo") or self._client_no)
-        if loop is None or queue is None or not connected or loop.is_closed():
-            return False
-        envelope = publish_envelope(client_no, payload)
-        loop.call_soon_threadsafe(self._queue_outbound, envelope)
+            if self._stopping:
+                return False
+            envelope = publish_envelope(client_no, payload)
+            if retained:
+                self._pending_events.append((self._url, envelope))
+            elif loop is None or queue is None or not self._connected or loop.is_closed():
+                return False
+        if loop is not None and queue is not None and not loop.is_closed():
+            try:
+                # 空信封只唤醒writer，业务事件不进入会被丢旧保新的遥测队列。
+                loop.call_soon_threadsafe(self._queue_outbound, {} if retained else envelope)
+            except RuntimeError:
+                return retained
         return True
 
     def report_waypoints_staged(self) -> bool:
@@ -539,12 +552,13 @@ class UpstreamCommunicationService:
                 f"已订阅 {command_topic(client_no)}",
                 connected=True,
             )
+            self._projector.connection_restored()
             handshake_completed.set()
             self._events.info("upstream", f"已连接上位机并订阅无人机 {client_no}")
             with self._state_lock:
                 self._last_connection_warning = ""
             reader = asyncio.create_task(self._reader(websocket, client_no))
-            writer = asyncio.create_task(self._writer(websocket))
+            writer = asyncio.create_task(self._writer(websocket, url, client_no))
             done, pending = await asyncio.wait(
                 (reader, writer), return_when=asyncio.FIRST_COMPLETED
             )
@@ -610,14 +624,28 @@ class UpstreamCommunicationService:
             except UpstreamProtocolError as exc:
                 self._events.warn("upstream", f"拒绝无效上位机报文：{exc}")
 
-    async def _writer(self, websocket: Any) -> None:
-        """串行发送确认和状态，保证同一 WebSocket 不发生并发 send。"""
+    async def _writer(
+        self, websocket: Any, url: str | None = None, client_no: str | None = None
+    ) -> None:
+        """事件发送成功才出列表；失败或取消时留给同地址同编号的新连接。"""
         queue = self._outbound
         if queue is None:
             raise RuntimeError("上位机发送队列未初始化")
+        with self._state_lock:
+            destination = url or self._url
+            topic = status_topic(client_no or self._client_no)
         while True:
+            with self._state_lock:
+                pending = next((item for item in self._pending_events
+                                if item[0] == destination and item[1]["topic"] == topic), None)
+            if pending is not None:
+                await self._send_json(websocket, pending[1])
+                with self._state_lock:
+                    self._pending_events.remove(pending)
+                continue
             envelope = await queue.get()
-            await self._send_json(websocket, envelope)
+            if envelope:
+                await self._send_json(websocket, envelope)
 
     async def _send_json(self, websocket: Any, payload: Mapping[str, Any]) -> None:
         """发送紧凑 UTF-8 JSON，并把精确文本只写入原始报文日志。"""
@@ -642,7 +670,7 @@ class UpstreamCommunicationService:
             queue.put_nowait(envelope)
 
     def _clear_outbound(self) -> None:
-        """会话边界丢弃旧状态，满足不积压过期业务消息的要求。"""
+        """会话边界清除过期遥测和确认；07/08/09独立列表不受影响。"""
         queue = self._outbound
         if queue is None:
             return
