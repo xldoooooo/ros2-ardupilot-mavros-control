@@ -29,6 +29,10 @@ GPU运行中失败会保留已有片段，再创建CPU片段继续；不会覆�
 `~` 和环境变量；MediaMTX 优先从 `PATH` 查找，也可指定相对或绝对路径。参数及生效方式见
 [GPU 配置说明](deploy/GROUND_VIDEO_DEPLOYMENT.md#本机-gpu-参数配置)。
 可用`GROUND_MEDIA_CONFIG`指定另一份文件。修改后重启`ground-media.service`。
+顶层 `bitrate` 统一控制对外去畸变直播和最终去畸变 MP4 的目标码率，1080p60 清晰度优先建议设为 `"20M"`，
+带宽受限可设为 `"16M"`；`gop` 保持 `60`。新安装示例使用 `20M`，已有机器需自行修改本机 `media.json`。
+例如将现有字段改为 `"bitrate": "20M"`，无活动录像时执行 `sudo systemctl restart ground-media.service`，
+下一次新会话使用新值；历史会话的重建沿用其已保存的编码参数，不会随配置自动提高码率。
 `root`指定存储根，`public_host`指定客户端可达地址，`max_bytes`为总媒体容量上限；
 统计internal/public/inbox/staging，包含活动文件，不含索引和日志。超限按最旧记录清理，
 跳过录像/处理/传输及刚入库等待ACK的原片；若活动文件已占满空间，界面报错而不删除唯一机载副本。
