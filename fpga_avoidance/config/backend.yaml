@@ -3,7 +3,7 @@ fpga_ip: "192.168.2.10"
 bind_ip: "192.168.2.100"
 udp_port: 4000
 mock: false
-# Match new/uav002 autonomous resolution and nominal centroid clearance.
+# Use the uav002 autonomous profile as the numeric clearance/resolution reference.
 # Solid-voxel checking also adds one voxel diagonal: total inflation is about 0.523 m.
 resolution_m: 0.1
 resolution_z_m: 0.1
@@ -14,12 +14,12 @@ safe_clearance_m: 0.3
 window_radius_m: 8.0
 window_margin_m: 2.0
 z_margin_m: 1.2
-# Retain the previous metric window capacity after halving the voxel edge.
+# Retain the XY window capacity; 100 Z cells also cover uav001's 0.2..10 m bounds.
 max_axis_cells: 240
-max_z_cells: 48
+max_z_cells: 100
 max_vel_mps: 2.0
 max_acc_mps2: 1.0
-# Match new/uav002 autonomous execution limits: 2 m/s and 1 m/s².
+# Use the uav002 autonomous motion limits: 2 m/s and 1 m/s².
 max_velocity_xy: 2.0
 max_velocity_z: 2.0
 max_acceleration_xy: 1.0

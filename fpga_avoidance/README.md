@@ -22,6 +22,8 @@
 
 默认几何与运动参数对齐 `config/aircraft/uav002/avoidance/planner.yaml`：分辨率 0.1 m、名义净空 0.35 m、速度 2 m/s、加速度 1 m/s²，输出采样 0.02 s。这里以 `uav_radius_m=0.35`、`safety_margin_m=0` 表达名义净空，并非新增机体尺寸标定。FPGA 另加完整体素对角线补偿，传给膨胀函数的实际半径为 `0.35 + sqrt(3)*0.1 ≈ 0.5232 m`；CPU 仍比较质心距离 0.35 m，两者几何定义不同。`safe_clearance_m` 是原 QUBO 的额外净空偏好，不是地图膨胀半径，不按名称照搬 CPU 阈值。其他机型和仿真档案可能不同，需在专用配置中显式调整。
 
+机型由各主机 `config/aircraft.local.env` 独立选择，FPGA 参数不会自动跟随所选 CPU 档案；不能根据主机名称推断档案编号。`max_z_cells=100` 支持 0.1 m 栅格覆盖 uav001 的 0.2–10 m 高度范围；这是地图容量上限，实际搜索边界仍继承当前机型。
+
 `near_goal_replan_distance=0.3` 与 CPU 的末段调度一致：仅在已有成功曲线仍通过当前地图、输入及板卡检查时保留原零速末段，避免不断重拟合追逐终点；到点仍由原控制器判定。板卡 PING 持续进行，堵路、失效或超时立即发布空失败，不继续旧结果。原规划器的近点直线和 CPU 质量/耗时回退仍会发生，界面显示实际来源；可显式配置 `near_goal_direct_m`、`strict_spine_latency_fuse_ms`，后者默认 3.5 ms。
 
 ## 选择与停止
