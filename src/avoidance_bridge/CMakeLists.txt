@@ -11,5 +11,7 @@ add_executable(avoidance_bridge_node src/avoidance_bridge.cpp)
 target_include_directories(avoidance_bridge_node PRIVATE include)
 ament_target_dependencies(avoidance_bridge_node rclcpp sensor_msgs nav_msgs geometry_msgs guided_interfaces correction_interfaces path_planning)
 install(TARGETS avoidance_bridge_node DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/avoidance_backend_manager.py scripts/avoidance_backend_process.py
+        DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 ament_package()

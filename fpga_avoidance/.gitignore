@@ -1,0 +1,6 @@
+# Optional installation marker and independent build/runtime artifacts are local.
+.installed
+workspace/build/
+workspace/install/
+workspace/log/
+workspace/.venv/

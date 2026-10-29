@@ -17,6 +17,8 @@ from tests import run
         ("ground_station_core/upstream/protocol.py", {"upstream"}),
         ("ground_station_core/waypoint_io.py", {"waypoints"}),
         ("ground_station_core/qt_ui/waypoint_panel.py", {"waypoints"}),
+        ("src/avoidance_bridge/src/avoidance_bridge.cpp", {"runtime", "flight", "waypoints"}),
+        ("fpga_avoidance/workspace/src/fpga_uav_planner_ros2/setup.py", set()),
         ("src/onboard_control/src/fcu_reboot.cpp", {"flight"}),
         ("src/onboard_control/src/avoidance_execution.cpp", {"flight", "waypoints"}),
         ("src/onboard_control/include/onboard_control/avoidance_trajectory.hpp", {"flight", "waypoints"}),

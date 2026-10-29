@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-23。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-29。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -15,6 +15,10 @@
   不复制开发机 `build/`、`install/`。核对源码、安装产物和运行接口，不能只看 Git HEAD。
 
 ## 当前架构与入口
+
+- **Task10 FPGA 可移除旁路已在开发机原生安装**：权威交付源码及独立构建/环境/配置在 `fpga_avoidance/`，`COLCON_IGNORE` 隔离默认构建；CPU 模式不读模块配置、不加载 overlay、不探板。原避障启动入口带标准 ROS 管理器，地面站独立选择 CPU/FPGA，只有新鲜落地、未解锁、空闲无任务才可切换；桥 `native_namespace` 单选结果源且每次启动强制 CPU，飞行公共协议仍 3.5，PD+DOB/策略/参数不变。模块删除不需修主程序；接口和维护见[模块说明](fpga_avoidance/README.md)。
+  原对象现在导出实测起速、零终速的真实 Hermite 三次，解析限 v/a、连续体素碰撞检查；近目标仅保持当前仍有效的零速末段，故障空失败。只保证单条 C1，不保证跨计划 a/jerk 连续；实际算法仍是 CPU A* + FPGA Ising/QUBO，不是板上 A*，source/回退/MOCK 必须如实显示。
+  本地 CPU 模块拔除和三策略 SITL、FPGA 软件契约及 MOCK 自主/遇障恢复/进程退出后的超时降落已通过；**真实板卡参与、ARM 负载和硬件+SITL 尚未验收**。new 当前离线，用户要求先完成本地；new/refresh/其他地面站均未部署本集成。旧外部副本 `/home/nvidia/scq/projects/FPGA-avoidance-ros2` 已同步原对象修复但不是部署必需；板卡 `192.168.2.10:4000`、new host `192.168.2.100`、runtime `0x04010351` 的旧 PING/一次求解只属接入前证据。旧交付哈希三项不匹配及 bag 元数据问题见[原评估](agent/report/report-2026-10-29-fpga-avoidance-assessment.md)，本次结果与待验项见[Task10报告](agent/report/report-2026-10-29-task10-fpga-avoidance-integration.md)。
 
 - 独立 map 系位姿诊断脚本源码在 `dev/odom2map/odom_pose_in_map.py`；new 另有根目录副本
   `/home/nvidia/ros2-ardupilot-mavros-control/odom_pose_in_map.py`（与原始版本一致）。

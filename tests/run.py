@@ -65,6 +65,9 @@ RULES = {
     "src/correction_interfaces/*": ("correction",),
     "*onboard_correction.sh": ("correction",),
     "src/guided_sim/*": ("waypoints", "runtime"),
+    "src/avoidance_bridge/*": ("runtime", "flight", "waypoints"),
+    # The removable module has an explicit independent test entry; default groups never import it.
+    "fpga_avoidance/*": (),
     "src/onboard_control/src/main.cpp": ("flight", "waypoints", "video"),
     "src/onboard_control/src/onboard_control_node.cpp": (
         "flight",

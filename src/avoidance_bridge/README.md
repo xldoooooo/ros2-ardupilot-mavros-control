@@ -1,6 +1,9 @@
 <!-- Native planner coordinate/goal adapter: inputs, lifecycle and deployment. -->
 # 机载避障接入
 
+默认使用原 CPU 规划器。独立的“CPU / FPGA 加速”后端选择及可移除模块见
+[`fpga_avoidance/README.md`](../../fpga_avoidance/README.md)；模块缺失不影响本包构建和原有三种飞行策略。
+
 本包将 FCU 状态、业务目标与原生规划器结果做坐标和身份适配。地图、搜索及目标/时间/位移/碰撞触发全部由独立 `dyn_small_obs_avoidance-ros2` 的规划节点负责，采用原生 `dual_tree`。桥不建图、不做射线覆盖/unknown 检查，也不周期请求搜索；没有观测到障碍的区域可通过规划检查。
 
 `onboard_control` 是唯一飞控输出源，以现有 PD+DOB 执行规划器精确段的 p/v/a，保留原段时间尺度；只裁掉规划延迟期间已越过的前缀，不再统一放慢曲线。直线航点策略不依赖规划器；遇障悬停策略用同一地图的 CHECK_LINE，正常飞行和正常到点使用普通直线的参考参数，遇障制动使用自主避障的加速度限额。

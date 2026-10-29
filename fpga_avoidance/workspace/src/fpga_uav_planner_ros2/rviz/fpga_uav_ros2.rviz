@@ -1,0 +1,97 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: camera_init
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane: XY
+      Plane Cell Count: 20
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Registered cloud
+      Enabled: true
+      Topic:
+        Value: /cloud_registered
+      Queue Size: 2
+      Style: Flat Squares
+      Size (Pixels): 2
+      Size (m): 0.02
+      Color Transformer: AxisColor
+    - Class: rviz_default_plugins/Path
+      Name: Original A star
+      Enabled: true
+      Topic:
+        Value: /search_node/trajectory_position
+      Color: 255; 40; 40
+      Line Style: Lines
+      Line Width: 0.04
+    - Class: rviz_default_plugins/Path
+      Name: FPGA or Mock
+      Enabled: true
+      Topic:
+        Value: /fpga_ising/trajectory_position
+      Color: 0; 50; 255
+      Line Style: Lines
+      Line Width: 0.06
+    - Class: rviz_default_plugins/Marker
+      Name: FPGA marker
+      Enabled: true
+      Topic:
+        Value: /fpga_ising/path_marker
+    - Class: rviz_default_plugins/Marker
+      Name: A star contrast halo
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/astar_halo
+    - Class: rviz_default_plugins/Marker
+      Name: A star samples
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/astar_points
+    - Class: rviz_default_plugins/Marker
+      Name: FPGA samples
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/fpga_points
+    - Class: rviz_default_plugins/Marker
+      Name: Path separation
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/difference_links
+    - Class: rviz_default_plugins/Marker
+      Name: Current start or aircraft
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/start_marker
+    - Class: rviz_default_plugins/Marker
+      Name: Goal
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/goal_marker
+    - Class: rviz_default_plugins/Marker
+      Name: Live comparison metrics
+      Enabled: true
+      Topic:
+        Value: /fpga_astar_compare/comparison_text
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 12
+      Pitch: 0.6
+      Yaw: 0.8
+Window Geometry:
+  Height: 900
+  Width: 1400

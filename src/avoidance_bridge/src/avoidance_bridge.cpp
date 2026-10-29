@@ -47,6 +47,9 @@ public:
     frame_ = declare_parameter("planning_frame", mode_ == "identity" ? "map" : "odom");
     timeout_ = declare_parameter("input_timeout", .5);
     preview_ = declare_parameter("preview_enabled", false);
+    // Persisted/CLI backend choices cannot activate an optional module during startup.
+    declare_parameter("native_namespace", std::string("/avoidance"),
+                      rcl_interfaces::msg::ParameterDescriptor{}, true);
     if ((mode_ != "identity" && mode_ != "extnav") || frame_.empty() ||
         !std::isfinite(timeout_) || timeout_ <= 0.) {
       throw std::invalid_argument("invalid coordinate mode, frame or input timeout");
@@ -55,17 +58,45 @@ public:
     result_pub_ = create_publisher<Result>("/onboard_control/avoidance_result", rclcpp::QoS(10));
     odom_pub_ = create_publisher<Odom>("/avoidance/odom", rclcpp::SensorDataQoS());
     preview_pub_ = create_publisher<Cloud>("/onboard_control/obstacle_preview", rclcpp::SensorDataQoS());
-    goal_client_ = create_client<Goal>("/avoidance/set_goal");
-    motion_client_ = create_client<Motion>("/avoidance/plan_motion");
+    connect_native("/avoidance");
+    parameter_callback_ = add_on_set_parameters_callback([this](const auto &parameters) {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      for (const auto &parameter : parameters) {
+        if (parameter.get_name() != "native_namespace") { continue; }
+        const auto target = parameter.as_string();
+        if (target == native_namespace_) { continue; }
+        if ((target != "/avoidance" && target != "/fpga_avoidance") ||
+            !control_status_ || age(control_time_) > 3.0 || control_status_->armed ||
+            !control_status_->on_ground || control_status_->controller_active ||
+            control_status_->reboot_in_progress || control_status_->waypoint_count != 0 ||
+            control_status_->control_mode != guided_interfaces::msg::ControlStatus::MODE_IDLE) {
+          result.successful = false;
+          result.reason = "planner selection requires fresh landed, disarmed, idle state";
+          return result;
+        }
+        auto goal = create_client<Goal>(target + "/set_goal");
+        auto motion = create_client<Motion>(target + "/plan_motion");
+        if (!goal->service_is_ready() || !motion->service_is_ready()) {
+          result.successful = false;
+          result.reason = "selected planner interfaces unavailable";
+          return result;
+        }
+        cancel_goal();
+        ++coordinate_revision_;
+        connect_native(target);
+      }
+      return result;
+    });
     request_sub_ = create_subscription<Request>("/onboard_control/avoidance_request", rclcpp::QoS(10),
       [this](Request::SharedPtr message) { request(*message); });
-    native_sub_ = create_subscription<NativeResult>("/avoidance/plan_result", rclcpp::QoS(10),
-      [this](NativeResult::SharedPtr message) { native_result(*message); });
     control_status_sub_ = create_subscription<guided_interfaces::msg::ControlStatus>(
       "/onboard_control/status", rclcpp::SensorDataQoS(),
       [this](guided_interfaces::msg::ControlStatus::SharedPtr message) {
         // Display coordinates remain local; Odin's real map must not share their TF name.
         preview_frame_ = message->navigation_frame == "map" ? "fcu_local" : "map";
+        control_status_ = *message;
+        control_time_ = Steady::now();
       });
     odom_sub_ = create_subscription<Odom>(declare_parameter("odometry_topic",
         std::string("/mavros/local_position/odom")), rclcpp::SensorDataQoS(),
@@ -99,10 +130,6 @@ public:
         status_ = *message;
         status_time_ = Steady::now();
       });
-    if (preview_) {
-      cloud_sub_ = create_subscription<Cloud>("/avoidance/filtered_cloud", rclcpp::SensorDataQoS(),
-        [this](Cloud::SharedPtr message) { preview(*message); });
-    }
     heartbeat_ = create_wall_timer(std::chrono::seconds(1), [this] {
       Result result = identity(Request{});
       result.ready = ready();
@@ -114,6 +141,28 @@ public:
   }
 
 private:
+  // Select one native result stream; old callbacks cannot cross a backend generation.
+  void connect_native(const std::string &selected) {
+    native_namespace_ = selected;
+    planner_session_.clear();
+    native_time_ = {};
+    last_native_sequence_ = 0;
+    motion_limits_ = {};
+    const auto generation = ++native_generation_;
+    goal_client_ = create_client<Goal>(selected + "/set_goal");
+    motion_client_ = create_client<Motion>(selected + "/plan_motion");
+    native_sub_ = create_subscription<NativeResult>(selected + "/plan_result", rclcpp::QoS(10),
+      [this, generation](NativeResult::SharedPtr message) {
+        if (generation == native_generation_) { native_result(*message); }
+      });
+    if (preview_) {
+      cloud_sub_ = create_subscription<Cloud>(selected + "/filtered_cloud", rclcpp::SensorDataQoS(),
+        [this, generation](Cloud::SharedPtr message) {
+          if (generation == native_generation_) { preview(*message); }
+        });
+    }
+  }
+
   // b=T is a fixed origin offset, not the current rotated FCU->IMU lever arm.
   // Extnav already publishes the actual FCU center: p_LF=p_OI+b-R_OF*T.
   std::array<double, 3> local_origin_offset() const {
@@ -401,7 +450,7 @@ private:
     preview_time_ = Steady::now();
   }
 
-  std::string mode_, frame_, session_, planner_session_, reason_;
+  std::string mode_, frame_, session_, planner_session_, reason_, native_namespace_;
   std::string preview_frame_{"map"};  // Preserve legacy display frame until map is selected.
   rclcpp::Subscription<guided_interfaces::msg::ControlStatus>::SharedPtr control_status_sub_;
   double timeout_{};
@@ -413,7 +462,10 @@ private:
   std::optional<NativeResult> pending_native_;
   std::optional<Odom> state_;
   std::optional<Status> status_;
-  Steady::time_point state_time_{}, status_time_{}, preview_time_{}, native_time_{};
+  std::optional<guided_interfaces::msg::ControlStatus> control_status_;
+  uint64_t native_generation_{0};  // Invalidates queued callbacks from the previous result source.
+  OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
+  Steady::time_point state_time_{}, status_time_{}, preview_time_{}, native_time_{}, control_time_{};
   rclcpp::Publisher<Result>::SharedPtr result_pub_;
   rclcpp::Publisher<Odom>::SharedPtr odom_pub_;
   rclcpp::Publisher<Cloud>::SharedPtr preview_pub_;

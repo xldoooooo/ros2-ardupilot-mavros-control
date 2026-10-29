@@ -41,6 +41,9 @@ INTERFACE_VERSION = "3.5"
 # 视频服务使用独立接口，不能随飞行协议升级而失配。
 VIDEO_INTERFACE_VERSION = "3.2"
 
+# 可选后端主动启动/板卡检测的异步等待上限，不增加默认 CPU 启动耗时。
+AVOIDANCE_BACKEND_SWITCH_TIMEOUT_SECONDS = 30.0
+
 # 实机整组电池低电压阈值（V），共用于落地起飞门控与上位机告警。
 HARDWARE_LOW_VOLTAGE = 22.2
 

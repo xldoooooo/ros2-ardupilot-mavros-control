@@ -1,0 +1,18 @@
+fpga_astar_compare:
+  ros__parameters:
+    astar_path_topic: "/search_node/trajectory_position"
+    fpga_path_topic: "/fpga_ising/trajectory_position"
+    cloud_topic: "/cloud_registered"
+    odom_topic: "/mavros/odometry/out"
+    goal_topic: "/goal"
+    safe_dist_m: 0.45
+    output_csv: "/tmp/fpga_uav_ros2/fpga_vs_astar.csv"
+    summary_csv: "/tmp/fpga_uav_ros2/fpga_vs_astar_summary.csv"
+    summary_period_s: 10.0
+    append_csv: false
+    max_cloud_points: 2000
+    cloud_stride: 3
+    astar_dt_sample_s: 0.01
+    fpga_dt_sample_s: 0.02
+    bag_rate: 1.0
+    metrics_wait_ms: 20.0

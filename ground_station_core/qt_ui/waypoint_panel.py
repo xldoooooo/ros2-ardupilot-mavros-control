@@ -28,6 +28,7 @@ from ..config import (
     WAYPOINT_Z_MIN_METERS,
 )
 from ..models import (
+    AvoidanceBackendSnapshot,
     FlightMode,
     VehicleSnapshot,
     WaypointFlightStrategy,
@@ -391,8 +392,59 @@ class WaypointPanel(QWidget):
             field.addWidget(combo)
             selection_row.addLayout(field, 1)
         card.content_layout.addLayout(selection_row)
+        backend_row = QHBoxLayout()
+        backend_row.setSpacing(8)
+        backend_row.addWidget(QLabel("规划后端"))
+        self.backend_combo = DownwardComboBox()
+        self.backend_combo.setObjectName("avoidanceBackendCombo")
+        self.backend_combo.addItem("CPU", "cpu")
+        self.backend_combo.addItem("FPGA 加速", "fpga")
+        self.backend_combo.model().item(1).setEnabled(False)
+        self.backend_combo.setEnabled(False)
+        backend_row.addWidget(self.backend_combo)
+        self.backend_status_label = QLabel("CPU 默认 · 可选模块未连接")
+        self.backend_status_label.setObjectName("mutedLabel")
+        self.backend_status_label.setWordWrap(True)
+        backend_row.addWidget(self.backend_status_label, 1)
+        card.content_layout.addLayout(backend_row)
         self.strategy_combo.currentIndexChanged.connect(self._apply_strategy_constraints)
         return card
+
+    def update_backend(
+        self, backend: AvoidanceBackendSnapshot, *, can_switch: bool, switching: str | None,
+    ) -> None:
+        """只投影管理器实际后端，独立展示硬件、CPU 回退和 MOCK 来源。"""
+        self.backend_combo.blockSignals(True)
+        self.backend_combo.setCurrentIndex(1 if backend.backend == "fpga" else 0)
+        self.backend_combo.blockSignals(False)
+        self.backend_combo.model().item(1).setEnabled(
+            backend.manager_available and backend.available
+        )
+        self.backend_combo.setEnabled(can_switch)
+        if not backend.manager_available:
+            detail = (
+                f"{backend.backend.upper()} 最后选择 · 状态未知"
+                if backend.backend == "fpga" or math.isfinite(backend.age_seconds)
+                else "CPU 默认 · 可选管理器不可用"
+            )
+        else:
+            source = backend.source.strip() or "尚无求解结果"
+            if "mock" in source.lower():
+                source = f"MOCK 模拟 ({source})"
+            elif backend.backend == "fpga" and ("cpu" in source.lower() or source.lower() in {"direct", "deterministic"}):
+                source = f"CPU 回退 ({source})"
+            detail = f"{backend.backend.upper()} 模式 · {'就绪' if backend.ready else '未就绪'} · 来源 {source}"
+        if backend.error and (backend.manager_available or math.isfinite(backend.age_seconds)):
+            detail += f" · {backend.error}"
+        if switching:
+            detail = f"正在切换 {switching.upper()}… · 当前 {backend.backend.upper()}"
+        set_text_if_changed(self.backend_status_label, detail)
+        tip = backend.error
+        if backend.manager_available:
+            tip = (f"机载实际后端：{backend.backend.upper()}；实际求解来源：{backend.source or '尚无结果'}。\n"
+                   "仅落地、未解锁且无任务时可切换；FPGA 板卡在主动切换时检测。\n" + tip)
+        set_tooltip_if_changed(self.backend_combo, tip)
+        set_tooltip_if_changed(self.backend_status_label, tip)
 
     def _apply_strategy_constraints(self) -> None:
         """明确显示规划轨迹语义，并约束避障使用连续参考及轨迹跟踪。"""

@@ -55,6 +55,14 @@ def _nodes(context):
         Node(package='avoidance_bridge', executable='avoidance_bridge_node', output='screen',
              on_exit=Shutdown(reason='Avoidance bridge exited'),
              parameters=[bridge]),
+        # Standard ROS management only: no FPGA imports, config or board probes in CPU mode.
+        Node(package='avoidance_bridge', executable='avoidance_backend_manager.py', output='screen',
+             parameters=[{
+                 'planning_frame': bridge['planning_frame'], 'cloud_topic': cloud,
+                 'odometry_twist_in_body': parameters.get('odometry_twist_in_body', True),
+                 'search_lower': parameters.get('search.lower', [-20., -20., .2]),
+                 'search_upper': parameters.get('search.upper', [20., 20., 1.8]),
+             }]),
     ]
 
 

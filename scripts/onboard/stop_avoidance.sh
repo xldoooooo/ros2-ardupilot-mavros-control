@@ -8,7 +8,7 @@ if systemctl is-active --quiet ros2-ardupilot-avoidance.service; then
 fi
 
 # Cover direct nodes, the operator entry, package launches and launch-file paths.
-readonly process_pattern='(^|[[:space:]])([^[:space:]]*/)?(start_avoidance\.sh|avoidance_bridge_node|path_planning_node)([[:space:]]|$)|(^|/)ros2[[:space:]]+launch[[:space:]]+((avoidance_bridge[[:space:]]+|[^[:space:]]*/)?avoidance\.launch\.py|(path_planning[[:space:]]+|[^[:space:]]*/)(odin|planner)\.launch\.py|(guided_sim[[:space:]]+|[^[:space:]]*/)?avoidance_demo\.launch\.py)([[:space:]]|$)'
+readonly process_pattern='(^|[[:space:]])([^[:space:]]*/)?(start_avoidance\.sh|avoidance_bridge_node|path_planning_node|avoidance_backend_manager\.py|fpga_uav_planner_ros2\.flight_backend_node)([[:space:]]|$)|(^|/)ros2[[:space:]]+launch[[:space:]]+((avoidance_bridge[[:space:]]+|[^[:space:]]*/)?avoidance\.launch\.py|(path_planning[[:space:]]+|[^[:space:]]*/)(odin|planner)\.launch\.py|(guided_sim[[:space:]]+|[^[:space:]]*/)?avoidance_demo\.launch\.py)([[:space:]]|$)'
 # Match the graceful/forced shutdown windows used by stop_onboard_control.sh.
 readonly graceful_attempts=50
 readonly forced_attempts=20

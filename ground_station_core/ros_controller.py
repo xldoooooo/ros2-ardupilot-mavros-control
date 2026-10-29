@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import queue
@@ -13,6 +14,7 @@ from collections import deque
 from dataclasses import replace
 
 from .config import (
+    AVOIDANCE_BACKEND_SWITCH_TIMEOUT_SECONDS,
     COMMAND_TTL_MS,
     HARDWARE_DISCOVERY_RANGE,
     HARDWARE_DOMAIN_ID,
@@ -24,6 +26,7 @@ from .config import (
 )
 from .event_log import EventLog
 from .models import (
+    AvoidanceBackendSnapshot,
     CommandRequest,
     CommandResult,
     FlightMode,
@@ -48,6 +51,11 @@ _REMOTE_MODE_MAP = {
 
 # 连续多个图查询周期均发现重复状态发布者才锁定冲突，过滤 DDS 发现瞬态。
 _ENDPOINT_CONFLICT_OBSERVATIONS = 10
+
+# 可选后端管理器周期上报；缺失不参与原 CPU 飞行门控。
+_BACKEND_STATUS_STALE_SECONDS = 5.0
+_BACKEND_STATUS_TOPIC = "/avoidance/backend/status"
+_BACKEND_SELECT_SERVICE = "/avoidance/backend/select"
 
 # These optional ROS discovery settings may explicitly point at the aircraft.
 # Simulation temporarily removes them and restores the exact launch-time values
@@ -354,6 +362,10 @@ class GroundStationRosController:
         self._video_status_received_at = 0.0
         self._video_event_sequence = 0
         self._video_events: deque[VideoCaptureEvent] = deque(maxlen=512)
+        self._backend_lock = threading.RLock()
+        self._backend_snapshot = AvoidanceBackendSnapshot()
+        self._backend_status_received_at = 0.0
+        self._backend_service_available = False
 
         self._release_requested = threading.Event()
         self._release_finished = threading.Event()
@@ -442,6 +454,71 @@ class GroundStationRosController:
             )
         return replace(snapshot, age_seconds=age)
 
+    def avoidance_backend_snapshot(self) -> AvoidanceBackendSnapshot:
+        """返回独立管理器实际状态；失联只标记未知，不虚构已切回 CPU。"""
+        with self._backend_lock:
+            snapshot = self._backend_snapshot
+            received_at = self._backend_status_received_at
+            service_available = self._backend_service_available
+        age = max(0.0, time.monotonic() - received_at) if received_at else float("inf")
+        if age > _BACKEND_STATUS_STALE_SECONDS:
+            return replace(
+                snapshot, manager_available=False, available=False, ready=False,
+                source="unknown" if received_at or snapshot.backend == "fpga" else snapshot.source,
+                error=("后端管理器状态超时，保留最后选择；实际后端和求解来源待确认"
+                       if received_at else snapshot.error),
+                age_seconds=age,
+            )
+        return replace(
+            snapshot, manager_available=service_available,
+            ready=snapshot.ready and service_available,
+            available=snapshot.available and service_available,
+            error=(snapshot.error or "后端切换服务不可用；保留最后选择")
+                  if not service_available else snapshot.error,
+            age_seconds=age,
+        )
+
+    def _ingest_avoidance_backend_status(self, message: object) -> None:
+        """解析可选 JSON 状态；格式错误仅禁用 FPGA 选项。"""
+        try:
+            payload = json.loads(str(message.data))
+            if (not isinstance(payload, dict) or payload.get("backend") not in {"cpu", "fpga"}
+                    or not isinstance(payload.get("available"), bool)
+                    or not isinstance(payload.get("ready"), bool)
+                    or not isinstance(payload.get("error", ""), str)
+                    or not isinstance(payload.get("source", ""), str)):
+                raise ValueError("backend/available/ready/error/source 字段无效")
+            if payload.get("source_confirmed", True) is False:
+                # 管理器重启后的初值不是桥回读，不能把最后 FPGA 选择虚构为 CPU。
+                with self._backend_lock:
+                    previous = self._backend_snapshot
+                payload = dict(payload, backend=previous.backend, ready=False, source="unknown",
+                               error=payload.get("error") or "实际后端尚未确认，保留最后选择")
+            snapshot = AvoidanceBackendSnapshot(
+                backend=payload["backend"], available=payload["available"],
+                ready=payload["ready"], error=payload.get("error", ""),
+                source=payload.get("source", ""),
+            )
+            received_at = time.monotonic()
+        except (AttributeError, TypeError, ValueError) as exc:
+            with self._backend_lock:
+                previous = self._backend_snapshot
+            snapshot = replace(
+                previous, manager_available=False, available=False, ready=False,
+                source="unknown", error=f"后端状态无效，保留最后选择：{exc}",
+            )
+            received_at = 0.0
+        with self._backend_lock:
+            self._backend_snapshot = snapshot
+            self._backend_status_received_at = received_at
+
+    def _reset_avoidance_backend_runtime(self) -> None:
+        """跨 ROS 环境时清除选择回读，不把 FPGA 偏好带入下一次连接。"""
+        with self._backend_lock:
+            self._backend_snapshot = AvoidanceBackendSnapshot()
+            self._backend_status_received_at = 0.0
+            self._backend_service_available = False
+
     def video_capture_results_after(self, sequence: int) -> list[VideoCaptureEvent]:
         """按地面站本地序号增量返回截图完成事件。"""
         with self._video_lock:
@@ -495,6 +572,7 @@ class GroundStationRosController:
                 )
                 self._state.mark_disconnected()
                 self._reset_video_runtime()
+                self._reset_avoidance_backend_runtime()
                 self._discard_queued_commands("ROS 传输环境已切换，旧命令已取消")
                 self._active_domain_id = desired_domain
                 self._active_discovery_range = desired_discovery
@@ -550,6 +628,7 @@ class GroundStationRosController:
             self._discard_waypoint_preview_requests()
             self._state.mark_disconnected()
             self._reset_video_runtime()
+            self._reset_avoidance_backend_runtime()
             if self._thread is None or not self._thread.is_alive():
                 self._active_domain_id = None
                 self._active_discovery_range = ""
@@ -673,6 +752,12 @@ class GroundStationRosController:
         if mode not in {"odom", "map"}:
             raise ValueError("导航模式必须是 odom 或 map")
         return self._enqueue("navigation_mode", mode)
+
+    def request_avoidance_backend(self, backend: str) -> int:
+        """异步选择可选规划后端；实际选择只由管理器状态回读确认。"""
+        if backend not in {"cpu", "fpga"}:
+            raise ValueError("避障后端必须是 cpu 或 fpga")
+        return self._enqueue("avoidance_backend", backend)
 
     def request_land(self) -> int:
         """请求机载端切换 LAND。"""
@@ -957,6 +1042,9 @@ class GroundStationRosController:
                     SetGpsOrigin, f"{INTERFACE_PREFIX}/set_gps_origin"
                 ),
             }
+            backend_entities = self._create_avoidance_backend_entities(node, rclpy)
+            if backend_entities:
+                clients["avoidance_backend"] = backend_entities["client"]
 
             def status_callback(message: ControlStatus) -> None:
                 self._state.update(message)
@@ -1058,6 +1146,7 @@ class GroundStationRosController:
                 "SetGpsOrigin": SetGpsOrigin,
                 "SetNavigationMode": SetNavigationMode,
                 "subscriptions": subscriptions,
+                **backend_entities,
             }
             pending_services: dict[int, tuple] = {}
             lease_state = {
@@ -1090,6 +1179,11 @@ class GroundStationRosController:
                     node.destroy_subscription(rosout_subscription)
                     rosout_subscription = None
                 executor.spin_once(timeout_sec=0.02)
+                backend_client = clients.get("avoidance_backend")
+                with self._backend_lock:
+                    self._backend_service_available = bool(
+                        backend_client is not None and backend_client.service_is_ready()
+                    )
                 if node.count_publishers(status_topic) > 1:
                     endpoint_conflict_observations += 1
                 else:
@@ -1134,6 +1228,26 @@ class GroundStationRosController:
                         context.shutdown()
                 except Exception:
                     pass
+
+    def _create_avoidance_backend_entities(self, node: object, rclpy: object) -> dict:
+        """创建标准消息可选接入点；任何缺失都不阻止原 ROS 客户端启动。"""
+        try:
+            from std_msgs.msg import String
+            from std_srvs.srv import SetBool
+
+            subscription = node.create_subscription(
+                String, _BACKEND_STATUS_TOPIC, self._ingest_avoidance_backend_status,
+                rclpy.qos.QoSProfile(
+                    depth=1,
+                    reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
+                    durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+                ),
+            )
+            client = node.create_client(SetBool, _BACKEND_SELECT_SERVICE)
+            return {"client": client, "SetBool": SetBool, "backend_subscription": subscription}
+        except Exception as exc:
+            self._events.warn("avoidance", f"可选 FPGA 接口不可用，CPU 功能保持：{exc}")
+            return {}
 
     def _ensure_waypoint_visualization_entities(
         self, entities: dict[str, object]
@@ -1652,7 +1766,23 @@ class GroundStationRosController:
                 )
                 return
 
-            if command.name == "navigation_mode":
+            if command.name == "avoidance_backend":
+                if (snapshot.armed or not snapshot.on_ground or snapshot.reboot_in_progress
+                        or snapshot.controller_active or snapshot.active_mode is not FlightMode.IDLE
+                        or snapshot.waypoint_count != 0):
+                    raise RuntimeError("只能在落地、未解锁且无任务时切换避障后端")
+                backend = self.avoidance_backend_snapshot()
+                if not backend.manager_available:
+                    raise RuntimeError(backend.error or "可选后端管理器不可用")
+                if command.argument == "fpga" and not backend.available:
+                    raise RuntimeError(backend.error or "FPGA 模块未安装或配置不可用")
+                client = clients.get("avoidance_backend")
+                if client is None or not client.service_is_ready():
+                    raise RuntimeError("可选后端切换服务不可用")
+                request = ros_entities["SetBool"].Request()
+                request.data = command.argument == "fpga"
+                future = client.call_async(request)
+            elif command.name == "navigation_mode":
                 client = clients["navigation_mode"]
                 if not client.service_is_ready():
                     raise RuntimeError("机载导航切换服务不可用")
@@ -1761,7 +1891,10 @@ class GroundStationRosController:
             pending_services[command.ticket] = (
                 future,
                 command,
-                time.monotonic() + 6.0,
+                time.monotonic() + (
+                    AVOIDANCE_BACKEND_SWITCH_TIMEOUT_SECONDS
+                    if command.name == "avoidance_backend" else 6.0
+                ),
             )
         except Exception as exc:
             self._emit_result(
@@ -1775,8 +1908,10 @@ class GroundStationRosController:
             if future.done():
                 try:
                     response = future.result()
-                    accepted = bool(response and response.accepted)
-                    if accepted and command.name == "navigation_mode":
+                    accepted = bool(response and (
+                        response.success if command.name == "avoidance_backend" else response.accepted
+                    ))
+                    if accepted and command.name in {"navigation_mode", "avoidance_backend"}:
                         self._emit_result(ticket, command.name, True, response.message, final=True)
                     if not accepted:
                         message = response.message if response else "机载服务无响应"

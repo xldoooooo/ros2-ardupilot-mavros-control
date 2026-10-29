@@ -43,10 +43,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import HARDWARE_DOMAIN_ID, INTERFACE_VERSION, MAX_WAYPOINT_COUNT, PROJECT_ROOT
+from ..config import (
+    AVOIDANCE_BACKEND_SWITCH_TIMEOUT_SECONDS,
+    HARDWARE_DOMAIN_ID,
+    INTERFACE_VERSION,
+    MAX_WAYPOINT_COUNT,
+    PROJECT_ROOT,
+)
 from ..environment import EnvironmentInitializer
 from ..event_log import EventLog, LogLevel
 from ..models import (
+    AvoidanceBackendSnapshot,
     FlightMode,
     VehicleSnapshot,
     WaypointFlightStrategy,
@@ -181,6 +188,8 @@ class GroundStationWindow(QMainWindow):
         self._navigation_switch_target: str | None = None
         self._navigation_switch_started = 0.0
         self._last_navigation_notice: object = None
+        self._backend_switch_target: str | None = None
+        self._backend_switch_started = 0.0
         self._communication_cancel_pending = False
         self._waypoint_running = False
         self._waypoint_preview_active = False
@@ -802,6 +811,7 @@ class GroundStationWindow(QMainWindow):
         )
         self.waypoints.send_requested.connect(self._send_waypoints)
         self.waypoints.strategy_combo.currentIndexChanged.connect(self._refresh)
+        self.waypoints.backend_combo.activated.connect(self._switch_avoidance_backend)
         self.waypoints.clear_requested.connect(self._confirm_clear_waypoints)
         self.waypoints.preview_requested.connect(self._preview_waypoints)
         self.waypoints.import_file_requested.connect(self._choose_waypoint_file)
@@ -1174,6 +1184,8 @@ class GroundStationWindow(QMainWindow):
         self._pending_environment_mode = "none"
         self._navigation_switch_target = None
         self._pending_commands.discard("navigation_mode")
+        self._backend_switch_target = None
+        self._pending_commands.discard("avoidance_backend")
         self._upstream_sequence = None
         self._abnormal_return_latched = False
         self._hardware_low_power_notice_latched = False
@@ -1744,6 +1756,61 @@ class GroundStationWindow(QMainWindow):
             and snapshot.on_ground and not snapshot.armed and not snapshot.controller_active
         )
 
+    def _avoidance_backend_snapshot(self) -> AvoidanceBackendSnapshot:
+        """允许旧客户端或缺失可选接口的环境照常运行 CPU 界面。"""
+        reader = getattr(self._ros, "avoidance_backend_snapshot", None)
+        return reader() if reader is not None else AvoidanceBackendSnapshot()
+
+    def _can_switch_avoidance_backend(self, snapshot: VehicleSnapshot) -> bool:
+        """仅完整控制会话的落地待机状态允许切换，保持现有任务不受热切换影响。"""
+        return bool(
+            self._environment_active and self._availability.waypoint_configuration
+            and snapshot.onboard_available and snapshot.control_authority
+            and snapshot.on_ground and not snapshot.armed and not snapshot.reboot_in_progress
+            and not snapshot.controller_active and snapshot.active_mode is FlightMode.IDLE
+            and snapshot.waypoint_count == 0 and not self._waypoint_running
+            and self._upstream_sequence is None and not self._pending_commands
+            and self._backend_switch_target is None
+        )
+
+    def _switch_avoidance_backend(self, index: int) -> None:
+        """提交异步后端请求，等待机载权威状态而不提前显示 FPGA 成功。"""
+        target = str(self.waypoints.backend_combo.itemData(index))
+        snapshot = self._ros.snapshot()
+        backend = self._avoidance_backend_snapshot()
+        self.waypoints.update_backend(backend, can_switch=False, switching=None)
+        if (target == backend.backend or not self._can_switch_avoidance_backend(snapshot)
+                or not backend.manager_available or (target == "fpga" and not backend.available)):
+            self._refresh()
+            return
+        self._backend_switch_target = target
+        self._backend_switch_started = time.monotonic()
+        self._pending_commands.add("avoidance_backend")
+        self._events.info("avoidance", f"请求切换规划后端至 {target.upper()}")
+        self._ros.request_avoidance_backend(target)
+        self._refresh()
+
+    def _refresh_avoidance_backend(self, snapshot: VehicleSnapshot) -> None:
+        """核对权威后端状态；超时或管理器离线只撤销可选切换。"""
+        backend = self._avoidance_backend_snapshot()
+        target = self._backend_switch_target
+        if target is not None:
+            if (backend.manager_available and backend.backend == target
+                    and (target == "cpu" or backend.ready)):
+                self._backend_switch_target = None
+                self._pending_commands.discard("avoidance_backend")
+            elif time.monotonic() - self._backend_switch_started >= AVOIDANCE_BACKEND_SWITCH_TIMEOUT_SECONDS:
+                self._backend_switch_target = None
+                self._pending_commands.discard("avoidance_backend")
+                message = f"规划后端切换确认超时；当前显示 {backend.backend.upper()}，请核对机载状态"
+                self._events.warn("avoidance", message)
+                self.activity_banner.set_message(message, LogLevel.WARN)
+        self.waypoints.update_backend(
+            backend,
+            can_switch=backend.manager_available and self._can_switch_avoidance_backend(snapshot),
+            switching=self._backend_switch_target,
+        )
+
     def _refresh_navigation(self, snapshot: VehicleSnapshot) -> None:
         """Follow the actual frame and wait for restart plus lease recovery."""
         target = self._navigation_switch_target
@@ -2265,6 +2332,7 @@ class GroundStationWindow(QMainWindow):
         busy = (
             self._workflow_busy
             or self._navigation_switch_target is not None
+            or self._backend_switch_target is not None
             or self._communication_busy
             or cleanup_active
             or bool(getattr(self._environment, "busy", False))
@@ -2316,6 +2384,7 @@ class GroundStationWindow(QMainWindow):
             self._last_availability_render_key = render_key
 
         self._refresh_navigation(snapshot)
+        self._refresh_avoidance_backend(snapshot)
         self._drive_upstream_sequence(snapshot)
         self._handle_vehicle_abnormal(
             snapshot, upstream_connected=upstream_connected
@@ -2384,6 +2453,8 @@ class GroundStationWindow(QMainWindow):
                 self._pending_commands.discard(result.command)
             if result.command == "navigation_mode" and not result.success:
                 self._navigation_switch_target = None
+            if result.command == "avoidance_backend" and not result.success:
+                self._backend_switch_target = None
             level = LogLevel.INFO if result.success else LogLevel.ERROR
             if not stale_waypoint_result:
                 self.activity_banner.set_message(

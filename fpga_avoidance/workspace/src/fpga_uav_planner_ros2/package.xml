@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!-- Independent optional FPGA solver and native flight-protocol adapter. -->
+<package format="3">
+  <name>fpga_uav_planner_ros2</name>
+  <version>27.3.1</version>
+  <description>Optional FPGA-UAV planner with exact executable Hermite trajectories.</description>
+  <maintainer email="maintainer@example.invalid">FPGA-UAV ROS2 adaptation team</maintainer>
+  <license>GPLv3</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>path_planning</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rosbag2</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <test_depend>ament_pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

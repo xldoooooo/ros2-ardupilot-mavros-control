@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!-- Independent optional CPU kernels for FPGA solver preprocessing and UDP transport. -->
+<package format="3">
+  <name>fpga_uav_native</name>
+  <version>24.1.0</version>
+  <description>Host-side native acceleration library for FPGA UAV planning; FPGA firmware/RTL unchanged.</description>
+  <maintainer email="maintainer@example.invalid">FPGA-UAV ROS2 adaptation team</maintainer>
+  <license>GPLv3</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -96,6 +96,19 @@ class WaypointTrackingController(int, Enum):
 
 
 @dataclass(frozen=True)
+class AvoidanceBackendSnapshot:
+    """独立可选避障管理器状态，不属于公共飞行协议。"""
+
+    manager_available: bool = False
+    backend: str = "cpu"
+    available: bool = False
+    ready: bool = False
+    error: str = "未发现可选后端管理器，使用 CPU 默认链路"
+    source: str = "cpu"
+    age_seconds: float = float("inf")
+
+
+@dataclass(frozen=True)
 class VehicleSnapshot:
     """来自机载聚合状态接口的飞行器、租约和控制诊断快照。"""
 
