@@ -35,6 +35,8 @@ ros2 service call /avoidance/backend/select std_srvs/srv/SetBool '{data: true}'
 
 `/avoidance/backend/status` 为每秒发布的可靠、持久最近一条 JSON 状态，包含 `backend`、`available`（入口及独立构建标记存在）、`ready`、`error`、`source`、`transitioning`。CPU 的 `ready` 来自新鲜机载 `ControlStatus.avoidance_ready`，仅用于显示当前规划链路状态。未选中时仅检查入口和安装标记；实际硬件就绪在主动选择后确认。FPGA 原始诊断位于 `/fpga_avoidance/status`，服务及结果亦隔离在 `/fpga_avoidance`。真实求解来源、硬件事务数及参与率照实显示；选中后故障保留当前来源并通过原执行链路处理，不在空中切回 CPU。
 
+失败计划也记录本次 `planning_ms`、`solve_ms` 和 `cpu_ms`；CPU 时间为该任务提交至处理完成期间的进程 CPU 时间，含 ROS 回调及最新地图复核，不是整机占用百分比。规划错误保留到成功规划、更换目标或取消，不因一次成功 PING 隐藏；板卡连接正常也可能因当前轨迹不合格而显示未就绪。
+
 ## 移除
 
 先在落地未解锁状态调用 `stop.sh`，再删除或移出整个 `fpga_avoidance/` 目录即可。原构建与启动不依赖本目录，旧的 FPGA 界面偏好不会自动启用模块；下一次启动始终默认 CPU。无需修改 CPU 配置或重新安装公共飞行协议。

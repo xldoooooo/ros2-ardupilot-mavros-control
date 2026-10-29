@@ -108,6 +108,7 @@ class FlightBackend(Node):
         self.input_error = ''
         self.board_time = 0.0
         self.board_error = 'board has not been probed'
+        self.plan_error = ''
         self.source = 'unprobed'
         self.transactions = 0
         self.hardware_transactions = 0
@@ -242,6 +243,7 @@ class FlightBackend(Node):
                 self.previous = []
                 self.valid_curve = None
                 self.last_attempt = 0.0
+                self.plan_error = ''
             elif self.target and self.target[0] != request.target_id:
                 raise ValueError('active target identity mismatch')
             elif self.target:
@@ -249,6 +251,7 @@ class FlightBackend(Node):
                 self.target = None
                 self.previous = []
                 self.valid_curve = None
+                self.plan_error = ''
             response.accepted = True
             response.detail = 'goal accepted' if request.active else 'matching goal cancelled'
         except ValueError as exc:
@@ -309,14 +312,17 @@ class FlightBackend(Node):
             elapsed = 0.
         return shifted, remaining
 
-    def revoke_curve(self, status, detail, target):
+    def revoke_curve(self, status, detail, target, stamp=None, planning_ms=0.0):
         """Replace an unusable success with an empty failure before actual-state recovery."""
         self.valid_curve = None
         self.previous = []
         self.source = 'failure'
         self.transactions = self.hardware_transactions = 0
         self.last_attempt = 0.0
-        self.result_pub.publish(self.outcome(status, detail, target))
+        self.plan_error = detail
+        message = self.outcome(status, detail, target, stamp)
+        message.planning_ms = planning_ms
+        self.result_pub.publish(message)
 
     def terminal_curve_clear(self, now):
         """Certify the remaining old curve, or only its stationary goal after it expires."""
@@ -441,10 +447,15 @@ class FlightBackend(Node):
                 # replace the already valid final curve when it eventually returns.
                 self.job_expired = True
         if self.future is not None:
-            target, stamp, started = self.job
+            target, stamp, started, cpu_started = self.job
             current = (target is None or (self.target is not None and target[:2] == self.target[:2]))
             if target is not None and current and not self.job_expired and now-started > self.budget:
-                self.result_pub.publish(self.outcome(PlanResult.TIMEOUT, 'FPGA planning deadline exceeded', target, stamp))
+                self.plan_error = 'FPGA planning deadline exceeded'
+                self.solve_ms = (now-started)*1000.
+                self.cpu_ms = (time.process_time()-cpu_started)*1000.
+                message = self.outcome(PlanResult.TIMEOUT, self.plan_error, target, stamp)
+                message.planning_ms = self.solve_ms
+                self.result_pub.publish(message)
                 self.source = 'timeout'
                 self.transactions = self.hardware_transactions = 0
                 self.valid_curve = None
@@ -469,12 +480,14 @@ class FlightBackend(Node):
                     self.source = ('mock:' if self.mock else '') + result.source
                     self.transactions = int(result.details.get('solver_transactions', 0))
                     self.hardware_transactions = int(result.details.get('hardware_transactions', 0))
-                    self.solve_ms = (now-started)*1000.
-                    self.cpu_ms = float(result.details.get('backend_cpu_ms', 0.0))
+                    self.solve_ms = (time.monotonic()-started)*1000.
+                    # Include this job's ROS callbacks and latest-map certification.
+                    self.cpu_ms = (time.process_time()-cpu_started)*1000.
+                    self.plan_error = ''
                     message = self.outcome(PlanResult.REACH_END if result.reaches_goal else PlanResult.REACH_HORIZON,
                                            json.dumps({'source': self.source, 'transactions': self.transactions,
                                                        'fallback': result.details.get('fallback_reason', '')}), target, stamp)
-                    message.planning_ms = (now-started)*1000.
+                    message.planning_ms = self.solve_ms
                     message.segments = [PolynomialSegment(duration=float(duration), x=list(c[0]),
                                                            y=list(c[1]), z=list(c[2]))
                                         for c, duration in zip(coefficients, durations)]
@@ -488,7 +501,9 @@ class FlightBackend(Node):
                     self.board_error = str(exc)
                     affected = self.target if target is None else target
                     if affected is not None:
-                        self.revoke_curve(PlanResult.NO_PATH, str(exc), affected)
+                        self.solve_ms = (time.monotonic()-started)*1000.
+                        self.cpu_ms = (time.process_time()-cpu_started)*1000.
+                        self.revoke_curve(PlanResult.NO_PATH, str(exc), affected, stamp, self.solve_ms)
             self.future = self.job = None
             self.job_expired = False
         reason = self.input_reason()
@@ -505,7 +520,7 @@ class FlightBackend(Node):
             if now-self.board_time < 1.0:
                 return
             # Keep probing the board without refitting the valid zero-speed finish.
-            self.job = (None, self.get_clock().now().to_msg(), now)
+            self.job = (None, self.get_clock().now().to_msg(), now, time.process_time())
             self.future = self.worker.submit(self.solve, None, None, None)
             return
         if target is None:
@@ -520,14 +535,14 @@ class FlightBackend(Node):
         self.last_attempt = now
         self.last_position = self.odom[0].copy() if self.odom else None
         stamp = self.get_clock().now().to_msg()
-        self.job = (target, stamp, now)
+        self.job = (target, stamp, now, time.process_time())
         odom = self.odom
         points = self.cloud[0] if self.cloud else None
         self.future = self.worker.submit(self.solve, target, odom, points)
 
     def heartbeat(self):
         """Advertise identity and honest solver provenance without publishing flight commands."""
-        reason = self.input_reason() or self.board_error
+        reason = self.input_reason() or self.board_error or self.plan_error
         ready = not reason and self.board_ready()
         data = dict(process_id=os.getpid(), ready=ready, mock=self.mock, source=self.source,
                     error=reason, transactions=self.transactions, planner_session=self.session,

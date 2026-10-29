@@ -16,9 +16,10 @@
 
 ## 当前架构与入口
 
-- **Task10 FPGA 可移除旁路已在开发机原生安装**：权威交付源码及独立构建/环境/配置在 `fpga_avoidance/`，`COLCON_IGNORE` 隔离默认构建；CPU 模式不读模块配置、不加载 overlay、不探板。原避障启动入口带标准 ROS 管理器，地面站独立选择 CPU/FPGA，只有新鲜落地、未解锁、空闲无任务才可切换；桥 `native_namespace` 单选结果源且每次启动强制 CPU，飞行公共协议仍 3.5，PD+DOB/策略/参数不变。模块删除不需修主程序；接口和维护见[模块说明](fpga_avoidance/README.md)。
-  原对象现在导出实测起速、零终速的真实 Hermite 三次，解析限 v/a、连续体素碰撞检查；近目标仅保持当前仍有效的零速末段，故障空失败。只保证单条 C1，不保证跨计划 a/jerk 连续；实际算法仍是 CPU A* + FPGA Ising/QUBO，不是板上 A*，source/回退/MOCK 必须如实显示。
-  本地 CPU 模块拔除和三策略 SITL、FPGA 软件契约及 MOCK 自主/遇障恢复/进程退出后的超时降落已通过；**真实板卡参与、ARM 负载和硬件+SITL 尚未验收**。new 当前离线，用户要求先完成本地；new/refresh/其他地面站均未部署本集成。旧外部副本 `/home/nvidia/scq/projects/FPGA-avoidance-ros2` 已同步原对象修复但不是部署必需；板卡 `192.168.2.10:4000`、new host `192.168.2.100`、runtime `0x04010351` 的旧 PING/一次求解只属接入前证据。旧交付哈希三项不匹配及 bag 元数据问题见[原评估](agent/report/report-2026-10-29-fpga-avoidance-assessment.md)，本次结果与待验项见[Task10报告](agent/report/report-2026-10-29-task10-fpga-avoidance-integration.md)。
+- **Task10 FPGA 可移除旁路已在开发机和 new 原生安装**：权威交付源码及独立构建/环境/配置在 `fpga_avoidance/`，`COLCON_IGNORE` 隔离默认构建；CPU 模式不读模块配置、不加载 overlay、不探板。原避障启动入口带标准 ROS 管理器，地面站独立选择 CPU/FPGA，只有新鲜落地、未解锁、空闲无任务才可切换；桥 `native_namespace` 单选结果源且每次启动强制 CPU，飞行公共协议仍 3.5，PD+DOB/策略/参数不变。模块删除不需修主程序；接口和维护见[模块说明](fpga_avoidance/README.md)。
+  原对象导出实测起速、零终速的真实 Hermite 三次，解析限 v/a、连续体素碰撞检查；近目标仅保持仍有效的零速末段，故障空失败。只保证单条 C1，不保证跨计划 a/jerk 连续；实际算法是 CPU A* + FPGA Ising/QUBO，source/回退/MOCK 必须如实显示。失败任务的计时/CPU 使用本次值，规划错误保持到成功、更换目标或取消，不因成功 PING 隐藏。
+  CPU 模块拔除/三策略回归，以及真实板卡参与的隔离 SITL 绕障、恢复、换目标、取消和断板超时 LAND 已通过；new 的 ARM 构建、原生 DDS/轨迹契约、落地 CPU→FPGA→CPU 和直连性能测量已完成，**全程未解锁或起飞实机**。复杂点云仍可能因保守曲线校验拒绝规划，不代表全场景可规划，也不关闭既有跟踪/机体净空风险。板卡 `192.168.2.10:4000`，new 网口 `192.168.2.100`，runtime `0x04010351` / build `0x44325257`。本机默认配置保留原近点直线与 3.5 ms fuse，硬件参与与采用 FPGA 输出是两项不同指标。
+  new 已补齐主线此前遗漏的 Task9 机载部分、绝对起飞目标 Z、统一偏航限速和启动网络等待，原生重建主工程/CPU 规划器/可选模块；保留逐机配置及 RViz 现场修改。测试结束飞控/避障停止、视频/修正保持原运行状态，未新增避障自启 unit。refresh、hp 和 mini-ground **未部署 Task10**。new 备份在 `~/ros2-ardupilot-maintenance/task10-fpga-20261029/`；旧外部 FPGA 副本不是部署依赖。实现见[本地报告](agent/report/report-2026-10-29-task10-fpga-avoidance-integration.md)，硬件结果、性能和未通过算例见[硬件报告](agent/report/report-2026-10-29-task10-fpga-hardware-validation.md)。
 
 - 独立 map 系位姿诊断脚本源码在 `dev/odom2map/odom_pose_in_map.py`；new 另有根目录副本
   `/home/nvidia/ros2-ardupilot-mavros-control/odom_pose_in_map.py`（与原始版本一致）。
@@ -67,7 +68,7 @@
 | 避障构建、启停 | `src/onboard_control/deploy/build_avoidance.sh`、`scripts/onboard/start_avoidance.sh`、`stop_avoidance.sh` |
 | Odin/extnav 单独启动 | `scripts/onboard/components/start_odin.sh`、`start_extnav.sh`；读取 `onboard.env`，不启动其他组件 |
 
-地面站安装、机载构建（含verify）和避障构建共用`scripts/lib/build_dependencies.bash`，编译前仅对缺失的Eigen/JSON开发包执行sudo/apt；全量依赖安装器复用同一清单，`deps-check`保持只读。开发机与hp已同步验证；refresh/new下次同步须带上该共享文件及部署脚本，无需重启运行服务。
+地面站安装、机载构建（含verify）和避障构建共用`scripts/lib/build_dependencies.bash`，编译前仅对缺失的Eigen/JSON开发包执行sudo/apt；全量依赖安装器复用同一清单，`deps-check`保持只读。开发机、hp与new已同步验证；refresh下次同步须带上该共享文件及部署脚本，无需重启运行服务。
 
 部署细节查 [机载部署指导](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)、
 [视频说明](video_service/README.md)、[修正说明](correction_service/README.md)、
@@ -94,7 +95,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
 | refresh / uav002 / 2号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，MAVROS2.16.0修复overlay保持 | 配置直接读取`config/aircraft/uav002/`；杆臂(.10,-.04,.05)，自动pitch与-22°回退保留；导航仍map，当前未定位，不能视为map实飞验收。Wasintek推流及UQ212取帧通过，飞控/视频/修正最终停止；控制/避障参数按迁移前有效值保留 |
-| new / uav001 / 1号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂(.10,-.04,.05)，自动pitch与0°回退保留；保持odom，reloc地图未配置。当前没有摄像头，跳过相机硬件验收；飞控/视频/修正按用户要求最终停止，避障停止；控制/避障参数按迁移前有效值保留 |
+| new / uav001 / 1号机 | Task10 可选 FPGA / 3.5；主工程、CPU规划器、项目Odin及FPGA均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂与自动pitch/回退角保留，保持odom，reloc地图未配置；飞控/避障停止，视频/修正保持原运行状态；相机和实飞未验收 |
 | hp-desktop | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；逐机参数与控制/规划配置随主线同步，旧TODO/RViz等现场改动保留；机载服务未启用 |
 | mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
 | 开发机 | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`，SITL始终显式使用仿真档案；实机档案不影响仿真。配置重启生效已实际验证；原有TODO、RViz及文档现场改动保留 |

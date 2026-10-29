@@ -346,11 +346,25 @@ def main():
             failure = [r for r in test.results if r.target_id == "board-loss" and r.status == PlanResult.NO_PATH][-1]
             assert ping_count[0] >= 2 and "post-solve board loss" in failure.detail
             assert not failure.segments
+            assert failure.planning_ms > 0.0 and test.backend.cpu_ms > 0.0
             assert not any(r.target_id == "board-loss" and r.status in (PlanResult.REACH_END, PlanResult.REACH_HORIZON) for r in test.results)
         finally:
             test.backend.solver.ping = original_ping
             test.goal("board-loss", active=False)
         checks.append("injected post-solve board loss suppresses successful candidate")
+
+        # A later successful idle PING must not conceal the failed trajectory.
+        test.backend.plan_error = "last trajectory collision"
+        test.backend.board_error = ''
+        test.backend.board_time = time.monotonic()
+        before = len(test.status)
+        test.backend.heartbeat()
+        test.until(lambda: len(test.status) > before, "persistent planning diagnostic")
+        assert not test.status[-1]['ready'] and test.status[-1]['error'] == "last trajectory collision"
+        test.goal("clear-failure", (2.0, 0.5, 1.0))
+        assert not test.backend.plan_error
+        test.goal("clear-failure", active=False)
+        checks.append("failed job timing and planning error survive idle hardware health probes")
 
         test.position = np.array((0.0, 0.0, 1.0))
         test.body_velocity = np.array((0.2, 0.0, 0.0))
