@@ -116,6 +116,8 @@ class FlightBackend(Node):
         self.last_attempt = 0.0
         self.last_position = None
         self.previous = []
+        # Same-target published geometry supplies a spatial speed hint, never an executable fallback.
+        self.timing_reference = None
         # Cache only a complete, published curve with its target generation and steady start.
         self.valid_curve = None
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='fpga-planner')
@@ -241,6 +243,7 @@ class FlightBackend(Node):
                 self.revision += 1
                 self.target = (request.target_id, self.revision, goal)
                 self.previous = []
+                self.timing_reference = None
                 self.valid_curve = None
                 self.last_attempt = 0.0
                 self.plan_error = ''
@@ -250,6 +253,7 @@ class FlightBackend(Node):
                 self.revision += 1
                 self.target = None
                 self.previous = []
+                self.timing_reference = None
                 self.valid_curve = None
                 self.plan_error = ''
             response.accepted = True
@@ -316,6 +320,7 @@ class FlightBackend(Node):
         """Replace an unusable success with an empty failure before actual-state recovery."""
         self.valid_curve = None
         self.previous = []
+        self.timing_reference = None
         self.source = 'failure'
         self.transactions = self.hardware_transactions = 0
         self.last_attempt = 0.0
@@ -389,7 +394,7 @@ class FlightBackend(Node):
             response.result = self.outcome(PlanResult.INVALID_INPUT, str(exc))
         return response
 
-    def solve(self, target, odom, points):
+    def solve(self, target, odom, points, execution_reference=None):
         """Probe real hardware and call the original object's executable trajectory entry."""
         cpu_started = time.process_time()
         deadline = time.monotonic() + self.budget
@@ -407,6 +412,7 @@ class FlightBackend(Node):
             exact_start_xyz=position, exact_goal_xyz=effective,
             max_vel_xy=self.limits[0], max_vel_z=self.limits[1],
             max_acc_xy=self.limits[2], max_acc_z=self.limits[3],
+            execution_reference=execution_reference,
             cancel_callback=lambda: (self.target is None or self.target[:2] != target[:2] or
                                      time.monotonic() > deadline),
             trusted_binary_grid=True, **kino_kwargs_from_request(payload))
@@ -421,7 +427,7 @@ class FlightBackend(Node):
         target = self.target
         reason = self.input_reason()
         if target is not None and reason:
-            if self.valid_curve is not None or now-self.last_attempt > .5:
+            if self.valid_curve is not None or self.timing_reference is not None or now-self.last_attempt > .5:
                 self.revoke_curve(PlanResult.STALE_INPUT, reason, target)
                 self.last_attempt = now
             if self.future is not None and self.job[0] is not None and self.job[0][:2] == target[:2]:
@@ -460,6 +466,7 @@ class FlightBackend(Node):
                 self.transactions = self.hardware_transactions = 0
                 self.valid_curve = None
                 self.previous = []
+                self.timing_reference = None
                 self.job_expired = True
             if not self.future.done():
                 return
@@ -493,6 +500,7 @@ class FlightBackend(Node):
                                         for c, duration in zip(coefficients, durations)]
                     self.result_pub.publish(message)
                     self.previous = list(result.waypoints_xyz)
+                    self.timing_reference = (target[:2], coefficients, durations)
                     self.valid_curve = (target, coefficients, durations, started) if result.reaches_goal else None
             except Exception as exc:
                 if not self.job_expired and (target is None or current):
@@ -521,7 +529,7 @@ class FlightBackend(Node):
                 return
             # Keep probing the board without refitting the valid zero-speed finish.
             self.job = (None, self.get_clock().now().to_msg(), now, time.process_time())
-            self.future = self.worker.submit(self.solve, None, None, None)
+            self.future = self.worker.submit(self.solve, None, None, None, None)
             return
         if target is None:
             if now-self.board_time < 1.0:
@@ -538,7 +546,11 @@ class FlightBackend(Node):
         self.job = (target, stamp, now, time.process_time())
         odom = self.odom
         points = self.cloud[0] if self.cloud else None
-        self.future = self.worker.submit(self.solve, target, odom, points)
+        # Onboard projects each result onto measured p/v; wall time is not its execution phase.
+        reference = self.timing_reference
+        execution_reference = (reference[1:] if target is not None and reference is not None and
+                               reference[0] == target[:2] else None)
+        self.future = self.worker.submit(self.solve, target, odom, points, execution_reference)
 
     def heartbeat(self):
         """Advertise identity and honest solver provenance without publishing flight commands."""
@@ -558,6 +570,7 @@ class FlightBackend(Node):
         """Invalidate active work and let the launcher own bounded process termination."""
         self.target = None
         self.valid_curve = None
+        self.timing_reference = None
         self.worker.shutdown(wait=False, cancel_futures=True)
         if self.transport.session:
             self.transport.session.close()

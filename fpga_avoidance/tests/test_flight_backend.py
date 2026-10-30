@@ -98,11 +98,13 @@ class Contract:
         self.entered, self.release = threading.Event(), threading.Event()
         self.gate_armed = False
         self.plan_calls = 0
+        self.execution_references = []
         original = self.backend.planner.plan_executable
 
         def gated(*args, **kwargs):
             """Delay one real solve so replacement/cancel races are reproducible."""
             self.plan_calls += 1
+            self.execution_references.append(kwargs.get("execution_reference"))
             if self.gate_armed:
                 self.gate_armed = False
                 self.entered.set()
@@ -271,6 +273,7 @@ def main():
         assert cancelled.accepted
         test.until(test.entered.is_set, "cancel test native solve start")
         assert test.goal("cancelled", active=False).accepted
+        assert test.backend.timing_reference is None
         test.release.set()
         test.spin(0.3)
         assert not any(r.target_id == "cancelled" and r.status in (PlanResult.REACH_END, PlanResult.REACH_HORIZON) for r in test.results)
@@ -281,6 +284,7 @@ def main():
         test.until(test.entered.is_set, "replacement native solve start")
         current = test.goal("current", (1.5, 0.5, 1.0))
         assert current.accepted and current.goal_revision > old.goal_revision
+        assert test.backend.timing_reference is None
         test.release.set()
         test.until(lambda: any(r.target_id == "current" and r.status == PlanResult.REACH_END for r in test.results), "current target executable trajectory")
         assert not any(r.target_id == "replaced" and r.status in (PlanResult.REACH_END, PlanResult.REACH_HORIZON) for r in test.results)
@@ -291,6 +295,7 @@ def main():
         assert success.planner_session == current.planner_session
         duplicate = test.goal("current", (1.5, 0.5, 1.0))
         assert duplicate.accepted and duplicate.goal_revision == current.goal_revision
+        assert test.backend.timing_reference[0] == ("current", current.goal_revision)
         stale_cancel = test.goal("replaced", active=False)
         assert not stale_cancel.accepted and test.backend.target[0] == "current"
         first, last = success.segments[0], success.segments[-1]
@@ -307,6 +312,7 @@ def main():
         test.until(lambda: any(r.target_id == "timed-out" and r.status == PlanResult.TIMEOUT for r in test.results), "native planning timeout")
         timeout_result = [r for r in test.results if r.target_id == "timed-out" and r.status == PlanResult.TIMEOUT][-1]
         assert not timeout_result.segments and timeout_result.goal_revision == timed_out.goal_revision
+        assert test.backend.timing_reference is None
         assert test.goal("timed-out", active=False).accepted
         heartbeat_start = len(test.results)
         test.spin(1.05)
@@ -322,6 +328,7 @@ def main():
         test.cloud_frame = "wrong-frame"
         before = len(test.results)
         test.until(lambda: any(r.target_id == "after-timeout" and r.status == PlanResult.STALE_INPUT for r in test.results[before:]), "invalid cloud-frame failure")
+        assert test.backend.timing_reference is None
         assert all(not r.segments for r in test.results[before:] if r.status not in (PlanResult.REACH_END, PlanResult.REACH_HORIZON))
         assert test.query().status == PlanResult.STALE_INPUT
         test.cloud_frame = "odom"
@@ -336,10 +343,15 @@ def main():
         test.cloud_enabled = True
         test.spin(0.15)
         test.goal("after-timeout", active=False)
+        test.until(lambda: test.backend.future is None, "previous target worker drains before reference test")
+        test.execution_references.clear()
         horizon_target = test.goal("horizon", (12.0, 0.5, 1.0))
         test.until(lambda: any(r.target_id == "horizon" and r.status == PlanResult.REACH_HORIZON for r in test.results), "window-clipped horizon result")
         horizon = [r for r in test.results if r.target_id == "horizon" and r.status == PlanResult.REACH_HORIZON][-1]
         assert horizon.goal_revision == horizon_target.goal_revision
+        assert test.execution_references[0] is None
+        assert test.backend.valid_curve is None
+        assert test.backend.timing_reference[0] == ("horizon", horizon_target.goal_revision)
         assert not any(r.target_id == "horizon" and r.status == PlanResult.REACH_END for r in test.results)
         first = horizon.segments[0]
         t = min(0.2, first.duration / 2.0)
@@ -358,8 +370,13 @@ def main():
                     np.allclose((segment.x[1], segment.y[1], segment.z[1]), velocity, atol=1.0e-8))
 
         test.until(lambda: any(joins_updated_state(r) for r in test.results), "rolling horizon replans from measured p/v")
-        checks.append("local horizon semantics and rolling replan from updated measured position/velocity")
+        expected_coefficients = np.array([(s.x, s.y, s.z) for s in horizon.segments])
+        expected_durations = np.array([s.duration for s in horizon.segments])
+        assert any(reference is not None and np.array_equal(reference[0], expected_coefficients) and
+                   np.array_equal(reference[1], expected_durations) for reference in test.execution_references)
+        checks.append("local horizon replans retain published spatial timing reference and measured start p/v")
         test.goal("horizon", active=False)
+        assert test.backend.timing_reference is None
         test.until(lambda: test.backend.future is None, "previous target worker drains")
         test.backend.board_time = time.monotonic()
         original_ping = test.backend.solver.ping
@@ -418,6 +435,7 @@ def main():
         test.points = [finish_goal]
         test.until(lambda: any(r.target_id == "terminal-hold" and r.status == PlanResult.NO_PATH for r in test.results[before:]), "blocked held terminal point revoked")
         assert test.backend.valid_curve is None
+        assert test.backend.timing_reference is None
         test.points = [(8.0, 8.0, 1.0)]
         test.until(lambda: test.backend.valid_curve is not None, "actual-state curve recovery after dynamic obstacle")
         assert test.plan_calls > count
@@ -426,6 +444,7 @@ def main():
         before = len(test.results)
         test.until(lambda: any(r.target_id == "terminal-hold" and r.status == PlanResult.STALE_INPUT for r in test.results[before:]), "held curve revoked on expired input")
         assert test.backend.valid_curve is None
+        assert test.backend.timing_reference is None
         test.cloud_enabled = True
         test.until(lambda: test.backend.valid_curve is not None, "actual-state recovery after input returns")
         assert test.plan_calls > count
@@ -441,6 +460,7 @@ def main():
         try:
             test.until(lambda: any(r.target_id == "terminal-hold" and r.status == PlanResult.NO_PATH for r in test.results[before:]), "periodic probe revokes held curve on board loss")
             assert test.backend.valid_curve is None
+            assert test.backend.timing_reference is None
         finally:
             test.backend.solver.ping = original_ping
         test.until(lambda: test.backend.valid_curve is not None, "actual-state recovery after board probe returns")
@@ -448,6 +468,7 @@ def main():
         assert all(not r.segments for r in test.results[before:] if r.status not in (PlanResult.REACH_END, PlanResult.REACH_HORIZON))
         test.goal("terminal-hold", active=False)
         assert test.backend.valid_curve is None
+        assert test.backend.timing_reference is None
         checks.append("held finish revoked by dynamic blockage, stale input and board loss with actual-state recovery")
         test.spin(1.1)
         assert test.status and all(item["mock"] and not item["hardware_participation"] for item in test.status)

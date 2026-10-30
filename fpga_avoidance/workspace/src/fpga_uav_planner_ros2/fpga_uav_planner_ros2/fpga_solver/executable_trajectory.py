@@ -19,8 +19,11 @@ _COLLISION_MAX_DEPTH = 20
 _COLLISION_MAX_HULLS = 20000
 
 
-def hermite_coefficients(points: np.ndarray, velocities: np.ndarray, duration: float) -> np.ndarray:
+def hermite_coefficients(points: np.ndarray, velocities: np.ndarray, duration) -> np.ndarray:
     """Construct the actual per-segment, per-axis cubic coefficients."""
+    duration = np.asarray(duration, dtype=np.float64)
+    if duration.ndim:
+        duration = duration[:, None]
     delta = points[1:] - points[:-1]
     result = np.empty((len(points) - 1, 3, 4), dtype=np.float64)
     result[:, :, 0] = points[:-1]
@@ -28,6 +31,76 @@ def hermite_coefficients(points: np.ndarray, velocities: np.ndarray, duration: f
     result[:, :, 2] = 3.0 * delta / duration**2 - (2.0 * velocities[:-1] + velocities[1:]) / duration
     result[:, :, 3] = -2.0 * delta / duration**3 + (velocities[:-1] + velocities[1:]) / duration**2
     return result
+
+
+def motion_durations(points, initial_velocity, cruise, acceleration):
+    """Allocate chord times with forward acceleration and backward terminal braking."""
+    distance = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    speed = np.full(len(points), cruise)
+    speed[0] = np.linalg.norm(initial_velocity)
+    for i, length in enumerate(distance):
+        speed[i + 1] = min(speed[i + 1], math.sqrt(speed[i] ** 2 + 2 * acceleration * length))
+    speed[-1] = 0.0
+    for i in range(len(points) - 2, 0, -1):
+        speed[i] = min(speed[i], math.sqrt(speed[i + 1] ** 2 + 2 * acceleration * distance[i]))
+    if len(points) == 2:
+        # A single cubic also handles measured braking away from and back to a same-cell goal.
+        return np.array([max(0.05, 2 * distance[0] / cruise,
+                             math.sqrt(6 * distance[0] / acceleration),
+                             4 * speed[0] / acceleration)])
+    return 2 * distance / np.maximum(speed[:-1] + speed[1:], np.finfo(float).eps)
+
+
+def clamped_velocities(points, durations, initial_velocity):
+    """Solve interior velocities for C2 cubics, preserving measured start and zero finish."""
+    n = len(points)
+    diagonal = np.ones(n)
+    upper = np.zeros(n - 1)
+    lower = np.zeros(n - 1)
+    rhs = np.zeros((n, 3))
+    rhs[0] = initial_velocity
+    delta = np.diff(points, axis=0)
+    for i in range(1, n - 1):
+        left, right = durations[i - 1:i + 1]
+        lower[i - 1], diagonal[i], upper[i] = right, 2 * (left + right), left
+        rhs[i] = 3 * (right * delta[i - 1] / left + left * delta[i] / right)
+    # Thomas elimination is linear in the waypoint count and solves all three axes together.
+    for i in range(1, n):
+        factor = lower[i - 1] / diagonal[i - 1]
+        diagonal[i] -= factor * upper[i - 1]
+        rhs[i] -= factor * rhs[i - 1]
+    velocity = rhs / diagonal[:, None]
+    for i in range(n - 2, -1, -1):
+        velocity[i] -= upper[i] * velocity[i + 1] / diagonal[i]
+    return velocity
+
+
+def reference_durations(points, reference):
+    """Project new knots spatially onto the last curve; its wall-clock phase is unknown."""
+    if reference is None or not len(reference[0]):
+        return None
+    positions, times = [], []
+    offset = 0.0
+    for coefficients, duration in zip(*reference):
+        local = np.linspace(0.0, duration, min(201, max(3, math.ceil(duration / 0.05) + 1)))
+        p, _, _ = sample_executable_segment(np.asarray(coefficients), local)
+        positions.extend(p[:-1])
+        times.extend(offset + local[:-1])
+        offset += duration
+    positions.append(p[-1])
+    times.append(offset)
+    positions, times = np.asarray(positions), np.asarray(times)
+    chord = np.diff(positions, axis=0)
+    length2 = np.sum(chord * chord, axis=1)
+    projected = []
+    for point in points:
+        fraction = np.clip(np.sum((point - positions[:-1]) * chord, axis=1) /
+                           np.maximum(length2, np.finfo(float).eps), 0.0, 1.0)
+        distance2 = np.sum((positions[:-1] + fraction[:, None] * chord - point) ** 2, axis=1)
+        index = int(np.argmin(distance2))
+        projected.append(times[index] + fraction[index] * (times[index + 1] - times[index]))
+    duration = np.diff(projected)
+    return duration if np.all(duration > 0.0) else None
 
 
 def sample_executable_segment(coefficients: np.ndarray, times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

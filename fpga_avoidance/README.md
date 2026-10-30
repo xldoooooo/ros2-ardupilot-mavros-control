@@ -18,7 +18,7 @@
 
 专用设置集中于 `config/backend.yaml`：`fpga_ip`、`bind_ip`、`udp_port` 指定 UDP 链路，`mock` 默认为 false；其余参数配置原规划器的栅格、机体净空、轨迹速度/加速度上限及重规划周期。可用 `FPGA_AVOIDANCE_CONFIG` 或 `start.sh --config /absolute/backend.yaml` 覆盖。规划 frame、点云、速度坐标约定和搜索边界由当前 CPU 启动配置传入；适配后的 FCU 中心里程计沿用 `/avoidance/odom`。
 
-`max_velocity_xy/z` 和 `max_acceleration_xy/z` 为执行轨迹的方向限额，结果向原执行器回显相同值。规划对象从内部航点构造真实 Hermite 三次曲线，保留实测起速、终端零速，并解析检查速度/加速度；整条曲线通过占据体素的 Bezier 凸包细分验证。体素膨胀含输入量化余量，查询与曲线使用同一地图，净空不能直接等同于 CPU 的质心距离阈值。当前只保证单条曲线 C1，不保证跨计划加速度或 jerk 连续。
+`max_velocity_xy/z` 和 `max_acceleration_xy/z` 为执行轨迹的方向限额，结果向原执行器回显相同值。规划对象按段长分配时间，联立求解内点速度，构造单条 C2 连续的 Hermite 三次曲线，保留实测起速、终端零速，并解析检查速度/加速度；整条曲线通过占据体素的 Bezier 凸包细分验证。无法通过的冗余节点只在直连也通过连续碰撞检查时移除，不再回退为逐点停车。同目标重规划用上一条已发布曲线的空间时间分配作参考，失败时仍输出空失败；不保证跨计划加速度或 jerk 连续。体素膨胀含输入量化余量，查询与曲线使用同一地图，净空不能直接等同于 CPU 的质心距离阈值。
 
 默认几何与运动参数对齐 `config/aircraft/uav002/avoidance/planner.yaml`：分辨率 0.1 m、名义净空 0.35 m、速度 2 m/s、加速度 1 m/s²，输出采样 0.02 s。这里以 `uav_radius_m=0.35`、`safety_margin_m=0` 表达名义净空，并非新增机体尺寸标定。FPGA 另加完整体素对角线补偿，传给膨胀函数的实际半径为 `0.35 + sqrt(3)*0.1 ≈ 0.5232 m`；CPU 仍比较质心距离 0.35 m，两者几何定义不同。`safe_clearance_m` 是原 QUBO 的额外净空偏好，不是地图膨胀半径，不按名称照搬 CPU 阈值。其他机型和仿真档案可能不同，需在专用配置中显式调整。
 

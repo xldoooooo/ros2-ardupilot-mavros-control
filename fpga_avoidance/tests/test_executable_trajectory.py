@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,15 @@ class NoBoard:
     def solve_runs(self, *args, **kwargs):
         """Assert that the direct path does not issue hardware transactions."""
         raise AssertionError("offline direct case must not contact hardware")
+
+
+def evaluate(result, elapsed):
+    """Evaluate the actual exported cubic at a trajectory-relative time."""
+    for coefficients, duration in zip(result.polynomial_coefficients_xyz, result.segment_durations_s):
+        if elapsed <= duration:
+            return tuple(value[0] for value in sample_executable_segment(np.asarray(coefficients), np.array([elapsed])))
+        elapsed -= duration
+    raise AssertionError("test evaluation exceeds trajectory duration")
 
 
 def main() -> None:
@@ -46,6 +56,7 @@ def main() -> None:
             raise AssertionError("unbounded execution output was accepted")
     assert result.source == "direct" and result.details["hardware_transactions"] == 0
     assert result.details["interpolation"] == "cubic-hermite"
+    assert result.details["execution_continuity"] == "C2"
     assert np.allclose(result.path_xyz[0], start, atol=1.0e-12)
     assert np.allclose(result.path_xyz[-1], goal, atol=1.0e-12)
     assert np.allclose(result.velocities_xyz[0], measured_v, atol=1.0e-12)
@@ -59,7 +70,8 @@ def main() -> None:
         if previous is not None:
             assert np.allclose(p[0], previous[0], atol=1.0e-12)
             assert np.allclose(v[0], previous[1], atol=1.0e-12)
-        previous = p[-1], v[-1]
+            assert np.allclose(a[0], previous[2], atol=1.0e-10)
+        previous = p[-1], v[-1], a[-1]
     assert sampled_speed <= result.max_vel_mps + 1.0e-10 <= 1.0 + 1.0e-7
     assert sampled_acc <= result.max_acc_mps2 + 1.0e-10 <= 1.5 + 1.0e-7
 
@@ -131,6 +143,10 @@ def main() -> None:
     assert np.allclose(returning.path_xyz[-1], same, atol=1.0e-12)
     assert np.linalg.norm(returning.velocities_xyz[-1]) < 1.0e-12
     assert returning.max_acc_mps2 <= 1.5 + 1.0e-7
+    vertical_return = planner.plan_executable(
+        grid, same_cell, same_cell, frame, exact_start_xyz=same, exact_goal_xyz=same,
+        start_vel_xyz=(0., 0., .1), max_vel=1., max_acc=1.5, max_acc_z=.15)
+    assert vertical_return.details["execution_maxima"]["acceleration_z"] <= .15 + 1.0e-7
 
     # If the necessary braking excursion exits the only free cell, reject it.
     constrained_start = (0.195, -0.1, 1.1)
@@ -146,6 +162,50 @@ def main() -> None:
         assert "collides" in str(error)
     else:
         raise AssertionError("same-cell braking escaped the only free voxel")
+
+    # A short first chord previously overshot and reversed despite free space.
+    prescribed = FpgaKinoPathPlanner(NoBoard())
+    uneven = ((0., 0., 1.), (.03, 0., 1.), (1., 0., 1.), (2., 0., 1.))
+    prescribed.plan = lambda *args, **kwargs: replace(result, waypoints_xyz=uneven)
+    smooth = prescribed.plan_executable(
+        grid, xyz_to_cell3d(*uneven[0], frame), xyz_to_cell3d(*uneven[-1], frame), frame,
+        exact_start_xyz=uneven[0], exact_goal_xyz=uneven[-1], start_vel_xyz=(.6, 0., 0.),
+        max_vel=2., max_acc=1.)
+    assert np.min(np.linalg.norm(np.asarray(smooth.waypoint_velocities_xyz)[1:-1], axis=1)) > .6
+    _, short_velocity, _ = sample_executable_segment(
+        np.asarray(smooth.polynomial_coefficients_xyz[0]), np.linspace(0, smooth.segment_durations_s[0], 1001))
+    assert short_velocity[:, 0].min() >= .6 - 1.0e-10
+
+    # The old collision fallback stopped at this corner. A certified shortcut
+    # removes the redundant knot while the entire new cubic is checked again.
+    corner_frame = GridFrame3D("map", .02, .1, -1., -1., 0., 20, 200, 200)
+    corner_grid = np.zeros((20, 200, 200), dtype=np.uint8)
+    corner_grid[8:13, 40:49, 60:90] = 1
+    corner = ((0., 0., 1.), (1., 0., 1.), (1., 1., 1.))
+    prescribed.plan = lambda *args, **kwargs: replace(result, waypoints_xyz=corner)
+    corner_result = prescribed.plan_executable(
+        corner_grid, xyz_to_cell3d(*corner[0], corner_frame), xyz_to_cell3d(*corner[-1], corner_frame), corner_frame,
+        exact_start_xyz=corner[0], exact_goal_xyz=corner[-1], max_vel=2., max_acc=1.)
+    assert corner_result.details["execution_removed_knots"] == 1
+    assert len(corner_result.segment_durations_s) == 1
+    assert np.linalg.norm(evaluate(corner_result, sum(corner_result.segment_durations_s) / 2)[1]) > .5
+
+    # Replanning a clear three-metre run must preserve its speed progression,
+    # rather than repeatedly stretching the remaining terminal brake.
+    rolling_start, rolling_goal = (0., 0., 1.), (3., 0., 1.)
+    rolling_options = dict(exact_goal_xyz=rolling_goal, max_vel=2., max_acc=1.)
+    initial = planner.plan_executable(
+        grid, xyz_to_cell3d(*rolling_start, frame), xyz_to_cell3d(*rolling_goal, frame), frame,
+        exact_start_xyz=rolling_start, **rolling_options)
+    current_p, current_v, current_a = evaluate(initial, 2.)
+    replanned = planner.plan_executable(
+        grid, xyz_to_cell3d(*current_p, frame), xyz_to_cell3d(*rolling_goal, frame), frame,
+        exact_start_xyz=current_p, start_vel_xyz=current_v,
+        execution_reference=(initial.polynomial_coefficients_xyz, initial.segment_durations_s), **rolling_options)
+    assert replanned.details["execution_timing_reference"]
+    assert np.allclose(replanned.velocities_xyz[0], current_v, atol=1.0e-12)
+    assert np.linalg.norm(evaluate(replanned, 0.)[2] - current_a) < .05
+    assert np.linalg.norm(evaluate(replanned, 1.)[1] - evaluate(initial, 3.)[1]) < .03
     print(json.dumps({"status": "PASS", "source": result.source,
                       "segments": len(result.segment_durations_s),
                       "duration_s": sum(result.segment_durations_s),

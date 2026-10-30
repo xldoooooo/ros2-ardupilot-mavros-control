@@ -51,7 +51,7 @@ from dyn_ising_adapter import GridFrame3D, cell3d_to_xyz, xyz_to_cell3d
 from fpga_uav_solver import FpgaSolver
 from executable_trajectory import (
     executable_segment_limits, executable_segments_clear, hermite_coefficients,
-    sample_executable_segment,
+    sample_executable_segment, motion_durations, clamped_velocities, reference_durations,
 )
 from qubo_model import N_HW, SCALE, Problem, make_qubo, make_qubo_from_terms, qubo_value
 
@@ -2741,6 +2741,7 @@ class FpgaKinoPathPlanner:
         max_acc_z: float | None = None,
         max_duration: float = 60.0,
         max_samples: int = 10000,
+        execution_reference=None,
         **kwargs,
     ) -> KinoPlanResult:
         """Build measured-start, zero-terminal Hermite cubics.
@@ -2816,48 +2817,60 @@ class FpgaKinoPathPlanner:
         # Always bind the contract to the measured continuous position, even
         # when the geometry planner's legacy fallback retained a voxel centre.
         points[0], points[-1] = start, goal
-        distance = np.linalg.norm(np.diff(points, axis=0), axis=1)
-        baseline = max(0.05, min(result.dt_s, max(float(distance.max()) / (0.8 * max_vel),
-                                                math.sqrt(6.0 * float(distance.max()) / max_acc))))
-        if start_zyx == goal_zyx:
-            # A single segment ending at rest needs at least the measured
-            # speed divided by acceleration, including a zero-distance return.
-            baseline = max(baseline, float(np.linalg.norm(sv)) / limits["acceleration"],
-                           float(np.linalg.norm(sv[:2])) / limits["acceleration_xy"],
-                           abs(float(sv[2])) / limits["acceleration_z"])
+        original_point_count = len(points)
+        # Repeated geometry nodes carry no motion and must not create zero-duration knots.
+        points = points[np.r_[True, np.linalg.norm(np.diff(points, axis=0), axis=1) > 1.0e-9]]
+        if len(points) == 1:
+            points = np.array([start, goal])
+        points[0], points[-1] = start, goal
         dt_sample = float(options.get("dt_sample", 0.01))
         if not math.isfinite(dt_sample) or dt_sample <= 0.0:
             raise ValueError("execution sample interval must be finite and positive")
         failure = "no bounded collision-free Hermite trajectory"
         accepted = None
-        for tangent_mode in ("central", "stationary-interior"):
-            duration = baseline
-            for expansion in range(18):
+        cruise = min(float(kwargs.get("cruise_speed_mps", 1.5)), limits["speed"], limits["speed_xy"])
+        # Leave room for spline curvature; exact analytic checks below remain authoritative.
+        acceleration = 0.7 * limits["acceleration"]
+        for _ in range(2):
+            prior_durations = reference_durations(points, execution_reference)
+            for expansion in range(25):
                 if cancel is not None and cancel():
                     raise RuntimeError("executable trajectory planning cancelled")
-                velocities = np.zeros_like(points)
-                if tangent_mode == "central" and len(points) > 2:
-                    velocities[1:-1] = (points[2:] - points[:-2]) / (2.0 * duration)
-                velocities[0] = sv
-                coefficients = hermite_coefficients(points, velocities, duration)
-                durations = (float(duration),) * len(coefficients)
+                if expansion == 0 and prior_durations is not None:
+                    durations = prior_durations
+                else:
+                    # Reduce cruise by 10% per retry, recomputing times around fixed measured speed.
+                    target_cruise = cruise * 0.9 ** (expansion - (prior_durations is not None))
+                    durations = motion_durations(points, sv, target_cruise, acceleration)
+                    if len(points) == 2:
+                        # Brake-and-return acceleration is 4*v/T even at zero displacement.
+                        durations = np.maximum(durations, max(4 * np.linalg.norm(sv[:2]) / limits["acceleration_xy"],
+                                                              4 * abs(sv[2]) / limits["acceleration_z"]))
+                velocities = clamped_velocities(points, durations, sv)
+                coefficients = hermite_coefficients(points, velocities, durations)
                 maxima = executable_segment_limits(coefficients, durations)
                 ratios = [value / limits[name] for name, value in maxima.items()]
                 if max(ratios) <= 1.0 + 1.0e-7:
                     if executable_segments_clear(coefficients, durations, occupancy, frame, cancel_callback=cancel):
-                        accepted = coefficients, durations, velocities, maxima, tangent_mode, expansion
+                        accepted = coefficients, durations, velocities, maxima, "clamped-c2", expansion
                         break
                     failure = "native Hermite curve collides with occupied voxels or leaves map"
-                    # Timing changes with a fixed measured start tangent also
-                    # change geometry; modest alternatives may clear the hull.
-                    duration *= 1.1
                     continue
                 failure = "native Hermite curve exceeds analytic execution dynamics"
-                scale = max(1.05, *(math.sqrt(ratio) if name.startswith("acceleration") else ratio
-                                    for name, ratio in zip(maxima, ratios)))
-                duration *= min(scale * 1.005, 1.5)
             if accepted is not None:
                 break
+            # A certified local chord can remove an unnecessary sharp/short knot without stopping.
+            simplified = [points[0]]
+            for i in range(1, len(points) - 1):
+                chord = np.zeros((1, 3, 4))
+                chord[0, :, 0] = simplified[-1]
+                chord[0, :, 1] = points[i + 1] - simplified[-1]
+                if not executable_segments_clear(chord, [1.0], occupancy, frame, cancel_callback=cancel):
+                    simplified.append(points[i])
+            simplified.append(points[-1])
+            if len(simplified) == len(points):
+                break
+            points = np.asarray(simplified)
         if accepted is None:
             raise RuntimeError(failure)
         coefficients, durations, velocities, maxima, tangent_mode, expansion = accepted
@@ -2891,7 +2904,9 @@ class FpgaKinoPathPlanner:
             "execution_tangent_mode": tangent_mode, "execution_retime_expansions": expansion,
             "execution_limits": limits, "execution_maxima": maxima,
             "execution_collision": "subdivided-bezier-hull-occupied-voxels",
-            "execution_continuity": "C1",
+            "execution_continuity": "C2",
+            "execution_removed_knots": original_point_count - len(points),
+            "execution_timing_reference": prior_durations is not None and expansion == 0,
             "hardware_transactions": hardware_transactions, "solver_transports": transports,
             "solver_transactions": int(result.details.get("solver_transactions_total", result.details.get("solver_transactions", 0))),
             "legacy_geometry_source": result.source,
