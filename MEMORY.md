@@ -1,7 +1,7 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
-维护日期：2026-10-29。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-10-30。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -20,7 +20,7 @@
   原对象导出实测起速、零终速的真实 Hermite 三次，解析限 v/a、连续体素碰撞检查；近目标仅保持仍有效的零速末段，故障空失败。只保证单条 C1，不保证跨计划 a/jerk 连续；实际算法是 CPU A* + FPGA Ising/QUBO，source/回退/MOCK 必须如实显示。失败任务的计时/CPU 使用本次值，规划错误保持到成功、更换目标或取消，不因成功 PING 隐藏。
   CPU 模块拔除/三策略、ARM 原生 DDS/轨迹契约及落地 CPU→FPGA→CPU 已验证；新参数真板卡参与的隔离 SITL 绕障、恢复、换目标、取消和断板超时 LAND 五项通过，**全程未解锁或起飞实机**。原搜索擦棱、新增实测起速 Hermite 与闭盒认证不一致、碰撞后只延时未重搜的问题仍在，见[曲线归因](agent/report/report-2026-10-29-task10-fpga-curve-rejection-analysis.md)。单条C1及跨计划/实际跟踪净空风险未关闭。板卡 `192.168.2.10:4000`，new 网口 `192.168.2.100`，runtime `0x04010351` / build `0x44325257`。默认近点捷径与3.5ms fuse保留，硬件参与和采用FPGA输出分别记录。
   开发机与new当前FPGA参数为0.1m格、名义净空0.35m、v=2/a=1、采样0.02s，含补偿的膨胀函数半径约0.5232m。数值参考uav002；**new实选uav001**，其CPU为净空0.25、XY/Z速度1/0.2、加速度0.35/0.15，不能再称二者已完全对齐。max_z_cells已补100以覆盖实机0.2–10m的98层。ARM两策略各9/10（各5 FPGA输出、4 CPU回退）；桌面真实起点Z约−0.05低于0.2下界而拒绝，实际下采样云的虚拟高度诊断5/9通过，不是实飞。部署及实景证据见[新参数硬件报告](agent/report/report-2026-10-29-task10-fpga-new-parameters-live-cloud.md)。
-  new 已补齐此前遗漏的Task9机载、绝对起飞目标Z、偏航限速及网络等待；本轮保留逐机配置/RViz。结束时onboard_control及CPU避障运行、后端恢复CPU，视频/修正保持原PID；无新避障自启unit。refresh、hp和mini-ground **未部署Task10**。原备份 `~/ros2-ardupilot-maintenance/task10-fpga-20261029/`、本轮参数备份 `~/ros2-ardupilot-maintenance/task10-parameters-20261029-191836/`；旧外部FPGA副本不是依赖。实现见[本地报告](agent/report/report-2026-10-29-task10-fpga-avoidance-integration.md)，旧参数硬件结果见[硬件报告](agent/report/report-2026-10-29-task10-fpga-hardware-validation.md)。
+  new 已补齐Task9机载、绝对起飞目标Z、偏航限速及网络等待，逐机配置/RViz保留；onboard_control与独立避障均运行、当前CPU。2026-10-30已补装并enable标准 `ros2-ardupilot-avoidance.service`：管理器随该服务启动，只有onboard启动时FPGA选项不可用；开机仍默认CPU、不探板，见[服务恢复](agent/report/report-2026-10-30-task10-fpga-backend-service-recovery.md)。refresh、hp和mini-ground **未部署Task10**。原备份 `~/ros2-ardupilot-maintenance/task10-fpga-20261029/`、参数备份 `~/ros2-ardupilot-maintenance/task10-parameters-20261029-191836/`；旧外部FPGA副本不是依赖。实现见[本地报告](agent/report/report-2026-10-29-task10-fpga-avoidance-integration.md)，旧参数硬件结果见[硬件报告](agent/report/report-2026-10-29-task10-fpga-hardware-validation.md)。
 
 - 独立 map 系位姿诊断脚本源码在 `dev/odom2map/odom_pose_in_map.py`；new 另有根目录副本
   `/home/nvidia/ros2-ardupilot-mavros-control/odom_pose_in_map.py`（与原始版本一致）。
