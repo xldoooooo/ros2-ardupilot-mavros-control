@@ -26,7 +26,39 @@ from std_msgs.msg import Header, String
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "workspace/src/fpga_uav_planner_ros2"))
 from fpga_uav_planner_ros2.flight_backend_node import FlightBackend
-from dyn_ising_adapter import xyz_to_cell3d
+from dyn_ising_adapter import GridFrame3D, pointcloud_to_grid3d, xyz_to_cell3d
+from executable_trajectory import executable_segments_clear
+
+
+def check_grid_origin_invariance():
+    """Keep fixed world obstacles and curve decisions stable across aligned windows."""
+    backend = object.__new__(FlightBackend)
+    backend.config = dict(resolution_m=.1, resolution_z_m=.1, uav_radius_m=.35,
+                          max_axis_cells=240, max_z_cells=100)
+    backend.frame = 'odom'
+    backend.lower, backend.upper = np.array([-20., -20., .2]), np.array([20., 20., 10.])
+    cloud = np.array([[2., 0., 1.]], dtype=np.float32)
+    curve = np.zeros((1, 3, 4))
+    curve[0, :, 0], curve[0, 1, 1] = [1.45, -.02, 1.], .04
+    for x in (.01, .11):
+        frame, occupied, _, _ = backend.grid(np.array([x, 0., 1.]), np.array([3., 0., 1.]), cloud)
+        assert executable_segments_clear(curve, [1.], occupied, frame), 'fixed curve changed with grid origin'
+        blocked = curve.copy()
+        blocked[0, 0, 0] = 2.
+        assert not executable_segments_clear(blocked, [1.], occupied, frame)
+
+    # Both point lookups and bulk clouds share half-open cells, including negative/anisotropic axes.
+    for origin in (-2.7, -2.6, -.1, 0., .1):
+        frame = GridFrame3D('odom', .1, .2, origin, origin, -.6, 12, 80, 80)
+        for point in ((2., 0., 1.), (.3, -.3, .6), (-.3, -.1, .2)):
+            cell = xyz_to_cell3d(*point, frame)
+            world = np.array(cell) + np.rint(np.array([frame.z_min/.2, origin/.1, origin/.1])).astype(int)
+            assert np.array_equal(world, np.floor(np.array(point)[::-1]/[.2, .1, .1]))
+            if all(0 <= index < size for index, size in zip(cell, (12, 80, 80))):
+                assert pointcloud_to_grid3d([point], frame)[cell]
+    frame = GridFrame3D('fractional', .1, .2, .025, -.035, .03, 12, 10, 10)
+    assert xyz_to_cell3d(.075, .015, .13, frame) == (0, 0, 0)
+    assert pointcloud_to_grid3d([(.075, .015, .13)], frame)[0, 0, 0]
 
 
 class Contract:
@@ -157,10 +189,11 @@ class Contract:
 
 def main():
     """Check core goals, query geometry, stale input and honest MOCK provenance."""
+    check_grid_origin_invariance()
     if os.environ.get("ROS_DOMAIN_ID") != "226" or os.environ.get("ROS_AUTOMATIC_DISCOVERY_RANGE") != "LOCALHOST":
         raise RuntimeError("run with ROS_DOMAIN_ID=226 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")
     test = Contract()
-    checks = []
+    checks = ['fixed-cloud grid-origin invariance and unchanged collision rejection']
     try:
         test.until(lambda: test.backend.board_ready() and not test.backend.input_reason(), "MOCK/input readiness")
         assert np.allclose(test.backend.odom[1], (0.0, 0.2, 0.0), atol=1.0e-10)

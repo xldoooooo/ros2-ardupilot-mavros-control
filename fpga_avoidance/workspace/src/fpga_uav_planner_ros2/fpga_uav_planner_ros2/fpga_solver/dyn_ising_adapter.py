@@ -18,6 +18,24 @@ Cell = Tuple[int, int]
 Cell3D = Tuple[int, int, int]
 Point3 = Tuple[float, float, float]
 
+# Cell units: tolerate only floating error in an intended integer-aligned origin.
+_GRID_ALIGNMENT_TOLERANCE = 1.0e-10
+
+
+def _axis_cells(values, origin: float, resolution: float):
+    """Quantise aligned grids globally before subtracting their integer offset."""
+    origin_units = origin / resolution
+    offset = round(origin_units)
+    if abs(origin_units - offset) <= _GRID_ALIGNMENT_TOLERANCE:
+        # Subtracting a floating local origin before floor can move boundary points one cell.
+        scaled = values / resolution
+    else:
+        scaled = (values - origin) / resolution
+        offset = 0
+    if np.isscalar(scaled):
+        return math.floor(scaled) - offset
+    return np.floor(scaled).astype(np.int64) - offset
+
 
 @dataclass(frozen=True)
 class GridFrame:
@@ -268,9 +286,10 @@ def xyz_to_cell(x: float, y: float, frame: GridFrame) -> Cell:
 
 
 def xyz_to_cell3d(x: float, y: float, z: float, frame: GridFrame3D) -> Cell3D:
-    col = int(math.floor((float(x) - frame.x_min) / frame.resolution_m))
-    row = int(math.floor((float(y) - frame.y_min) / frame.resolution_m))
-    layer = int(math.floor((float(z) - frame.z_min) / frame.resolution_z_m))
+    """Use the same stable voxel mapping for endpoints and bulk obstacle points."""
+    col = _axis_cells(float(x), frame.x_min, frame.resolution_m)
+    row = _axis_cells(float(y), frame.y_min, frame.resolution_m)
+    layer = _axis_cells(float(z), frame.z_min, frame.resolution_z_m)
     return layer, row, col
 
 
@@ -605,9 +624,9 @@ def pointcloud_to_grid3d(
         points = points[finite]
         if points.size == 0:
             return grid
-    cols = np.floor((points[:, 0] - frame.x_min) / frame.resolution_m).astype(np.int64)
-    rows = np.floor((points[:, 1] - frame.y_min) / frame.resolution_m).astype(np.int64)
-    layers = np.floor((points[:, 2] - frame.z_min) / frame.resolution_z_m).astype(np.int64)
+    cols = _axis_cells(points[:, 0], frame.x_min, frame.resolution_m)
+    rows = _axis_cells(points[:, 1], frame.y_min, frame.resolution_m)
+    layers = _axis_cells(points[:, 2], frame.z_min, frame.resolution_z_m)
     valid = (
         (layers >= 0) & (layers < frame.layers)
         & (rows >= 0) & (rows < frame.rows)
