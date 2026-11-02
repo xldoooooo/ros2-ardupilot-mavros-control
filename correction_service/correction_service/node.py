@@ -36,6 +36,7 @@ from correction_interfaces.msg import (
 from correction_interfaces.srv import (
     ApplySavedCorrection,
     ClearWindow,
+    ConfigureTags,
     SetCorrection,
     StartCorrection,
     StopCorrection,
@@ -50,7 +51,7 @@ from project_configuration import config_file
 
 from . import INTERFACE_VERSION
 from .camera_process import CameraProcess
-from .config import ServiceConfig, load_config
+from .config import ServiceConfig, format_tag_csv, load_config, save_tag_config
 from .detector import AprilTagDetector
 from .estimator import CorrectionEstimator, CorrectionSample, QualitySnapshot
 from .geometry import (
@@ -274,6 +275,9 @@ class CorrectionServiceNode(Node):
             ApplySavedCorrection,
             topics["apply_saved_service"],
             self._on_apply_saved,
+        )
+        self.create_service(
+            ConfigureTags, "/correction_service/configure_tags", self._on_configure_tags
         )
         self.create_timer(0.25, self._publish_status)
 
@@ -760,6 +764,50 @@ class CorrectionServiceNode(Node):
             )
             response.accepted = True
             response.message = job.message
+        self._publish_status()
+        return response
+
+    def _on_configure_tags(self, request, response):
+        """读写当前飞机 CSV；空闲时保存并丢弃旧几何窗口，不触碰 extnav。"""
+        with self._lock:
+            response.accepted = False
+            response.service_instance_id = self._service_instance_id
+            response.window_revision = self._window_revision
+            response.config_path = str(self.config.config_dir / "tag_pose.csv")
+            if request.save:
+                accepted, reason = self._validate_common_request_locked(
+                    str(request.source_id), int(request.sequence),
+                    str(request.expected_service_instance_id),
+                    int(request.expected_window_revision),
+                )
+                if not accepted:
+                    response.message = reason
+                    return response
+                try:
+                    updated = save_tag_config(self.config, str(request.csv))
+                except (ValueError, OSError) as exc:
+                    response.message = f"Tag 配置未保存：{exc}"
+                    return response
+                changed = updated.config_fingerprint != self.config.config_fingerprint
+                self.config = updated
+                if changed:
+                    self._invalidate_window_locked("Tag 配置已更新，请从首次校准开始")
+                response.window_revision = self._window_revision
+                response.message = (
+                    "Tag 配置已保存并应用；旧滑窗/候选已清空，当前生效修正保持"
+                    if changed else "Tag 配置已保存并应用；内容未变"
+                )
+            else:
+                # 默认读取磁盘，面板不依赖地面站自身所选的 aircraft 档案。
+                try:
+                    response.csv = (self.config.config_dir / "tag_pose.csv").read_text(encoding="utf-8")
+                except OSError as exc:
+                    response.message = f"读取 Tag 配置失败：{exc}"
+                    return response
+                response.message = "已读取当前飞机 tag_pose.csv"
+            if request.save:
+                response.csv = format_tag_csv(self.config.tags)
+            response.accepted = True
         self._publish_status()
         return response
 

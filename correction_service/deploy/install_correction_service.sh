@@ -131,6 +131,7 @@ grep -q 'expected_window_revision' <<< "${installed_start}" ||
   die "installed StartCorrection is not 2.0"
 ros2 interface show correction_interfaces/srv/ClearWindow >/dev/null
 ros2 interface show correction_interfaces/srv/ApplySavedCorrection >/dev/null
+ros2 interface show correction_interfaces/srv/ConfigureTags >/dev/null
 ros2 interface show correction_interfaces/srv/SetCorrection >/dev/null
 
 unit_stage="$(mktemp)"

@@ -1,13 +1,16 @@
-"""严格加载相机标定、Tag 世界位姿和修正任务运行参数。"""
+"""加载相机标定和修正任务参数，并校验、保存 Tag 世界位姿。"""
 
 from __future__ import annotations
 
 import configparser
 import csv
 import hashlib
+import io
 import math
+import os
 import re
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -282,33 +285,73 @@ def _load_extrinsics(config_dir: Path) -> np.ndarray:
 def _load_tags(config_dir: Path) -> dict[int, TagPose]:
     """加载人工维护的 Tag 世界坐标，拒绝重复 ID 与非正边长。"""
     path = config_dir / "tag_pose.csv"
-    expected = ("tag_id", "x", "y", "z", "yaw_deg", "size_m")
-    tags: dict[int, TagPose] = {}
     try:
-        with path.open("r", encoding="utf-8", newline="") as stream:
-            reader = csv.DictReader(stream)
-            if tuple(reader.fieldnames or ()) != expected:
-                raise ValueError(f"tag_pose.csv 表头必须为 {','.join(expected)}")
-            for line_number, row in enumerate(reader, start=2):
-                tag_id = int(row["tag_id"])
-                if tag_id < 0 or tag_id in tags:
-                    raise ValueError(f"tag_pose.csv 第 {line_number} 行 ID 重复或为负")
-                size = _positive(row["size_m"], f"tag_pose.csv:{line_number}:size_m")
-                tags[tag_id] = TagPose(
-                    tag_id=tag_id,
-                    x=_finite(row["x"], f"tag_pose.csv:{line_number}:x"),
-                    y=_finite(row["y"], f"tag_pose.csv:{line_number}:y"),
-                    z=_finite(row["z"], f"tag_pose.csv:{line_number}:z"),
-                    yaw_rad=math.radians(
-                        _finite(row["yaw_deg"], f"tag_pose.csv:{line_number}:yaw_deg")
-                    ),
-                    size_m=size,
-                )
+        return parse_tag_csv(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ValueError(f"无法读取 {path}: {exc}") from exc
+
+
+# CSV 字段及顺序同时用于文件、远端接口与配置表格。
+TAG_COLUMNS = ("tag_id", "x", "y", "z", "yaw_deg", "size_m")
+
+
+def parse_tag_csv(text: str) -> dict[int, TagPose]:
+    """统一检查 CSV：ID 唯一非负、数值有限、边长为正且至少一行。"""
+    reader = csv.DictReader(io.StringIO(text))
+    if tuple(reader.fieldnames or ()) != TAG_COLUMNS:
+        raise ValueError(f"tag_pose.csv 表头必须为 {','.join(TAG_COLUMNS)}")
+    tags: dict[int, TagPose] = {}
+    for line_number, row in enumerate(reader, start=2):
+        try:
+            tag_id = int(row["tag_id"])
+            if not 0 <= tag_id <= 2_147_483_647 or tag_id in tags:
+                raise ValueError("ID 必须唯一且位于 0～2147483647")
+            if None in row:
+                raise ValueError("列数必须为 6")
+            values = [_finite(row[key], key) for key in TAG_COLUMNS[1:]]
+            if values[-1] <= 0:
+                raise ValueError("size_m 必须大于 0")
+            tags[tag_id] = TagPose(tag_id, *values[:3], math.radians(values[3]), values[4])
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ValueError(f"tag_pose.csv 第 {line_number} 行：{exc}") from exc
     if not tags:
         raise ValueError("tag_pose.csv 至少需要一个 Tag")
-    return tags
+    return dict(sorted(tags.items()))
+
+
+def format_tag_csv(tags: dict[int, TagPose]) -> str:
+    """按数值 ID 升序输出可直接编辑的六列表格文件。"""
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(TAG_COLUMNS)
+    for tag_id, tag in sorted(tags.items()):
+        writer.writerow((tag_id, tag.x, tag.y, tag.z, math.degrees(tag.yaw_rad), tag.size_m))
+    return stream.getvalue()
+
+
+def save_tag_config(config: ServiceConfig, text: str) -> ServiceConfig:
+    """校验后原子替换 CSV，仅更新内存 Tag 配置与指纹，其余参数保持。"""
+    tags = parse_tag_csv(text)
+    canonical = format_tag_csv(tags)
+    root = config.config_dir
+    general = _load_yaml(root / "general_settings.yaml")
+    extrinsics = (root / Path(general["fcu_reference"]["extrinsics_file"]).expanduser()).resolve()
+    fingerprint = _configuration_fingerprint(root, extrinsics, tag_csv=canonical)
+    path = root / "tag_pose.csv"
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="",
+                                         dir=root, prefix=".tag_pose-", delete=False) as stream:
+            temporary_path = Path(stream.name)
+            stream.write(canonical)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary_path.chmod(path.stat().st_mode & 0o777)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    return replace(config, tags=tags, config_fingerprint=fingerprint)
 
 
 def _load_ini(path: Path) -> configparser.ConfigParser:
@@ -386,7 +429,9 @@ def _load_lens(config_dir: Path) -> dict[str, int]:
     return controls
 
 
-def _configuration_fingerprint(config_dir: Path, odin_extrinsics: Path) -> str:
+def _configuration_fingerprint(
+    config_dir: Path, odin_extrinsics: Path, *, tag_csv: str | None = None
+) -> str:
     """哈希全部几何与采集配置，阻止修改后静默复用内存窗口。"""
     digest = hashlib.sha256()
     paths = [config_dir / name for name in (
@@ -400,7 +445,9 @@ def _configuration_fingerprint(config_dir: Path, odin_extrinsics: Path) -> str:
     paths.append(odin_extrinsics)
     for path in paths:
         try:
-            payload = path.read_bytes()
+            payload = (tag_csv.encode("utf-8")
+                       if path.name == "tag_pose.csv" and tag_csv is not None
+                       else path.read_bytes())
         except OSError as exc:
             raise ValueError(f"无法读取配置指纹输入 {path}: {exc}") from exc
         digest.update(path.name.encode("utf-8") + b"\0" + payload + b"\0")

@@ -613,3 +613,50 @@ def test_finished_job_elapsed_time_remains_frozen(
     assert job.finished_monotonic > job.started_monotonic
     assert results[-1].duration_s == pytest.approx(finished_elapsed, abs=1e-6)
     assert statuses[-1].elapsed_s == pytest.approx(finished_elapsed, abs=1e-6)
+
+
+def test_tag_config_save_is_atomic_and_invalidates_old_geometry_only(
+    correction_node, tmp_path: Path
+) -> None:
+    """真实服务回调保存到临时档案，失败保留文件，成功换几何且不动 active。"""
+    import shutil
+    from correction_interfaces.srv import ConfigureTags
+    node = correction_node
+    root = tmp_path / "correction"
+    shutil.copytree(CONFIG_DIR, root)
+    shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", tmp_path / "odin_extrinsics.yaml")
+    node.config = replace(node.config, config_dir=root)
+    path = root / "tag_pose.csv"
+    original = path.read_bytes()
+    candidate = _candidate(node, saved=True)
+    node._window = candidate.keyframes
+    node._saved_candidate = candidate
+    active_revision = node._extnav.revision
+    request = ConfigureTags.Request()
+    request.save = True
+    request.source_id = "tag-editor-test"
+    request.sequence = 1
+    request.expected_service_instance_id = node._service_instance_id
+    request.expected_window_revision = node._window_revision
+    request.csv = "tag_id,x,y,z,yaw_deg,size_m\n2,1,2,3,90,0.2\n2,0,0,0,0,0.1\n"
+    response = node._on_configure_tags(request, ConfigureTags.Response())
+    assert not response.accepted
+    assert path.read_bytes() == original
+    assert node._saved_candidate is candidate
+    request.sequence += 1
+    request.csv = "tag_id,x,y,z,yaw_deg,size_m\n10,1,2,3,90,0.2\n2,-1,0,0,0,0.1\n"
+    response = node._on_configure_tags(request, ConfigureTags.Response())
+    assert response.accepted
+    assert list(node.config.tags) == [2, 10]
+    assert path.read_text() == response.csv
+    assert node.config.tags[10].yaw_rad == pytest.approx(math.pi / 2)
+    assert not node._window and node._saved_candidate is None
+    assert node._extnav.revision == active_revision
+    assert node._window_revision == request.expected_window_revision + 1
+    saved_bytes = path.read_bytes()
+    request.sequence += 1
+    request.expected_window_revision = node._window_revision
+    node._pending_candidate = candidate
+    response = node._on_configure_tags(request, ConfigureTags.Response())
+    assert not response.accepted
+    assert path.read_bytes() == saved_bytes

@@ -113,6 +113,15 @@ class _FakeCorrectionClient:
     def status(self) -> dict[str, Any]:
         return self.current_status
 
+    def request_tags(self, *, save=False, csv="", service_instance_id="",
+                     window_revision=0, callback=None) -> None:
+        """模拟当前飞机的配置读取，避免 UI 测试创建真实 DDS。"""
+        if callback:
+            callback({"accepted": True, "csv": csv if save else
+                      "tag_id,x,y,z,yaw_deg,size_m\n0,0,0,0,0,0.1\n",
+                      "service_instance_id": "instance-test",
+                      "config_path": "/aircraft/correction/tag_pose.csv", "message": "ok"}, "")
+
     def request_start(
         self,
         operation: int,
@@ -516,8 +525,7 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
                 window._command_layout.indexOf(widget)
             )
             for widget in (
-                window.tag_id_input,
-                window.window_size_input,
+                window._inputs_row,
                 window.first_button,
                 window.next_button,
                 window.stop_button,
@@ -525,8 +533,9 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
                 window.apply_saved_button,
             )
         }
-        assert command_positions[window.tag_id_input][:2] == (0, 1)
-        assert command_positions[window.window_size_input][:2] == (1, 1)
+        assert command_positions[window._inputs_row] == (0, 0, 1, 2)
+        assert window.tag_id_input.maximumWidth() == 130
+        assert window.window_size_input.maximumWidth() == 130
         assert command_positions[window.first_button][:2] == (3, 0)
         assert command_positions[window.next_button][:2] == (3, 1)
         assert command_positions[window.stop_button][:2] == (4, 0)
@@ -576,5 +585,51 @@ def test_spin_boxes_ignore_wheel_events() -> None:
         window.tag_id_input.wheelEvent(tag_event)  # type: ignore[arg-type]
         window.window_size_input.wheelEvent(window_event)  # type: ignore[arg-type]
         assert tag_event.ignored and window_event.ignored
+    finally:
+        window.close()
+
+
+def test_tag_editor_roundtrip_sort_validation_and_draft_preservation() -> None:
+    """配置表格按数字排序、阻止重复 ID，并保持刷新期间的草稿。"""
+    from PySide6.QtCore import Qt
+    application = _application()
+    client = _FakeCorrectionClient()
+    window = CorrectionPanelWindow(client=client)
+    try:
+        editor = window.tag_editor
+        assert editor.table.rowCount() == 1
+        editor._populate("tag_id,x,y,z,yaw_deg,size_m\n10,1,2,3,45,0.2\n2,4,5,6,90,0.3\n")
+        assert [editor.table.item(row, 0).text() for row in range(2)] == ["2", "10"]
+        from PySide6.QtWidgets import QLineEdit
+        window.show()
+        window.tabs.setCurrentIndex(1)
+        application.processEvents()
+        editor.table.editItem(editor.table.item(0, 1))
+        application.processEvents()
+        cell_editor = editor.table.findChild(QLineEdit)
+        assert cell_editor is not None
+        cell_editor.setText("8.125")
+        editor.save_button.click()
+        application.processEvents()
+        window._refresh()
+        assert editor.table.item(0, 1).text() == "8.125"
+        editor.table.item(1, 0).setData(Qt.ItemDataRole.EditRole, 2)
+        editor.save_button.click()
+        assert "唯一" in editor.message.text()
+        editor.table.item(1, 0).setData(Qt.ItemDataRole.EditRole, 7)
+        editor.save_button.click()
+        application.processEvents()
+        assert editor.message.text() == "ok"
+        assert editor.table.item(0, 1).text() == "8.125"
+        editor.add_button.click()
+        assert editor.table.rowCount() == 3
+        assert editor.table.item(0, 0).text() == "0"
+        editor.table.selectRow(0)
+        editor.delete_button.click()
+        assert editor.table.rowCount() == 2
+        client.current_status["correction"]["active"] = True
+        window._refresh()
+        assert not editor.save_button.isEnabled()
+        assert not window.details_group.isChecked()
     finally:
         window.close()

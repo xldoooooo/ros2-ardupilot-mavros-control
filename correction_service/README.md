@@ -258,11 +258,22 @@ source 与 install 的 `2.0.0` 清单，以及新消息/服务字段，避免旧
 
 ## 面板
 
-主 GUI 右上角可打开“AprilTag-Odin 修正面板”，也可独立运行：
+主 GUI 右上角可打开“标记校准面板”，也可独立运行：
 
 ```bash
 ./.venv/bin/python correction_service/correction_panel.py
 ```
+
+面板分为“校准与状态”和“Tag 配置”。校准页突出任务、候选和当前生效修正，以表格对照
+原始/修正 Odin、FCU 输入和 EKF 位姿；配准、采样、session 和旧 T 公式等信息在“展开诊断与任务详情”中。
+Tag 配置页自动读取实际连接的修正服务所用 `tag_pose.csv`，支持增删和编辑
+`tag_id,x,y,z,yaw_deg,size_m`，按数值 ID 升序排列。点击“保存并应用”才通过
+`/correction_service/configure_tags` 原子写入飞机端文件并更新内存，无需重启；界面显示实际文件路径。
+ID 必须唯一非负，坐标/角度必须有限，边长必须为正，至少保留一个 Tag。
+活动校准或应用结果未知期间不能保存；配置变化后清空旧几何的窗口、候选和累计次数，
+当前 extnav 生效修正保持。重新读取会替换未保存草稿，普通状态刷新不会覆盖编辑。
+该入口为独立新增服务，已有飞行/校准协议不变；升级时地面与飞机均须重建
+`correction_interfaces` 和 `correction_service`，旧服务仍可校准但配置页会提示缺少接口。
 
 面板使用独立 ROS context 和 `CORRECTION_ROS_DOMAIN_ID`（默认 0）。它显示服务端窗口长度、
 N/下一次序号、Tag 顺序、每个 keyframe 的 P/Q/质量、最长 O/W 基线、RMS/最大残差、模型 yaw sigma、

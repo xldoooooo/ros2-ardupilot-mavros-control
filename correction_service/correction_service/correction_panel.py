@@ -1,16 +1,17 @@
-"""独立 AprilTag-Odin 2.0 面板：响应式滑窗操作、生产位姿与旧 T 对照。"""
+"""独立标记校准面板：Tag 配置、滑窗操作、位姿对照与折叠诊断。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Qt
 from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QGroupBox,
     QLabel,
     QMainWindow,
@@ -19,6 +20,11 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
     QVBoxLayout,
     QWidget,
 )
@@ -26,13 +32,18 @@ from PySide6.QtWidgets import (
 from ground_station_core.qt_ui.window_chrome import ShadowWindowChromeMixin
 
 from .ros_client import CorrectionPanelClient
+from .tag_editor import TagConfigEditor
 
+# 独立面板桌面身份；保持与已有启动入口兼容。
 DESKTOP_APPLICATION_NAME = "ROS 2 AprilTag Odin Correction"
+# 既有校准协议；Tag 编辑为新增的独立可选服务。
 INTERFACE_VERSION = "2.0"
+# 对应 StartCorrection 首次和后续操作枚举。
 OPERATION_FIRST = 1
 OPERATION_NEXT = 2
 # 低于此宽度时改为两列命令区和纵向状态组，适配小屏及高 DPI 显示。
 COMPACT_LAYOUT_WIDTH_PX = 820
+# 面板、编辑表格及状态层级的统一样式。
 PANEL_STYLE_SHEET = """
 QWidget {
     color: #182433;
@@ -64,6 +75,9 @@ QGroupBox {
 QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; }
 QLabel#valueLabel { font-family: "DejaVu Sans Mono", monospace; font-weight: 600; }
 QLabel#warningLabel { color: #8b4a18; }
+QTableWidget { background: white; alternate-background-color: #f3f6f9; gridline-color: #dce3ea; }
+QHeaderView::section { background: #e8eef4; padding: 6px; border: none; font-weight: 600; }
+QLabel#summaryValue { color: #245f87; font-size: 12pt; font-weight: 700; }
 QSpinBox {
     min-height: 30px;
     padding: 2px 7px;
@@ -107,6 +121,7 @@ class _NoWheelSpinBox(QSpinBox):
     """禁用滚轮改值，避免滚动页面时误改 Tag ID 或滑窗长度。"""
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        """将滚轮交还页面滚动，不改输入值。"""
         event.ignore()
 
 
@@ -125,6 +140,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         client: CorrectionPanelClient | None = None,
         parent: QWidget | None = None,
     ) -> None:
+        """创建独立面板与异步客户端，不接管飞行会话。"""
         super().__init__(parent)
         self.client = client or CorrectionPanelClient()
         self._bridge = _PanelBridge(self)
@@ -156,7 +172,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
-        root_layout.addWidget(self._build_window_title_bar("AprilTag-Odin 修正面板"))
+        root_layout.addWidget(self._build_window_title_bar("标记校准面板"))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -175,19 +191,30 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         warning.setWordWrap(True)
         layout.addWidget(warning)
 
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+        calibration = QWidget()
+        layout = QVBoxLayout(calibration)
+        layout.setContentsMargins(6, 6, 6, 6)
+        self.tabs.addTab(calibration, "校准与状态")
+        self.tag_editor = TagConfigEditor(self.client)
+        self.tabs.addTab(self.tag_editor, "Tag 配置")
+
         command_group = QGroupBox("多 Tag 滑窗标定")
         self._command_layout = QGridLayout(command_group)
         self._tag_id_label = QLabel("预期 Tag ID")
-        self._command_layout.addWidget(self._tag_id_label, 0, 0)
         self.tag_id_input = _NoWheelSpinBox()
         self.tag_id_input.setRange(0, 2_147_483_647)
-        self._command_layout.addWidget(self.tag_id_input, 0, 1)
         self._window_size_label = QLabel("滑窗长度")
-        self._command_layout.addWidget(self._window_size_label, 0, 2)
         self.window_size_input = _NoWheelSpinBox()
         self.window_size_input.setRange(2, 20)
         self.window_size_input.setValue(5)
-        self._command_layout.addWidget(self.window_size_input, 0, 3)
+        self._inputs_row = QWidget()
+        inputs = QHBoxLayout(self._inputs_row)
+        inputs.setContentsMargins(0, 0, 0, 0)
+        for widget in (self._tag_id_label, self.tag_id_input, self._window_size_label, self.window_size_input):
+            inputs.addWidget(widget)
+        inputs.addStretch(1)
         self.apply_checkbox = QCheckBox("本次收敛后弹窗确认应用（默认仅 dry-run）")
         self.apply_checkbox.setChecked(False)
         self._command_layout.addWidget(self.apply_checkbox, 1, 0, 1, 4)
@@ -216,6 +243,12 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.command_message.setWordWrap(True)
         self._command_layout.addWidget(self.command_message, 4, 0, 1, 4)
         layout.addWidget(command_group)
+        for control in (self.tag_id_input, self.window_size_input):
+            control.setMaximumWidth(130)
+        for button in (self.first_button, self.next_button, self.stop_button,
+                       self.clear_button, self.apply_saved_button):
+            button.setMaximumWidth(210)
+        self.apply_checkbox.setText("收敛后确认应用（默认仅采样）")
 
         window_group = QGroupBox("服务端权威滑窗")
         window_form = QFormLayout(window_group)
@@ -228,9 +261,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             self.keyframe_values.textInteractionFlags()
         )
         window_form.addRow("状态 / N", self.window_summary)
-        window_form.addRow("instance / revisions", self.window_revisions)
         window_form.addRow("Tag 顺序", self.window_tags)
-        window_form.addRow("P/Q/质量", self.keyframe_values)
         layout.addWidget(window_group)
 
         self._status_layout = QGridLayout()
@@ -247,11 +278,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.apply_state_value.setWordWrap(True)
         correction_form.addRow("任务", self.correction_state)
         correction_form.addRow("候选", self.candidate_value)
-        correction_form.addRow("停留段质量", self.quality_value)
-        correction_form.addRow("基线 / 配准", self.registration_value)
         correction_form.addRow("delta / 预计跳变", self.delta_value)
-        correction_form.addRow("帧/样本", self.sample_value)
-        correction_form.addRow("性能/时间源", self.performance_value)
         correction_form.addRow("可应用性", self.apply_state_value)
         self._correction_group = correction_group
         self._status_layout.addWidget(correction_group, 0, 0)
@@ -266,38 +293,61 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.extnav_event.setWordWrap(True)
         extnav_form.addRow("Odin / 修正", self.extnav_state)
         extnav_form.addRow("active", self.extnav_value)
-        extnav_form.addRow("session / revision", self.session_value)
-        extnav_form.addRow("中心模式 / 杆臂", self.reference_value)
         extnav_form.addRow("最近事件", self.extnav_event)
         self._extnav_group = extnav_group
         self._status_layout.addWidget(extnav_group, 0, 1)
         layout.addLayout(self._status_layout)
 
-        compare_group = QGroupBox("实际数据链对照（不同中心/参考系，不能直接逐帧相减）")
-        compare_form = QFormLayout(compare_group)
+        self.window_summary.setObjectName("summaryValue")
+        self.extnav_value.setObjectName("summaryValue")
+        self.candidate_value.setObjectName("summaryValue")
+
+        compare_group = QGroupBox("位姿对照 · 不同中心/参考系，不可直接相减")
+        compare_layout = QVBoxLayout(compare_group)
+        self.pose_table = QTableWidget(4, 5)
+        self.pose_table.setHorizontalHeaderLabels(("x (m)", "y (m)", "z (m)", "yaw (°)", "年龄 (s)"))
+        self.pose_table.setVerticalHeaderLabels(("Odin 原始", "Odin 修正", "FCU 输入", "EKF 融合"))
+        self.pose_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.pose_table.horizontalHeader().setMinimumSectionSize(45)
+        self.pose_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.pose_table.setAlternatingRowColors(True)
+        self.pose_table.setFixedHeight(165)
+        compare_layout.addWidget(self.pose_table)
+        layout.addWidget(compare_group)
+
         self.raw_pose = self._value_label()
         self.corrected_pose = self._value_label()
         self.pose_fcu = self._value_label()
         self.legacy_t_pose_fcu = self._value_label()
         self.final_pose = self._value_label()
-        compare_form.addRow("raw Odin（Odin IMU / O 局部系）", self.raw_pose)
-        compare_form.addRow(
-            "corrected Odin（Odin IMU / 世界水平或 identity）", self.corrected_pose
-        )
-        compare_form.addRow("飞控输入（FCU 中心 / extnav pose_fcu）", self.pose_fcu)
-        compare_form.addRow(
-            "旧 T 公式对照（+T_xy，仅诊断）",
-            self.legacy_t_pose_fcu,
-        )
-        compare_form.addRow("MAVROS EKF final（融合输出）", self.final_pose)
-        layout.addWidget(compare_group)
-
-        result_group = QGroupBox("最近任务终态")
-        result_layout = QVBoxLayout(result_group)
         self.result_value = QLabel("尚无终态结果")
         self.result_value.setWordWrap(True)
-        result_layout.addWidget(self.result_value)
-        layout.addWidget(result_group)
+        details = QWidget()
+        detail_form = QFormLayout(details)
+        for title, label in (
+            ("instance / revisions", self.window_revisions),
+            ("keyframe P/Q/质量", self.keyframe_values),
+            ("停留段质量", self.quality_value),
+            ("基线 / 配准", self.registration_value),
+            ("帧/样本", self.sample_value),
+            ("性能/时间源", self.performance_value),
+            ("session / revision", self.session_value),
+            ("中心模式 / 杆臂", self.reference_value),
+            ("Odin 原始 · IMU/O 局部系", self.raw_pose),
+            ("Odin 修正 · IMU/世界或 identity", self.corrected_pose),
+            ("FCU 输入 · extnav", self.pose_fcu),
+            ("旧 T 公式（仅诊断）", self.legacy_t_pose_fcu),
+            ("MAVROS EKF 融合输出", self.final_pose),
+            ("最近任务终态", self.result_value),
+        ):
+            detail_form.addRow(title, label)
+        self.details_group = QGroupBox("展开诊断与任务详情")
+        self.details_group.setCheckable(True)
+        self.details_group.setChecked(False)
+        details.setVisible(False)
+        self.details_group.toggled.connect(details.setVisible)
+        QVBoxLayout(self.details_group).addWidget(details)
+        layout.addWidget(self.details_group)
         layout.addStretch(1)
         root_layout.addWidget(scroll, 1)
         self._update_responsive_layout(self.width())
@@ -320,10 +370,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self._compact_layout = compact
 
         command_widgets = (
-            self._tag_id_label,
-            self.tag_id_input,
-            self._window_size_label,
-            self.window_size_input,
+            self._inputs_row,
             self.apply_checkbox,
             self.first_button,
             self.next_button,
@@ -338,10 +385,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             self._command_layout.setColumnStretch(column, 0)
 
         if compact:
-            self._command_layout.addWidget(self._tag_id_label, 0, 0)
-            self._command_layout.addWidget(self.tag_id_input, 0, 1)
-            self._command_layout.addWidget(self._window_size_label, 1, 0)
-            self._command_layout.addWidget(self.window_size_input, 1, 1)
+            self._command_layout.addWidget(self._inputs_row, 0, 0, 1, 2)
             self._command_layout.addWidget(self.apply_checkbox, 2, 0, 1, 2)
             self._command_layout.addWidget(self.first_button, 3, 0)
             self._command_layout.addWidget(self.next_button, 3, 1)
@@ -352,10 +396,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             self._command_layout.setColumnStretch(0, 1)
             self._command_layout.setColumnStretch(1, 1)
         else:
-            self._command_layout.addWidget(self._tag_id_label, 0, 0)
-            self._command_layout.addWidget(self.tag_id_input, 0, 1)
-            self._command_layout.addWidget(self._window_size_label, 0, 2)
-            self._command_layout.addWidget(self.window_size_input, 0, 3)
+            self._command_layout.addWidget(self._inputs_row, 0, 0, 1, 4)
             self._command_layout.addWidget(self.apply_checkbox, 1, 0, 1, 4)
             self._command_layout.addWidget(self.first_button, 2, 0)
             self._command_layout.addWidget(self.next_button, 2, 1)
@@ -513,6 +554,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         """读取纯数据快照并刷新窗口、候选、应用事实和四段位姿。"""
         status = self.client.status()
         self._latest_status = status
+        self.tag_editor.set_service_status(status.get("correction", {}))
         correction = status.get("correction", {})
         extnav = status.get("extnav", {})
         startup_error = str(status.get("startup_error", ""))
@@ -599,6 +641,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             )
         else:
             self.correction_state.setText("correction_service 状态不可用/过期")
+            for label in (self.window_summary, self.window_tags, self.candidate_value,
+                          self.delta_value, self.apply_state_value):
+                label.setText("不可用/过期")
 
         if extnav_fresh:
             self.extnav_state.setText(
@@ -633,7 +678,13 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             self.extnav_event.setText(str(extnav.get("last_event", "—")))
         else:
             self.extnav_state.setText("extnav correction 状态不可用/过期")
+            self.extnav_value.setText("不可用/过期")
 
+        for row, key in enumerate(("raw", "corrected", "pose_fcu", "final")):
+            snapshot = status.get(key, {})
+            for column, field in enumerate(("x_m", "y_m", "z_m", "yaw_deg", "age_seconds")):
+                text = f"{snapshot.get(field, 0):+.4f}" if snapshot.get("fresh") else "—"
+                self.pose_table.setItem(row, column, QTableWidgetItem(text))
         self.raw_pose.setText(self._format_pose(status.get("raw", {})))
         self.corrected_pose.setText(self._format_pose(status.get("corrected", {})))
         self.pose_fcu.setText(self._format_pose(status.get("pose_fcu", {})))

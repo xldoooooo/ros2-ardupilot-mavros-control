@@ -1,0 +1,14 @@
+# Read or atomically save the correction service's active tag_pose.csv.
+bool save
+string csv
+string expected_service_instance_id
+string source_id
+uint64 sequence
+uint64 expected_window_revision
+---
+bool accepted
+string message
+string csv
+string config_path
+string service_instance_id
+uint64 window_revision

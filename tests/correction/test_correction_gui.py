@@ -29,7 +29,7 @@ def test_correction_panel_launcher_is_detached_from_ground_station_cleanup() -> 
             sys.executable, [str(panel_script)], str(panel_script.parent)
         )
         assert environment.cleanup_calls == 0
-        assert "已打开独立 Tag-Odin 修正面板" in (
+        assert "已打开独立标记校准面板" in (
             window.activity_banner.message_label.text()
         )
     finally:

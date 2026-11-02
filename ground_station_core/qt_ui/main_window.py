@@ -590,7 +590,7 @@ class GroundStationWindow(QMainWindow):
         self.file_manager_button.setToolTip("打开独立地面媒体文件管理面板")
         self.file_manager_button.clicked.connect(self._open_file_manager)
         controls_layout.addWidget(self.file_manager_button)
-        self.correction_panel_button = QPushButton("Tag-Odin 修正面板")
+        self.correction_panel_button = QPushButton("标记校准面板")
         self.correction_panel_button.setObjectName("correctionPanelButton")
         self.correction_panel_button.setProperty("compact", True)
         self.correction_panel_button.setToolTip(
@@ -741,7 +741,7 @@ class GroundStationWindow(QMainWindow):
             return
         panel_script = PROJECT_ROOT / "correction_service" / "correction_panel.py"
         if not panel_script.is_file():
-            message = f"未找到 Tag-Odin 修正面板：{panel_script}"
+            message = f"未找到 标记校准面板：{panel_script}"
             self._events.error("correction", message)
             self._show_notice("无法打开修正面板", message, QMessageBox.Icon.Warning)
             return
@@ -756,13 +756,13 @@ class GroundStationWindow(QMainWindow):
             self._events.error("correction", f"修正面板启动异常：{exc}")
         if started:
             self._events.info(
-                "correction", f"已启动独立 Tag-Odin 修正面板（PID={process_id}）"
+                "correction", f"已启动独立标记校准面板（PID={process_id}）"
             )
             self.activity_banner.set_message(
-                "已打开独立 Tag-Odin 修正面板。", LogLevel.INFO
+                "已打开独立标记校准面板。", LogLevel.INFO
             )
             return
-        message = "Tag-Odin 修正面板启动失败，请检查接口构建和 PySide6 环境。"
+        message = "标记校准面板启动失败，请检查接口构建和 PySide6 环境。"
         self._events.error("correction", message)
         self._show_notice("无法打开修正面板", message, QMessageBox.Icon.Warning)
 

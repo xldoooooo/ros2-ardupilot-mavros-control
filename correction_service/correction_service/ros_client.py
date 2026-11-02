@@ -20,6 +20,8 @@ class _Command:
     """跨线程交给 ROS executor 的单条校准操作。"""
 
     kind: str
+    csv: str = ""
+    save: bool = False
     operation: int = 0
     expected_tag_id: int = 0
     window_size: int = 5
@@ -242,6 +244,16 @@ class CorrectionPanelClient:
             )
         )
 
+    def request_tags(
+        self, *, save: bool = False, csv: str = "", service_instance_id: str = "",
+        window_revision: int = 0, callback: ResultCallback | None = None,
+    ) -> None:
+        """异步读取或保存实际服务端的 Tag CSV，不使用地面站本地档案。"""
+        self._enqueue(_Command(
+            "tags", save=save, csv=csv, service_instance_id=service_instance_id,
+            window_revision=window_revision, callback=callback,
+        ))
+
     def close(self) -> None:
         """只关闭面板 ROS context；不隐式停止任务或改变 active correction。"""
         self._stop_requested.set()
@@ -290,6 +302,7 @@ class CorrectionPanelClient:
             from correction_interfaces.srv import (
                 ApplySavedCorrection,
                 ClearWindow,
+                ConfigureTags,
                 StartCorrection,
                 StopCorrection,
             )
@@ -375,6 +388,7 @@ class CorrectionPanelClient:
             apply_saved_client = node.create_client(
                 ApplySavedCorrection, "/correction_service/apply_saved"
             )
+            tags_client = node.create_client(ConfigureTags, "/correction_service/configure_tags")
             executor = SingleThreadedExecutor(context=context)
             executor.add_node(node)
 
@@ -386,6 +400,7 @@ class CorrectionPanelClient:
                     except queue.Empty:
                         break
                     clients = {
+                        "tags": tags_client,
                         "start": start_client,
                         "stop": stop_client,
                         "clear": clear_client,
@@ -401,7 +416,13 @@ class CorrectionPanelClient:
                             f"未发现 correction_service {command.kind} 接口",
                         )
                         continue
-                    if command.kind == "start":
+                    if command.kind == "tags":
+                        request = ConfigureTags.Request()
+                        request.save = command.save
+                        request.csv = command.csv
+                        request.expected_service_instance_id = command.service_instance_id
+                        request.expected_window_revision = command.window_revision
+                    elif command.kind == "start":
                         request = StartCorrection.Request()
                         request.operation = command.operation
                         request.expected_tag_id = command.expected_tag_id
@@ -431,7 +452,8 @@ class CorrectionPanelClient:
                         )
                         request.expected_window_revision = command.window_revision
                         request.expected_extnav_revision = command.extnav_revision
-                    request.stamp = node.get_clock().now().to_msg()
+                    if hasattr(request, "stamp"):
+                        request.stamp = node.get_clock().now().to_msg()
                     request.source_id = self.source_id
                     request.sequence = self._next_sequence()
                     future = client.call_async(request)
@@ -450,6 +472,9 @@ class CorrectionPanelClient:
                             "accepted": bool(response.accepted),
                             "message": str(response.message),
                         }
+                        if kind == "tags":
+                            payload["csv"] = str(response.csv)
+                            payload["config_path"] = str(response.config_path)
                         if kind in ("start", "apply_saved"):
                             payload["job_id"] = str(response.job_id)
                         if hasattr(response, "service_instance_id"):

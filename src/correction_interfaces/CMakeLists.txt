@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/StopCorrection.srv"
   "srv/ClearWindow.srv"
   "srv/ApplySavedCorrection.srv"
+  "srv/ConfigureTags.srv"
   DEPENDENCIES
     builtin_interfaces
     std_msgs
