@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -87,9 +88,51 @@ class WaypointDropTable(QTableWidget):
         event.acceptProposedAction()
 
 
+class WaypointCoordinateDelegate(QStyledItemDelegate):
+    """复用顶部输入约束，在单元格编辑期间即时更新本地航点。"""
+
+    def __init__(self, panel: WaypointPanel) -> None:
+        """将数值编辑器绑定到面板唯一的航点列表。"""
+        super().__init__(panel.table)
+        self._panel = panel
+
+    def createEditor(self, parent, option, index):  # noqa: N802
+        """为坐标或角度创建支持键入即时更新的数值输入框。"""
+        source = (
+            self._panel.x_input, self._panel.y_input,
+            self._panel.z_input, self._panel.yaw_input,
+        )[index.column() - 1]
+        editor = NoWheelDoubleSpinBox(parent)
+        editor.setDecimals(source.decimals())
+        editor.setRange(source.minimum(), source.maximum())
+        editor.setSingleStep(source.singleStep())
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        editor.setFrame(False)
+        editor.setKeyboardTracking(True)
+        editor.valueChanged.connect(
+            lambda value: self._panel._edit_waypoint(index.row(), index.column(), value)
+        )
+        return editor
+
+    def setEditorData(self, editor, index) -> None:  # noqa: N802
+        """载入原始值；实时刷新同值时保留用户正在键入的文本与光标。"""
+        value = self._panel.waypoints[index.row()][index.column() - 1]
+        if index.column() == 4:
+            value = math.degrees(value)
+        value = round(value, editor.decimals())
+        if editor.value() != value:
+            with QSignalBlocker(editor):
+                editor.setValue(value)
+
+    def setModelData(self, editor, model, index) -> None:  # noqa: N802
+        """数值变化已即时写回；退出编辑时不再提交，避免未修改值被取整。"""
+        pass
+
+
 class WaypointPanel(QWidget):
     """维护尚未上传的本地航点副本，并把最终列表作为单一信号发出。"""
 
+    # 顶部输入、表头和航点行共用的紧凑高度，单位为像素。
     _ROW_HEIGHT = 28
 
     # 参数依次为航点、飞行策略、命令生成方式和跟踪控制方式。
@@ -199,12 +242,17 @@ class WaypointPanel(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.AnyKeyPressed
+        )
+        self.table.setItemDelegate(WaypointCoordinateDelegate(self))
         self.table.setMinimumHeight(95)
-        self.table.setToolTip("可将一个 CSV 航点文件直接拖入此列表")
+        self.table.setToolTip("双击数值直接修改，即时生效并更新已开启的预览；支持拖入 CSV 文件")
         self.table.setProperty("baseToolTip", self.table.toolTip())
         self.table.setAccessibleDescription(
-            "当前 odom/map 坐标系航点列表；支持拖入一个 CSV 文件并在确认后替换列表"
+            "当前 odom/map 坐标系航点列表；双击数值即时修改；支持拖入一个 CSV 文件并在确认后替换列表"
         )
         # 取消固定最大高度，使中间列表成为唯一纵向伸缩区。
         self.table.setSizePolicy(
@@ -598,6 +646,24 @@ class WaypointPanel(QWidget):
         self.status_label.setText(f"本地列表包含 {len(self._waypoints)} 个航点，尚未上传。")
         self.waypoints_changed.emit(f"已添加航点 #{len(self._waypoints)}")
 
+    def _edit_waypoint(self, row: int, column: int, value: float) -> None:
+        """只修改目标分量并复用现有通知，让预览与待上传副本即时一致。"""
+        if not self._editing_enabled or not 0 <= row < len(self._waypoints):
+            return
+        waypoint = list(self._waypoints[row])
+        coordinate = math.radians(value) if column == 4 else value
+        previous = math.degrees(waypoint[3]) if column == 4 else waypoint[column - 1]
+        # Qt 在回车时也会发出同值信号；保留未实际修改的采点/导入精度。
+        if round(previous, 1 if column == 4 else 2) == value:
+            return
+        waypoint[column - 1] = coordinate
+        self._waypoints[row] = tuple(waypoint)
+        self.table.item(row, column).setText(
+            f"{value:+.1f}" if column == 4 else f"{value:+.2f}"
+        )
+        self.status_label.setText(f"已修改本地航点 #{row + 1}，尚未上传。")
+        self.waypoints_changed.emit(f"已修改航点 #{row + 1} 的 {('X', 'Y', 'Z', 'Yaw')[column - 1]}")
+
     def _remove_selected(self) -> None:
         """删除当前选中行并保持邻近选择。"""
         row = self.table.currentRow()
@@ -651,7 +717,7 @@ class WaypointPanel(QWidget):
         self.progress.setFormat("尚未执行")
 
     def _refresh_table(self, selected_row: int | None = None) -> None:
-        """由内存列表重建只读表格，保持编号与弧度/角度转换一致。"""
+        """由内存列表重建表格，仅编号只读，保持弧度/角度转换一致。"""
         self.table.setRowCount(len(self._waypoints))
         for row, waypoint in enumerate(self._waypoints):
             values = (
@@ -663,6 +729,8 @@ class WaypointPanel(QWidget):
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, column, item)
         if selected_row is not None and 0 <= selected_row < self.table.rowCount():

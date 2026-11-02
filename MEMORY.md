@@ -79,6 +79,8 @@
 
 ## 逐机部署差异与待同步项
 
+- 主GUI航点列表支持双击 X/Y/Z/Yaw 原位编辑，有效数值输入即时更新本地航点和已开启的 RViz 预览，无需确认；编号只读，执行中保持原有编辑锁，未改动分量保留采点/导入精度。实现仅在 `ground_station_core/qt_ui/waypoint_panel.py`，无新依赖、无需 ROS 重建，重开GUI加载。仅开发机已更新，mini-ground、hp及两架飞机内的地面源码尚未同步。
+
 - **落地低电压起飞门控（`f321f43`）**：实机会话仅在机载 `on_ground=true`、电池遥测有效且整组电压低于22.2 V时禁用起飞按钮，拒绝人工及上位机01/03起飞并记日志；确认/倒计时结束复核最新值。唯一阈值已移至 `ground_station_core/config.py:HARDWARE_LOW_VOLTAGE`，与上位机0C告警共用。离地不增加电压干预，不修改飞控自身电池保护；仿真百分比策略保持。开发机与mini-ground源码已同步，mini已重开GUI且本机9项门控测试通过，自动连接飞机保持关闭；refresh无机载改动无需部署或重启，hp/new地面源码下次同步需包含本改动。无需机载重建。
 
 - 开发机源码已增加地面 `config/host.local.env` 的实机 ROS domain 和默认 GPS 原点入口，地面与机载视频安装器使用运行时选定的 MediaMTX 路径。refresh、new、hp-desktop、mini-ground 尚未同步；部署时保留各机配置并核对两端 ROS domain 一致，服务重启后才生效。详见[配置审查报告](agent/report/report-2026-10-23-configurability-audit.md)。

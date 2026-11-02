@@ -15,9 +15,11 @@ from pathlib import Path
 from unittest.mock import patch
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtTest import QTest
 from ground_station_core.config import PROJECT_ROOT
 from ground_station_core.event_log import LogLevel
 from ground_station_core.models import CommandResult, FlightMode
+from ground_station_core.qt_ui.widgets import NoWheelDoubleSpinBox
 
 
 def test_add_current_waypoint_uses_displayed_pose_and_rejects_invalid_pose() -> None:
@@ -292,6 +294,79 @@ def test_waypoint_preview_button_publishes_snapshot_and_tracks_later_edits() -> 
         panel.clear_waypoints()
         assert ros.calls[-1] == ("waypoint_preview", ())
         assert not panel.preview_button.isEnabled()
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
+    """真实键入中间航点四项，验证即时预览、精度保留与任务编辑锁。"""
+    environment = _FakeEnvironment()
+    window, ros = _window(_operational_snapshot(armed=False), environment=environment)
+    original = (
+        (1.234567, -2.345678, 3.456789, 0.123456),
+        (4.567891, -5.678912, 6.789123, -0.234567),
+        (7.891234, -8.912345, 9.123456, 0.345678),
+    )
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        panel = window.waypoints
+        panel.replace_waypoints(original, "测试")
+        window._refresh()
+        panel.preview_button.click()
+        assert not panel.table.item(1, 0).flags() & Qt.ItemFlag.ItemIsEditable
+
+        # 打开再退出未修改的单元格，不能把采点/导入的原始精度截断。
+        item = panel.table.item(1, 1)
+        panel.table.setCurrentItem(item)
+        panel.table.editItem(item)
+        _application().processEvents()
+        editor = panel.table.viewport().findChild(NoWheelDoubleSpinBox)
+        assert editor is not None
+        QTest.keyClick(editor, Qt.Key.Key_Return)
+        _application().processEvents()
+        assert panel.waypoints == original
+        assert len(ros.calls) == 1
+
+        for column, text in ((1, "-12.34"), (2, "23.45"), (3, "-0.75"), (4, "-45.6")):
+            item = panel.table.item(1, column)
+            panel.table.setCurrentItem(item)
+            panel.table.editItem(item)
+            _application().processEvents()
+            editor = next(
+                control for control in panel.table.viewport().findChildren(NoWheelDoubleSpinBox)
+                if control.isVisible()
+            )
+            source = (panel.x_input, panel.y_input, panel.z_input, panel.yaw_input)[column - 1]
+            assert (editor.minimum(), editor.maximum()) == (source.minimum(), source.maximum())
+            editor.lineEdit().selectAll()
+            QTest.keyClicks(editor.lineEdit(), text)
+            value = math.radians(float(text)) if column == 4 else float(text)
+            # 不失焦、不按回车、不点确认时，内部列表与预览已更新。
+            assert math.isclose(panel.waypoints[1][column - 1], value)
+            assert panel.waypoints[0] == original[0]
+            assert panel.waypoints[2] == original[2]
+            assert ros.calls[-1] == ("waypoint_preview", panel.waypoints)
+            assert editor.lineEdit().text() == text
+            window._refresh()
+            assert editor.hasFocus()
+            QTest.keyClick(editor, Qt.Key.Key_Escape)
+            _application().processEvents()
+            assert item.text() == (f"{float(text):+.1f}" if column == 4 else f"{float(text):+.2f}")
+
+        assert environment.preview_modes == ["simulation"]
+        assert not any(call[0] == "waypoints" for call in ros.calls)
+        edited = panel.waypoints
+        panel.table.selectRow(1)
+        panel.up_button.click()
+        assert panel.waypoints == (edited[1], edited[0], edited[2])
+        assert ros.calls[-1] == ("waypoint_preview", panel.waypoints)
+
+        window._waypoint_running = True
+        window._refresh()
+        assert not panel.table.isEnabled()
+        assert not panel.up_button.isEnabled()
     finally:
         _close_window(window)
 
