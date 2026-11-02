@@ -96,7 +96,7 @@ def _assert_ros_equal(reference, candidate, path="message"):
 class _ProcessPair:
     """Own two child nodes and exercise only their public topics and services."""
 
-    def __init__(self, executable, rpy, monkeypatch):
+    def __init__(self, executable, rpy, monkeypatch, extra_parameters=None):
         """Create isolated ROS clients before starting the reference and candidate."""
         import rclpy
         from correction_interfaces.msg import ExtnavCorrectionStatus
@@ -147,14 +147,17 @@ class _ProcessPair:
                     parameters[key] = f"{prefix}/{key}"
             parameters.update(zip(("roll_cam", "pitch_cam", "yaw_cam"), rpy))
             parameters.update(odin_x=0.173, odin_y=-0.067, odin_z=0.219)
+            parameters.update(extra_parameters or {})
             args = ["--ros-args", "-r", f"__node:={name}"]
             # Endpoint defaults stay observable through parameters: ROS remaps alone
             # isolate their graph names without overriding the original values.
-            for key, default in DEFAULT_PARAMETERS.items():
+            for key, value in parameters.items():
+                default = DEFAULT_PARAMETERS.get(key)
                 if key.endswith("_topic") or key.endswith("_service"):
                     args += ["-r", f"{default}:={parameters[key]}"]
                 elif parameters[key] != default:
-                    args += ["-p", f"{key}:={parameters[key]}"]
+                    encoded = str(value).lower() if isinstance(value, bool) else str(value)
+                    args += ["-p", f"{key}:={encoded}"]
             endpoint = {
                 "label": label, "name": name, "parameters": parameters,
                 "status": deque(maxlen=32), "corrected": deque(maxlen=64),
@@ -471,8 +474,8 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
                            odin_available=False, final_sample_available=False)
         raw = Odometry()
         raw.header.stamp.sec = 100
-        raw.header.frame_id = "contract_odom"
-        raw.child_frame_id = "contract_imu"
+        raw.header.frame_id = "odom"
+        raw.child_frame_id = "fcu"
         raw.pose.pose.position.x, raw.pose.pose.position.y, raw.pose.pose.position.z = (1.2, -2.3, 0.81)
         raw.pose.pose.orientation.x, raw.pose.pose.orientation.y = (0.2, -0.3)
         raw.pose.pose.orientation.z, raw.pose.pose.orientation.w = (0.4, 0.8)
@@ -485,47 +488,40 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
         initial_sessions = [item["status"][-1].odin_session_id for item in pair.endpoints]
         assert all(initial_sessions)
 
-        if any(installation_rpy):
-            # The existing public contract deliberately rejects Tag correction when
-            # installation rotation is active; the rewrite must preserve it.
-            assert not pair.call().accepted
-            pair.compare_state(correction_valid=False, revision=0)
-            return
-        else:
-            for rejection in (
-                {"expected_revision": 5}, {"odin_session_id": "stale-session"},
-                {"sample_count": 0}, {"position_std_m": -1.0},
-                {"yaw_std_rad": math.nan}, {"correction_yaw_rad": math.inf},
-                {"correction_x_m": 101.0},
-            ):
-                assert not pair.call(**rejection).accepted
-            assert pair.call().accepted
-            pair.compare_state(correction_valid=True, revision=1, final_sample_available=False)
-            pair.assert_stopped()
-            # Idempotency precedes CAS and preserves the frozen-sample invalidation.
-            assert pair.call(expected_revision=0).accepted
-            assert not pair.call(job_id="conflict", expected_revision=0).accepted
-            pair.compare_state(revision=1, final_sample_available=False)
+        for rejection in (
+            {"expected_revision": 5}, {"odin_session_id": "stale-session"},
+            {"sample_count": 0}, {"position_std_m": -1.0},
+            {"yaw_std_rad": math.nan}, {"correction_yaw_rad": math.inf},
+            {"correction_x_m": 101.0},
+        ):
+            assert not pair.call(**rejection).accepted
+        assert pair.call().accepted
+        pair.compare_state(correction_valid=True, revision=1, final_sample_available=False)
+        pair.assert_stopped()
+        # Idempotency precedes CAS and preserves the frozen-sample invalidation.
+        assert pair.call(expected_revision=0).accepted
+        assert not pair.call(job_id="conflict", expected_revision=0).accepted
+        pair.compare_state(revision=1, final_sample_available=False)
+        raw.header.stamp.nanosec += 1
+        pair.publish(raw)
+        for sentinel in (-1.0, math.nan):
             raw.header.stamp.nanosec += 1
+            raw.pose.covariance[0] = sentinel
+            raw.twist.covariance[0] = sentinel
             pair.publish(raw)
-            for sentinel in (-1.0, math.nan):
-                raw.header.stamp.nanosec += 1
-                raw.pose.covariance[0] = sentinel
-                raw.twist.covariance[0] = sentinel
-                pair.publish(raw)
-                for item in pair.endpoints:
-                    np.testing.assert_allclose(
-                        item["corrected"][-1].pose.covariance, raw.pose.covariance,
-                        equal_nan=True, err_msg=f"{item['label']} sentinel covariance",
-                    )
-            assert not pair.call(valid=False, odin_session_id="stale-session").accepted
-            clear = pair.call(valid=False)
-            assert clear.accepted and not clear.applied and clear.revision == 2
-            pair.compare_state(correction_valid=False, revision=2, final_sample_available=False)
-            pair.assert_stopped()
-            assert pair.call(valid=False).revision == 2
-            raw.header.stamp.nanosec += 1
-            pair.publish(raw)
+            for item in pair.endpoints:
+                np.testing.assert_allclose(
+                    item["corrected"][-1].pose.covariance, raw.pose.covariance,
+                    equal_nan=True, err_msg=f"{item['label']} sentinel covariance",
+                )
+        assert not pair.call(valid=False, odin_session_id="stale-session").accepted
+        clear = pair.call(valid=False)
+        assert clear.accepted and not clear.applied and clear.revision == 2
+        pair.compare_state(correction_valid=False, revision=2, final_sample_available=False)
+        pair.assert_stopped()
+        assert pair.call(valid=False).revision == 2
+        raw.header.stamp.nanosec += 1
+        pair.publish(raw)
 
         # A regression exactly at the threshold is tolerated; one nanosecond more
         # starts a new session. Zero stamps do not trigger the regression rule.
@@ -541,10 +537,16 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
                    for item, previous in zip(pair.endpoints, previous_sessions))
         for frame_field in ("header", "child"):
             previous_sessions = [item["status"][-1].odin_session_id for item in pair.endpoints]
+            broken = copy.deepcopy(raw)
             if frame_field == "header":
-                raw.header.frame_id = "changed_parent"
+                broken.header.frame_id = "legacy_odom"
             else:
-                raw.child_frame_id = "changed_child"
+                broken.child_frame_id = "imu"
+            for endpoint in pair.endpoints:
+                endpoint["publisher"].publish(broken)
+            pair.compare_state(odin_available=False, final_sample_available=False,
+                               raw_messages=pair.sent)
+            pair.assert_stopped()
             raw.header.stamp.nanosec += 1
             pair.publish(raw)
             assert all(item["status"][-1].odin_session_id != previous

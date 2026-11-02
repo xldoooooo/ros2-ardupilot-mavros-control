@@ -7,7 +7,7 @@
 | `aircraft/<编号>/onboard.env` | 飞控串口、波特率、ROS 通信及依赖路径。 |
 | `aircraft/<编号>/navigation.env` | 保存 odom/map 导航模式。 |
 | `aircraft/<编号>/control.yaml` | 机载控制器参数。 |
-| `aircraft/<编号>/odin_extrinsics.yaml` | Odin 安装姿态、杆臂和外部定位桥参数。 |
+| `aircraft/<编号>/odin_extrinsics.yaml` | Host 固定 pitch/FLU 杆臂，及 extnav 局部原点/发布参数。 |
 | `aircraft/<编号>/odin/{odom,slam,reloc,original}.yaml` | Odin 各工作模式、点云处理及地图路径。 |
 | `aircraft/<编号>/odin/calibration/calib.yaml` | 对应 Odin 设备的原厂标定。 |
 | `aircraft/<编号>/mavros/apm_config.yaml` | 对应 MAVROS 版本的 ArduPilot 插件参数。 |
@@ -20,7 +20,7 @@
 | `video/Wasintek/intrinsics.yaml.old` | 旧 Wasintek 镜头内参，仅作存档。 |
 | `aircraft/<编号>/correction/general_settings.yaml` | AprilTag 修正算法参数。 |
 | `aircraft/<编号>/correction/camera.conf`、`lens.conf` | UQ212 下视相机采集及镜头控制参数。 |
-| `aircraft/<编号>/correction/intrinsics.yaml`、`extrinsics.yaml` | UQ212 相机标定。 |
+| `aircraft/<编号>/correction/intrinsics.yaml`、`extrinsics.yaml` | UQ212 内参及相机光学系→FCU FLU 的完整 T_fcu_camera。 |
 | `aircraft/<编号>/correction/tag_pose.csv` | Tag 尺寸和地图位置。 |
 | `aircraft/<编号>/correction.env` | 独立修正服务的 ROS 通信配置。 |
 | `ground/video.json` | 本机地面视频工具保存的偏好，不提交 Git。 |

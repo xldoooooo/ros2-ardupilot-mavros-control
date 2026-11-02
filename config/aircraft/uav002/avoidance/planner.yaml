@@ -18,7 +18,7 @@ path_planning:
     stamp_clock: receive  # ros: validate header age; receive: explicitly accept unknown sensor-clock offset
     # Native alternating KD-tree accumulation; no bridge snapshot profile.
     cloud.map_mode: dual_tree
-    odometry_twist_in_body: true  # Generic/MAVROS body twist; Odin uses its entry-specific setting below.
+    odometry_twist_in_body: true  # MAVROS and project Odin publish standard body twist.
     # Metres, >=0: remove points strictly inside this 3D radius before map accumulation; 0 disables.
     # This is a sensor blind zone, not body classification: real obstacles inside it are also removed.
     cloud.blind_radius: 0.0
@@ -94,8 +94,8 @@ path_planning:
 # Entry-specific defaults consumed by the independent launch files.
 odin_launch:
   ros__parameters:
-    # SDK linear twist is in the world frame; override here for a different Odin publisher, or via CLI.
-    odometry_twist_in_body: false
+    # Project Odin now publishes FCU body twist; legacy external drivers need an explicit false override.
+    odometry_twist_in_body: true
     cloud: /odin1/cloud_slam_down
     odom: /odin1/odometry_highfreq
     goal: /goal

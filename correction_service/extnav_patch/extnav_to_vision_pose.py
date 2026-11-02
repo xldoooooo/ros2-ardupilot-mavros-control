@@ -48,6 +48,7 @@ class _FcuOutputSnapshot:
     """一个 raw 回调内冻结的最终中心位姿、速度和修正元数据。"""
 
     __slots__ = (
+        "angular",
         "correction_revision",
         "correction_valid",
         "horizontal_reference_mode",
@@ -62,6 +63,7 @@ class _FcuOutputSnapshot:
         *,
         position,
         velocity,
+        angular,
         quaternion,
         correction_valid,
         correction_revision,
@@ -71,6 +73,7 @@ class _FcuOutputSnapshot:
         """保存不可重新解释的单样本数值；调用方不再修改其中数组。"""
         self.position = position
         self.velocity = velocity
+        self.angular = angular
         self.quaternion = quaternion
         self.correction_valid = correction_valid
         self.correction_revision = correction_revision
@@ -148,8 +151,8 @@ def apply_planar_correction(
     correction_y_m: float,
     correction_yaw_rad: float,
 ) -> Odometry:
-    """左乘 C_world_odin；z 不平移，姿态和水平线速度按同一 yaw 旋转。"""
-    position, q_corrected, linear = _planar_components(
+    """左乘世界修正；FCU 机体系的线角速度及其协方差保持不变。"""
+    position, q_corrected, _linear = _planar_components(
         message, correction_x_m, correction_y_m, correction_yaw_rad
     )
     corrected = copy.deepcopy(message)
@@ -166,28 +169,18 @@ def apply_planar_correction(
         corrected.pose.pose.orientation.z,
         corrected.pose.pose.orientation.w,
     ) = q_corrected
-    (
-        corrected.twist.twist.linear.x,
-        corrected.twist.twist.linear.y,
-        corrected.twist.twist.linear.z,
-    ) = linear
-    # Angular velocity remains in the body frame; only world linear velocity rotates.
+    # Both twist vectors remain expressed in the unchanged FCU child frame.
     pose_transform = np.zeros((6, 6), dtype=np.float64)
     pose_transform[:3, :3] = rotation
     pose_transform[3:, 3:] = rotation
-    twist_transform = np.eye(6, dtype=np.float64)
-    twist_transform[:3, :3] = rotation
     corrected.pose.covariance = _rotate_covariance(
         message.pose.covariance, pose_transform
-    )
-    corrected.twist.covariance = _rotate_covariance(
-        message.twist.covariance, twist_transform
     )
     return corrected
 
 
 def _planar_components(message, correction_x_m, correction_y_m, correction_yaw_rad):
-    """Compute corrected pose/linear values without allocating a ROS message."""
+    """Compute the corrected pose while retaining FCU-frame linear velocity."""
     if not all(
         math.isfinite(value)
         for value in (correction_x_m, correction_y_m, correction_yaw_rad)
@@ -208,11 +201,7 @@ def _planar_components(message, correction_x_m, correction_y_m, correction_yaw_r
         multiply_quaternions(yaw_quaternion, normalize_quaternion(raw_quaternion))
     )
     linear = message.twist.twist.linear
-    corrected_linear = (
-        cosine * linear.x - sine * linear.y,
-        sine * linear.x + cosine * linear.y,
-        linear.z,
-    )
+    corrected_linear = (linear.x, linear.y, linear.z)
     return corrected_position, q_corrected, corrected_linear
 
 
@@ -223,20 +212,19 @@ def compute_fcu_reference_position(
     lever_arm_m: np.ndarray,
     correction_valid: bool,
 ) -> tuple[np.ndarray, str]:
-    """Use FCU orientation and FCU-frame lever; local b=T preserves the legacy origin."""
+    """Incoming pose is already FCU-centered; only preserve the constant local origin."""
     raw = np.asarray(raw_position, dtype=np.float64).reshape(3)
     corrected = np.asarray(corrected_position, dtype=np.float64).reshape(3)
     rotation = np.asarray(corrected_rotation, dtype=np.float64).reshape(3, 3)
     lever = np.asarray(lever_arm_m, dtype=np.float64).reshape(3)
     if not all(np.isfinite(value).all() for value in (raw, corrected, rotation, lever)):
         raise ValueError("non-finite FCU reference transform")
-    rotated_lever = rotation @ lever
     if correction_valid:
-        position = corrected - rotated_lever
-        # 世界高度未校准；同一个 raw 上保留补丁前的 z 数值。
-        position[2] = raw[2] + lever[2] - rotated_lever[2]
+        position = corrected.copy()
+        # Tag does not calibrate world height; preserve the legacy local Z origin.
+        position[2] = raw[2] + lever[2]
         return position, "tag_world_xy_local_z"
-    return raw + lever - rotated_lever, "local_identity_origin"
+    return raw + lever, "local_identity_origin"
 
 
 def _stamp_nanoseconds(message: Odometry) -> int:
@@ -271,6 +259,8 @@ class OdometryBridge(Node):
         self.declare_parameter("roll_cam", 0.0)
         self.declare_parameter("pitch_cam", 0.0)
         self.declare_parameter("yaw_cam", 0.0)
+        self.declare_parameter("auto_installation", False)
+        self.declare_parameter("auto_installation_seconds", 3.0)
         self.declare_parameter("odin_x", 0.0)
         self.declare_parameter("odin_y", 0.0)
         self.declare_parameter("odin_z", 0.0)
@@ -298,19 +288,15 @@ class OdometryBridge(Node):
             ],
             dtype=np.float64,
         )
-        # R_FI maps Odin IMU axes I to FCU FLU axes F; T is FCU->IMU in F.
-        self.q_FI = normalize_quaternion(
-            rpy_to_quaternion(self.roll_cam, self.pitch_cam, self.yaw_cam)
-        )
-        qx, qy, qz, qw = self.q_FI
-        self.q_IF = (-qx, -qy, -qz, qw)
-        self.R_FI = quaternion_to_rotation_matrix(self.q_FI)
-        if not np.isfinite(self.T).all():
-            raise ValueError("non-finite Odin lever arm")
-        self.world_center_formula_supported = all(
-            abs(value) <= 1e-9
-            for value in (self.roll_cam, self.pitch_cam, self.yaw_cam)
-        )
+        # Installation is driver-owned; the bridge retains metadata and local origin only.
+        if not np.isfinite(self.T).all() or not all(
+            math.isfinite(value) for value in (self.roll_cam, self.pitch_cam, self.yaw_cam)
+        ):
+            raise ValueError("non-finite Odin installation metadata")
+        if self.get_parameter("auto_installation").value:
+            self.get_logger().warning(
+                "auto_installation is disabled: the Odin driver owns fixed installation"
+            )
 
         vision_topic = str(self.get_parameter("vision_pose_topic").value)
         pose_fcu_topic = str(self.get_parameter("pose_fcu_topic").value)
@@ -398,14 +384,16 @@ class OdometryBridge(Node):
             "TODO(task27-reset-counter): 当前 /mavros/vision_pose/pose 是 PoseStamped，"
             "无法携带 MAVLink estimator reset_counter；本节点仅在修正状态中递增计数。"
         )
-        if not self.world_center_formula_supported:
-            # TODO(task6-tag): independently validate Tag jump prediction with nonzero R_FI.
-            self.get_logger().warning(
-                "Odin installation rotation active; Tag SetCorrection remains unsupported"
-            )
 
     def _odom_cb(self, message: Odometry) -> None:
         """Process every raw sample and publish corrected only while readers exist."""
+        if message.header.frame_id != "odom" or message.child_frame_id != "fcu":
+            reason = "Odin 输入必须为 odom<-fcu，拒绝旧 IMU 中心里程计"
+            self.odin_available = False
+            self.odin_session_id = ""
+            if self.last_error != reason or self.latest_output is not None or self.correction_valid:
+                self._invalidate(reason)
+            return
         now_monotonic = time.monotonic()
         stamp_ns = _stamp_nanoseconds(message)
         frame_pair = (message.header.frame_id, message.child_frame_id)
@@ -576,11 +564,6 @@ class OdometryBridge(Node):
         if not self.odin_available or not self.odin_session_id:
             response.message = "Odin 当前不可用"
             return response
-        if not self.world_center_formula_supported:
-            response.message = (
-                "当前 extnav 安装角非零，task29 飞控中心有效分支尚未重新推导"
-            )
-            return response
         if request.odin_session_id != self.odin_session_id:
             response.message = "候选 Odin session 已失效"
             return response
@@ -718,32 +701,28 @@ class OdometryBridge(Node):
             (raw_pose.position.x, raw_pose.position.y, raw_pose.position.z)
         )
         p_corrected = p_raw
-        v_odom = np.array((linear.x, linear.y, linear.z))
+        v_body = np.array((linear.x, linear.y, linear.z))
         if corrected_components is not None:
             position, q_odom, velocity = corrected_components
             p_corrected = np.array(position)
-            v_odom = np.array(velocity)
+            v_body = np.array(velocity)
         else:
             q_odom = normalize_quaternion(
                 (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
             )
-        # Only change the child axes: R_OF = R_OI R_IF. Odin's world is gravity aligned.
-        q_imu = normalize_quaternion(multiply_quaternions(q_odom, self.q_IF))
-        rotation_imu = _normalized_rotation_matrix(q_imu)
-        p_imu, reference_mode = compute_fcu_reference_position(
-            p_raw,
-            p_corrected,
-            rotation_imu,
-            self.T,
-            correction_valid,
+        q_fcu = normalize_quaternion(q_odom)
+        rotation_fcu = _normalized_rotation_matrix(q_fcu)
+        p_fcu, reference_mode = compute_fcu_reference_position(
+            p_raw, p_corrected, rotation_fcu, self.T, correction_valid
         )
-        # Odin linear velocity is in O, angular velocity is in its IMU body I.
-        omega_fcu = self.R_FI @ np.array((angular.x, angular.y, angular.z))
-        v_imu = v_odom - rotation_imu @ np.cross(omega_fcu, self.T)
+        # TwistStamped declares odom, so rotate both standard body-frame twist vectors.
+        v_fcu = rotation_fcu @ v_body
+        omega_odom = rotation_fcu @ np.array((angular.x, angular.y, angular.z))
         return _FcuOutputSnapshot(
-            position=p_imu,
-            velocity=v_imu,
-            quaternion=q_imu,
+            position=p_fcu,
+            velocity=v_fcu,
+            angular=omega_odom,
+            quaternion=q_fcu,
             correction_valid=correction_valid,
             correction_revision=int(correction_revision),
             odin_session_id=str(correction_session),
@@ -751,7 +730,7 @@ class OdometryBridge(Node):
         )
 
     def _apply_transform(self, position, quaternion, linear, angular):
-        """保留供旧调用方测试的 identity/local 中心转换兼容入口。"""
+        """保留 identity/local 位姿与世界速度的测试入口。"""
         raw = Odometry()
         raw.pose.pose.position = copy.deepcopy(position)
         raw.pose.pose.orientation = copy.deepcopy(quaternion)
@@ -782,7 +761,7 @@ class OdometryBridge(Node):
         return message
 
     @staticmethod
-    def _make_twist(stamp, velocity):
+    def _make_twist(stamp, velocity, angular):
         """构造既有控制器 TwistStamped 输出。"""
         message = TwistStamped()
         message.header.stamp = stamp
@@ -790,6 +769,9 @@ class OdometryBridge(Node):
         message.twist.linear.x = float(velocity[0])
         message.twist.linear.y = float(velocity[1])
         message.twist.linear.z = float(velocity[2])
+        message.twist.angular.x = float(angular[0])
+        message.twist.angular.y = float(angular[1])
+        message.twist.angular.z = float(angular[2])
         return message
 
     def vision_timer_callback(self) -> None:
@@ -808,7 +790,7 @@ class OdometryBridge(Node):
             return
         position, velocity, quaternion, stamp = data
         self.pose_fcu_pub.publish(self._make_pose(stamp, position, quaternion))
-        self.vel_fcu_pub.publish(self._make_twist(stamp, velocity))
+        self.vel_fcu_pub.publish(self._make_twist(stamp, velocity, self.latest_output.angular))
         self.final_pose_messages += 1
 
 

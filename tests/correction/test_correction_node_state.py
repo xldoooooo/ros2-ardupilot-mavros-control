@@ -155,6 +155,36 @@ def _job(node: Any, tmp_path: Path, candidate: WindowCandidate):
     )
 
 
+def test_raw_capture_requires_fcu_frame_and_nonzero_installation_can_apply(
+    correction_node,
+) -> None:
+    """旧 IMU 流不得进入标定；固定安装角已由驱动转换，不再阻止应用。"""
+    from nav_msgs.msg import Odometry
+
+    node = correction_node
+    node._start_odometry_capture()
+    raw = Odometry()
+    raw.header.frame_id = "odom"
+    raw.child_frame_id = "odin_imu"
+    raw.pose.pose.orientation.w = 1.0
+    node._on_odometry(raw)
+    assert node._latest_raw_transform is None
+
+    raw.child_frame_id = "fcu"
+    node._on_odometry(raw)
+    assert np.allclose(node._latest_raw_transform, np.eye(4))
+    node._extnav.installation_rpy = np.array((0.0, -math.pi / 6.0, 0.0))
+    candidate = _candidate(node)
+    with node._lock:
+        evaluated = node._evaluate_candidate_apply_locked(candidate)
+    assert evaluated.can_apply, evaluated.apply_reason
+    expected = np.linalg.norm(
+        np.array((candidate.x_m, candidate.y_m))
+        - node.config.fcu_reference.lever_arm_m[:2]
+    )
+    assert math.isclose(evaluated.expected_position_jump_m, expected, abs_tol=1e-12)
+
+
 def test_window_commit_and_clear_increment_revision_without_touching_extnav(
     correction_node, tmp_path: Path
 ) -> None:

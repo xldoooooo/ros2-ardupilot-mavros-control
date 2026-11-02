@@ -136,11 +136,10 @@ class WindowSettings:
 
 @dataclass(frozen=True)
 class FcuReferenceSettings:
-    """用于应用跳变复算的已核实 extnav 飞控参考中心参数。"""
+    """用于应用跳变复算的 extnav 既有局部原点偏移。"""
 
     lever_arm_m: np.ndarray
     parameter_tolerance: float
-    require_zero_installation_angles: bool
 
 
 @dataclass(frozen=True)
@@ -173,7 +172,7 @@ class ServiceConfig:
     config_fingerprint: str
     topics: dict[str, str]
     intrinsics: Intrinsics
-    t_imu_camera: np.ndarray
+    t_fcu_camera: np.ndarray
     tags: dict[int, TagPose]
     camera: CameraSettings
     lens_controls: dict[str, int]
@@ -269,16 +268,18 @@ def _load_intrinsics(config_dir: Path) -> Intrinsics:
 
 
 def _load_extrinsics(config_dir: Path) -> np.ndarray:
-    """加载 T_imu_camera，并检查刚体旋转正交性和齐次末行。"""
+    """加载相机光学系到 FCU FLU 的 T_fcu_camera。"""
     data = _load_yaml(config_dir / "extrinsics.yaml")
-    transform = _matrix(data.get("matrix"), 4, 4, "T_imu_camera")
+    if data.get("transform_name") != "T_fcu_camera":
+        raise ValueError("相机外参必须明确为 T_fcu_camera，请迁移旧 IMU 外参")
+    transform = _matrix(data.get("matrix"), 4, 4, "T_fcu_camera")
     rotation = transform[:3, :3]
     if not np.allclose(transform[3], (0, 0, 0, 1), atol=1e-9):
-        raise ValueError("T_imu_camera 齐次末行无效")
+        raise ValueError("T_fcu_camera 齐次末行无效")
     if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6):
-        raise ValueError("T_imu_camera 旋转矩阵不正交")
+        raise ValueError("T_fcu_camera 旋转矩阵不正交")
     if not math.isclose(float(np.linalg.det(rotation)), 1.0, abs_tol=1e-6):
-        raise ValueError("T_imu_camera 旋转矩阵行列式不为 1")
+        raise ValueError("T_fcu_camera 旋转矩阵行列式不为 1")
     return transform
 
 
@@ -539,18 +540,18 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
     if not 2 <= recommended_keyframes <= maximum_window_size:
         raise ValueError("recommended_precision_keyframes 必须位于 [2, maximum_size]")
 
-    # Reuse the exact FCU-to-Odin geometry consumed by extnav.
+    # 安装转换已在驱动完成；这里仅复用 extnav 保留的局部原点偏移 b。
     extrinsics_value = str(fcu_reference.get("extrinsics_file", "")).strip()
     if not extrinsics_value:
         raise ValueError("fcu_reference.extrinsics_file 必须指定 Odin 外参配置")
     odin_extrinsics = (root / Path(extrinsics_value).expanduser()).resolve()
-    extnav_node = _mapping(
-        _load_yaml(odin_extrinsics).get("/extnav_to_vision_pose"),
-        "/extnav_to_vision_pose",
+    shared_node = _mapping(
+        _load_yaml(odin_extrinsics).get("/**"),
+        "/**",
     )
-    extnav_parameters = _mapping(extnav_node.get("ros__parameters"), "ros__parameters")
+    shared_parameters = _mapping(shared_node.get("ros__parameters"), "ros__parameters")
     lever_arm_values = np.array([
-        _finite(extnav_parameters[f"odin_{axis}"], f"odin_{axis}")
+        _finite(shared_parameters[f"odin_{axis}"], f"odin_{axis}")
         for axis in "xyz"
     ])
 
@@ -569,7 +570,7 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
         config_fingerprint=_configuration_fingerprint(root, odin_extrinsics),
         topics=topics,
         intrinsics=intrinsics,
-        t_imu_camera=_load_extrinsics(root),
+        t_fcu_camera=_load_extrinsics(root),
         tags=_load_tags(root),
         camera=camera,
         lens_controls=_load_lens(root),
@@ -704,9 +705,6 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
             lever_arm_m=lever_arm_values,
             parameter_tolerance=_positive(
                 fcu_reference.get("parameter_tolerance"), "parameter_tolerance"
-            ),
-            require_zero_installation_angles=bool(
-                fcu_reference.get("require_zero_installation_angles", True)
             ),
         ),
         timeouts=TimeoutSettings(

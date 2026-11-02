@@ -48,7 +48,10 @@ def test_aircraft_correction_configs_are_complete() -> None:
     for aircraft_id in ("simulation", "uav001", "uav002"):
         profile = PROJECT_ROOT / "config" / "aircraft" / aircraft_id / "correction"
         assert required <= {path.name for path in profile.iterdir()}
-        assert np.allclose(load_config(profile).fcu_reference.lever_arm_m, (0.10, -0.04, 0.05))
+        shared = yaml.safe_load((profile.parent / "odin_extrinsics.yaml").read_text())
+        parameters = shared["/**"]["ros__parameters"]
+        assert np.allclose(load_config(profile).fcu_reference.lever_arm_m,
+                           [parameters[f"odin_{axis}"] for axis in "xyz"])
 
 
 def test_shared_odin_geometry_changes_reference_and_fingerprint(tmp_path: Path) -> None:
@@ -59,7 +62,7 @@ def test_shared_odin_geometry_changes_reference_and_fingerprint(tmp_path: Path) 
     shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", odin_path)
     before = load_config(root)
     odin = yaml.safe_load(odin_path.read_text())
-    odin["/extnav_to_vision_pose"]["ros__parameters"]["odin_x"] = 0.12
+    odin["/**"]["ros__parameters"]["odin_x"] = 0.12
     odin_path.write_text(yaml.safe_dump(odin))
     after = load_config(root)
     assert np.allclose(after.fcu_reference.lever_arm_m, (0.12, -0.04, 0.05))
@@ -165,11 +168,12 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
     assert np.allclose(config.intrinsics.distortion,
                        [0.03626268524324754, -0.056048601794863075,
                         0.0010844756398792788, -0.0010052529149732062, 0.00958122664915688])
-    # 从模块前下边缘中心换算至 IMU 原点，防止遗漏深度/高度或弄反左右符号。
-    assert np.allclose(config.t_imu_camera[:3, 3],
-                       np.array((41 + 5.57, 50 - 21.03, -46 - 12 - 9.26)) / 1000)
-    assert np.array_equal(config.t_imu_camera[:3, 2], (0, 0, -1))
-    assert np.array_equal(config.t_imu_camera[:3, :3] @ (0, -1, 0), (1, 0, 0))
+    # simulation 保留原物理相机位置，改写到 FCU 后需加原 FCU→IMU 位移。
+    assert np.allclose(config.t_fcu_camera[:3, 3],
+                       np.array((41 + 5.57, 50 - 21.03, -46 - 12 - 9.26)) / 1000
+                       + config.fcu_reference.lever_arm_m)
+    assert np.array_equal(config.t_fcu_camera[:3, 2], (0, 0, -1))
+    assert np.array_equal(config.t_fcu_camera[:3, :3] @ (0, -1, 0), (1, 0, 0))
     # Tag 布设由现场 CSV 决定；换纸后仍须逐项精确加载，不能锁死历史17cm。
     with (CONFIG_DIR / "tag_pose.csv").open() as stream:
         rows = list(csv.DictReader(stream))
@@ -201,16 +205,16 @@ def test_aircraft_calibration_config_is_loaded_exactly() -> None:
 
 
 def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:
-    """先完整组合倾斜相机/IMU，再提取的 SE(2) 必须恢复已知真值。"""
+    """先完整组合相机/FCU，再提取的 SE(2) 必须恢复已知真值。"""
     config = load_config(CONFIG_DIR)
     tag = config.tags[0]
     desired = planar_transform(1.25, -0.73, math.radians(37.0))
-    odin_from_imu = homogeneous(
+    odin_from_fcu = homogeneous(
         rotation_z(math.radians(-21.0)),
         np.array((0.42, 0.17, 0.31)),
     )
-    world_from_imu = desired @ odin_from_imu
-    world_from_camera = world_from_imu @ config.t_imu_camera
+    world_from_fcu = desired @ odin_from_fcu
+    world_from_camera = world_from_fcu @ config.t_fcu_camera
     camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
         tag
     )
@@ -221,8 +225,8 @@ def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:
     correction = compute_planar_correction(
         camera_from_tag_standard,
         tag,
-        config.t_imu_camera,
-        odin_from_imu,
+        config.t_fcu_camera,
+        odin_from_fcu,
     )
 
     assert np.allclose(correction.world_from_odin, desired, atol=1e-10)
@@ -231,7 +235,7 @@ def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:
     assert math.isclose(correction.yaw_rad, math.radians(37.0), abs_tol=1e-10)
     assert correction.tilt_rad < 1e-8
     expected_odin_from_tag = (
-        odin_from_imu @ config.t_imu_camera @ camera_from_tag_configured
+        odin_from_fcu @ config.t_fcu_camera @ camera_from_tag_configured
     )
     assert np.allclose(correction.odin_from_tag, expected_odin_from_tag, atol=1e-10)
     assert np.allclose(
@@ -259,11 +263,11 @@ def test_tilted_full_chain_preserves_task27_planar_projection() -> None:
         rotation_z(yaw) @ pitch_rotation,
         np.array((0.08, -0.04, 0.72)),
     )
-    odin_from_imu = homogeneous(
+    odin_from_fcu = homogeneous(
         rotation_z(math.radians(11.0)), np.array((0.25, -0.31, 0.72))
     )
-    world_from_imu = desired_full @ odin_from_imu
-    world_from_camera = world_from_imu @ config.t_imu_camera
+    world_from_fcu = desired_full @ odin_from_fcu
+    world_from_camera = world_from_fcu @ config.t_fcu_camera
     camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
         tag
     )
@@ -274,8 +278,8 @@ def test_tilted_full_chain_preserves_task27_planar_projection() -> None:
     correction = compute_planar_correction(
         camera_from_tag_standard,
         tag,
-        config.t_imu_camera,
-        odin_from_imu,
+        config.t_fcu_camera,
+        odin_from_fcu,
     )
 
     assert np.allclose(correction.world_from_odin, desired_full, atol=1e-10)
@@ -293,76 +297,51 @@ def test_tilted_full_chain_preserves_task27_planar_projection() -> None:
     assert np.linalg.norm(predicted_world - np.array((tag.x, tag.y))) > 0.05
 
 
-def test_task27_first_plus_task29_fcu_center_maps_tag_check_point_to_zero() -> None:
-    """首次沿用 Task27，且有效分支只删除 +T_xy，搬回 Tag0 时 FCU xy 应为零。"""
-    config = load_config(CONFIG_DIR)
+def test_nonzero_installation_preserves_full_tag_chain_and_final_center() -> None:
+    """30°安装的新旧完整链等价；驱动中心输出经 Tag 修正后回到真实 FCU。"""
+    config = load_config(PROJECT_ROOT / "config/aircraft/uav002/correction")
     tag = config.tags[0]
-    lever = np.array((0.06, -0.03, 0.05), dtype=np.float64)
-    # H_FI：Odin IMU 原点相对 FCU 原点位于 +T，二者安装角为零。
-    fcu_from_imu = homogeneous(np.eye(3), lever)
-
-    # 校准时飞机实际在 Tag0 附近，但 Odin 自建系读数可为 (5,6)、yaw=9deg。
-    world_from_fcu_calibration = homogeneous(np.eye(3), np.array((0.35, -0.22, 0.70)))
-    world_from_imu_calibration = world_from_fcu_calibration @ fcu_from_imu
-    odin_from_imu_calibration = homogeneous(
-        rotation_z(math.radians(9.0)), np.array((5.0, 6.0, 0.75))
+    pitch = -math.pi / 6.0
+    fcu_from_imu = homogeneous(
+        np.array(((math.cos(pitch), 0, math.sin(pitch)),
+                  (0, 1, 0), (-math.sin(pitch), 0, math.cos(pitch)))),
+        np.array((0.100, -0.029, 0.060)),
     )
-    expected_world_from_odin = world_from_imu_calibration @ np.linalg.inv(
-        odin_from_imu_calibration
-    )
-
-    world_from_camera = world_from_imu_calibration @ config.t_imu_camera
-    camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
-        tag
-    )
+    imu_from_camera = np.linalg.inv(fcu_from_imu) @ config.t_fcu_camera
+    desired = planar_transform(-0.8, 1.6, math.radians(-42.0))
+    # 非零机体倾斜和偏航，与固定安装角分开构造。
+    body_rotation, _ = cv2.Rodrigues(np.array((0.12, -0.08, 0.33)))
+    odin_from_fcu = homogeneous(body_rotation, np.array((2.0, -0.7, 0.4)))
+    odin_from_imu = odin_from_fcu @ fcu_from_imu
+    world_from_fcu = desired @ odin_from_fcu
+    world_from_imu = world_from_fcu @ fcu_from_imu
+    camera_from_tag_configured = np.linalg.inv(
+        world_from_fcu @ config.t_fcu_camera
+    ) @ world_tag_transform(tag)
     camera_from_tag_standard = camera_from_tag_configured @ np.linalg.inv(
         configured_tag_from_standard()
     )
+
     correction = compute_planar_correction(
-        camera_from_tag_standard,
-        tag,
-        config.t_imu_camera,
-        odin_from_imu_calibration,
+        camera_from_tag_standard, tag, config.t_fcu_camera, odin_from_fcu
     )
+    old_world_from_odin = world_from_imu @ np.linalg.inv(odin_from_imu)
+    old_odin_from_tag = odin_from_imu @ imu_from_camera @ camera_from_tag_configured
+    assert np.allclose(correction.world_fcu, world_from_fcu, atol=1e-12)
+    assert np.allclose(correction.world_from_odin, old_world_from_odin, atol=1e-12)
+    assert np.allclose(correction.world_from_odin, desired, atol=1e-12)
+    assert np.allclose(correction.odin_from_tag, old_odin_from_tag, atol=1e-12)
 
-    assert np.allclose(correction.world_from_odin, expected_world_from_odin, atol=1e-10)
-    assert np.allclose(
-        (correction.x_m, correction.y_m),
-        expected_world_from_odin[:2, 3],
-        atol=1e-10,
-    )
-
-    # 用户把 FCU 中心搬到 Tag0 正上方；用同一固定世界<-Odin 修正反求此时 raw。
-    world_from_fcu_check = homogeneous(np.eye(3), np.array((0.0, 0.0, 0.70)))
-    world_from_imu_check = world_from_fcu_check @ fcu_from_imu
-    odin_from_imu_check = np.linalg.inv(expected_world_from_odin) @ world_from_imu_check
+    center = homogeneous(np.eye(3), np.array((tag.x, tag.y, 0.70)))
+    raw_center = np.linalg.inv(desired) @ center
     projected = project_fcu_reference_pose(
-        odin_from_imu_check,
-        (correction.x_m, correction.y_m, correction.yaw_rad),
-        lever,
+        raw_center, (correction.x_m, correction.y_m, correction.yaw_rad),
+        config.fcu_reference.lever_arm_m,
     )
-
-    assert np.allclose(projected.position[:2], (0.0, 0.0), atol=1e-10)
-    # Task27 之后旧 extnav 若仍多加固定 +T_xy，会在正确零点显示该固定偏移。
-    assert np.allclose(projected.position[:2] + lever[:2], lever[:2], atol=1e-10)
-
-
-def test_fixed_fcu_extrinsic_cancels_from_world_odin_calibration() -> None:
-    """公共右乘的固定 FCU 外参不改变 world<-Odin；中心补丁不得污染候选 C。"""
-    desired = planar_transform(-0.8, 1.6, math.radians(-42.0))
-    odin_from_imu = homogeneous(
-        rotation_z(math.radians(19.0)), np.array((2.0, -0.7, 0.4))
-    )
-    world_from_imu = desired @ odin_from_imu
-    imu_from_fcu = homogeneous(
-        rotation_z(math.radians(11.0)), np.array((-0.06, 0.03, -0.05))
-    )
-
-    recovered = (world_from_imu @ imu_from_fcu) @ np.linalg.inv(
-        odin_from_imu @ imu_from_fcu
-    )
-
-    assert np.allclose(recovered, desired, atol=1e-12)
+    assert np.allclose(projected.position[:2], (tag.x, tag.y), atol=1e-12)
+    assert np.allclose(projected.rotation, np.eye(3), atol=1e-12)
+    assert math.isclose(projected.position[2],
+                        raw_center[2, 3] + config.fcu_reference.lever_arm_m[2])
 
 
 def test_detector_pose_solver_uses_metric_tag_size_and_scaled_intrinsics() -> None:
@@ -525,12 +504,14 @@ def _load_extnav_module() -> Any:
     return module
 
 
-def test_extnav_planar_correction_left_multiplies_pose_and_rotates_velocity() -> None:
-    """实际 extnav 修正必须发布新消息并一致旋转位置、姿态、水平速度。"""
+def test_extnav_planar_correction_left_multiplies_pose_and_keeps_body_velocity() -> None:
+    """世界修正左乘位姿；FCU 机体系速度不随世界系 yaw 改变。"""
     from nav_msgs.msg import Odometry
 
     extnav = _load_extnav_module()
     raw = Odometry()
+    raw.header.frame_id = "odom"
+    raw.child_frame_id = "fcu"
     raw.pose.pose.position.x = 2.0
     raw.pose.pose.position.y = 1.0
     raw.pose.pose.position.z = 0.7
@@ -545,6 +526,6 @@ def test_extnav_planar_correction_left_multiplies_pose_and_rotates_velocity() ->
     assert corrected.pose.pose.position.z == 0.7
     assert math.isclose(corrected.pose.pose.orientation.z, math.sqrt(0.5))
     assert math.isclose(corrected.pose.pose.orientation.w, math.sqrt(0.5))
-    assert math.isclose(corrected.twist.twist.linear.x, 0.0, abs_tol=1e-12)
-    assert math.isclose(corrected.twist.twist.linear.y, 1.0, abs_tol=1e-12)
+    assert corrected.twist.twist.linear.x == 1.0
+    assert corrected.twist.twist.linear.y == 0.0
     assert raw.pose.pose.position.x == 2.0

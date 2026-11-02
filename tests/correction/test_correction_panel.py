@@ -87,11 +87,6 @@ class _FakeCorrectionClient:
                 "z_m": 0.1,
                 "yaw_deg": 3.2,
             },
-            "legacy_t_pose_fcu": {
-                "fresh": False,
-                "available": False,
-                "reason": "修正未生效；identity 分支没有 Task29 前后差异",
-            },
             "final": {
                 "fresh": True,
                 "age_seconds": 0.2,
@@ -171,7 +166,7 @@ def _application() -> QApplication:
 
 
 def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
-    """默认 first 必须 dry-run，并展示四段生产链及旧 T 公式诊断行。"""
+    """默认 first 必须 dry-run，并展示四段 FCU 生产链。"""
     application = _application()
     client = _FakeCorrectionClient()
     window = CorrectionPanelWindow(client=client)
@@ -187,7 +182,8 @@ def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
         assert "x=+1.0000" in window.raw_pose.text()
         assert "x=+1.0000" in window.corrected_pose.text()
         assert "x=+1.1000" in window.pose_fcu.text()
-        assert "identity 分支没有 Task29 前后差异" in window.legacy_t_pose_fcu.text()
+        assert window.pose_table.verticalHeaderItem(0).text() == "FCU 原始"
+        assert window.pose_table.verticalHeaderItem(1).text() == "FCU 修正"
         assert "x=+1.2000" in window.final_pose.text()
         assert "Tag解码次数=0" in window.sample_value.text()
         assert (
@@ -201,122 +197,6 @@ def test_panel_starts_first_dry_run_and_displays_four_chain_positions() -> None:
 
     assert client.closed == 1
     assert client.stop_requests == []
-
-
-def test_legacy_t_comparison_adds_only_historical_fixed_xy_offset() -> None:
-    """旧 T 对照必须由当前 FCU 同源位姿只加 T_xy，不改 z/yaw 或生产快照。"""
-    pose_fcu = {
-        "fresh": True,
-        "age_seconds": 0.02,
-        "x_m": 0.24,
-        "y_m": 0.15,
-        "z_m": 0.72,
-        "yaw_deg": -1.5,
-    }
-    extnav = {
-        "fresh": True,
-        "age_seconds": 0.10,
-        "valid": True,
-        "revision": 7,
-        "session": "odin-current",
-        "lever_arm_m": (0.06, -0.03, 0.05),
-        "final_sample_available": True,
-        "final_sample_valid": True,
-        "final_sample_revision": 7,
-        "final_sample_session": "odin-current",
-    }
-
-    comparison = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
-
-    assert comparison["available"] is True
-    assert comparison["x_m"] == 0.30
-    assert comparison["y_m"] == 0.12
-    assert comparison["z_m"] == pose_fcu["z_m"]
-    assert comparison["yaw_deg"] == pose_fcu["yaw_deg"]
-    assert comparison["delta_x_m"] == 0.06
-    assert comparison["delta_y_m"] == -0.03
-    assert comparison["age_seconds"] == 0.02
-    assert comparison["extnav_age_seconds"] == 0.10
-    assert pose_fcu["x_m"] == 0.24
-    assert extnav["lever_arm_m"] == (0.06, -0.03, 0.05)
-
-
-def test_legacy_t_comparison_rejects_identity_or_unaligned_sample() -> None:
-    """未激活修正或最终样本 revision 不一致时，不得伪造旧公式对照。"""
-    pose_fcu = {
-        "fresh": True,
-        "age_seconds": 0.02,
-        "x_m": 0.24,
-        "y_m": 0.15,
-        "z_m": 0.72,
-        "yaw_deg": -1.5,
-    }
-    extnav = {
-        "fresh": True,
-        "age_seconds": 0.10,
-        "valid": False,
-        "revision": 7,
-        "session": "odin-current",
-        "lever_arm_m": (0.06, -0.03, 0.05),
-        "final_sample_available": True,
-        "final_sample_valid": False,
-        "final_sample_revision": 7,
-        "final_sample_session": "odin-current",
-    }
-
-    identity = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
-    assert identity["available"] is False
-    assert "identity 分支" in identity["reason"]
-
-    extnav.update(valid=True, final_sample_valid=True, final_sample_revision=6)
-    mismatched = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
-    assert mismatched["available"] is False
-    assert "revision/session" in mismatched["reason"]
-
-    extnav["final_sample_revision"] = 7
-    pose_fcu["age_seconds"] = 0.2
-    older_pose = CorrectionPanelClient._legacy_t_pose_fcu(pose_fcu, extnav)
-    assert older_pose["available"] is False
-    assert "extnav 状态之后" in older_pose["reason"]
-
-
-def test_panel_displays_live_legacy_t_pose_as_diagnostic_only() -> None:
-    """修正有效时，GUI 应显示旧公式位姿、固定差值和对应 revision。"""
-    application = _application()
-    client = _FakeCorrectionClient()
-    client.current_status["extnav"].update(
-        valid=True,
-        revision=7,
-        reference_mode="tag_world_xy_local_z",
-        final_sample_valid=True,
-        final_sample_revision=7,
-        final_sample_reference_mode="tag_world_xy_local_z",
-    )
-    client.current_status["legacy_t_pose_fcu"] = {
-        "fresh": True,
-        "available": True,
-        "age_seconds": 0.1,
-        "x_m": 0.30,
-        "y_m": 0.12,
-        "z_m": 0.72,
-        "yaw_deg": -1.5,
-        "delta_x_m": 0.06,
-        "delta_y_m": -0.03,
-        "revision": 7,
-        "session": "odin-test",
-    }
-
-    window = CorrectionPanelWindow(client=client)
-    try:
-        window.show()
-        application.processEvents()
-        text = window.legacy_t_pose_fcu.text()
-        assert "x=+0.3000" in text
-        assert "y=+0.1200" in text
-        assert "Δxy=(+0.0600, -0.0300)" in text
-        assert "r7" in text
-    finally:
-        window.close()
 
 
 def test_panel_defers_apply_until_frozen_candidate_confirmation(monkeypatch) -> None:

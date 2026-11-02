@@ -21,7 +21,9 @@ bash scripts/onboard/stop_avoidance.sh
 
 构建脚本先构建独立库，再重建共享接口、桥、onboard 和仿真入口；不启动硬件或服务。独立库默认位于主工程同级目录，可通过 `AVOIDANCE_WORKSPACE` 指定。旧安装缺少 SetGoal 或新的结果身份字段时必须重新构建，不能只更新 Python/launch。
 
-默认输入为 `/odin1/cloud_slam_down` 与 `/mavros/local_position/odom`。桥将 FCU 实际里程计转换到规划 frame 并转发 `/avoidance/odom`；MAVROS 的 twist 属于机体系，公共 `odometry_twist_in_body=true` 将其转回世界系。独立 `odin.launch.py` 默认使用 Odin 已在世界系的线速度，因此该入口默认为 false；更换里程计来源时须对应设置。SITL 使用 `coordinate_mode:=identity`、map 点云及真实模拟 FCU odom；纯隔离台架可显式提供同 frame 的 odom 输入。
+默认输入为 `/odin1/cloud_slam_down` 与 `/mavros/local_position/odom`。桥将 FCU 实际里程计转换到规划 frame 并转发 `/avoidance/odom`；MAVROS 和项目 Odin 的 twist 均属于机体系，公共配置和传入项目 YAML 的独立 `odin.launch.py` 入口均用 `odometry_twist_in_body=true` 转回世界系；旧外部 IMU 驱动需显式 false。SITL 使用 `coordinate_mode:=identity`、map 点云及真实模拟 FCU odom；纯隔离台架可显式提供同 frame 的 odom 输入。
+
+独立使用项目 Odin 时须传项目档案，例如 `ros2 launch path_planning odin.launch.py config:=$PWD/config/aircraft/uav002/avoidance/planner.yaml`；外部原生工程自身的旧默认配置不随本项目修改。
 
 正式输入已经上游降采样并剔除近点；不同时启动独立 Python 降采样进程。规划器盲区默认 0，不再二次剔除。若自行开启盲区过滤，云与 odom 须满足原生源时间配对规则，设备云和 FCU ROS 时钟通常不适合直接配对。
 
@@ -40,7 +42,7 @@ ros2 launch path_planning odin.launch.py search.safe_distance:=0.3
 
 原生检查频率默认 10 Hz，时间重规划 0.2 s、位移 1 m、双树轮换 20 个有效点云更新，实际结果发布频率受搜索和输入负载影响。从实际状态规划时直接搜索加速度，不反复插入零加速度滑行首段；窄垂直速度轴补充精确停速候选。其余搜索参数均来自公共配置；没有 bridge 专属规划 profile。
 
-启动正式接入后，手动规划可向 `/avoidance/goal` 发规划 frame 的 PoseStamped；地面站目标由 onboard 经桥调用 `/avoidance/set_goal`。两者进入同一原生目标处理、地图和触发逻辑。独立 `odin.launch.py` 的手动入口仍为 `/goal`，输入参考点默认是 Odin 里程计；正式桥的参考点是 FCU 中心，比较结果时应提供相同状态及转换后的目标。
+启动正式接入后，手动规划可向 `/avoidance/goal` 发规划 frame 的 PoseStamped；地面站目标由 onboard 经桥调用 `/avoidance/set_goal`。两者进入同一原生目标处理、地图和触发逻辑。独立 `odin.launch.py` 的手动入口仍为 `/goal`，项目 Odin 输入参考点也为 FCU 中心；与正式桥比较时仍须统一固定原点偏移和目标坐标。
 
 单个任务航点只设置一次持久目标，投递失败重试保持同一身份；正常重规划无需重发 goal。新 SetGoal 服务支持 active/cancel、target_id 与幂等，取消保留双树地图。任务完成、取消和换点都撤销旧目标；手动目标替换不会自动获得 onboard 飞行控制权。
 
@@ -54,9 +56,9 @@ PlanResult 带进程 session、target_id、sequence 和原搜索时间；桥回�
 
 REACH_HORIZON 只表示中间段，不能触发航点完成或拍照；没有后续结果时在段尾前按避障加速度限额预留时间并等待。到点、低速、停留、拍照和推进航点仍由 onboard 判断。轨迹 yaw 沿现有航点语义管理，规划器只提供平移参考。
 
-extnav 模式使用未应用 Tag 的 local-identity 基线。外参唯一入口为项目 `config/aircraft/<编号>/odin_extrinsics.yaml`，由本机固定编号选择。`R_FI=Rz(yaw_cam)Ry(pitch_cam)Rx(roll_cam)` 将 Odin IMU 轴映射到 FCU FLU 轴，角度单位 rad，向上仰装约 22°对应 `pitch_cam=-0.3839724354`。`T=(odin_x,odin_y,odin_z)` 是 FCU 中心到 Odin IMU 的向量，以 FCU FLU 表达，单位 m。
+extnav 模式使用未应用 Tag 的 local-identity 基线。安装外参唯一入口为项目 `config/aircraft/<编号>/odin_extrinsics.yaml`，由本机固定编号选择；仅 Host SDK 补偿固定 pitch 与杆臂，业务 Odin 里程计已经是 FCU 中心。
 
-extnav 对原始 Odin 位姿使用 `R_OF=R_OI R_IF`、`p_LF=p_OI+b-R_OF T`，对速度减去 `R_OF(omega_F×T)`；`b=T` 是保留旧本地原点约定的常量。桥的输入已经是实际 FCU 中心，因此只需从 FCU 本地系减 `b` 映射到 Odin 世界，目标也减 `b`，返回多项式常数项加 `b`。这里减去的不是实时杆臂，不应再次按姿态旋转。MAVROS 的 FCU body twist 和姿态保持不变；Odin 已重力对齐的世界点云不另按安装 pitch 旋转。extnav session/revision/外参变化撤销旧目标与结果。TODO(task6-tag)：Tag 有效分支仍拒绝接入，非零安装角的 Tag 跳变预测尚未适配。
+extnav 只对 raw FCU 位姿使用 `p_LF=p_OF+b`；`b=(odin_x,odin_y,odin_z)` 是保留旧本地原点约定的常量。桥从 FCU 本地系减 `b` 映射到 Odin 世界，目标也减 `b`，返回多项式常数项加 `b`；不再次按姿态旋转或补偿杆臂。MAVROS 的 FCU body twist 和姿态保持不变；世界点云不另按安装 pitch 旋转。extnav session/revision/外参变化撤销旧目标与结果。TODO(task6-tag)：Tag 有效分支仍拒绝接入；Tag 服务自身已支持非零固定安装角。
 
 FCU 状态沿用输入超时；2 Hz 的 extnav 坐标身份消息使用独立 2 s 接收超时，避免一个发布周期的普通抖动撤销整个规划输入。消息主动报告失效或身份变化时立即处理。
 

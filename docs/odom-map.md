@@ -14,15 +14,15 @@ odom 任务直接沿用 FCU 本地 ENU，不是 Odin IMU 原始 odom。手动速
 ## 坐标关系
 
 Odin 原始高频里程计与实时 SLAM 点云在 `odom`，原生 TF 是 `odom ← map`。
-记 `T_OM=(R_OM,t_OM)`，FCU 本地原点偏移为既有 extnav 的常量 `b=T_FI`：
+记 `T_OM=(R_OM,t_OM)`，FCU 本地原点偏移为既有 extnav 的常量 `b=odin_xyz`：
 
 ```text
 p_local = R_OM * p_map + t_OM + b
 p_map   = inverse(R_OM) * (p_local - t_OM - b)
 ```
 
-航点与采点均以 **FCU 中心** 为参考。`b` 是历史本地原点偏移，实际物理杆臂在 extnav 内计算：
-`R_OF=R_OI R_IF`，`p_local=p_OI+b-R_OF T_FI`，速度同时减去旋转杆臂速度。
+航点与采点均以 **FCU 中心** 为参考。Host SDK 已右乘固定安装外参得到 `T_OF=T_OI*T_IF`，
+并处理旋转杆臂速度和标准 FCU body twist；extnav 只保留 `p_local=p_OF+b` 的历史常量原点偏移。
 安装仰角只改变传感器到机体的姿态转换，不再次倾转 Odin 已调平的世界点云。
 
 MAVROS 消息原有的 `map` 名称仍表示 FCU 本地值；不能用于推断 Odin 地图坐标。
@@ -34,12 +34,10 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 ## 配置与切换
 
 - 安装外参：`config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml`，由本机 `config/aircraft.local.env` 选择飞机。
-  `roll_cam/pitch_cam/yaw_cam` 定义 `R_FI=Rz Ry Rx`，单位弧度；机头向上安装为负 pitch。
+  共享 `/**/ros__parameters` 的 `pitch_cam` 定义 `R_FI=Ry(pitch_cam)`，单位弧度；上仰为负 pitch，roll/yaw 保持零。
   `odin_x/y/z` 是 FCU 到 Odin IMU 的向量，以 FCU FLU 表达，单位米。
-  手工回退角按飞机设置，上仰22°对应约`-0.3839724354`。
-  `auto_installation: true`在未解锁静止约3秒后，用Odin/飞控重力方向自动学习安装俯仰并锁定，
-  roll/yaw及杆臂保持配置，不要求机身摆平；重启extnav可重新学习。项目默认YAML已启用，
-  旧逐机YAML需添加开关，详情见[extnav说明](../correction_service/extnav_patch/README.md)。
+  refresh 固定上仰30°对应 `-0.5235987756`，`auto_installation: false`，不再自适应。
+  相机外参独立采用 `correction/extrinsics.yaml` 的 `T_fcu_camera`，不再维护相机到 Odin 的第三套安装外参。
 - 地图：`config/aircraft/<AIRCRAFT_ID>/odin/reloc.yaml` 的 `relocalization_map_abs_path`。
   必须先提供存在的 bin；地图文件放 `drivers/odin/maps/`，不提交 Git。
 - 默认选择：`config/aircraft/<AIRCRAFT_ID>/navigation.env` 的 `NAVIGATION_MODE=odom|map`。
@@ -59,7 +57,8 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 | 定位健康、目标转换、模式切换服务 | `src/onboard_control/src/navigation_frame.cpp` |
 | 航点提交、起飞前校验、状态输出 | `src/onboard_control/src/onboard_control_node.cpp` |
 | 规划目标撤销重发、遇障悬停通道重查 | `src/onboard_control/src/avoidance_execution.cpp` |
-| 姿态、杆臂及自动安装俯仰 | `correction_service/extnav_patch/src/extnav_to_vision_pose.cpp`、`include/extnav_bridge/math.hpp` |
+| 固定安装姿态、杆臂、速度与协方差 | `drivers/odin/src/odin_ros_driver/include/fcu_odometry.h` |
+| 世界修正与既有局部原点 | `correction_service/extnav_patch/src/extnav_to_vision_pose.cpp`、`include/extnav_bridge/math.hpp` |
 | 地面重启事务 | `scripts/onboard/switch_navigation_mode.sh` |
 | GUI / 上位机坐标适配 | `ground_station_core/ros_controller.py`、`qt_ui/`、`upstream/` |
 | RViz 机体时间与轨迹显示 | `src/guided_sim/scripts/pose_to_tf.py`、`avoidance_preview.py` |
@@ -74,4 +73,4 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 不会自动切回 odom 或自动恢复旧任务。阈值在 `control.yaml` 的 `navigation_*`，不与 FCU 遥测时效混用。
 
 **TODO：map 与 Odin-Tag 的组合尚未适配。** map 要求 extnav 无 active Tag 修正，GUI 禁用 Tag 入口；
-非零安装角的 Tag apply 仍明确拒绝。切换和构建均不等于完成实飞或绝对定位精度验收。
+odom 的 Tag apply 支持非零固定安装角。切换和构建均不等于完成实飞或绝对定位精度验收。

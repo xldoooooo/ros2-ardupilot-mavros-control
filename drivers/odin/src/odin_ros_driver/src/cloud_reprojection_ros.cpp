@@ -1,3 +1,4 @@
+// Device-camera reprojection uses the physical IMU diagnostic, never FCU business odometry.
 /*
 Copyright 2025 Manifold Tech Ltd.(www.manifoldtech.com.co)
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -84,7 +85,7 @@ void CloudReprojectionRosNode::loadParameters()
 {
     // Declare and get parameters
     this->declare_parameter<std::string>("cloud_slam_topic", "/odin1/cloud_slam");
-    this->declare_parameter<std::string>("odometry_topic", "/odin1/odometry");
+    this->declare_parameter<std::string>("odometry_topic", "/odin1/odometry_imu");
     this->declare_parameter<std::string>("wiwc_topic", "/odin1/wiwc");
     this->declare_parameter<std::string>("reprojected_image_topic", "/odin1/reprojected_image");
 
@@ -344,7 +345,7 @@ CloudReprojectionRosNode::CloudReprojectionRosNode(ros::NodeHandle& nh, ros::Nod
 void CloudReprojectionRosNode::loadParameters()
 {
     pnh_.param<std::string>("cloud_slam_topic", cloud_slam_topic_, std::string("/odin1/cloud_slam"));
-    pnh_.param<std::string>("odometry_topic", odometry_topic_, std::string("/odin1/odometry"));
+    pnh_.param<std::string>("odometry_topic", odometry_topic_, std::string("/odin1/odometry_imu"));
     pnh_.param<std::string>("wiwc_topic", wiwc_topic_, std::string("/odin1/wiwc"));
     pnh_.param<std::string>("reprojected_image_topic", reprojected_image_topic_, std::string("/odin1/reprojected_image"));
 

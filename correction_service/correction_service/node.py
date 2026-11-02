@@ -185,8 +185,8 @@ class _Job:
 class CorrectionServiceNode(Node):
     """与飞控/视频生命周期解耦的服务端权威滑窗状态机。"""
 
+    # extnav 权威状态的可用接收年龄。
     EXTNAV_STATUS_MAX_AGE_S = 2.0
-    INSTALLATION_ANGLE_TOLERANCE_RAD = 1e-9
 
     def __init__(self, **node_kwargs) -> None:
         """严格加载 2.0 配置并仅创建低频状态接口，默认不订高频 Odin。"""
@@ -288,7 +288,7 @@ class CorrectionServiceNode(Node):
             config_fingerprint=self.config.config_fingerprint,
             window_size=self._window_size,
             tag_map={key: value.__dict__ for key, value in self.config.tags.items()},
-            t_imu_camera=self.config.t_imu_camera.tolist(),
+            t_fcu_camera=self.config.t_fcu_camera.tolist(),
         )
         self._service_logger.info(
             "节点启动 instance=%s config=%s fingerprint=%s raw_on_demand=%s",
@@ -303,7 +303,7 @@ class CorrectionServiceNode(Node):
         self._publish_status()
 
     def _on_odometry(self, message: Odometry) -> None:
-        """缓存任务专属原始 Odin，并在时钟/session 异常时取消且清空窗口。"""
+        """只缓存未经 Tag 修正的 odom←FCU，并监测时钟/session 异常。"""
         with self._lock:
             if not self._odom_capture_active:
                 return
@@ -311,6 +311,14 @@ class CorrectionServiceNode(Node):
         arrival_ros_ns = self.get_clock().now().nanoseconds
         stamp_ns = stamp_to_nanoseconds(message.header.stamp)
         frame_pair = (str(message.header.frame_id), str(message.child_frame_id))
+        if frame_pair != ("odom", "fcu"):
+            with self._lock:
+                reason = f"原始里程计必须为 odom/fcu，收到 {frame_pair}"
+                self._invalidate_window_locked(reason)
+                job = self._job
+                if job is not None and job.active:
+                    self._fail_job_locked(job, reason)
+            return
         gap = (
             now_monotonic - self._raw_received_monotonic
             if self._raw_received_monotonic > 0.0
@@ -704,7 +712,7 @@ class CorrectionServiceNode(Node):
                 tag_map={
                     key: value.__dict__ for key, value in self.config.tags.items()
                 },
-                t_imu_camera=self.config.t_imu_camera.tolist(),
+                t_fcu_camera=self.config.t_fcu_camera.tolist(),
                 window_before=[
                     item.audit_dict(self.config.window) for item in self._window
                 ],
@@ -1195,7 +1203,7 @@ class CorrectionServiceNode(Node):
             self._reject_sample(job, "图像时间戳附近没有满足阈值的 Odin 历史样本")
             return
         pose = match.message.pose.pose
-        odin_from_imu = transform_from_pose(
+        odin_from_fcu = transform_from_pose(
             np.array((pose.position.x, pose.position.y, pose.position.z)),
             np.array(
                 (
@@ -1209,8 +1217,8 @@ class CorrectionServiceNode(Node):
         correction = compute_planar_correction(
             detection.camera_from_tag_standard,
             self.config.tags[job.expected_tag_id],
-            self.config.t_imu_camera,
-            odin_from_imu,
+            self.config.t_fcu_camera,
+            odin_from_fcu,
         )
         if (
             math.degrees(correction.tilt_rad)
@@ -1456,9 +1464,6 @@ class CorrectionServiceNode(Node):
                     else "local_identity_origin"
                 ),
                 "candidate_mode_after": "tag_world_xy_local_z",
-                "require_zero_installation_angles": (
-                    self.config.fcu_reference.require_zero_installation_angles
-                ),
             },
         )
 
@@ -1492,21 +1497,7 @@ class CorrectionServiceNode(Node):
             rtol=0.0,
         ):
             return replace(
-                candidate, can_apply=False, apply_reason="extnav 杆臂与已推导配置不一致"
-            )
-        if (
-            self.config.fcu_reference.require_zero_installation_angles
-            and not np.allclose(
-                extnav.installation_rpy,
-                np.zeros(3),
-                atol=self.INSTALLATION_ANGLE_TOLERANCE_RAD,
-                rtol=0.0,
-            )
-        ):
-            return replace(
-                candidate,
-                can_apply=False,
-                apply_reason="extnav 安装角非零，中心公式需重推",
+                candidate, can_apply=False, apply_reason="extnav 局部原点偏移与共享配置不一致"
             )
         if (
             self._latest_raw_transform is None
@@ -2290,9 +2281,6 @@ class CorrectionServiceNode(Node):
             "fcu_reference": {
                 "candidate_mode": "tag_world_xy_local_z",
                 "lever_arm_m": self.config.fcu_reference.lever_arm_m.tolist(),
-                "require_zero_installation_angles": (
-                    self.config.fcu_reference.require_zero_installation_angles
-                ),
             },
         }
 

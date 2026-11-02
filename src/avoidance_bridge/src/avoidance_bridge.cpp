@@ -164,7 +164,7 @@ private:
   }
 
   // b=T is a fixed origin offset, not the current rotated FCU->IMU lever arm.
-  // Extnav already publishes the actual FCU center: p_LF=p_OI+b-R_OF*T.
+  // The driver already publishes the FCU center; extnav only adds b: p_LF=p_OF+b.
   std::array<double, 3> local_origin_offset() const {
     if (mode_ == "identity" || !status_) { return {0., 0., 0.}; }
     return {status_->lever_arm_x_m, status_->lever_arm_y_m, status_->lever_arm_z_m};

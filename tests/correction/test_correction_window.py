@@ -11,10 +11,13 @@ from typing import Any
 import numpy as np
 from correction_service.estimator import CorrectionEstimator, CorrectionSample
 from correction_service.geometry import (
+    compute_planar_correction,
+    configured_tag_from_standard,
     expected_fcu_jump,
     homogeneous,
     project_fcu_reference_pose,
     rotation_z,
+    world_tag_transform,
 )
 from correction_service.window import (
     CalibrationKeyframe,
@@ -94,6 +97,34 @@ def test_two_point_equal_weight_recovers_known_transform_across_yaw_wrap() -> No
     assert result.rms_m < 1e-12
     # 两点拟合内残差必为零，但绝对位置 sigma 仍必须给出非零 yaw 不确定度。
     assert result.model_yaw_std_rad > 0.0
+
+
+def test_two_tag_baseline_uses_tag_centers_from_raw_fcu_camera_chain() -> None:
+    """两次不同机体姿态的完整观测链仍以 Tag 中心配准，不能用拍摄位置。"""
+    config = load_config(PROJECT_ROOT / "config/aircraft/uav002/correction")
+    world_from_odin = homogeneous(rotation_z(0.37), np.array((0.8, -0.6, 0.0)))
+    frames = []
+    for tag_id, attitude in ((0, (0.17, -0.11, 0.6)), (1, (-0.12, 0.08, -0.4))):
+        tag = config.tags[tag_id]
+        world_from_fcu = homogeneous(
+            _rpy_rotation(*attitude), np.array((tag.x + 0.2, tag.y - 0.1, 0.9))
+        )
+        raw = np.linalg.inv(world_from_odin) @ world_from_fcu
+        camera_from_tag = np.linalg.inv(
+            world_from_fcu @ config.t_fcu_camera
+        ) @ world_tag_transform(tag)
+        sample = compute_planar_correction(
+            camera_from_tag @ np.linalg.inv(configured_tag_from_standard()),
+            tag, config.t_fcu_camera, raw,
+        )
+        frames.append(_keyframe(tag_id,
+                               (sample.odin_tag_x_m, sample.odin_tag_y_m),
+                               (tag.x, tag.y)))
+    result = solve_weighted_se2(tuple(frames), config.window)
+    assert result.valid, result.reason
+    assert np.allclose((result.x_m, result.y_m), world_from_odin[:2, 3], atol=1e-12)
+    assert math.isclose(result.yaw_rad, 0.37, abs_tol=1e-12)
+    assert result.rms_m < 1e-12
 
 
 def test_unequal_weight_translation_uses_weighted_centroids() -> None:
@@ -338,7 +369,7 @@ def _rpy_rotation(roll: float, pitch: float, yaw: float) -> np.ndarray:
 
 
 def test_valid_fcu_center_removes_fixed_xy_origin_for_arbitrary_pose_and_yaw() -> None:
-    """有效分支必须是 Qp+t-QR*T；valid identity 也不能回到旧 +T_xy。"""
+    """raw 已为 FCU；有效分支为 Qp+t，局部 b 不再随姿态转动。"""
     lever = np.array((0.06, -0.03, 0.05))
     raw_rotation = _rpy_rotation(0.21, -0.17, 0.73)
     raw_position = np.array((1.2, -0.8, 0.6))
@@ -350,9 +381,8 @@ def test_valid_fcu_center_removes_fixed_xy_origin_for_arbitrary_pose_and_yaw() -
         expected_xy = (
             world_rotation @ raw_position
             + np.array((correction[0], correction[1], 0.0))
-            - world_rotation @ raw_rotation @ lever
         )[:2]
-        old_z = raw_position[2] + lever[2] - (world_rotation @ raw_rotation @ lever)[2]
+        old_z = raw_position[2] + lever[2]
         assert np.allclose(projected.position[:2], expected_xy, atol=1e-12)
         assert math.isclose(projected.position[2], old_z, abs_tol=1e-12)
 
@@ -393,7 +423,7 @@ def test_extnav_and_candidate_jump_use_identical_center_formula() -> None:
         raw, corrected, rotation, lever, True
     )
 
-    expected = corrected - rotation @ lever
-    expected[2] = raw[2] + lever[2] - (rotation @ lever)[2]
+    expected = corrected.copy()
+    expected[2] = raw[2] + lever[2]
     assert mode == "tag_world_xy_local_z"
     assert np.allclose(actual, expected, atol=1e-12)

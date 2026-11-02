@@ -590,10 +590,12 @@ def test_integrated_start_supervises_all_four_components_without_flight_commands
         assert parameter in script
 
     extrinsics = yaml.safe_load((PROJECT_ROOT / "config/aircraft/simulation/odin_extrinsics.yaml").read_text())
-    assert extrinsics["/extnav_to_vision_pose"]["ros__parameters"] == {
-        "auto_installation": True, "auto_installation_seconds": 3.0,
+    assert extrinsics["/**"]["ros__parameters"] == {
+        "auto_installation": False,
         "roll_cam": 0.0, "pitch_cam": 0.0, "yaw_cam": 0.0,
         "odin_x": 0.10, "odin_y": -0.04, "odin_z": 0.05,
+    }
+    assert extrinsics["/extnav_to_vision_pose"]["ros__parameters"] == {
         "vision_rate_hz": 40.0, "ctrl_rate_hz": 100.0,
         "odom_topic": "/odin1/odometry_highfreq",
     }

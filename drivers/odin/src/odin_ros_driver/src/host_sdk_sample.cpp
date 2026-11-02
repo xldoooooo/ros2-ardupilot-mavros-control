@@ -2328,6 +2328,18 @@ int main(int argc, char *argv[])
         RCLCPP_INFO(node->get_logger(), "Odin config_file: %s", config_file.c_str());
         #endif
 
+        // The selected aircraft file is the only mounting source, including direct binary starts.
+        const std::string mounting_file = odin_ros_driver::GetProjectConfigDir(package_path) +
+            "/odin_extrinsics.yaml";
+        const auto mounting = YAML::LoadFile(mounting_file)["/**"]["ros__parameters"];
+        const double mounting_pitch = mounting["pitch_cam"].as<double>();
+        const Eigen::Vector3d mounting_lever(mounting["odin_x"].as<double>(),
+            mounting["odin_y"].as<double>(), mounting["odin_z"].as<double>());
+        g_ros_object->configureFcuInstallation(mounting_pitch, mounting_lever);
+        LOG_INFO("FCU mounting: %s; pitch=%g rad, FCU->IMU=(%g,%g,%g) m",
+            mounting_file.c_str(), mounting_pitch,
+            mounting_lever.x(), mounting_lever.y(), mounting_lever.z());
+
 
         // Read host-only settings separately; register_keys retain their existing parser.
         CloudDownsampleConfig downsample;

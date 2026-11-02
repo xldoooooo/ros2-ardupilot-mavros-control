@@ -58,17 +58,15 @@ def test_official_print_to_first_correction_and_return_to_center(
     # Independently build the supported UQ212 mechanical installation scene.
     physical = homogeneous(
         np.array(((0, -1, 0), (-1, 0, 0), (0, 0, -1))),
-        np.array((41 + 5.57, 50 - 21.03, -(46 + 12 + 9.26))) / 1000,
+        np.array((141 + 5.57, 10 - 21.03, -(46 + 12 + 9.26) + 50)) / 1000,
     )
     # 历史独立真值场景固定17cm；现场换纸不得改变此场景的像素尺寸与精度断言。
     tag = replace(cfg.tags[0], size_m=0.170, yaw_rad=math.radians(tag_yaw_deg))
     # 这里使用无畸变合成镜头，以单独检查角点方向；畸变另有公制回归覆盖。
     intrinsics = replace(cfg.intrinsics, distortion=np.zeros(5))
     detector = AprilTagDetector(intrinsics, cfg.detection)
-    fi = homogeneous(np.eye(3), np.array((0.06, -0.03, 0.05)))
     wf = homogeneous(rotation_z(math.radians(yaw_deg)), np.array((*fcu_xy, 0.70)))
-    wi = wf @ fi
-    wc = wi @ physical
+    wc = wf @ physical
     wt = homogeneous(rotation_z(tag.yaw_rad), np.zeros(3))
     ct = np.linalg.inv(wc) @ wt
     half = tag.size_m / 2
@@ -91,19 +89,19 @@ def test_official_print_to_first_correction_and_return_to_center(
     assert batch.marker_ids == (0,)
     assert len(batch.detections) == 1
     # Odin 起始自建系归零，随后按真实刚体位移变化。
-    oi_start = np.eye(4)
+    of_start = np.eye(4)
     measured = compute_planar_correction(
-        batch.detections[0].camera_from_tag_standard, tag, cfg.t_imu_camera, oi_start
+        batch.detections[0].camera_from_tag_standard, tag, cfg.t_fcu_camera, of_start
     )
     candidate = (measured.x_m, measured.y_m, measured.yaw_rad)
-    start = project_fcu_reference_pose(oi_start, candidate, fi[:3, 3])
+    start = project_fcu_reference_pose(of_start, candidate, cfg.fcu_reference.lever_arm_m)
     assert np.allclose(start.position[:2], fcu_xy, atol=0.008)
     assert abs(
         math.remainder(measured.yaw_rad - math.radians(yaw_deg), 2 * math.pi)
     ) < math.radians(0.3)
     wf_center = homogeneous(np.eye(3), np.array((0.0, 0.0, 0.70)))
-    oi_center = np.linalg.inv(wi) @ wf_center @ fi
-    final = project_fcu_reference_pose(oi_center, candidate, fi[:3, 3])
+    of_center = np.linalg.inv(wf) @ wf_center
+    final = project_fcu_reference_pose(of_center, candidate, cfg.fcu_reference.lever_arm_m)
     assert np.linalg.norm(final.position[:2]) < 0.008
 
 

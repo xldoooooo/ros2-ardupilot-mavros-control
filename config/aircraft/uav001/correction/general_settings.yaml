@@ -78,10 +78,9 @@ window:
 
 # 仅用于复算候选在飞控参考中心处的实际跳变；extnav 状态必须回报同一参数。
 fcu_reference:
-  # Share the same geometry file with extnav.
+  # Shared mounting source; odin_xyz is extnav legacy local-origin b, not a second lever correction.
   extrinsics_file: ../odin_extrinsics.yaml
   parameter_tolerance: 0.000001
-  require_zero_installation_angles: true
 
 timeouts:
   camera_start_seconds: 12.0

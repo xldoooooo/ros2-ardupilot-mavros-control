@@ -24,14 +24,6 @@ struct Components
   Vector3 velocity;
 };
 
-struct Installation
-{
-  Vector3 lever;
-  Quaternion q_fi;
-  Quaternion q_if;
-  Matrix3 rotation_fi;
-};
-
 struct Correction
 {
   double x = 0.0;
@@ -41,7 +33,6 @@ struct Correction
   double sine = 0.0;
   Quaternion quaternion{0.0, 0.0, 0.0, 1.0};
   Matrix6 pose_transform{};
-  Matrix6 twist_transform{};
 };
 
 /** Normalize xyzw and retain the original finite/zero-norm rejection. */
@@ -102,54 +93,6 @@ inline Vector3 rotate(const Matrix3 & r, const Vector3 & v)
     r[6] * v[0] + r[7] * v[1] + r[8] * v[2]};
 }
 
-/** Express world up in the sensor/body frame; world yaw cancels exactly. */
-inline Vector3 body_up(const Quaternion & orientation)
-{
-  const auto r = rotation_matrix(normalize(orientation));
-  return {r[6], r[7], r[8]};
-}
-
-/** Solve installation pitch from mean gravity directions, preserving configured roll/yaw. */
-inline double gravity_pitch(Vector3 sensor_up, Vector3 fcu_up, double roll, double yaw)
-{
-  for (auto * vector : {&sensor_up, &fcu_up}) {
-    const double norm = std::hypot((*vector)[0], (*vector)[1], (*vector)[2]);
-    if (!std::isfinite(norm) || norm < kMinimumQuaternionNorm) {
-      throw std::invalid_argument("invalid mean gravity direction");
-    }
-    for (double & value : *vector) {value /= norm;}
-  }
-  const double cr = std::cos(roll), sr = std::sin(roll);
-  const Vector3 a{sensor_up[0], cr * sensor_up[1] - sr * sensor_up[2],
-    sr * sensor_up[1] + cr * sensor_up[2]};
-  const double c = std::cos(yaw), s = std::sin(yaw);
-  const Vector3 b{c * fcu_up[0] + s * fcu_up[1],
-    -s * fcu_up[0] + c * fcu_up[1], fcu_up[2]};
-  // A body whose gravity lies along its y axis cannot observe a rotation around that axis.
-  constexpr double minimum_projection = 1e-6;
-  if (!std::isfinite(roll) || !std::isfinite(yaw) ||
-    std::hypot(a[0], a[2]) < minimum_projection || std::hypot(b[0], b[2]) < minimum_projection)
-  {
-    throw std::invalid_argument("gravity cannot determine installation pitch");
-  }
-  return std::atan2(b[0] * a[2] - b[2] * a[0], b[0] * a[0] + b[2] * a[2]);
-}
-
-/** Cache installation rotation while retaining the original lever validation. */
-inline Installation installation(const Vector3 & lever, double roll, double pitch, double yaw)
-{
-  Installation result;
-  result.lever = lever;
-  result.q_fi = normalize(rpy_quaternion(roll, pitch, yaw));
-  const auto [x, y, z, w] = result.q_fi;
-  result.q_if = {-x, -y, -z, w};
-  result.rotation_fi = rotation_matrix(normalize(result.q_fi));
-  for (double value : lever) {
-    if (!std::isfinite(value)) {throw std::invalid_argument("non-finite Odin lever arm");}
-  }
-  return result;
-}
-
 /** Cache revision-constant yaw and covariance matrices instead of rebuilding per raw. */
 inline Correction correction(double x, double y, double yaw)
 {
@@ -168,14 +111,12 @@ inline Correction correction(double x, double y, double yaw)
     for (std::size_t col = 0; col < 3; ++col) {
       result.pose_transform[row * 6 + col] = r[row * 3 + col];
       result.pose_transform[(row + 3) * 6 + col + 3] = r[row * 3 + col];
-      result.twist_transform[row * 6 + col] = r[row * 3 + col];
     }
-    result.twist_transform[(row + 3) * 6 + row + 3] = 1.0;
   }
   return result;
 }
 
-/** Left-multiply the planar correction, preserving body angular velocity separately. */
+/** Left-multiply the world correction while preserving FCU-frame velocity. */
 inline Components planar_components(const Components & raw, const Correction & c)
 {
   if (!std::isfinite(c.x) || !std::isfinite(c.y) || !std::isfinite(c.yaw)) {
@@ -185,46 +126,30 @@ inline Components planar_components(const Components & raw, const Correction & c
     {c.cosine * raw.position[0] - c.sine * raw.position[1] + c.x,
       c.sine * raw.position[0] + c.cosine * raw.position[1] + c.y, raw.position[2]},
     normalize(multiply(c.quaternion, normalize(raw.quaternion))),
-    {c.cosine * raw.velocity[0] - c.sine * raw.velocity[1],
-      c.sine * raw.velocity[0] + c.cosine * raw.velocity[1], raw.velocity[2]}};
+    raw.velocity};
 }
 
-/** Convert IMU to FCU using the current installation, origin and local-z formulas. */
+/** Apply only the legacy constant origin offset; incoming odometry already refers to FCU. */
 inline Components fcu_components(
   const Components & raw, const Components * corrected,
-  const Vector3 & angular, const Installation & mount, bool correction_valid)
+  const Vector3 & origin, bool correction_valid)
 {
   const Components & source = corrected ? *corrected : raw;
-  const Quaternion q_odom = corrected ? source.quaternion : normalize(raw.quaternion);
-  const Quaternion q_fcu = normalize(multiply(q_odom, mount.q_if));
-  const Matrix3 r_fcu = rotation_matrix(q_fcu);
-  // Match the original checks; velocity/angular NaN policy is intentionally unchanged.
-  for (std::size_t index = 0; index < 3; ++index) {
-    if (!std::isfinite(raw.position[index]) || !std::isfinite(source.position[index]) ||
-      !std::isfinite(mount.lever[index]))
+  const Quaternion q_fcu = normalize(source.quaternion);
+  for (std::size_t axis = 0; axis < 3; ++axis) {
+    if (!std::isfinite(raw.position[axis]) || !std::isfinite(source.position[axis]) ||
+      !std::isfinite(origin[axis]))
     {
       throw std::invalid_argument("non-finite FCU reference transform");
     }
   }
-  for (double value : r_fcu) {
-    if (!std::isfinite(value)) {throw std::invalid_argument("non-finite FCU reference transform");}
+  Vector3 position = source.position;
+  if (!correction_valid) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {position[axis] += origin[axis];}
   }
-  const Vector3 arm = rotate(r_fcu, mount.lever);
-  Vector3 position;
-  for (std::size_t index = 0; index < 3; ++index) {
-    position[index] = correction_valid ? source.position[index] - arm[index] :
-      raw.position[index] + mount.lever[index] - arm[index];
-  }
-  if (correction_valid) {position[2] = raw.position[2] + mount.lever[2] - arm[2];}
-  const Vector3 omega = rotate(mount.rotation_fi, angular);
-  const Vector3 cross{
-    omega[1] * mount.lever[2] - omega[2] * mount.lever[1],
-    omega[2] * mount.lever[0] - omega[0] * mount.lever[2],
-    omega[0] * mount.lever[1] - omega[1] * mount.lever[0]};
-  const Vector3 velocity_arm = rotate(r_fcu, cross);
-  return {position, q_fcu,
-    {source.velocity[0] - velocity_arm[0], source.velocity[1] - velocity_arm[1],
-      source.velocity[2] - velocity_arm[2]}};
+  // Tag only calibrates XY/yaw; local Z retains its existing constant origin.
+  position[2] = raw.position[2] + origin[2];
+  return {position, q_fcu, rotate(rotation_matrix(q_fcu), source.velocity)};
 }
 
 /** Rotate every covariance block; preserve negative-unknown and nonfinite arrays. */

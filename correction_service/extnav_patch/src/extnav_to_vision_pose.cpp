@@ -6,8 +6,6 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <sensor_msgs/msg/imu.hpp>
-#include <mavros_msgs/msg/state.hpp>
 #if EXTNAV_HAS_CORRECTION_API
 #include <correction_interfaces/msg/extnav_correction_status.hpp>
 #include <correction_interfaces/srv/set_correction.hpp>
@@ -32,18 +30,10 @@ using Odometry = nav_msgs::msg::Odometry;
 using PoseStamped = geometry_msgs::msg::PoseStamped;
 using TwistStamped = geometry_msgs::msg::TwistStamped;
 
-// Existing public protocol, discovery cadence, status cadence and installation-angle boundary.
+// Existing public protocol, discovery cadence and status cadence.
 constexpr char kInterfaceVersion[] = "2.0";
 constexpr double kDiscoverySeconds = 0.1;
 constexpr double kStatusSeconds = 0.5;
-constexpr double kZeroInstallationAngle = 1e-9;
-// Startup-only calibration tolerates normal ground noise and never follows flight motion.
-constexpr double kCalibrationPeriod = 0.1;
-constexpr double kCalibrationImuAge = 0.5;
-constexpr double kCalibrationStateAge = 3.0;
-constexpr double kCalibrationSpeed = 0.1;
-constexpr double kCalibrationAngularSpeed = 0.05;
-constexpr double kCalibrationDirectionCosine = 0.9999619230641713;  // cos(0.5 degrees).
 // Header timestamps are nanoseconds; active status reports degrees while installation stays radians.
 constexpr std::int64_t kNanosecondsPerSecond = 1000000000;
 constexpr double kRadiansToDegrees = 180.0 / 3.14159265358979323846;
@@ -54,6 +44,7 @@ constexpr char kCorrectedReference[] = "tag_world_xy_local_z";
 struct Snapshot
 {
   Components value;
+  Vector3 angular;
   bool correction_valid;
   std::uint64_t revision;
   std::string session;
@@ -130,11 +121,11 @@ public:
     roll_ = declare_parameter("roll_cam", 0.0);
     pitch_ = declare_parameter("pitch_cam", 0.0);
     yaw_ = declare_parameter("yaw_cam", 0.0);
-    auto_installation_ = declare_parameter("auto_installation", false);
-    calibration_seconds_ = declare_parameter("auto_installation_seconds", 3.0);
-    if (!std::isfinite(calibration_seconds_) || calibration_seconds_ <= 0.0) {
-      RCLCPP_ERROR(get_logger(), "Invalid auto_installation_seconds; retaining configured installation");
-      auto_installation_ = false;
+    // Accept legacy configuration but never repeat driver-side installation compensation.
+    const bool auto_installation = declare_parameter("auto_installation", false);
+    declare_parameter("auto_installation_seconds", 3.0);
+    if (auto_installation) {
+      RCLCPP_WARN(get_logger(), "auto_installation is disabled: the Odin driver owns fixed installation");
     }
     const double x = declare_parameter("odin_x", 0.0);
     const double y = declare_parameter("odin_y", 0.0);
@@ -142,9 +133,10 @@ public:
     if (session_gap_ <= 0.0 || max_translation_ <= 0.0) {
       throw std::invalid_argument("invalid correction/session limit");
     }
-    mount_ = installation({x, y, z}, roll_, pitch_, yaw_);
-    world_center_supported_ = std::abs(roll_) <= kZeroInstallationAngle &&
-      std::abs(pitch_) <= kZeroInstallationAngle && std::abs(yaw_) <= kZeroInstallationAngle;
+    origin_ = {x, y, z};
+    for (double value : {x, y, z, roll_, pitch_, yaw_}) {
+      if (!std::isfinite(value)) {throw std::invalid_argument("non-finite Odin installation metadata");}
+    }
     if (vision_rate <= 0.0 || control_rate <= 0.0) {
       throw std::invalid_argument("invalid publication rate");
     }
@@ -154,22 +146,6 @@ public:
     corrected_pub_ = create_publisher<Odometry>(corrected_topic, rclcpp::SensorDataQoS());
     raw_sub_ = create_subscription<Odometry>(odometry_topic, rclcpp::SensorDataQoS(),
       [this](Odometry::ConstSharedPtr message) {on_odometry(*message);});
-    if (auto_installation_) {
-      imu_sub_ = create_subscription<sensor_msgs::msg::Imu>("/mavros/imu/data", rclcpp::SensorDataQoS(),
-        [this](sensor_msgs::msg::Imu::ConstSharedPtr message) {
-          fcu_imu_ = std::move(message);
-          imu_received_ = monotonic_seconds();
-        });
-      state_sub_ = create_subscription<mavros_msgs::msg::State>("/mavros/state", rclcpp::SensorDataQoS(),
-        [this](mavros_msgs::msg::State::ConstSharedPtr message) {
-          fcu_state_ = std::move(message);
-          state_received_ = monotonic_seconds();
-          if (fcu_state_->armed || !fcu_state_->connected) {reset_calibration("等待连接且未解锁");}
-        });
-      RCLCPP_WARN(get_logger(),
-        "Auto installation pitch enabled: keep disarmed and still for %gs; roll/yaw stay configured. "
-        "Configured installation remains active until convergence.", calibration_seconds_);
-    }
 #if EXTNAV_HAS_CORRECTION_API
     status_pub_ = create_publisher<Status>(status_topic, rclcpp::QoS(1).reliable().transient_local());
     correction_service_ = create_service<SetCorrection>(service_name,
@@ -194,93 +170,9 @@ public:
     RCLCPP_WARN(get_logger(),
       "TODO(task27-reset-counter): 当前 /mavros/vision_pose/pose 是 PoseStamped，"
       "无法携带 MAVLink estimator reset_counter；本节点仅在修正状态中递增计数。");
-    if (!world_center_supported_) {
-      RCLCPP_WARN(get_logger(), "Odin installation rotation active; Tag SetCorrection remains unsupported");
-    }
   }
 
 private:
-  /** Discard only unfinished calibration; the configured output remains available. */
-  void reset_calibration(const std::string & reason)
-  {
-    calibration_count_ = 0;
-    calibration_started_ = 0.0;
-    sensor_up_sum_ = {};
-    fcu_up_sum_ = {};
-    calibration_detail_ = reason;
-  }
-
-  /** Learn only relative pitch from two gravity references, then freeze until restart. */
-  void calibrate_installation(const Odometry & message, const Components & raw, double received)
-  {
-    if (!auto_installation_ || installation_locked_ ||
-      received - calibration_checked_ < kCalibrationPeriod) {return;}
-    const double gap = received - calibration_checked_;
-    calibration_checked_ = received;
-    if (!fcu_state_ || !fcu_state_->connected || fcu_state_->armed ||
-      received - state_received_ > kCalibrationStateAge)
-    {
-      reset_calibration("等待连接且未解锁");
-      return;
-    }
-    if (!fcu_imu_ || received - imu_received_ > kCalibrationImuAge ||
-      fcu_imu_->orientation_covariance[0] < 0.0)
-    {
-      reset_calibration("等待飞控有效姿态");
-      return;
-    }
-    const auto & omega = message.twist.twist.angular;
-    const auto & gyro = fcu_imu_->angular_velocity;
-    if (!(std::hypot(raw.velocity[0], raw.velocity[1], raw.velocity[2]) < kCalibrationSpeed) ||
-      !(std::hypot(omega.x, omega.y, omega.z) < kCalibrationAngularSpeed) ||
-      !(std::hypot(gyro.x, gyro.y, gyro.z) < kCalibrationAngularSpeed) || correction_valid_)
-    {
-      reset_calibration("等待静止且无 active Tag 修正");
-      return;
-    }
-    try {
-      const auto & q = fcu_imu_->orientation;
-      const auto sensor_up = body_up(raw.quaternion);
-      const auto fcu_up = body_up({q.x, q.y, q.z, q.w});
-      const auto aligned = [](const Vector3 & a, const Vector3 & b) {
-          return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] >= kCalibrationDirectionCosine;
-        };
-      if (gap > kCalibrationImuAge || (calibration_count_ > 0 &&
-        (!aligned(sensor_up, sensor_up_first_) || !aligned(fcu_up, fcu_up_first_))))
-      {
-        reset_calibration("等待重力方向稳定");
-      }
-      if (calibration_count_ == 0) {
-        calibration_started_ = received;
-        sensor_up_first_ = sensor_up;
-        fcu_up_first_ = fcu_up;
-      }
-      for (std::size_t axis = 0; axis < 3; ++axis) {
-        sensor_up_sum_[axis] += sensor_up[axis];
-        fcu_up_sum_[axis] += fcu_up[axis];
-      }
-      ++calibration_count_;
-      calibration_detail_ = "正在收集稳定重力方向";
-      if (calibration_count_ < 3 || received - calibration_started_ < calibration_seconds_) {return;}
-      const double pitch = gravity_pitch(sensor_up_sum_, fcu_up_sum_, roll_, yaw_);
-      mount_ = installation(mount_.lever, roll_, pitch, yaw_);
-      pitch_ = pitch;
-      world_center_supported_ = std::abs(roll_) <= kZeroInstallationAngle &&
-        std::abs(pitch_) <= kZeroInstallationAngle && std::abs(yaw_) <= kZeroInstallationAngle;
-      installation_locked_ = true;
-      calibration_detail_ = "自动安装角已锁定 pitch=" + decimal(pitch_ * kRadiansToDegrees, 3) +
-        "deg，roll/yaw沿用配置";
-      // Calibration readers are no longer needed; retain zero steady-state callback overhead.
-      imu_sub_.reset();
-      state_sub_.reset();
-      fcu_imu_.reset();
-      fcu_state_.reset();
-      RCLCPP_INFO(get_logger(), "%s", calibration_detail_.c_str());
-    } catch (const std::exception & error) {
-      reset_calibration(std::string("等待可解的重力方向：") + error.what());
-    }
-  }
-
   /** Use the node ROS clock, including use_sim_time, rather than wall-clock output timers. */
   template<typename Callback>
   rclcpp::TimerBase::SharedPtr ros_timer(double seconds, Callback callback)
@@ -312,7 +204,6 @@ private:
   /** New session identifiers have the legacy timestamp plus an independent eight-hex suffix. */
   void begin_session(const Odometry & message, const std::string & reason)
   {
-    if (!installation_locked_) {reset_calibration("等待稳定的 Odin 会话");}
     if (correction_valid_) {invalidate(reason + "，旧修正立即失效");}
     std::ostringstream identifier;
     identifier << "odin-" << stamp_nanoseconds(message) << '-' << std::hex << std::setfill('0') <<
@@ -328,6 +219,14 @@ private:
   /** Process every raw and freeze output/metadata before optional corrected publication. */
   void on_odometry(const Odometry & message)
   {
+    if (message.header.frame_id != "odom" || message.child_frame_id != "fcu") {
+      const std::string reason = "Odin 输入必须为 odom<-fcu，拒绝旧 IMU 中心里程计";
+      odin_available_ = false;
+      session_.clear();
+      if (last_error_ != reason || latest_ || correction_valid_) {invalidate(reason);}
+      return;
+    }
+
     const double received = monotonic_seconds();
     const auto stamp = stamp_nanoseconds(message);
     const auto frame = std::make_pair(message.header.frame_id, message.child_frame_id);
@@ -356,7 +255,6 @@ private:
     // Retain the pre-invalidation transform for this callback's independent corrected stream.
     const auto frozen_correction = sample_valid ? std::optional<Correction>(correction_) : std::nullopt;
     const auto raw = components(message);
-    calibrate_installation(message, raw, received);
     std::optional<Components> corrected;
     try {
       if (sample_valid) {corrected = planar_components(raw, *frozen_correction);}
@@ -370,7 +268,9 @@ private:
     try {
       const auto & w = message.twist.twist.angular;
       output = Snapshot{
-        fcu_components(raw, corrected ? &*corrected : nullptr, {w.x, w.y, w.z}, mount_, sample_valid),
+        fcu_components(raw, corrected ? &*corrected : nullptr, origin_, sample_valid),
+        rotate(rotation_matrix(normalize(corrected ? corrected->quaternion : raw.quaternion)),
+          {w.x, w.y, w.z}),
         sample_valid, sample_revision, sample_session, sample_valid ? kCorrectedReference : kLocalReference};
     } catch (const std::exception & error) {
       invalidate(std::string("飞控中心转换异常，停止重复发布旧样本：") + error.what());
@@ -380,11 +280,7 @@ private:
       if (corrected) {
         Odometry published = message;
         write_pose(published.pose.pose, *corrected);
-        published.twist.twist.linear.x = corrected->velocity[0];
-        published.twist.twist.linear.y = corrected->velocity[1];
-        published.twist.twist.linear.z = corrected->velocity[2];
         published.pose.covariance = rotate_covariance(message.pose.covariance, frozen_correction->pose_transform);
-        published.twist.covariance = rotate_covariance(message.twist.covariance, frozen_correction->twist_transform);
         corrected_pub_->publish(published);
       } else {
         // rclcpp serializes a const message; no Python-style deep copy or raw mutation is needed.
@@ -441,10 +337,6 @@ private:
     }
     if (!odin_available_ || session_.empty()) {
       response.message = "Odin 当前不可用";
-      return;
-    }
-    if (!world_center_supported_) {
-      response.message = "当前 extnav 安装角非零，task29 飞控中心有效分支尚未重新推导";
       return;
     }
     if (request.odin_session_id != session_) {
@@ -530,9 +422,9 @@ private:
     message.correction_yaw_deg = correction_.yaw * kRadiansToDegrees;
     message.applied_job_id = applied_job_;
     message.horizontal_reference_mode = correction_valid_ ? kCorrectedReference : kLocalReference;
-    message.lever_arm_x_m = mount_.lever[0];
-    message.lever_arm_y_m = mount_.lever[1];
-    message.lever_arm_z_m = mount_.lever[2];
+    message.lever_arm_x_m = origin_[0];
+    message.lever_arm_y_m = origin_[1];
+    message.lever_arm_z_m = origin_[2];
     message.installation_roll_rad = roll_;
     message.installation_pitch_rad = pitch_;
     message.installation_yaw_rad = yaw_;
@@ -548,7 +440,7 @@ private:
       std::max(0.0, monotonic_seconds() - last_raw_time_) : std::numeric_limits<double>::infinity();
     message.raw_messages = raw_messages_;
     message.corrected_messages = corrected_messages_;
-    message.last_event = auto_installation_ ? last_event_ + "；" + calibration_detail_ : last_event_;
+    message.last_event = last_event_;
     message.last_error = last_error_;
     status_pub_->publish(message);
 #endif
@@ -588,6 +480,9 @@ private:
         message.twist.linear.x = latest_->value.velocity[0];
         message.twist.linear.y = latest_->value.velocity[1];
         message.twist.linear.z = latest_->value.velocity[2];
+        message.twist.angular.x = latest_->angular[0];
+        message.twist.angular.y = latest_->angular[1];
+        message.twist.angular.z = latest_->angular[2];
         velocity_pub_->publish(message);
       }
     }
@@ -595,23 +490,13 @@ private:
     ++final_pose_messages_;
   }
 
-  Installation mount_{};
-  // Calibration learns only once per node lifetime; parameters remain the manual fallback.
-  bool auto_installation_ = false, installation_locked_ = false;
-  double calibration_seconds_ = 3.0, calibration_checked_ = 0.0, calibration_started_ = 0.0;
-  double imu_received_ = 0.0, state_received_ = 0.0;
-  std::size_t calibration_count_ = 0;
-  Vector3 sensor_up_sum_{}, fcu_up_sum_{}, sensor_up_first_{}, fcu_up_first_{};
-  std::string calibration_detail_ = "等待连接、有效姿态和静止";
-  sensor_msgs::msg::Imu::ConstSharedPtr fcu_imu_;
-  mavros_msgs::msg::State::ConstSharedPtr fcu_state_;
-  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-  rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_sub_;
+  // FCU-to-IMU metadata also preserves the legacy local-origin translation.
+  Vector3 origin_{};
   Correction correction_ = correction(0.0, 0.0, 0.0);
   double roll_ = 0.0, pitch_ = 0.0, yaw_ = 0.0;
   double session_gap_ = 2.0, max_translation_ = 100.0;
   long double stamp_regression_ns_ = 0.0;
-  bool world_center_supported_ = true, corrected_has_readers_ = false;
+  bool corrected_has_readers_ = false;
   bool odin_available_ = false, correction_valid_ = false;
   double last_raw_time_ = 0.0;
   std::int64_t last_stamp_ = 0;

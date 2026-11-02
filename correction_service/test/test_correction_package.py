@@ -46,13 +46,13 @@ def test_aircraft_configuration_loads_for_expected_tag() -> None:
     assert np.allclose(config.intrinsics.distortion,
                        [0.03626268524324754, -0.056048601794863075,
                         0.0010844756398792788, -0.0010052529149732062, 0.00958122664915688])
-    rotation = config.t_imu_camera[:3, :3]
+    rotation = config.t_fcu_camera[:3, :3]
     # Task32撤销把Tag约定错误归因于相机的180°补偿；原始画面上方接近
-    # Odin +X，光轴接近 Odin -Z。Tag官方图案与OpenCV角点差异由geometry处理。
-    image_up_in_imu = rotation @ np.array((0.0, -1.0, 0.0))
-    optical_axis_in_imu = rotation @ np.array((0.0, 0.0, 1.0))
-    assert image_up_in_imu[0] > math.cos(math.radians(10.0))
-    assert optical_axis_in_imu[2] < -math.cos(math.radians(10.0))
+    # FCU +X，光轴接近 FCU -Z。Tag官方图案与OpenCV角点差异由geometry处理。
+    image_up_in_fcu = rotation @ np.array((0.0, -1.0, 0.0))
+    optical_axis_in_fcu = rotation @ np.array((0.0, 0.0, 1.0))
+    assert image_up_in_fcu[0] > math.cos(math.radians(10.0))
+    assert optical_axis_in_fcu[2] < -math.cos(math.radians(10.0))
 
 
 def test_planar_correction_rotates_translation_and_preserves_z() -> None:
@@ -80,11 +80,11 @@ def test_single_tag_keeps_task27_full_se3_xy_translation() -> None:
         rotation_z(math.radians(-15.0)) @ pitch_rotation,
         np.array((0.08, -0.04, 0.0)),
     )
-    odin_from_imu = homogeneous(
+    odin_from_fcu = homogeneous(
         rotation_z(math.radians(9.0)), np.array((0.4, -0.2, 0.7))
     )
-    world_from_imu = expected @ odin_from_imu
-    world_from_camera = world_from_imu @ config.t_imu_camera
+    world_from_fcu = expected @ odin_from_fcu
+    world_from_camera = world_from_fcu @ config.t_fcu_camera
     camera_from_tag_configured = np.linalg.inv(world_from_camera) @ world_tag_transform(
         tag
     )
@@ -93,7 +93,7 @@ def test_single_tag_keeps_task27_full_se3_xy_translation() -> None:
     )
 
     correction = compute_planar_correction(
-        camera_from_tag_standard, tag, config.t_imu_camera, odin_from_imu
+        camera_from_tag_standard, tag, config.t_fcu_camera, odin_from_fcu
     )
 
     assert np.allclose(correction.world_from_odin, expected, atol=1e-10)

@@ -3,63 +3,58 @@
 
 `correction_service` 2.0 用世界位置已测的不同 AprilTag 建立空间基线，估计
 `世界 <- Odin` 的水平 `x / y / yaw` 刚体变换。首次观测提供完整 SE(3) 链得到的粗解；
-从第二个不同 Tag 起，每次用服务端滑窗保存的原始世界中心 `P_i` 与 Odin 中心 `Q_i`
+从第二个不同 Tag 起，每次用服务端滑窗保存的世界系 Tag 中心 `P_i` 与 odom 系 Tag 中心 `Q_i`
 重新求完整加权 SE(2)，不累计历史增量，也不拿 corrected odometry 反算。
 
 本模块不修正世界高度，不发送解锁、起飞、模式或轨迹命令。任何 ACK 只说明 extnav
 接受了坐标变换，不代表 MAVROS EKF 已稳定，更不构成实飞许可。
 
-extnav 的机体安装外参维护于项目 `config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml`，
-手动与 systemd 启动均使用 `config/aircraft.local.env` 选择的同一份逐机参数。
-RPY 单位 rad，定义 `R_FI` 将 Odin IMU 轴变换到 FCU FLU 轴，采用标准 ZYX；上仰约 22°
-对应 `pitch_cam=-0.3839724354`。设置`auto_installation: true`后，C++桥在未解锁静止约3秒后
-用Odin与飞控的重力方向自动估计俯仰并锁定，pitch参数作为收敛前回退；roll/yaw保持配置。
-不要求机身精确摆平，改变安装后重启节点重新学习；详情见[extnav说明](extnav_patch/README.md)。
-`odin_xyz` 为 FCU→Odin IMU 在 FCU
-FLU 系中的米制向量。姿态使用 `R_OF=R_OI R_IF`，局部位置使用 `p_LF=p_OI+T-R_OF T`，
-速度使用 `v_LF=v_OI-R_OF(omega_F×T)`；Odin 世界点云已经重力对齐，不再整体旋转。
-仓库手工回退角为零、默认YAML启用自动俯仰；旧逐机YAML需显式添加开关才启用。
-TODO(task6-tag)：新安装角只用于正常外部导航，Tag 标定、
-应用跳变预测与非零安装角尚未联合验证，继续拒绝此组合。
+Odin→FCU 安装外参的唯一来源是
+`config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml` 的 `/**/ros__parameters`。
+`pitch_cam` 单位 rad，定义 `R_FI=Ry(pitch_cam)`，把 Odin IMU 轴变换到 FCU 前/左/上轴；
+`odin_xyz` 为 FCU→Odin IMU 在 FCU 轴表达的米制位移。host_sdk 在发布层右乘 `T_IF`，
+同时转换位姿、速度及协方差。固定安装角补偿只作用于机体关系，不旋转 odom/map 世界系；
+`auto_installation` 默认关闭。当前 refresh 的固定仰装30°对应 `pitch_cam=-pi/6`，
+`odin_xyz=(0.100,-0.029,0.060)m`。下游直接使用 FCU 中心，不重复补偿安装杆臂。
 
 ## 数据链和中心语义
 
 ```text
-/odin1/odometry_highfreq (raw，Odin IMU 中心 / O 局部系)
+host_sdk 原始估计右乘 T_IF
        |
-       +--> extnav 左乘公共 C
+/odin1/odometry_highfreq (raw，odom←FCU，child=fcu，twist 在 FCU 轴)
+       |                          |
+       |                          +--> Tag 采样：只读此未经修正的 raw
+       +--> extnav 左乘水平修正 C
               |
-              +--> /odin1/odometry_highfreq_corrected
-              |      (corrected，仍是 Odin IMU 中心)
-              |
-              +--> 同一 raw 回调冻结飞控中心结果
-                     +--> /extnav/pose_fcu
-                     +--> /mavros/vision_pose/pose (MAVROS 外部视觉输入)
-                                  |
-                                  +--> /mavros/local_position/pose (EKF 融合输出)
+              +--> /odin1/odometry_highfreq_corrected (FCU 中心)
+              +--> /extnav/pose_fcu (最终导航约定)
+              +--> /mavros/vision_pose/pose
+                           +--> /mavros/local_position/pose (EKF 融合输出)
 ```
 
-当前已核实零安装角，物理杆臂 `T=(0.06,-0.03,0.05)m` 表示飞控中心指向 Odin
-中心的机体系向量。原始位姿为 `(p,R)`、水平修正为 `(Q,t)` 时：
+raw 位姿为 `(p,R)`、水平修正为 `(Q,t)`、既有局部原点偏移为 `b=odin_xyz` 时：
 
 ```text
 correction valid:
-  corrected Odin: p' = Q*p+t, R' = Q*R
-  FCU center xy:  (p' - R'*T).xy
-  FCU center z:   p_raw.z + T.z - (R'*T).z
+  corrected FCU: p' = Q*p+t, R' = Q*R
+  final FCU xy:  p'.xy
+  final FCU z:   p_raw.z + b.z
 
 correction invalid 或 correction API 缺失:
-  FCU center:     p_raw + T - R_raw*T
+  final FCU:     p_raw + b, R_raw
 ```
 
-有效分支移除了旧实现多出的固定 `+T_xy`；即使 `valid=true` 且 `C` 为 identity，
-也必须走有效分支。无效分支保留旧局部零点约定，避免 API 缺失破坏原链路。`z` 仍是旧局部
-数值约定，不是已标定的 Tag 世界高度。若 extnav 回报非零安装角或杆臂与配置不一致，服务
-拒绝应用，而不是机械套用只对当前零安装角推导的简式。
+`b` 是保留原导航数值约定的固定偏移，不随姿态转动；安装杆臂效应已在驱动完成。
+即使有效修正为 identity，也走有效分支，水平零点相对无效分支相差 `-b.xy`，
+应用跳变门会在同一条 raw FCU 样本上完整计算该差异。Z 保留局部数值约定，
+不使用 Tag 世界高度；Tag 的 roll/pitch 不应用。非零固定安装角可正常标定和应用，
+服务继续核对 extnav 与共享配置的 `b`，以及 session/revision 和最终实际跳变。
 
 raw、corrected、最终 FCU pose、`valid/session/revision/reference_mode` 在同一个 raw 回调中
-形成一致快照。修正改变或失效时先丢弃旧最终快照，必须等下一条 raw 才恢复最终发布；不会
-把新状态套在旧 pose 上，也不会在断流后重复发布旧世界样本。
+形成一致快照。修正改变或失效时先丢弃旧最终快照，等下一条 raw 恢复最终发布。
+Tag 服务只接受 `frame_id=odom, child_frame_id=fcu`，旧 IMU 流必须先迁移。
+map 导航与 Tag 的组合仍待适配，本次统一参考点不启用该组合。
 
 ## 标定模型
 
@@ -76,31 +71,27 @@ raw、corrected、最终 FCU pose、`valid/session/revision/reference_mode` 在�
 
 PnP 的标准 Tag 轴为 `+X右 / +Y上 / +Z朝观察者`，因此
 `T_OpenCVTag_ConfiguredTag` 的旋转为 `[[0,1,0],[-1,0,0],[0,0,1]]`，右乘
-`T_camera_OpenCVTag`。2026-09-15 Task32 修复了这里的方向错误，并撤销了此前为补偿
-航向差而错误加在 `T_imu_camera` 上的光轴 180°旋转。两个错误曾使航向近似抵消、相机世界
-水平位置反号；不能只改其中一处，也不能给最终 x/y/yaw 单独补符号。
+`T_camera_OpenCVTag`。Tag 图案约定由 `geometry.py` 处理，不通过改变相机外参补符号。
 
-更新时须配套部署 `geometry.py` 与 `config/aircraft/<AIRCRAFT_ID>/correction/extrinsics.yaml`，重启独立修正服务并重新采样，
-不可复用旧窗口或旧 active 修正。应在已确认未武装、无控制任务的维护状态处理旧 active；
-独立修正服务重启不会自动清除 extnav 的 active。无需修改飞行控制节点、Odin 或 extnav。
-UQ212 外参自 2026-09-17 按机械尺寸近似：基座位于模块前表面下边缘宽度中点前方
-41 mm、下方 46 mm，镜头中心再向下 12 mm，横向居中。结合 Odin 官方 IMU 深度
-5.57 mm、离底面 9.26 mm、正视图距左边缘 21.03 mm 和模块宽度 100 mm，得到
-`t_imu_camera=(0.04657,0.02897,-0.06726)m`。光轴沿 IMU -Z、画面上方沿 +X、画面右方沿 -Y；
-用户确认按横平竖直、无偏航角近似，旋转矩阵为 `[[0,-1,0],[-1,0,0],[0,0,-1]]`。
-这是相对 IMU 的固定安装近似，机体倾斜时不会自动保持地垂线。镜头中心近似光心，
-实物安装误差尚未实测，`quality.passed=false`；Wasintek 档案保持原样。
-推导与验证见 `agent/report/report-2026-09-17-uq212-mechanical-extrinsics.md`；2026-09-17 已同步
-refresh 并重建、重启修正服务，运行指纹已核对；new 飞机尚待同步。refresh 保留旧 extnav
-active，新外参结果仍需重新采样并应用。
+相机唯一外参为 `extrinsics.yaml` 的 `T_fcu_camera`：
+`p_F=R_FC p_C+t_FC`，C 为右/下/前的光学轴，F 为前/左/上。
+当前 refresh 相机在 FCU 前方107 mm、下方15 mm，
+`t_FC=(0.107,0,-0.015)m`；画面上方朝机前、右方朝机右、光轴向下，
+`R_FC=[[0,-1,0],[-1,0,0],[0,0,-1]]`。这是用户提供的机械安装近似。
+其他飞机档案保留原物理相机关系并转换为 FCU 表达；历史相机快照若仍为
+`T_imu_camera`，须先迁移，服务会拒绝把旧参考系当作 FCU。
+配置变更后重启独立修正服务并重新采样，不能复用旧窗口；服务重启不会自动清除
+extnav 已生效的修正。
 
 ### 首次与滑窗计算
 
-每个停留段先按当前 `T_imu_camera`、PnP `T_camera_tag`、Odin `T_odin_imu` 和 Tag 世界
+每个停留段先按当前 `T_fcu_camera`、PnP `T_camera_tag`、原始 `T_odin_fcu` 和 Tag 世界
 位姿完成三维链：
 
 ```text
-Q_i^O = translation(T_odin_imu * T_imu_camera * T_camera_tag)
+T_world_fcu = T_world_tag * inverse(T_camera_tag) * inverse(T_fcu_camera)
+T_world_odin = T_world_fcu * inverse(T_odin_fcu)
+Q_i^O = translation(T_odin_fcu * T_fcu_camera * T_camera_tag)
 ```
 
 首次粗解严格沿用 Task27：先计算完整 `T_world_odin`，再直接取该矩阵的 x/y 平移与 yaw；z
@@ -177,13 +168,13 @@ GUI 重开只读取这些权威状态，不自计数，也不要求磁盘窗口�
 项目 `config/aircraft/<AIRCRAFT_ID>/correction/` 在节点创建 ROS 写接口前严格加载：
 
 - `intrinsics.yaml`：与 `camera.conf` 分辨率对应的相机内参；
-- `extrinsics.yaml`：`T_imu_camera`；
+- `extrinsics.yaml`：`T_fcu_camera`（必须显式匹配此 transform_name）；
 - `tag_pose.csv`：`tag_id,x,y,z,yaw_deg,size_m`；每个 Tag 可有自己的真实边长；
 - `camera.conf`：唯一校准相机的稳定设备路径、MJPEG 模式和本包 UVC/V4L2 驱动；
 - `lens.conf`：预先保存的下视相机 UVC 参数；收到首帧并等待视频流稳定后，按文件顺序分步写入，
   丢弃切换期帧并最终逐项读回；任务日志保存 requested/readback；
 - `general_settings.yaml`：接口、同步、停留段、窗口、跳变、超时和日志门限。
-- `../odin_extrinsics.yaml`：与 extnav 共用 FCU 到 Odin 的安装平移；由 `fcu_reference.extrinsics_file` 指定，参与配置指纹，无独立平移副本。
+- `../odin_extrinsics.yaml`：与 host_sdk/extnav 共用安装配置，服务从共享参数段读取局部偏移 `b`；由 `fcu_reference.extrinsics_file` 指定并参与配置指纹。
 
 面向 refresh 飞机的活动配置对应 UQ212 小视场镜头：1920×1200 MJPEG、原生 60 fps，
 镜头控制与标定时一致。内参采用用户指定的
@@ -265,7 +256,7 @@ source 与 install 的 `2.0.0` 清单，以及新消息/服务字段，避免旧
 ```
 
 面板分为“校准与状态”和“Tag 配置”。校准页突出任务、候选和当前生效修正，以表格对照
-原始/修正 Odin、FCU 输入和 EKF 位姿；配准、采样、session 和旧 T 公式等信息在“展开诊断与任务详情”中。
+原始/修正 FCU、最终 FCU 输入和 EKF 位姿；配准、采样和 session 等信息在“展开诊断与任务详情”中。
 Tag 配置页自动读取实际连接的修正服务所用 `tag_pose.csv`，支持增删和编辑
 `tag_id,x,y,z,yaw_deg,size_m`，按数值 ID 升序排列。点击“保存并应用”才通过
 `/correction_service/configure_tags` 原子写入飞机端文件并更新内存，无需重启；界面显示实际文件路径。
@@ -282,11 +273,8 @@ ID 必须唯一非负，坐标/角度必须有限，边长必须为正，至少�
 面板使用独立 ROS context 和 `CORRECTION_ROS_DOMAIN_ID`（默认 0）。它显示服务端窗口长度、
 N/下一次序号、Tag 顺序、每个 keyframe 的 P/Q/质量、最长 O/W 基线、RMS/最大残差、模型 yaw sigma、
 候选/相对 active delta、最近实际跳变、instance/session/revisions、application 状态和日志路径。
-四段生产位姿分别标为 raw Odin、corrected Odin、转换后 FCU 输入和 MAVROS EKF final，并显示
-消息年龄；不同中心/参考系不能直接逐帧相减。面板另由同一条 FCU 输入快照只读派生一行
-“旧 T 公式对照”：修正有效且 final sample 的 revision/session 对齐时，显示 Task29 修正前
-`p_old.xy=p_current.xy+T.xy` 的结果。该值仅用于定位当前厘米级偏差来源，不创建 ROS 发布器、
-不写 extnav，也不改变实际 FCU/MAVROS 输入；修正未生效或元数据未对齐时明确显示不可用。
+四段生产位姿分别标为 raw FCU、corrected FCU、最终导航 FCU 输入和 MAVROS EKF final，
+并显示消息年龄；前三段已采用相同机体参考点，但参考系和局部原点约定不同，不能直接逐帧相减。
 
 窗口非空时长度锁定，Tag ID/窗口数值框忽略滚轮。所有服务请求异步发送，状态过期、请求中、
 活动采样或 unknown 时按语义禁用冲突按钮。面板的“收敛后确认应用”也先发 dry-run；候选保存

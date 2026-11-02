@@ -4,6 +4,27 @@
 本目录独立维护完整 `odin_ros_driver`，使用项目修改后的 Host SDK，保留 XYZ down 点云输出。
 不依赖地面站、飞控或避障包，不修改项目外的 `catkin_ws`。
 
+## 飞控中心输出
+
+`/odin1/odometry` 和 `/odin1/odometry_highfreq` 的 pose 为 `odom←fcu`，
+参考点为飞控中心、机体轴为前/左/上；标准 Odometry 的线速度和角速度均在 `fcu` 表达。
+Host 发布层只右乘固定 `I←F`，不学习初始姿态、不移动或旋转 odom/map 世界系。
+物理 IMU/雷达/设备相机仍保留自身坐标，TF 链为 `odom←fcu←imu←lidar`；
+SLAM 点云、设备内部算法、WIWC 外参载荷及 `odom←map` 不作安装转换。
+
+唯一 Odin 安装配置为 `config/aircraft/<编号>/odin_extrinsics.yaml` 的 `/**/ros__parameters`：
+`pitch_cam` 定义 `R_FI=Ry(pitch_cam)`（rad，上仰30°为 `-π/6`），
+`odin_x/y/z` 是飞控到 IMU 的向量（水平 FLU、m）。只补固定 pitch，roll/yaw 为零，自动学习禁用。
+驱动直接读取该文件，包括直接启动二进制的场景；修改后重启驱动和 extnav。
+refresh 本次值为 `(.100,-.029,.060)m`，因此右乘的平移是 `-R_IF*odin_xyz`，不能直接取反后忽略安装角。
+
+旧 SDK 的线速度在 odom、角速度在 IMU；发布时包含旋转杆臂速度并转为 FCU body twist。
+6×6 协方差按一阶雅可比传播全部交叉块，采用 odom 平移/世界小角 pose 误差与旧混合 twist 约定，
+在当前姿态条件下计算；未知哨兵保留。厂商未公开协方差扰动定义，不能据此承诺统计标定准确性。
+二进制传感器诊断日志仍为设备原始 IMU 位姿；业务里程计和路径为 FCU。
+设备相机重投影单独订阅 `/odin1/odometry_imu`（标准低频原始 IMU 诊断流，仅有读者时发布），
+它沿用 SDK 的混合速度约定，只供传感器几何/诊断，禁止用作飞控或 Tag 标定输入。
+
 ## 构建
 
 在项目根目录执行 `./drivers/odin/build.sh`。源码、构建和安装分别位于本目录的

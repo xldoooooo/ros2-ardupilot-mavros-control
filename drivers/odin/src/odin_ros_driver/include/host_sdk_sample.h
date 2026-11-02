@@ -1,4 +1,4 @@
-// Odin host publishers, including optional SLAM cloud filtering and finite-coordinate validation.
+// Odin host publishers: FCU business odometry, physical sensor diagnostics and SLAM cloud filtering.
 /*
 Copyright 2025 Manifold Tech Ltd.(www.manifoldtech.com.co)
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,6 +48,7 @@ limitations under the License.
 #include <atomic>
 #include <unordered_map>
 #include "data_logger.h"
+#include "fcu_odometry.h"
 #include "lidar_api.h"
 #include "lidar_api_type.h"
 #include "rawCloudRender.h"
@@ -386,6 +387,33 @@ public:
         }
     #endif
     
+
+    /** Configure the fixed mounting once before starting SDK streams. */
+    void configureFcuInstallation(double pitch, const Eigen::Vector3d& lever) {
+        fcu_installation_.configure(pitch, lever);
+    }
+
+    /** Publish the physical IMU below the business FCU body, preserving sensor TFs. */
+    void publishFcuImuTransform(const ros::Time& stamp) {
+#ifdef ROS2
+        geometry_msgs::msg::TransformStamped transform;
+#else
+        geometry_msgs::TransformStamped transform;
+#endif
+        const Eigen::Isometry3d mounting = fcu_installation_.fcuFromImu();
+        const Eigen::Quaterniond rotation(mounting.linear());
+        transform.header.stamp = stamp;
+        transform.header.frame_id = "fcu";
+        transform.child_frame_id = "imu";
+        transform.transform.translation.x = mounting.translation().x();
+        transform.transform.translation.y = mounting.translation().y();
+        transform.transform.translation.z = mounting.translation().z();
+        transform.transform.rotation.x = rotation.x();
+        transform.transform.rotation.y = rotation.y();
+        transform.transform.rotation.z = rotation.z();
+        transform.transform.rotation.w = rotation.w();
+        tf_broadcaster->sendTransform(transform);
+    }
 
     // Configure once before starting SDK streams, leaving other publishers unchanged.
     void configureCloudDownsample(const CloudDownsampleConfig& config) {
@@ -1449,6 +1477,7 @@ void publishRgb(capture_Image_List_t *stream) {
         }
     }
 
+    /** Publish FCU odometry while preserving native map and physical sensor transforms. */
     void publishOdometry(capture_Image_List_t* stream, OdometryType odom_type, bool show_path, bool show_camerapose) {
         
 #ifdef ROS2
@@ -1542,12 +1571,36 @@ void publishRgb(capture_Image_List_t *stream) {
                 msg.pose.pose.orientation.w = static_cast<double>(odom_data->orient[3]) / 1e6;
             }
 
-            // Cache exactly the high-frequency odometry used by the Python subscriber.
+            // Keep the physical IMU pose for device camera/LiDAR visualization only.
+            const auto sensor_msg = msg;
+            if (odom_type != OdometryType::TRANSFORM) {
+                try {
+                    fcu_installation_.apply(msg);
+                } catch (const std::exception& error) {
+                    LOG_WARN("Invalid Odin odometry: %s", error.what());
+                    return;
+                }
+            }
+
+            // Center cloud filtering on the same FCU reference used by flight consumers.
             if (downsample_config_.enabled && odom_type == OdometryType::HIGHFREQ &&
                 (data_len == sizeof(ros_odom_convert_complete_t) || data_len == sizeof(ros2_odom_convert_t))) {
                 std::lock_guard<std::mutex> lock(downsample_center_mutex_);
                 downsample_center_ = {msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z};
                 downsample_has_center_ = true;
+            }
+
+            // Device reprojection still needs the physical IMU pose; never use this diagnostic for flight.
+            if (odom_type == OdometryType::STANDARD) {
+#ifdef ROS2
+                if (odom_imu_publisher_->get_subscription_count() > 0) {
+                    odom_imu_publisher_->publish(sensor_msg);
+                }
+#else
+                if (odom_imu_publisher_.getNumSubscribers() > 0) {
+                    odom_imu_publisher_.publish(sensor_msg);
+                }
+#endif
             }
 
 #ifdef ROS2
@@ -1558,7 +1611,7 @@ void publishRgb(capture_Image_List_t *stream) {
                         geometry_msgs::msg::TransformStamped transformStamped;
                         transformStamped.header.stamp = msg.header.stamp;
                         transformStamped.header.frame_id = "odom";
-                        transformStamped.child_frame_id = "imu";
+                        transformStamped.child_frame_id = "fcu";
                         transformStamped.transform.translation.x = msg.pose.pose.position.x;
                         transformStamped.transform.translation.y = msg.pose.pose.position.y;
                         transformStamped.transform.translation.z = msg.pose.pose.position.z;
@@ -1587,10 +1640,12 @@ void publishRgb(capture_Image_List_t *stream) {
                                 tf_copy.header.stamp.sec = static_cast<int32_t>(t_sec);
                                 tf_copy.header.stamp.nanosec = static_cast<uint32_t>((t_sec - static_cast<int32_t>(t_sec)) * 1e9);
                                 tf_broadcaster->sendTransform(tf_copy);
+                                publishFcuImuTransform(tf_copy.header.stamp);
                             }
                         } else {
                             // Simple mode: publish TF only at odom timestamp
                             tf_broadcaster->sendTransform(transformStamped);
+                            publishFcuImuTransform(msg.header.stamp);
                         }
 
                         // Publish til (imu -> lidar) and wc (odom -> camera_0)
@@ -1617,15 +1672,15 @@ void publishRgb(capture_Image_List_t *stream) {
                                 // the chain needs T_lidar_camera (lidar <- camera), so invert it here
                                 Eigen::Matrix4d T_wi_mat = Eigen::Matrix4d::Identity();
                                 Eigen::Quaterniond q_wi(
-                                    msg.pose.pose.orientation.w,
-                                    msg.pose.pose.orientation.x,
-                                    msg.pose.pose.orientation.y,
-                                    msg.pose.pose.orientation.z);
+                                    sensor_msg.pose.pose.orientation.w,
+                                    sensor_msg.pose.pose.orientation.x,
+                                    sensor_msg.pose.pose.orientation.y,
+                                    sensor_msg.pose.pose.orientation.z);
                                 q_wi.normalize();
                                 T_wi_mat.block<3,3>(0,0) = q_wi.toRotationMatrix();
-                                T_wi_mat(0,3) = msg.pose.pose.position.x;
-                                T_wi_mat(1,3) = msg.pose.pose.position.y;
-                                T_wi_mat(2,3) = msg.pose.pose.position.z;
+                                T_wi_mat(0,3) = sensor_msg.pose.pose.position.x;
+                                T_wi_mat(1,3) = sensor_msg.pose.pose.position.y;
+                                T_wi_mat(2,3) = sensor_msg.pose.pose.position.z;
 
                                 Eigen::Matrix4d T_wc = T_wi_mat * cached_T_base_lidar_ * cached_T_CL_.inverse();
                                 Eigen::Quaterniond q_wc(T_wc.block<3,3>(0,0));
@@ -1711,13 +1766,13 @@ void publishRgb(capture_Image_List_t *stream) {
 
                     if (show_camerapose) {
                         // camera pose visualization (ROS2)
-                        Eigen::Vector3d P(msg.pose.pose.position.x,
-                                        msg.pose.pose.position.y,
-                                        msg.pose.pose.position.z);
-                        Eigen::Quaterniond R(msg.pose.pose.orientation.w,
-                                            msg.pose.pose.orientation.x,
-                                            msg.pose.pose.orientation.y,
-                                            msg.pose.pose.orientation.z);
+                        Eigen::Vector3d P(sensor_msg.pose.pose.position.x,
+                                        sensor_msg.pose.pose.position.y,
+                                        sensor_msg.pose.pose.position.z);
+                        Eigen::Quaterniond R(sensor_msg.pose.pose.orientation.w,
+                                            sensor_msg.pose.pose.orientation.x,
+                                            sensor_msg.pose.pose.orientation.y,
+                                            sensor_msg.pose.pose.orientation.z);
                         if (extrinsic_ok_) {
                             P = P + R * t_ic_;
                             R = R * R_ic_;
@@ -1756,7 +1811,7 @@ void publishRgb(capture_Image_List_t *stream) {
                         geometry_msgs::TransformStamped transformStamped;
                         transformStamped.header.stamp = msg.header.stamp;
                         transformStamped.header.frame_id = "odom";
-                        transformStamped.child_frame_id = "imu";
+                        transformStamped.child_frame_id = "fcu";
                         transformStamped.transform.translation.x = msg.pose.pose.position.x;
                         transformStamped.transform.translation.y = msg.pose.pose.position.y;
                         transformStamped.transform.translation.z = msg.pose.pose.position.z;
@@ -1765,6 +1820,7 @@ void publishRgb(capture_Image_List_t *stream) {
                         transformStamped.transform.rotation.z = msg.pose.pose.orientation.z;
                         transformStamped.transform.rotation.w = msg.pose.pose.orientation.w;
                         tf_broadcaster->sendTransform(transformStamped);
+                        publishFcuImuTransform(msg.header.stamp);
 
                         // Publish til (imu -> lidar) and wc (odom -> camera_0)
                         std::lock_guard<std::mutex> lock(extrinsics_mutex_);
@@ -1791,15 +1847,15 @@ void publishRgb(capture_Image_List_t *stream) {
                             // the chain needs T_lidar_camera (lidar <- camera), so invert it here
                             Eigen::Matrix4d T_wi_mat = Eigen::Matrix4d::Identity();
                             Eigen::Quaterniond q_wi(
-                                msg.pose.pose.orientation.w,
-                                msg.pose.pose.orientation.x,
-                                msg.pose.pose.orientation.y,
-                                msg.pose.pose.orientation.z);
+                                sensor_msg.pose.pose.orientation.w,
+                                sensor_msg.pose.pose.orientation.x,
+                                sensor_msg.pose.pose.orientation.y,
+                                sensor_msg.pose.pose.orientation.z);
                             q_wi.normalize();
                             T_wi_mat.block<3,3>(0,0) = q_wi.toRotationMatrix();
-                            T_wi_mat(0,3) = msg.pose.pose.position.x;
-                            T_wi_mat(1,3) = msg.pose.pose.position.y;
-                            T_wi_mat(2,3) = msg.pose.pose.position.z;
+                            T_wi_mat(0,3) = sensor_msg.pose.pose.position.x;
+                            T_wi_mat(1,3) = sensor_msg.pose.pose.position.y;
+                            T_wi_mat(2,3) = sensor_msg.pose.pose.position.z;
 
                             Eigen::Matrix4d T_wc = T_wi_mat * cached_T_base_lidar_ * cached_T_CL_.inverse();
                             Eigen::Quaterniond q_wc(T_wc.block<3,3>(0,0));
@@ -1860,13 +1916,13 @@ void publishRgb(capture_Image_List_t *stream) {
 
                     if (show_camerapose) {
                         // camera pose visualization (ROS1)
-                        Eigen::Vector3d P(msg.pose.pose.position.x,
-                                        msg.pose.pose.position.y,
-                                        msg.pose.pose.position.z);
-                        Eigen::Quaterniond R(msg.pose.pose.orientation.w,
-                                            msg.pose.pose.orientation.x,
-                                            msg.pose.pose.orientation.y,
-                                            msg.pose.pose.orientation.z);
+                        Eigen::Vector3d P(sensor_msg.pose.pose.position.x,
+                                        sensor_msg.pose.pose.position.y,
+                                        sensor_msg.pose.pose.position.z);
+                        Eigen::Quaterniond R(sensor_msg.pose.pose.orientation.w,
+                                            sensor_msg.pose.pose.orientation.x,
+                                            sensor_msg.pose.pose.orientation.y,
+                                            sensor_msg.pose.pose.orientation.z);
                             
                         if (extrinsic_ok_) {
                             P = P + R * t_ic_;
@@ -2118,6 +2174,7 @@ private:
             
 //             xyzrgbacloud_pub_ = node_->create_publisher<ros::PointCloud2>("odin1/cloud_slam", qos_sensor);
             odom_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry", qos_sensor);
+            odom_imu_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry_imu", qos_sensor);
             odom_highfreq_publisher_ = node_->create_publisher<ros::Odometry>("odin1/odometry_highfreq", qos_small);
             path_publisher_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("odin1/path", qos_sensor);
             pub_camera_pose_visual_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("odin1/camera_pose_visual", qos_sensor);
@@ -2164,6 +2221,7 @@ public:
                 tf_copy.header.stamp.sec = sec;
                 tf_copy.header.stamp.nanosec = nanosec;
                 tf_broadcaster->sendTransform(tf_copy);
+                publishFcuImuTransform(tf_copy.header.stamp);
 
                 // Also republish til (imu -> lidar) at the same timestamp so the
                 // odom -> imu -> lidar chain stays valid between odom updates
@@ -2207,6 +2265,7 @@ public:
             cloud_pub_ = nh.advertise<ros::PointCloud2>("odin1/cloud_raw", 5);
 //             xyzrgbacloud_pub_ = nh.advertise<ros::PointCloud2>("odin1/cloud_slam", 5);
             odom_publisher_ = nh.advertise<ros::Odometry>("odin1/odometry", 5);
+            odom_imu_publisher_ = nh.advertise<ros::Odometry>("odin1/odometry_imu", 5);
             odom_highfreq_publisher_ = nh.advertise<ros::Odometry>("odin1/odometry_highfreq", 4000);
             path_publisher_ = nh.advertise<visualization_msgs::MarkerArray>("odin1/path", 5);
             pub_camera_pose_visual_ = nh.advertise<visualization_msgs::MarkerArray>("odin1/camera_pose_visual", 5);
@@ -2231,6 +2290,9 @@ public:
     ros::Publisher cloud_down_debug_pub_;
 #endif
 
+    // Fixed host-only body mounting; device sensor extrinsics below remain IMU-relative.
+    odin_ros_driver::FcuInstallation fcu_installation_;
+
     // Cached extrinsics from WIWC data for til/wc computation in publishOdometry
     std::mutex extrinsics_mutex_;
     Eigen::Matrix4d cached_T_base_lidar_ = Eigen::Matrix4d::Identity();  // imu -> lidar (T_IL inverse)
@@ -2244,6 +2306,7 @@ public:
         rclcpp::Publisher<ros::PointCloud2>::SharedPtr cloud_pub_;
 //         rclcpp::Publisher<ros::PointCloud2>::SharedPtr xyzrgbacloud_pub_;
         rclcpp::Publisher<ros::Odometry>::SharedPtr odom_publisher_;
+        rclcpp::Publisher<ros::Odometry>::SharedPtr odom_imu_publisher_;
         rclcpp::Publisher<ros::Odometry>::SharedPtr odom_highfreq_publisher_;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr path_publisher_;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr rendered_cloud_pub_;
@@ -2275,6 +2338,7 @@ public:
         ros::Publisher cloud_pub_;
 //         ros::Publisher xyzrgbacloud_pub_;
         ros::Publisher odom_publisher_;
+        ros::Publisher odom_imu_publisher_;
         ros::Publisher odom_highfreq_publisher_;
         ros::Publisher path_publisher_;
         ros::Publisher pub_camera_pose_visual_;

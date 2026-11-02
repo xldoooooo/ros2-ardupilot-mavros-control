@@ -68,6 +68,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
     bridge = extnav.OdometryBridge(
         context=context,
         parameter_overrides=[
+            Parameter("pitch_cam", value=-math.pi / 6),
             Parameter("odin_x", value=lever_arm[0]),
             Parameter("odin_y", value=lever_arm[1]),
             Parameter("odin_z", value=lever_arm[2]),
@@ -117,8 +118,8 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         _wait_for(lambda: bridge.corrected_has_subscribers)
         raw = Odometry()
         raw.header.stamp.sec = 100
-        raw.header.frame_id = "odin"
-        raw.child_frame_id = "imu"
+        raw.header.frame_id = "odom"
+        raw.child_frame_id = "fcu"
         raw.pose.pose.position.x = 1.0
         raw.pose.pose.position.y = 2.0
         raw.pose.pose.position.z = 0.7
@@ -147,11 +148,11 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
             raw.pose.pose.position, raw.pose.pose.orientation,
             raw.twist.twist.linear, raw.twist.twist.angular,
         )
-        np.testing.assert_allclose(compatible[0], (1., 2., .7), rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(compatible[1], (.385, -.23, .1), rtol=1e-12, atol=1e-12)
-        # invalid 分支保留旧局部零点；R=I 时杆臂平移相消，最终仍等于 raw。
-        assert math.isclose(pose_fcu[-1].pose.position.x, 1.0, abs_tol=1e-9)
-        assert math.isclose(pose_fcu[-1].pose.position.y, 2.0, abs_tol=1e-9)
+        np.testing.assert_allclose(compatible[0], (1.06, 1.97, .75), rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(compatible[1], (.4, -.2, .1), rtol=1e-12, atol=1e-12)
+        # 驱动已给飞控中心；invalid 分支只保留固定局部原点 b。
+        assert math.isclose(pose_fcu[-1].pose.position.x, 1.06, abs_tol=1e-9)
+        assert math.isclose(pose_fcu[-1].pose.position.y, 1.97, abs_tol=1e-9)
         initial = statuses[-1]
         assert not initial.correction_valid
         assert initial.revision == 0
@@ -196,9 +197,9 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
             np.asarray(corrected[-1].pose.covariance).reshape(6, 6),
             np.diag([2., 1., 3., 5., 4., 6.]), rtol=1e-12, atol=1e-12,
         )
-        assert corrected[-1].twist.twist.angular.z == raw.twist.twist.angular.z
-        # Q=Rz(90deg)，Q*T=(0.03,0.06,0.05)：有效分支不得保留额外 +T_xy。
-        expected_fcu = (7.97, -2.06, 0.7)
+        assert corrected[-1].twist == raw.twist
+        # 有效分支直接使用修正后飞控中心 XY；Z 保留 b.z。
+        expected_fcu = (8.0, -2.0, 0.75)
         _wait_for(
             lambda: (
                 pose_fcu
@@ -215,9 +216,10 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
             assert math.isclose(output.pose.position.x, expected_fcu[0], abs_tol=1e-9)
             assert math.isclose(output.pose.position.y, expected_fcu[1], abs_tol=1e-9)
             assert math.isclose(output.pose.position.z, expected_fcu[2], abs_tol=1e-9)
-        _wait_for(lambda: velocity_fcu and math.isclose(velocity_fcu[-1].twist.linear.x, 0.23, abs_tol=1e-12))
-        assert math.isclose(velocity_fcu[-1].twist.linear.y, 0.385, abs_tol=1e-12)
+        _wait_for(lambda: velocity_fcu and math.isclose(velocity_fcu[-1].twist.linear.x, 0.2, abs_tol=1e-12))
+        assert math.isclose(velocity_fcu[-1].twist.linear.y, 0.4, abs_tol=1e-12)
         assert velocity_fcu[-1].twist.linear.z == 0.1
+        assert velocity_fcu[-1].twist.angular.z == 0.5
         _wait_for(
             lambda: (
                 statuses[-1].correction_valid
@@ -331,14 +333,24 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         _wait_for(lambda: bridge.latest_output is not None)
         assert not bridge.latest_output.correction_valid
 
+        # 旧 IMU frame 不能混入新链路；拒绝后恢复会建立新会话。
+        previous_session = bridge.odin_session_id
+        processed_before = bridge.raw_messages
+        raw.child_frame_id = "imu"
+        publisher.publish(raw)
+        _wait_for(lambda: not bridge.odin_available and bridge.latest_output is None)
+        assert bridge.raw_messages == processed_before
+        raw.child_frame_id = "fcu"
+        publisher.publish(raw)
+        _wait_for(lambda: bridge.latest_output is not None)
+        assert bridge.odin_session_id != previous_session
+
         # Source changes rebuild the session; malformed input must erase the old output.
-        for change in ("stamp", "frame", "quaternion", "nan_quaternion", "inf_quaternion", "position"):
+        for change in ("stamp", "quaternion", "nan_quaternion", "inf_quaternion", "position"):
             previous_session = bridge.odin_session_id
             processed_before = bridge.raw_messages
             if change == "stamp":
                 raw.header.stamp.sec = 10
-            elif change == "frame":
-                raw.header.frame_id = "restarted_odin"
             elif change == "quaternion":
                 raw.pose.pose.orientation.w = 0.0
             elif change == "nan_quaternion":
@@ -350,7 +362,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
                 raw.pose.pose.position.x = math.nan
             publisher.publish(raw)
             _wait_for(lambda: bridge.raw_messages > processed_before)
-            if change in ("stamp", "frame"):
+            if change == "stamp":
                 assert bridge.odin_session_id != previous_session
             else:
                 assert bridge.latest_output is None

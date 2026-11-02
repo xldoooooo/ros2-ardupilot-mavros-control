@@ -281,11 +281,11 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.extnav_value.setObjectName("summaryValue")
         self.candidate_value.setObjectName("summaryValue")
 
-        compare_group = QGroupBox("位姿对照 · 不同中心/参考系，不可直接相减")
+        compare_group = QGroupBox("FCU 位姿对照 · 不同参考系，不可直接相减")
         compare_layout = QVBoxLayout(compare_group)
         self.pose_table = QTableWidget(4, 5)
         self.pose_table.setHorizontalHeaderLabels(("x (m)", "y (m)", "z (m)", "yaw (°)", "年龄 (s)"))
-        self.pose_table.setVerticalHeaderLabels(("Odin 原始", "Odin 修正", "FCU 输入", "EKF 融合"))
+        self.pose_table.setVerticalHeaderLabels(("FCU 原始", "FCU 修正", "FCU 输入", "EKF 融合"))
         self.pose_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.pose_table.horizontalHeader().setMinimumSectionSize(45)
         self.pose_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -297,7 +297,6 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.raw_pose = self._value_label()
         self.corrected_pose = self._value_label()
         self.pose_fcu = self._value_label()
-        self.legacy_t_pose_fcu = self._value_label()
         self.final_pose = self._value_label()
         self.result_value = QLabel("尚无终态结果")
         self.result_value.setWordWrap(True)
@@ -311,11 +310,10 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             ("帧/样本", self.sample_value),
             ("性能/时间源", self.performance_value),
             ("session / revision", self.session_value),
-            ("中心模式 / 杆臂", self.reference_value),
-            ("Odin 原始 · IMU/O 局部系", self.raw_pose),
-            ("Odin 修正 · IMU/世界或 identity", self.corrected_pose),
+            ("中心模式 / 局部原点 b", self.reference_value),
+            ("FCU 原始 · odom / 未经 Tag 修正", self.raw_pose),
+            ("FCU 修正 · 世界 XY / 原始 Z", self.corrected_pose),
             ("FCU 输入 · extnav", self.pose_fcu),
-            ("旧 T 公式（仅诊断）", self.legacy_t_pose_fcu),
             ("MAVROS EKF 融合输出", self.final_pose),
             ("最近任务终态", self.result_value),
         ):
@@ -658,7 +656,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
                 final_sample = "sample=waiting fresh raw"
             self.reference_value.setText(
                 f"active={extnav.get('reference_mode', '—')} / "
-                f"T=({lever[0]:+.3f},{lever[1]:+.3f},{lever[2]:+.3f}) m / "
+                f"b=({lever[0]:+.3f},{lever[1]:+.3f},{lever[2]:+.3f}) m / "
                 f"{final_sample}"
             )
             self.extnav_event.setText(str(extnav.get("last_event", "—")))
@@ -674,9 +672,6 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.raw_pose.setText(self._format_pose(status.get("raw", {})))
         self.corrected_pose.setText(self._format_pose(status.get("corrected", {})))
         self.pose_fcu.setText(self._format_pose(status.get("pose_fcu", {})))
-        self.legacy_t_pose_fcu.setText(
-            self._format_legacy_t_pose(status.get("legacy_t_pose_fcu", {}))
-        )
         self.final_pose.setText(self._format_pose(status.get("final", {})))
         result = status.get("result", {})
         if result.get("fresh"):
@@ -745,18 +740,6 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             f"z={snapshot.get('z_m', 0):+.4f} m  "
             f"yaw={snapshot.get('yaw_deg', 0):+.3f}°  "
             f"age={snapshot.get('age_seconds', 0):.2f}s"
-        )
-
-    @classmethod
-    def _format_legacy_t_pose(cls, snapshot: dict[str, Any]) -> str:
-        """格式化修正前旧 ``+T_xy`` 公式的只读对照及其固定差值。"""
-        if not snapshot.get("available"):
-            return str(snapshot.get("reason", "不可用/过期"))
-        return (
-            f"{cls._format_pose(snapshot)}  ·  "
-            f"相对当前 Δxy=({snapshot.get('delta_x_m', 0):+.4f}, "
-            f"{snapshot.get('delta_y_m', 0):+.4f}) m  ·  "
-            f"r{snapshot.get('revision', 0)}"
         )
 
     def _refresh_controls(self) -> None:

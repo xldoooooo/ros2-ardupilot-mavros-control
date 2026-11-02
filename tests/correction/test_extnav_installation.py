@@ -1,4 +1,4 @@
-"""Verify mounted Odin attitude and rotating lever against a known FCU trajectory."""
+"""Verify that standard FCU odometry receives only origin and world-frame conversion."""
 
 import importlib.util
 import math
@@ -7,14 +7,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rclpy
-from geometry_msgs.msg import Point, Quaternion, Vector3
+from nav_msgs.msg import Odometry
 from rclpy.context import Context
 from rclpy.parameter import Parameter
 
 
-@pytest.mark.parametrize("mount_pitch", (0.0, -math.radians(22.0)))
-def test_installation_and_lever_recover_fcu_pose_and_velocity(mount_pitch, monkeypatch):
-    """Recover a rolling/yawing FCU from the sensor pose without rotating its world."""
+@pytest.mark.parametrize("mount_pitch", (0.0, -math.radians(30.0)))
+def test_fcu_input_preserves_pose_and_rotates_body_twist(mount_pitch, monkeypatch):
+    """Installation metadata must not repeat physical driver-side compensation."""
     path = Path(__file__).resolve().parents[2] / "correction_service/extnav_patch/extnav_to_vision_pose.py"
     spec = importlib.util.spec_from_file_location("extnav_installation_test", path)
     module = importlib.util.module_from_spec(spec)
@@ -23,33 +23,45 @@ def test_installation_and_lever_recover_fcu_pose_and_velocity(mount_pitch, monke
     monkeypatch.delenv("ROS_LOCALHOST_ONLY", raising=False)
     context = Context()
     rclpy.init(args=[], context=context, domain_id=229)
-    lever = np.array((0.06, -0.03, 0.05))
+    origin = np.array((0.10, -0.029, 0.06))
     node = module.OdometryBridge(context=context, parameter_overrides=[
         Parameter("pitch_cam", value=mount_pitch),
         *(Parameter(name, value=float(value)) for name, value in zip(
-            ("odin_x", "odin_y", "odin_z"), lever)),
+            ("odin_x", "odin_y", "odin_z"), origin)),
     ])
     try:
-        for attitude in ((0.0, 0.0, 0.0), (0.2, -0.1, 1.4)):
-            q_fcu = module.rpy_to_quaternion(*attitude)
-            q_sensor = module.multiply_quaternions(q_fcu, node.q_FI)
-            rotation = module.quaternion_to_rotation_matrix(q_fcu)
-            position = np.array((2.0, -1.0, 0.8))
-            velocity = np.array((0.3, -0.2, 0.1))
-            omega_fcu = np.array((0.2, -0.3, 0.7))
-            sensor_position = position + rotation @ lever
-            sensor_velocity = velocity + rotation @ np.cross(omega_fcu, lever)
-            sensor_omega = node.R_FI.T @ omega_fcu
-            actual_position, actual_velocity, actual_quaternion = node._apply_transform(
-                Point(**dict(zip(("x", "y", "z"), sensor_position))),
-                Quaternion(**dict(zip(("x", "y", "z", "w"), q_sensor))),
-                Vector3(**dict(zip(("x", "y", "z"), sensor_velocity))),
-                Vector3(**dict(zip(("x", "y", "z"), sensor_omega))),
-            )
-            assert np.allclose(actual_position, position + lever, atol=1e-12)
-            assert np.allclose(actual_velocity, velocity, atol=1e-12)
-            assert np.allclose(module.quaternion_to_rotation_matrix(actual_quaternion),
-                               rotation, atol=1e-12)
+        raw = Odometry()
+        raw.header.frame_id = "odom"
+        raw.child_frame_id = "fcu"
+        raw.pose.pose.position.x, raw.pose.pose.position.y, raw.pose.pose.position.z = (2., -1., .8)
+        body_velocity = np.array((.3, -.2, .1))
+        body_angular = np.array((.2, -.3, .7))
+        raw.twist.twist.linear.x, raw.twist.twist.linear.y, raw.twist.twist.linear.z = body_velocity
+        raw.twist.twist.angular.x, raw.twist.twist.angular.y, raw.twist.twist.angular.z = body_angular
+        raw.twist.covariance = np.arange(36, dtype=float).tolist()
+        for attitude in ((0., 0., 0.), (.2, -.1, 1.4)):
+            quaternion = module.rpy_to_quaternion(*attitude)
+            (raw.pose.pose.orientation.x, raw.pose.pose.orientation.y,
+             raw.pose.pose.orientation.z, raw.pose.pose.orientation.w) = quaternion
+            rotation = module.quaternion_to_rotation_matrix(quaternion)
+            for correction in (None, (1.2, -2.3, .6)):
+                components = module._planar_components(raw, *correction) if correction else None
+                output = node._transform_sample(raw, components, correction_valid=correction is not None,
+                                                correction_revision=1, correction_session="synthetic")
+                expected_rotation = rotation
+                expected_position = np.array((2., -1., .8)) + origin
+                if correction:
+                    c, sine = math.cos(correction[2]), math.sin(correction[2])
+                    world_rotation = np.array(((c, -sine, 0.), (sine, c, 0.), (0., 0., 1.)))
+                    expected_rotation = world_rotation @ rotation
+                    expected_position[:2] = (world_rotation @ np.array((2., -1., .8)))[:2] + correction[:2]
+                    corrected = module.apply_planar_correction(raw, *correction)
+                    assert corrected.twist == raw.twist
+                np.testing.assert_allclose(output.position, expected_position, atol=1e-12)
+                np.testing.assert_allclose(output.velocity, expected_rotation @ body_velocity, atol=1e-12)
+                np.testing.assert_allclose(output.angular, expected_rotation @ body_angular, atol=1e-12)
+                np.testing.assert_allclose(module.quaternion_to_rotation_matrix(output.quaternion),
+                                           expected_rotation, atol=1e-12)
     finally:
         node.destroy_node()
         context.shutdown()
