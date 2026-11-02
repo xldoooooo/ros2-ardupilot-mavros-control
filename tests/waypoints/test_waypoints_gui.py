@@ -340,6 +340,7 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
             )
             source = (panel.x_input, panel.y_input, panel.z_input, panel.yaw_input)[column - 1]
             assert (editor.minimum(), editor.maximum()) == (source.minimum(), source.maximum())
+            assert editor.geometry() == panel.table.visualItemRect(item)
             editor.lineEdit().selectAll()
             QTest.keyClicks(editor.lineEdit(), text)
             value = math.radians(float(text)) if column == 4 else float(text)

@@ -9,6 +9,7 @@ from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -108,6 +109,12 @@ class WaypointCoordinateDelegate(QStyledItemDelegate):
         editor.setSingleStep(source.singleStep())
         editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
         editor.setFrame(False)
+        editor.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        # 普通输入框主题的最小高度、内边距和焦点边框会撑大表格编辑器。
+        editor.setStyleSheet(
+            "QDoubleSpinBox, QDoubleSpinBox:focus, QLineEdit, QLineEdit:focus {"
+            " min-height: 0; padding: 0; border: none; border-radius: 0; }"
+        )
         editor.setKeyboardTracking(True)
         editor.valueChanged.connect(
             lambda value: self._panel._edit_waypoint(index.row(), index.column(), value)
