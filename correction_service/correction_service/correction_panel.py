@@ -554,7 +554,14 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         """读取纯数据快照并刷新窗口、候选、应用事实和四段位姿。"""
         status = self.client.status()
         self._latest_status = status
-        self.tag_editor.set_service_status(status.get("correction", {}))
+        self.tag_editor.set_service_status({
+            **status.get("correction", {}),
+            "client_error": str(status.get("startup_error", "")),
+            "aircraft_available": any(
+                status.get(key, {}).get("fresh")
+                for key in ("extnav", "raw", "corrected", "pose_fcu", "final")
+            ),
+        })
         correction = status.get("correction", {})
         extnav = status.get("extnav", {})
         startup_error = str(status.get("startup_error", ""))

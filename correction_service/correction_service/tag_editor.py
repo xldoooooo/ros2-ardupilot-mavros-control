@@ -55,11 +55,16 @@ class TagConfigEditor(QWidget):
         self._busy = False
         self._dirty = False
         self._saving = False
+        self._error = ""
         self.completed.connect(self._on_completed)
         layout = QVBoxLayout(self)
         hint = QLabel("编辑当前飞机的 Tag 世界坐标；位置/边长单位 m，航向单位 °。")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        self.connection_notice = QLabel()
+        self.connection_notice.setWordWrap(True)
+        self.connection_notice.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.connection_notice)
         self.path_label = QLabel("等待修正服务，连接后自动读取 tag_pose.csv")
         self.path_label.setWordWrap(True)
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -103,6 +108,33 @@ class TagConfigEditor(QWidget):
         self._status = status
         instance = str(status.get("service_instance_id", ""))
         ready = bool(status.get("fresh") and status.get("service_available") and instance)
+        if status.get("client_error"):
+            notice = f"修正客户端启动失败：{status['client_error']}"
+        elif not ready:
+            if status.get("aircraft_available"):
+                notice = "已收到飞机数据，但 correction 服务不可用或通信中断。"
+            else:
+                notice = "未收到飞机数据或 correction 服务状态，可能尚未连接飞机或修正服务未启动。"
+            notice += "请检查飞机网络及 odin-correction.service；当前无法读取或保存配置，空表不表示 CSV 文件为空。"
+        elif self._error:
+            notice = self._error
+        elif status.get("active"):
+            notice = "飞机 correction 服务已连接；校准任务运行中，暂不能保存配置。"
+        elif status.get("application_state") == "unknown":
+            notice = "飞机 correction 服务已连接；修正应用结果尚未确认，暂不能保存配置。"
+        else:
+            notice = (
+                "飞机 correction 服务已连接。" if self._loaded_instance == instance
+                else "飞机 correction 服务已连接，等待读取 Tag 配置。"
+            )
+        self.connection_notice.setText(notice)
+        warning = (
+            not ready or bool(status.get("client_error")) or bool(self._error)
+            or bool(status.get("active")) or status.get("application_state") == "unknown"
+        )
+        self.connection_notice.setStyleSheet(
+            f"color: {'#8b4a18' if warning else '#245f87'}; font-weight: 600;"
+        )
         can_save = (ready and instance == self._loaded_instance
                     and not status.get("active") and status.get("application_state") != "unknown")
         self.save_button.setEnabled(can_save and not self._busy)
@@ -124,6 +156,7 @@ class TagConfigEditor(QWidget):
         """将文件操作交给 ROS 线程，Qt 主线程只维护编辑状态。"""
         self._busy = True
         self._saving = save
+        self._error = ""
         self.message.setText("正在保存并应用…" if save else "正在读取飞机 tag_pose.csv…")
         self.set_service_status(self._status)
         self.client.request_tags(
@@ -142,8 +175,10 @@ class TagConfigEditor(QWidget):
             except ValueError as exc:
                 error = str(exc)
         if error:
-            self.message.setText(f"{'保存' if self._saving else '读取'}失败：{error}")
+            self._error = f"Tag 配置{'保存' if self._saving else '读取'}失败：{error}"
+            self.message.setText(self._error)
         else:
+            self._error = ""
             self._populate(format_tag_csv(tags))
             self._loaded_instance = str(payload.get("service_instance_id", ""))
             self.path_label.setText(str(payload.get("config_path", "")))
@@ -191,7 +226,9 @@ class TagConfigEditor(QWidget):
         try:
             text = format_tag_csv(parse_tag_csv(self._csv()))
         except ValueError as exc:
-            self.message.setText(f"未保存：{exc}")
+            self._error = f"未保存：{exc}"
+            self.message.setText(self._error)
+            self.set_service_status(self._status)
             return
         self._request(save=True, text=text)
 
