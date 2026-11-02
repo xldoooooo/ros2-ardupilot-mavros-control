@@ -121,7 +121,7 @@ def test_compact_status_menu_shadow_and_external_entries_are_present() -> None:
         assert window.camera_panel_button.isVisible()
         assert window.camera_panel_button.text() == "摄像头配置面板"
         assert window.correction_panel_button.isVisible()
-        assert window.correction_panel_button.text() == "Tag-Odin 修正面板"
+        assert window.correction_panel_button.text() == "标记校准面板"
         assert not hasattr(window, "terminal_button")
         assert window.exit_button.isVisible()
         assert window.exit_button.text() == "退出地面站"

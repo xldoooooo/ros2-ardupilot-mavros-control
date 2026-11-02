@@ -623,13 +623,46 @@ def test_tag_editor_roundtrip_sort_validation_and_draft_preservation() -> None:
         assert editor.table.item(0, 1).text() == "8.125"
         editor.add_button.click()
         assert editor.table.rowCount() == 3
-        assert editor.table.item(0, 0).text() == "0"
+        assert editor.table.item(2, 0).text() == "8"
         editor.table.selectRow(0)
         editor.delete_button.click()
         assert editor.table.rowCount() == 2
+        assert [editor.table.item(row, 0).text() for row in range(2)] == ["2", "7"]
         client.current_status["correction"]["active"] = True
         window._refresh()
         assert not editor.save_button.isEnabled()
         assert not window.details_group.isChecked()
+    finally:
+        window.close()
+
+
+def test_tag_toolbar_moves_parameters_preserves_ids_and_clears_draft() -> None:
+    """移动交换五项参数但不动ID；减号删末行，清空禁用空表保存。"""
+    application = _application()
+    window = CorrectionPanelWindow(client=_FakeCorrectionClient())
+    try:
+        editor = window.tag_editor
+        editor._populate("tag_id,x,y,z,yaw_deg,size_m\n2,1,2,3,45,0.2\n7,4,5,6,90,0.3\n")
+        editor.table.setCurrentCell(0, 1)
+        editor.table.selectRow(0)
+        assert not editor.up_button.isEnabled() and editor.down_button.isEnabled()
+        editor.down_button.click()
+        assert [editor.table.item(row, 0).text() for row in range(2)] == ["2", "7"]
+        assert [editor.table.item(0, col).text() for col in range(1, 6)] == ["4", "5", "6", "90", "0.3"]
+        assert [editor.table.item(1, col).text() for col in range(1, 6)] == ["1", "2", "3", "45", "0.2"]
+        assert editor.table.currentRow() == 1
+        assert editor.up_button.isEnabled() and not editor.down_button.isEnabled()
+        editor.up_button.click()
+        assert editor.table.item(0, 1).text() == "1"
+        editor.table.selectRow(0)
+        editor.delete_button.click()
+        assert editor.table.rowCount() == 1 and editor.table.item(0, 0).text() == "2"
+        editor.clear_button.click()
+        assert editor.table.rowCount() == 0
+        assert not editor.save_button.isEnabled()
+        assert not editor.clear_button.isEnabled() and not editor.delete_button.isEnabled()
+        editor.add_button.click()
+        assert editor.table.item(0, 0).text() == "0"
+        assert editor.save_button.isEnabled()
     finally:
         window.close()

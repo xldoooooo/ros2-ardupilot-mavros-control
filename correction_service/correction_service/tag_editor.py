@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import csv
 import io
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QPushButton, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
+    QPushButton, QSizePolicy, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
+from ground_station_core.qt_ui import theme
+
 from .config import TAG_COLUMNS, format_tag_csv, parse_tag_csv
+
+# 与主GUI航点表格使用相同的行高和紧凑图标尺寸。
+ROW_HEIGHT = 28
 
 
 class _TagIdItem(QTableWidgetItem):
@@ -37,7 +44,9 @@ class _TextDelegate(QStyledItemDelegate):
 
     def createEditor(self, parent, option, index):
         """避免默认整数编辑器限制可用 Tag ID。"""
-        return QLineEdit(parent)
+        editor = QLineEdit(parent)
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return editor
 
 
 class TagConfigEditor(QWidget):
@@ -46,7 +55,7 @@ class TagConfigEditor(QWidget):
     completed = Signal(object, str)
 
     def __init__(self, client: Any, parent: QWidget | None = None) -> None:
-        """构建六列表格与新增、删除、重新读取、保存操作。"""
+        """构建六列表格及新增、移动、末行删除、清空和读写操作。"""
         super().__init__(parent)
         self.client = client
         self._status: dict[str, Any] = {}
@@ -60,7 +69,9 @@ class TagConfigEditor(QWidget):
         layout = QVBoxLayout(self)
         hint = QLabel("编辑当前飞机的 Tag 世界坐标；位置/边长单位 m，航向单位 °。")
         hint.setWordWrap(True)
-        layout.addWidget(hint)
+        hint_row = QHBoxLayout()
+        hint_row.addWidget(hint, 1)
+        layout.addLayout(hint_row)
         self.connection_notice = QLabel()
         self.connection_notice.setWordWrap(True)
         self.connection_notice.setTextFormat(Qt.TextFormat.PlainText)
@@ -70,12 +81,22 @@ class TagConfigEditor(QWidget):
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.path_label)
         self.table = QTableWidget(0, len(TAG_COLUMNS))
-        self.table.setHorizontalHeaderLabels(TAG_COLUMNS)
+        self.table.setObjectName("tagConfigTable")
+        self.table.setHorizontalHeaderLabels(("tag_id", "X / m", "Y / m", "Z / m", "Yaw / °", "Size / m"))
         self.table.setItemDelegate(_TextDelegate(self.table))
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setMinimumSectionSize(48)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setFixedHeight(ROW_HEIGHT)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setMinimumSectionSize(ROW_HEIGHT)
+        self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.table.setToolTip("单击选中整行，双击编辑；上下移动仅交换参数，Tag ID 保持升序。")
         self.table.setFixedHeight(230)
         self.table.setAlternatingRowColors(True)
         self.table.itemChanged.connect(self._on_item_changed)
@@ -84,18 +105,38 @@ class TagConfigEditor(QWidget):
         self.table.horizontalHeader().setSectionsClickable(False)
         layout.addWidget(self.table)
         actions = QHBoxLayout()
-        self.add_button = QPushButton("新增 Tag")
-        self.add_button.clicked.connect(self._add)
-        self.delete_button = QPushButton("删除选中")
+        actions.setSpacing(2)
+        assets = Path(theme.__file__).with_name("assets")
+        self.up_button = self._icon_button(assets / "chevron-up.svg", "上移选中 Tag 的配置参数（ID 保持不变）")
+        self.up_button.clicked.connect(lambda: self._move_selected(-1))
+        self.down_button = self._icon_button(assets / "chevron-down.svg", "下移选中 Tag 的配置参数（ID 保持不变）")
+        self.down_button.clicked.connect(lambda: self._move_selected(1))
+        self.delete_button = self._icon_button(assets / "minus-red.svg", "删除最下方一行 Tag")
         self.delete_button.clicked.connect(self._delete)
+        self.clear_button = QPushButton("清空")
+        self.clear_button.setProperty("role", "danger")
+        self.clear_button.setToolTip("清空全部 Tag 草稿，保存前需至少新增一个 Tag")
+        self.clear_button.clicked.connect(self._clear)
+        for button in (self.up_button, self.down_button, self.delete_button, self.clear_button):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        self.add_button = QPushButton("新增 Tag")
+        self.add_button.setToolTip("在列表末尾追加一个 Tag")
+        self.add_button.clicked.connect(self._add)
+        hint_row.addWidget(self.add_button)
         self.reload_button = QPushButton("重新读取")
         self.reload_button.clicked.connect(self._load)
         self.save_button = QPushButton("保存并应用")
         self.save_button.setProperty("role", "primary")
         self.save_button.clicked.connect(self._save)
-        for button in (self.add_button, self.delete_button, self.reload_button, self.save_button):
+        for button in (self.reload_button, self.save_button):
             actions.addWidget(button)
-        actions.addStretch()
+        for button in (self.add_button, self.up_button, self.down_button,
+                       self.delete_button, self.clear_button, self.reload_button, self.save_button):
+            button.setProperty("compact", True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.table.itemSelectionChanged.connect(self._update_row_controls)
+        self.table.currentCellChanged.connect(self._update_row_controls)
         layout.addLayout(actions)
         self.message = QLabel("未保存的编辑不会影响校准。保存变更将清空旧滑窗和候选，保留当前生效修正。")
         self.message.setWordWrap(True)
@@ -122,6 +163,8 @@ class TagConfigEditor(QWidget):
             notice = "飞机 correction 服务已连接；校准任务运行中，暂不能保存配置。"
         elif status.get("application_state") == "unknown":
             notice = "飞机 correction 服务已连接；修正应用结果尚未确认，暂不能保存配置。"
+        elif self._loaded_instance == instance and self.table.rowCount() == 0:
+            notice = "Tag 列表为空；请新增 Tag 后保存。"
         else:
             notice = (
                 "飞机 correction 服务已连接。" if self._loaded_instance == instance
@@ -131,16 +174,19 @@ class TagConfigEditor(QWidget):
         warning = (
             not ready or bool(status.get("client_error")) or bool(self._error)
             or bool(status.get("active")) or status.get("application_state") == "unknown"
+            or (self._loaded_instance == instance and self.table.rowCount() == 0)
         )
         self.connection_notice.setStyleSheet(
             f"color: {'#8b4a18' if warning else '#245f87'}; font-weight: 600;"
         )
         can_save = (ready and instance == self._loaded_instance
+                    and self.table.rowCount() > 0
                     and not status.get("active") and status.get("application_state") != "unknown")
         self.save_button.setEnabled(can_save and not self._busy)
         self.reload_button.setEnabled(ready and not self._busy)
-        for widget in (self.table, self.add_button, self.delete_button):
+        for widget in (self.table, self.add_button):
             widget.setEnabled(not self._busy)
+        self._update_row_controls()
         if ready and instance != self._requested_instance and not self._busy:
             self._requested_instance = instance
             if self._dirty:
@@ -195,11 +241,13 @@ class TagConfigEditor(QWidget):
         for row, values in enumerate(rows):
             for column, value in enumerate(values):
                 item = _TagIdItem(value) if column == 0 else QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table.setItem(row, column, item)
         self.table.setSortingEnabled(True)
         self.table.horizontalHeader().setSectionsClickable(False)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
         self.table.blockSignals(False)
+        self._update_row_controls()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         """编辑结束后按数值 ID 重排，非法输入保留到保存时提示。"""
@@ -232,29 +280,85 @@ class TagConfigEditor(QWidget):
             return
         self._request(save=True, text=text)
 
+    @staticmethod
+    def _icon_button(path: Path, tooltip: str) -> QPushButton:
+        """使用主GUI相同的SVG、尺寸及反馈样式创建紧凑表格按钮。"""
+        button = QPushButton()
+        button.setProperty("tableIcon", True)
+        button.setIcon(QIcon(str(path)))
+        button.setIconSize(QSize(16, 16))
+        button.setFixedSize(32, ROW_HEIGHT)
+        button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        return button
+
+    def _update_row_controls(self, *_args: Any) -> None:
+        """按选中行、列表数量及请求状态启用移动、末行删除和清空。"""
+        row = self.table.currentRow()
+        count = self.table.rowCount()
+        selected = bool(self.table.selectionModel().selectedRows())
+        self.up_button.setEnabled(not self._busy and selected and row > 0)
+        self.down_button.setEnabled(not self._busy and selected and 0 <= row < count - 1)
+        self.delete_button.setEnabled(not self._busy and count > 0)
+        self.clear_button.setEnabled(not self._busy and count > 0)
+
+    def _move_selected(self, offset: int) -> None:
+        """仅交换两行的五项配置参数，ID作为行编号留在原位。"""
+        self.table.setFocus()
+        row = self.table.currentRow()
+        target = row + offset
+        if row < 0 or not 0 <= target < self.table.rowCount():
+            return
+        self.table.blockSignals(True)
+        for column in range(1, len(TAG_COLUMNS)):
+            current_item = self.table.takeItem(row, column)
+            target_item = self.table.takeItem(target, column)
+            self.table.setItem(row, column, target_item)
+            self.table.setItem(target, column, current_item)
+        self.table.blockSignals(False)
+        self.table.setCurrentCell(target, 1)
+        self.table.selectRow(target)
+        self._dirty = True
+        self.message.setText("Tag 参数已移动，ID 保持升序；尚未保存。")
+        self._update_row_controls()
+
     def _add(self) -> None:
-        """新增最小未占用 ID，默认边长沿用首行或使用 0.1 m。"""
-        used = set()
+        """在最大ID后追加一行，默认边长沿用首行或使用0.1m。"""
+        self.table.setFocus()
+        used = []
         for row in range(self.table.rowCount()):
             try:
-                used.add(int(self.table.item(row, 0).text()))
+                used.append(int(self.table.item(row, 0).text()))
             except ValueError:
                 pass
-        tag_id = 0
-        while tag_id in used:
-            tag_id += 1
+        tag_id = max(used, default=-1) + 1
         size = self.table.item(0, 5).text() if self.table.rowCount() else "0.1"
         text = self._csv() + f"{tag_id},0,0,0,0,{size}\n"
         # 允许其他行暂存非法输入，新增操作不强制校验整个草稿。
         self._populate(text)
+        self.table.setCurrentCell(self.table.rowCount() - 1, 1)
+        self.table.selectRow(self.table.rowCount() - 1)
         self._dirty = True
         self.message.setText("已新增 Tag，尚未保存。")
+        self.set_service_status(self._status)
 
     def _delete(self) -> None:
-        """仅删除明确选中的行，空表会在保存时提示至少保留一个 Tag。"""
-        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
-        for row in rows:
-            self.table.removeRow(row)
-        if rows:
+        """减号始终删除最下方一行，与当前选择无关。"""
+        self.table.setFocus()
+        if self.table.rowCount():
+            self.table.removeRow(self.table.rowCount() - 1)
             self._dirty = True
-            self.message.setText("已删除选中 Tag，尚未保存。")
+            self.message.setText(
+                "已删除末行 Tag，尚未保存。" if self.table.rowCount()
+                else "已删除末行 Tag；请新增 Tag 后保存。"
+            )
+        self.set_service_status(self._status)
+
+    def _clear(self) -> None:
+        """清空全部本地草稿，不立即写入飞机配置。"""
+        self.table.setFocus()
+        self.table.setRowCount(0)
+        self._dirty = True
+        self.message.setText("Tag 草稿已清空；请新增 Tag 后保存。")
+        self.set_service_status(self._status)

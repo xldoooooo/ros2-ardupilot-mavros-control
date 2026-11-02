@@ -311,7 +311,8 @@ QPushButton#communicationTestButton {{
 }}
 QPushButton#moveWaypointUpButton,
 QPushButton#moveWaypointDownButton,
-QPushButton#removeWaypointButton {{
+QPushButton#removeWaypointButton,
+QPushButton[tableIcon="true"] {{
     min-height: 26px;
     max-height: 26px;
     padding: 0;
@@ -508,7 +509,8 @@ QHeaderView::section {{
     padding: 7px;
     font-weight: 700;
 }}
-QTableWidget#waypointTable QHeaderView::section {{ padding: 2px 5px; }}
+QTableWidget#waypointTable QHeaderView::section,
+QTableWidget#tagConfigTable QHeaderView::section {{ padding: 2px 5px; }}
 QMenu#downwardComboPopup {{
     background: white;
     border: 1px solid {COLORS['border_strong']};

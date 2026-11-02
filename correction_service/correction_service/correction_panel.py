@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ground_station_core.qt_ui.theme import STYLE_SHEET
 from ground_station_core.qt_ui.window_chrome import ShadowWindowChromeMixin
 
 from .ros_client import CorrectionPanelClient
@@ -43,8 +44,8 @@ OPERATION_FIRST = 1
 OPERATION_NEXT = 2
 # 低于此宽度时改为两列命令区和纵向状态组，适配小屏及高 DPI 显示。
 COMPACT_LAYOUT_WIDTH_PX = 820
-# 面板、编辑表格及状态层级的统一样式。
-PANEL_STYLE_SHEET = """
+# 复用主GUI主题，仅补充独立校准面板的布局与状态层级。
+PANEL_STYLE_SHEET = STYLE_SHEET + """
 QWidget {
     color: #182433;
     font-family: "Noto Sans CJK SC", "Noto Sans", sans-serif;
@@ -75,8 +76,6 @@ QGroupBox {
 QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; }
 QLabel#valueLabel { font-family: "DejaVu Sans Mono", monospace; font-weight: 600; }
 QLabel#warningLabel { color: #8b4a18; }
-QTableWidget { background: white; alternate-background-color: #f3f6f9; gridline-color: #dce3ea; }
-QHeaderView::section { background: #e8eef4; padding: 6px; border: none; font-weight: 600; }
 QLabel#summaryValue { color: #245f87; font-size: 12pt; font-weight: 700; }
 QSpinBox {
     min-height: 30px;
@@ -84,26 +83,6 @@ QSpinBox {
     background: white;
     border: 1px solid #aeb8c4;
     border-radius: 3px;
-}
-QPushButton {
-    min-height: 32px;
-    padding: 3px 12px;
-    background: #f7f8fa;
-    border: 1px solid #aeb8c4;
-    border-radius: 3px;
-    font-weight: 600;
-}
-QPushButton:hover { background: #e8edf1; }
-QPushButton:disabled { color: #98a4b1; background: #edf0f2; }
-QPushButton[role="primary"] {
-    color: white;
-    background: #245f87;
-    border-color: #245f87;
-}
-QPushButton[role="danger"] {
-    color: white;
-    background: #a7352a;
-    border-color: #a7352a;
 }
 QPushButton[windowControl="true"] {
     min-height: 25px;
