@@ -2,6 +2,7 @@
 # 用户确认：t_mm=(41+5.57, 100/2-21.03, -(46+12+9.26))。
 # 理想横平竖直安装：画面上方沿 IMU +X、右方沿 -Y、光轴沿 -Z，无偏航角。
 # 机械近似不是标定结果；镜头中心近似光心，实物安装误差尚待验证。
+# 小视场镜头沿用旧安装估计；换镜头后的光心位置尚未重新测量。
 transform_name: T_imu_camera
 source_path: agent/report/report-2026-09-17-uq212-mechanical-extrinsics.md
 matrix:

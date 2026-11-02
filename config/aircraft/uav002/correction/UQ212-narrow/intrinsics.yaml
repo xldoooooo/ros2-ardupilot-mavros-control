@@ -1,0 +1,82 @@
+# UQ212 小视场新镜头 AprilGrid 标定结果；原始畸变图像对应的 K/D，尚待独立验证。
+image_width: 1920
+image_height: 1200
+distortion_model: plumb_bob
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 2259.150232686555
+  - 0.0
+  - 948.3535790818033
+  - 0.0
+  - 2259.4920794374293
+  - 596.3627214345703
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+  - -0.5477167652984403
+  - 0.4090910337589189
+  - 0.00045505143305834856
+  - 0.0016883956791355055
+  - -0.273873050870248
+rms_reprojection_error: 0.8134706560164723
+calibration_status: calibrated_pending_independent_validation
+calibration_tag_family: tag36h11
+used_views: 30
+per_view_reprojection_errors:
+- 0.14318609318432926
+- 0.141540172630236
+- 0.18364453904998865
+- 0.15868319734902162
+- 0.12387283283784456
+- 0.14110242289929925
+- 0.1560927559028008
+- 0.14642516709420142
+- 0.22638187491119197
+- 0.14077838608252038
+- 1.764757893554608
+- 0.12878230838961785
+- 0.15418778977508082
+- 0.1472881499100251
+- 0.2138777093685401
+- 3.8948098392895214
+- 0.13294034354565226
+- 0.17501257967953762
+- 1.7005739686254353
+- 0.1201765652538309
+- 0.19386463971586793
+- 0.1777466916384762
+- 0.2278614986513897
+- 0.23490689105201093
+- 0.14577051922480747
+- 0.14125390247859582
+- 0.12960927368874475
+- 0.14104462453012426
+- 0.14199776827425564
+- 0.18863625973689452
+capture:
+  device: /dev/v4l/by-id/usb-YLX-WYZ-260812_UQ212_UQ212-video-index0
+  width: 1920
+  height: 1200
+  fps: 60.0
+  pixel_format: MJPG
+  lens_controls:
+    auto_exposure: 3
+    white_balance_automatic: 1
+    focus_automatic_continuous: 0
+    brightness: 0
+    contrast: 34
+    saturation: 60
+    hue: 0
+    gamma: 120
+    sharpness: 2
+    backlight_compensation: 1
+    power_line_frequency: 1
+    zoom_absolute: 0
+  opencv_version: 4.6.0
+  python_environment: /home/nvidia/ros2-ardupilot-mavros-control/.venv
