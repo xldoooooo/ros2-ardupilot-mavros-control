@@ -255,9 +255,9 @@ source 与 install 的 `2.0.0` 清单，以及新消息/服务字段，避免旧
 ./.venv/bin/python correction_service/correction_panel.py
 ```
 
-面板分为“校准与状态”和“Tag 配置”。校准页突出任务、候选和当前生效修正，以表格对照
-原始/修正 FCU、最终 FCU 输入和 EKF 位姿；配准、采样和 session 等信息在“展开诊断与任务详情”中。
-Tag 配置页自动读取实际连接的修正服务所用 `tag_pose.csv`，支持增删和编辑
+校准操作与Tag配置在同一页直接展示：宽屏上方左右并排，下方整行显示候选、当前生效修正和FCU位姿对照；
+窄屏自动上下排列，依靠纵向滚动访问全部内容。Tag表格随可用空间伸缩。配准、采样、session等信息在“展开诊断与任务详情”中。
+Tag 配置区自动读取实际连接的修正服务所用 `tag_pose.csv`，支持增删和编辑
 `tag_id,x,y,z,yaw_deg,size_m`，按数值 ID 升序排列。点击“保存并应用”才通过
 `/correction_service/configure_tags` 原子写入飞机端文件并更新内存，无需重启；界面显示实际文件路径。
 ID 必须唯一非负，坐标/角度必须有限，边长必须为正，至少保留一个 Tag。

@@ -384,6 +384,13 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
         scroll = window.findChild(QScrollArea)
         assert scroll is not None
         assert window._compact_layout is True
+        assert window._side_by_side is False
+        from PySide6.QtWidgets import QTabWidget
+        assert window.findChild(QTabWidget) is None
+        assert window.tag_editor.isVisible()
+        assert window._main_layout.getItemPosition(
+            window._main_layout.indexOf(window._tag_group)
+        )[:2] == (1, 0)
         assert scroll.horizontalScrollBar().maximum() == 0
         viewport = scroll.viewport().rect()
         for button in (
@@ -433,11 +440,16 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
 
         window.resize(1180, 860)
         application.processEvents()
-        assert window._compact_layout is False
+        assert window._compact_layout is True
+        assert window._side_by_side is True
+        assert window.tag_editor.isVisible()
+        assert window._main_layout.getItemPosition(
+            window._main_layout.indexOf(window._tag_group)
+        )[:2] == (0, 1)
         assert scroll.horizontalScrollBar().maximum() == 0
         assert window._command_layout.getItemPosition(
             window._command_layout.indexOf(window.stop_button)
-        ) == (2, 2, 1, 2)
+        ) == (4, 0, 1, 1)
         assert window._status_layout.getItemPosition(
             window._status_layout.indexOf(window._extnav_group)
         )[:2] == (0, 1)
@@ -482,7 +494,6 @@ def test_tag_editor_roundtrip_sort_validation_and_draft_preservation() -> None:
         assert [editor.table.item(row, 0).text() for row in range(2)] == ["2", "10"]
         from PySide6.QtWidgets import QLineEdit
         window.show()
-        window.tabs.setCurrentIndex(1)
         application.processEvents()
         editor.table.editItem(editor.table.item(0, 1))
         application.processEvents()

@@ -134,13 +134,14 @@ class TagConfigEditor(QWidget):
             QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
         )
         self.table.setToolTip("单击选中整行，双击编辑；上下移动仅交换参数，Tag ID 保持升序。")
-        self.table.setFixedHeight(230)
+        self.table.setMinimumHeight(150)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setAlternatingRowColors(True)
         self.table.itemChanged.connect(self._on_item_changed)
         self.table.setSortingEnabled(True)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
         self.table.horizontalHeader().setSectionsClickable(False)
-        layout.addWidget(self.table)
+        layout.addWidget(self.table, 1)
         actions = QHBoxLayout()
         actions.setSpacing(2)
         assets = Path(theme.__file__).with_name("assets")
@@ -174,7 +175,6 @@ class TagConfigEditor(QWidget):
         self.message = QLabel("未保存的编辑不会影响校准。保存变更将清空旧滑窗和候选，保留当前生效修正。")
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
-        layout.addStretch(1)
         self.set_service_status({})
 
     def set_service_status(self, status: dict[str, Any]) -> None:

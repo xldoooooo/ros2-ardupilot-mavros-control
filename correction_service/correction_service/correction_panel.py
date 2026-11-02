@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
@@ -42,8 +41,10 @@ INTERFACE_VERSION = "2.0"
 # 对应 StartCorrection 首次和后续操作枚举。
 OPERATION_FIRST = 1
 OPERATION_NEXT = 2
-# 低于此宽度时改为两列命令区和纵向状态组，适配小屏及高 DPI 显示。
+# 窄屏使用两列命令和纵向状态组；左右并排时命令区也保持紧凑。
 COMPACT_LAYOUT_WIDTH_PX = 820
+# 两个编辑区域均保留完整输入宽度后，再切为左右并排。
+SIDE_BY_SIDE_WIDTH_PX = 1100
 # 复用主GUI主题，仅补充独立校准面板的布局与状态层级。
 PANEL_STYLE_SHEET = STYLE_SHEET + """
 QWidget {
@@ -130,6 +131,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self._deferred_apply_requested = False
         self._deferred_apply_job_id = ""
         self._compact_layout: bool | None = None
+        self._side_by_side: bool | None = None
 
         self.setWindowTitle(DESKTOP_APPLICATION_NAME)
         self._configure_window_chrome()
@@ -144,7 +146,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self._refresh()
 
     def _build_ui(self) -> None:
-        """构建任务、窗口、质量、应用事实和四段数据链对照区。"""
+        """在同一页面构建校准、Tag编辑、主要状态和位姿对照区。"""
         root = QWidget()
         root.setObjectName("correctionPanelRoot")
         self.setCentralWidget(root)
@@ -170,14 +172,18 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         warning.setWordWrap(True)
         layout.addWidget(warning)
 
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        calibration = QWidget()
-        layout = QVBoxLayout(calibration)
-        layout.setContentsMargins(6, 6, 6, 6)
-        self.tabs.addTab(calibration, "校准与状态")
+        self._main_layout = QGridLayout()
+        self._main_layout.setSpacing(12)
+        layout.addLayout(self._main_layout, 1)
+        self._calibration_column = QWidget()
+        calibration_layout = QVBoxLayout(self._calibration_column)
+        calibration_layout.setContentsMargins(0, 0, 0, 0)
+        calibration_layout.setSpacing(10)
+        self._tag_group = QGroupBox("Tag 配置")
         self.tag_editor = TagConfigEditor(self.client)
-        self.tabs.addTab(self.tag_editor, "Tag 配置")
+        tag_layout = QVBoxLayout(self._tag_group)
+        tag_layout.setContentsMargins(6, 8, 6, 6)
+        tag_layout.addWidget(self.tag_editor)
 
         command_group = QGroupBox("多 Tag 滑窗标定")
         self._command_layout = QGridLayout(command_group)
@@ -221,7 +227,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.command_message = QLabel("等待 correction_service 2.0 状态")
         self.command_message.setWordWrap(True)
         self._command_layout.addWidget(self.command_message, 4, 0, 1, 4)
-        layout.addWidget(command_group)
+        calibration_layout.addWidget(command_group)
         for control in (self.tag_id_input, self.window_size_input):
             control.setMaximumWidth(130)
         for button in (self.first_button, self.next_button, self.stop_button,
@@ -241,7 +247,8 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         )
         window_form.addRow("状态 / N", self.window_summary)
         window_form.addRow("Tag 顺序", self.window_tags)
-        layout.addWidget(window_group)
+        calibration_layout.addWidget(window_group)
+        calibration_layout.addStretch(1)
 
         self._status_layout = QGridLayout()
         correction_group = QGroupBox("候选与质量")
@@ -325,7 +332,6 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self.details_group.toggled.connect(details.setVisible)
         QVBoxLayout(self.details_group).addWidget(details)
         layout.addWidget(self.details_group)
-        layout.addStretch(1)
         root_layout.addWidget(scroll, 1)
         self._update_responsive_layout(self.width())
         self._sync_window_chrome()
@@ -340,11 +346,19 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         return label
 
     def _update_responsive_layout(self, width: int) -> None:
-        """按窗口宽度重排命令与状态区，避免内容最小宽度遮住操作按钮。"""
-        compact = width < COMPACT_LAYOUT_WIDTH_PX
-        if self._compact_layout == compact:
+        """按窗口宽度排列两个编辑区、命令与状态，保持内容可访问。"""
+        side_by_side = width >= SIDE_BY_SIDE_WIDTH_PX
+        compact = side_by_side or width < COMPACT_LAYOUT_WIDTH_PX
+        if self._compact_layout == compact and self._side_by_side == side_by_side:
             return
         self._compact_layout = compact
+        self._side_by_side = side_by_side
+        self._main_layout.removeWidget(self._calibration_column)
+        self._main_layout.removeWidget(self._tag_group)
+        self._main_layout.setColumnStretch(0, 4 if side_by_side else 1)
+        self._main_layout.setColumnStretch(1, 5 if side_by_side else 0)
+        self._main_layout.addWidget(self._calibration_column, 0, 0)
+        self._main_layout.addWidget(self._tag_group, 0 if side_by_side else 1, 1 if side_by_side else 0)
 
         command_widgets = (
             self._inputs_row,
@@ -384,15 +398,16 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             for column in range(4):
                 self._command_layout.setColumnStretch(column, 1)
 
+        status_compact = width < COMPACT_LAYOUT_WIDTH_PX
         self._status_layout.removeWidget(self._correction_group)
         self._status_layout.removeWidget(self._extnav_group)
-        self._status_layout.setColumnStretch(0, 3 if not compact else 1)
-        self._status_layout.setColumnStretch(1, 2 if not compact else 0)
+        self._status_layout.setColumnStretch(0, 3 if not status_compact else 1)
+        self._status_layout.setColumnStretch(1, 2 if not status_compact else 0)
         self._status_layout.addWidget(self._correction_group, 0, 0)
         self._status_layout.addWidget(
             self._extnav_group,
-            1 if compact else 0,
-            0 if compact else 1,
+            1 if status_compact else 0,
+            0 if status_compact else 1,
         )
 
     def resizeEvent(self, event: QResizeEvent) -> None:
