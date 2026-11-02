@@ -16,11 +16,22 @@ from PySide6.QtWidgets import (
 )
 
 from ground_station_core.qt_ui import theme
+from ground_station_core.qt_ui.widgets import NoWheelDoubleSpinBox
 
 from .config import TAG_COLUMNS, format_tag_csv, parse_tag_csv
 
 # 与主GUI航点表格使用相同的行高和紧凑图标尺寸。
 ROW_HEIGHT = 28
+# 数值控件采用宽松范围，不套用飞行航点的空间限制。
+INPUT_LIMIT = 1e9
+
+
+class _ParameterInput(NoWheelDoubleSpinBox):
+    """沿用航点输入行为，省略显示尾零以适配五个参数同排。"""
+
+    def textFromValue(self, value: float) -> str:
+        """只压缩显示，保留设定的小数输入精度。"""
+        return super().textFromValue(value).rstrip("0").rstrip(self.locale().decimalPoint())
 
 
 class _TagIdItem(QTableWidgetItem):
@@ -65,13 +76,12 @@ class TagConfigEditor(QWidget):
         self._dirty = False
         self._saving = False
         self._error = ""
+        self._size_initialized = False
         self.completed.connect(self._on_completed)
         layout = QVBoxLayout(self)
         hint = QLabel("编辑当前飞机的 Tag 世界坐标；位置/边长单位 m，航向单位 °。")
         hint.setWordWrap(True)
-        hint_row = QHBoxLayout()
-        hint_row.addWidget(hint, 1)
-        layout.addLayout(hint_row)
+        layout.addWidget(hint)
         self.connection_notice = QLabel()
         self.connection_notice.setWordWrap(True)
         self.connection_notice.setTextFormat(Qt.TextFormat.PlainText)
@@ -80,6 +90,33 @@ class TagConfigEditor(QWidget):
         self.path_label.setWordWrap(True)
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.path_label)
+        inputs = QHBoxLayout()
+        inputs.setSpacing(3)
+        self.x_input = self._parameter_input(-INPUT_LIMIT, INPUT_LIMIT, 4, 0.1, "m")
+        self.y_input = self._parameter_input(-INPUT_LIMIT, INPUT_LIMIT, 4, 0.1, "m")
+        self.z_input = self._parameter_input(-INPUT_LIMIT, INPUT_LIMIT, 4, 0.1, "m")
+        self.yaw_input = self._parameter_input(-INPUT_LIMIT, INPUT_LIMIT, 3, 0.1, "°")
+        self.size_input = self._parameter_input(0.000001, INPUT_LIMIT, 6, 0.001, "m")
+        self.size_input.setValue(0.1)
+        self.size_input.valueChanged.connect(self._mark_size_initialized)
+        self._parameter_inputs = (
+            self.x_input, self.y_input, self.z_input, self.yaw_input, self.size_input,
+        )
+        for name, control in zip(("X", "Y", "Z", "Yaw", "Size"), self._parameter_inputs):
+            label = QLabel(name)
+            label.setObjectName("mutedLabel")
+            label.setBuddy(control)
+            inputs.addWidget(label)
+            inputs.addWidget(control, 1)
+        self.add_button = QPushButton("+")
+        self.add_button.setObjectName("addTagButton")
+        self.add_button.setFixedSize(ROW_HEIGHT, ROW_HEIGHT)
+        self.add_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.add_button.setToolTip("将上方 X、Y、Z、Yaw、Size 追加到列表末尾，ID 自动接续")
+        self.add_button.setAccessibleName("添加上方配置为新 Tag")
+        self.add_button.clicked.connect(self._add)
+        inputs.addWidget(self.add_button)
+        layout.addLayout(inputs)
         self.table = QTableWidget(0, len(TAG_COLUMNS))
         self.table.setObjectName("tagConfigTable")
         self.table.setHorizontalHeaderLabels(("tag_id", "X / m", "Y / m", "Z / m", "Yaw / °", "Size / m"))
@@ -120,10 +157,6 @@ class TagConfigEditor(QWidget):
         for button in (self.up_button, self.down_button, self.delete_button, self.clear_button):
             actions.addWidget(button)
         actions.addStretch(1)
-        self.add_button = QPushButton("新增 Tag")
-        self.add_button.setToolTip("在列表末尾追加一个 Tag")
-        self.add_button.clicked.connect(self._add)
-        hint_row.addWidget(self.add_button)
         self.reload_button = QPushButton("重新读取")
         self.reload_button.clicked.connect(self._load)
         self.save_button = QPushButton("保存并应用")
@@ -184,7 +217,7 @@ class TagConfigEditor(QWidget):
                     and not status.get("active") and status.get("application_state") != "unknown")
         self.save_button.setEnabled(can_save and not self._busy)
         self.reload_button.setEnabled(ready and not self._busy)
-        for widget in (self.table, self.add_button):
+        for widget in (self.table, self.add_button, *self._parameter_inputs):
             widget.setEnabled(not self._busy)
         self._update_row_controls()
         if ready and instance != self._requested_instance and not self._busy:
@@ -226,6 +259,9 @@ class TagConfigEditor(QWidget):
         else:
             self._error = ""
             self._populate(format_tag_csv(tags))
+            if not self._size_initialized:
+                self.size_input.setValue(next(iter(tags.values())).size_m)
+                self._size_initialized = True
             self._loaded_instance = str(payload.get("service_instance_id", ""))
             self.path_label.setText(str(payload.get("config_path", "")))
             self.message.setText(str(payload.get("message", "")))
@@ -281,6 +317,29 @@ class TagConfigEditor(QWidget):
         self._request(save=True, text=text)
 
     @staticmethod
+    def _parameter_input(
+        minimum: float, maximum: float, decimals: int, step: float, unit: str,
+    ) -> NoWheelDoubleSpinBox:
+        """复用航点数值组件和紧凑样式，滚轮不改值且小窗口允许收缩。"""
+        control = _ParameterInput()
+        control.setRange(minimum, maximum)
+        control.setDecimals(decimals)
+        control.setSingleStep(step)
+        # 单位由说明和表头展示，给五项同排的数值留出宽度。
+        control.setToolTip(f"输入值单位：{unit}")
+        control.setProperty("compactValueInput", True)
+        control.setProperty("waypointCoordinate", True)
+        control.setKeyboardTracking(False)
+        control.setFixedHeight(ROW_HEIGHT)
+        control.setMinimumWidth(58)
+        control.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        return control
+
+    def _mark_size_initialized(self, _value: float) -> None:
+        """用户改过边长后，首次连接也不再覆盖该输入。"""
+        self._size_initialized = True
+
+    @staticmethod
     def _icon_button(path: Path, tooltip: str) -> QPushButton:
         """使用主GUI相同的SVG、尺寸及反馈样式创建紧凑表格按钮。"""
         button = QPushButton()
@@ -324,8 +383,10 @@ class TagConfigEditor(QWidget):
         self._update_row_controls()
 
     def _add(self) -> None:
-        """在最大ID后追加一行，默认边长沿用首行或使用0.1m。"""
+        """提交顶部输入后将五项参数作为新行追加，ID自动接续。"""
         self.table.setFocus()
+        for control in self._parameter_inputs:
+            control.interpretText()
         used = []
         for row in range(self.table.rowCount()):
             try:
@@ -333,8 +394,8 @@ class TagConfigEditor(QWidget):
             except ValueError:
                 pass
         tag_id = max(used, default=-1) + 1
-        size = self.table.item(0, 5).text() if self.table.rowCount() else "0.1"
-        text = self._csv() + f"{tag_id},0,0,0,0,{size}\n"
+        values = ",".join(str(control.value()) for control in self._parameter_inputs)
+        text = self._csv() + f"{tag_id},{values}\n"
         # 允许其他行暂存非法输入，新增操作不强制校验整个草稿。
         self._populate(text)
         self.table.setCurrentCell(self.table.rowCount() - 1, 1)

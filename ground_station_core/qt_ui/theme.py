@@ -318,7 +318,8 @@ QPushButton[tableIcon="true"] {{
     padding: 0;
 }}
 QPushButton#addWaypointButton,
-QPushButton#addCurrentWaypointButton {{
+QPushButton#addCurrentWaypointButton,
+QPushButton#addTagButton {{
     min-height: 26px;
     max-height: 26px;
     min-width: 26px;
@@ -329,7 +330,8 @@ QPushButton#addCurrentWaypointButton {{
     font-weight: 700;
 }}
 QPushButton#addWaypointButton:hover,
-QPushButton#addCurrentWaypointButton:hover {{ background: #edf3f7; }}
+QPushButton#addCurrentWaypointButton:hover,
+QPushButton#addTagButton:hover {{ background: #edf3f7; }}
 QPushButton#previewWaypointButton,
 QPushButton#importWaypointButton,
 QPushButton#exportWaypointButton {{ background: white; }}
@@ -337,7 +339,8 @@ QPushButton#previewWaypointButton:hover,
 QPushButton#importWaypointButton:hover,
 QPushButton#exportWaypointButton:hover {{ background: #edf3f7; }}
 QPushButton#addWaypointButton:disabled,
-QPushButton#addCurrentWaypointButton:disabled {{
+QPushButton#addCurrentWaypointButton:disabled,
+QPushButton#addTagButton:disabled {{
     color: {COLORS['disabled']};
     background: #edf0f2;
     border-color: #dbe0e5;

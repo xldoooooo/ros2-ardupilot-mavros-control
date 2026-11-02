@@ -661,8 +661,21 @@ def test_tag_toolbar_moves_parameters_preserves_ids_and_clears_draft() -> None:
         assert editor.table.rowCount() == 0
         assert not editor.save_button.isEnabled()
         assert not editor.clear_button.isEnabled() and not editor.delete_button.isEnabled()
+        editor.x_input.lineEdit().setText("1.2345")
+        editor.y_input.setValue(-2.5)
+        editor.z_input.setValue(0.75)
+        editor.yaw_input.setValue(45.125)
+        editor.size_input.setValue(0.0465)
         editor.add_button.click()
         assert editor.table.item(0, 0).text() == "0"
+        assert [float(editor.table.item(0, col).text()) for col in range(1, 6)] == [
+            1.2345, -2.5, 0.75, 45.125, 0.0465,
+        ]
+        assert editor.add_button.text() == "+"
+        assert editor.add_button.width() == editor.add_button.height()
+        editor.add_button.click()
+        assert editor.table.item(1, 0).text() == "1"
+        assert editor.x_input.value() == 1.2345
         assert editor.save_button.isEnabled()
     finally:
         window.close()
