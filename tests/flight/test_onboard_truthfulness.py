@@ -177,14 +177,13 @@ def test_onboard_reports_telemetry_and_confirms_origin_and_land() -> None:
         assert spin_until(lambda: bool(statuses)), "机载状态话题未启动"
         publish_state(True)
         assert spin_until(lambda: any(status.fcu_connected for status in statuses))
-        assert spin_until(lambda: len(interval_requests) == 5)
-        assert {message_id for message_id, _rate in interval_requests} == {
-            1,
-            31,
-            32,
-            105,
-            245,
-        }
+        # 绝对起飞目标Z还需 GLOBAL_POSITION_INT(33) 提供 Home 相对高度。
+        expected_messages = {1, 31, 32, 33, 105, 245}
+        assert spin_until(lambda: expected_messages <= {
+            message_id for message_id, _rate in interval_requests
+        })
+        assert {message_id for message_id, _rate in interval_requests} == expected_messages
+        assert dict(interval_requests)[33] == pytest.approx(5.0)
         assert dict(interval_requests)[245] == pytest.approx(2.0)
 
         assert spin_until(
