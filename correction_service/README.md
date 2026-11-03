@@ -14,7 +14,7 @@ Odin→FCU 安装外参的唯一来源是
 `pitch_cam` 单位 rad，定义 `R_FI=Ry(pitch_cam)`，把 Odin IMU 轴变换到 FCU 前/左/上轴；
 `odin_xyz` 为 FCU→Odin IMU 在 FCU 轴表达的米制位移。host_sdk 在发布层右乘 `T_IF`，
 同时转换位姿、速度及协方差。固定安装角补偿只作用于机体关系，不旋转 odom/map 世界系；
-`auto_installation` 默认关闭。当前 refresh 的固定仰装30°对应 `pitch_cam=-pi/6`，
+`auto_installation` 默认关闭。refresh 的固定仰装25°配置对应 `pitch_cam=-0.4363323129985824`，
 `odin_xyz=(0.100,-0.029,0.060)m`。下游直接使用 FCU 中心，不重复补偿安装杆臂。
 
 ## 数据链和中心语义

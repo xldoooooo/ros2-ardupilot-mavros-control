@@ -13,7 +13,7 @@ Host 发布层只右乘固定 `I←F`，不学习初始姿态、不移动或旋�
 SLAM 点云、设备内部算法、WIWC 外参载荷及 `odom←map` 不作安装转换。
 
 唯一 Odin 安装配置为 `config/aircraft/<编号>/odin_extrinsics.yaml` 的 `/**/ros__parameters`：
-`pitch_cam` 定义 `R_FI=Ry(pitch_cam)`（rad，上仰30°为 `-π/6`），
+`pitch_cam` 定义 `R_FI=Ry(pitch_cam)`（rad，上仰25°为 `-0.4363323129985824`），
 `odin_x/y/z` 是飞控到 IMU 的向量（水平 FLU、m）。只补固定 pitch，roll/yaw 为零，自动学习禁用。
 驱动直接读取该文件，包括直接启动二进制的场景；修改后重启驱动和 extnav。
 refresh 本次值为 `(.100,-.029,.060)m`，因此右乘的平移是 `-R_IF*odin_xyz`，不能直接取反后忽略安装角。

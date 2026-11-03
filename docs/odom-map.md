@@ -36,7 +36,7 @@ map 模式下只读预览使用 `fcu_local`，由机载发布静态 `odom ← fc
 - 安装外参：`config/aircraft/<AIRCRAFT_ID>/odin_extrinsics.yaml`，由本机 `config/aircraft.local.env` 选择飞机。
   共享 `/**/ros__parameters` 的 `pitch_cam` 定义 `R_FI=Ry(pitch_cam)`，单位弧度；上仰为负 pitch，roll/yaw 保持零。
   `odin_x/y/z` 是 FCU 到 Odin IMU 的向量，以 FCU FLU 表达，单位米。
-  refresh 固定上仰30°对应 `-0.5235987756`，`auto_installation: false`，不再自适应。
+  refresh 固定上仰25°配置对应 `-0.4363323129985824`，`auto_installation: false`，不再自适应。
   相机外参独立采用 `correction/extrinsics.yaml` 的 `T_fcu_camera`，不再维护相机到 Odin 的第三套安装外参。
 - 地图：`config/aircraft/<AIRCRAFT_ID>/odin/reloc.yaml` 的 `relocalization_map_abs_path`。
   必须先提供存在的 bin；地图文件放 `drivers/odin/maps/`，不提交 Git。

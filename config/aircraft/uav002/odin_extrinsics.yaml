@@ -3,7 +3,7 @@
 /**:
   ros__parameters:
     roll_cam: 0.0
-    pitch_cam: -0.5235987755982988
+    pitch_cam: -0.4363323129985824
     yaw_cam: 0.0
     odin_x: 0.1
     odin_y: -0.029
