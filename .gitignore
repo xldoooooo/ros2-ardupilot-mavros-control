@@ -85,9 +85,9 @@ deepcopilot/
 /AGENTS.md
 /fishros
 
-# Agent-specific scratch files and generated evidence
-/agent/codex/
-/agent/grok/
+# Local agent tasks, reports, instructions, and scratch files.
+/agent/
+MEMORY.md
 
 # IDE and editor files
 .vscode/
@@ -120,20 +120,6 @@ site/
 
 # Large video captures are local artifacts and must not enter Git history
 *.mp4
-
-# Task reference media stays local; Markdown/task text may be committed separately.
-/agent/task/assets/**/*.png
-/agent/task/assets/**/*.jpg
-/agent/task/assets/**/*.jpeg
-/agent/task/assets/**/*.gif
-/agent/task/assets/**/*.webp
-/agent/task/assets/**/*.bmp
-/agent/task/assets/**/*.svg
-/agent/task/assets/**/*.mp4
-/agent/task/assets/**/*.mov
-/agent/task/assets/**/*.avi
-/agent/task/assets/**/*.mkv
-/agent/task/assets/**/*.webm
 
 # MediaMTX is installed per architecture under /usr/local/bin, never bundled in Git.
 /video_service/bin/
