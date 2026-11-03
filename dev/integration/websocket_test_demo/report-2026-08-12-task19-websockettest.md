@@ -4,7 +4,7 @@
 
 范围：仅 `integration/websocket_test_demo/`
 
-结论：协议单元测试 23/23、甲方原始 JAR 端到端验收 25/25，全部通过。
+结论：协议单元测试 23/23、生产环境原始 JAR 端到端验收 25/25，全部通过。
 
 ## 实现结果
 
@@ -12,7 +12,7 @@
 `drone/{clientNo}/command`，向自己的 `drone/{clientNo}/status` 发布命令确认和状态。
 模块不引用现有 Qt 地面站、ROS、MAVROS 或飞控代码。
 
-甲方 JAR 经字节码与实测确认采用以下通道协议：
+生产环境 JAR 经字节码与实测确认采用以下通道协议：
 
 - WebSocket 路径 `/ws`，JAR 默认端口 `8581`。
 - 首帧 `SYSTEM`，订阅 `SUBSCRIBE/SUB_ACK`，发布 `PUBLISH/BROADCAST`。
@@ -62,13 +62,13 @@ Java 8 时代 JAR，因为内部 Forest 依赖使用已移除的 `javax.xml.bind
 1. 所有代码、说明、测试和结果入口均在 `integration/websocket_test_demo/`；未修改现有地面站。
 2. JAR 真实行为与原始 DOCX 为权威，TXT 只用于交叉核对。
 3. 没有擅自加入协议未定义的序号、重试、去重、鉴权、过期时间字段或额外 ACK。
-4. client、甲方侧模拟器、测试驱动均由 Python 实现；JAR 作为被测权威服务器原样运行。
+4. client、生产环境侧模拟器、测试驱动均由 Python 实现；JAR 作为被测权威服务器原样运行。
 5. `run_demo.sh` 提供一键、逐项 PASS/FAIL 的直观验收。
 6. 没有触碰 `integration/` 外既有用户改动。
 
 ## 如实说明的未覆盖项
 
-- 未连接甲方公司内网或生产 WebSocket 地址，只验证甲方提供的本地 JAR。
+- 未连接生产环境公司内网或生产 WebSocket 地址，只验证生产环境提供的本地 JAR。
 - 文档中的 FTP 与 RTSP 地址是占位值；它们属于 WebSocket 之外的文件/视频链路，本任务未测。
 - 按任务给定的理想局域网假设，没有补做丢包、大延迟、断线重试和消息堆积压力测试。
 - 全部飞行动作均为 JSON 通讯模拟；未连接实机、未申请控制权、未解锁、未起飞。

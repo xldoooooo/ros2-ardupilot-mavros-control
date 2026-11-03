@@ -155,7 +155,7 @@ def _parse_task_points(
         normalized_angle = ((angle + 180.0) % 360.0) - 180.0
         normalized.append((x, y, z, math.radians(normalized_angle)))
         indexes.append(index)
-        # photoNo 是甲方文件标识，不校验递增、重复、正负、类型或范围。
+        # photoNo 是生产环境文件标识，不校验递增、重复、正负、类型或范围。
         # JSON 紧凑序列化保留结构和值；文件名层再做可逆转义。
         photo_nos.append(
             json.dumps(photo_no, ensure_ascii=False, separators=(",", ":"))

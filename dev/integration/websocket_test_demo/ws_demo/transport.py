@@ -1,4 +1,4 @@
-"""甲方 JAR 的 SUBSCRIBE/PUBLISH 原生 WebSocket 传输适配器。"""
+"""生产环境 JAR 的 SUBSCRIBE/PUBLISH 原生 WebSocket 传输适配器。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class TransportError(RuntimeError):
 
 
 class JarTopicConnection:
-    """一个与甲方 JAR 对接的独立 WebSocket 会话。"""
+    """一个与生产环境 JAR 对接的独立 WebSocket 会话。"""
 
     def __init__(self, url: str, name: str) -> None:
         self.url = url

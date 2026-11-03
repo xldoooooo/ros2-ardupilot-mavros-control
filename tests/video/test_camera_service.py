@@ -948,7 +948,7 @@ def test_start_sets_capture_mode_before_post_stream_lens_controls(
 
 
 def test_snapshot_names_include_time_source_and_original_photo_no(tmp_path: Path) -> None:
-    """三类 JPG 均含时间；甲方 photoNo 经可逆文件名转义后仍可恢复。"""
+    """三类 JPG 均含时间；生产环境 photoNo 经可逆文件名转义后仍可恢复。"""
     controller = CameraController(paths=_runtime_paths(tmp_path))
     try:
         manual = controller._snapshot_filename(kind="manual", photo_no="")

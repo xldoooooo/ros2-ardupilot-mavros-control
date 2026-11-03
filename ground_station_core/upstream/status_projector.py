@@ -259,7 +259,7 @@ class UpstreamStatusProjector:
                 self._mission = None
 
     def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
-        """本地记录任务期间的视频故障，机载路径不作为甲方下载入口。"""
+        """本地记录任务期间的视频故障，机载路径不作为生产环境下载入口。"""
         with self._lock:
             if self._mission is None and not self._completed_missions:
                 return
@@ -526,7 +526,7 @@ class UpstreamStatusProjector:
     def _send_mission(
         self, mission: _MissionState, status: str, data: Mapping[str, Any]
     ) -> bool:
-        """延迟媒体使用任务开始时的甲方编号，避免切机后归属改变。"""
+        """延迟媒体使用任务开始时的生产环境编号，避免切机后归属改变。"""
         try:
             return self._emit(make_status(mission.client_no, status, data))
         except Exception as exc:  # noqa: BLE001 - 媒体插件不得影响飞控。

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键准备隔离 Python 环境并运行甲方可见的逐帧通讯现场演示。
+# 一键准备隔离 Python 环境并运行生产环境可见的逐帧通讯现场演示。
 set -euo pipefail
 
 demo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

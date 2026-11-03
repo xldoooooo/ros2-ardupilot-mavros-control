@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     """解析独立客户端参数。"""
 
     parser = argparse.ArgumentParser(
-        description="连接甲方 JAR；只模拟通讯，不连接或控制真实飞机。"
+        description="连接生产环境 JAR；只模拟通讯，不连接或控制真实飞机。"
     )
     parser.add_argument("--url", default="ws://127.0.0.1:8581/ws")
     parser.add_argument("--client-no", default="UAV01001")

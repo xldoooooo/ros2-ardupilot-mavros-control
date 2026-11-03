@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""以甲方可见的逐帧方式演示 WebSocket 双端真实通讯过程。"""
+"""以生产环境可见的逐帧方式演示 WebSocket 双端真实通讯过程。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class LiveTrace:
     """将每一帧按参与方、方向、主题和完整 JSON 打印到终端。"""
 
     COLORS = {
-        "甲方地面站": "\033[36m",
+        "生产环境地面站": "\033[36m",
         "WebSocket JAR": "\033[35m",
         "我方地面站": "\033[32m",
         "本地验收": "\033[33m",
@@ -188,7 +188,7 @@ async def receive_and_show(
     *,
     timeout: float = 3.0,
 ) -> list[dict[str, Any]]:
-    """在甲方状态订阅端接收指定数量的 JAR BROADCAST 并逐帧显示。"""
+    """在生产环境状态订阅端接收指定数量的 JAR BROADCAST 并逐帧显示。"""
 
     received = []
     for _ in range(count):
@@ -196,7 +196,7 @@ async def receive_and_show(
         received.append(envelope)
         trace.frame(
             "WebSocket JAR",
-            "甲方地面站",
+            "生产环境地面站",
             "BROADCAST 返回状态",
             topic=str(envelope.get("topic")),
             payload=envelope,
@@ -213,23 +213,23 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
     other_monitor: JarTopicConnection | None = None
     clients: list[OurGroundStationClient] = []
     try:
-        trace.title("第 1 幕：双方连接甲方 WebSocket JAR，并订阅各自主题")
+        trace.title("第 1 幕：双方连接生产环境 WebSocket JAR，并订阅各自主题")
         publisher_system = await publisher.open()
         trace.frame(
             "WebSocket JAR",
-            "甲方地面站",
+            "生产环境地面站",
             "SYSTEM 连接确认",
             payload=publisher_system,
         )
         monitor_system = await monitor.open()
         trace.frame(
             "WebSocket JAR",
-            "甲方地面站",
+            "生产环境地面站",
             "SYSTEM 状态监听连接确认",
             payload=monitor_system,
         )
         trace.frame(
-            "甲方地面站",
+            "生产环境地面站",
             "WebSocket JAR",
             "SUBSCRIBE 订阅我方状态",
             topic=status_topic(client_no),
@@ -238,7 +238,7 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
         monitor_ack = await monitor.subscribe(status_topic(client_no))
         trace.frame(
             "WebSocket JAR",
-            "甲方地面站",
+            "生产环境地面站",
             "SUB_ACK 状态主题订阅成功",
             topic=status_topic(client_no),
             payload=monitor_ack,
@@ -260,12 +260,12 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
         await client.start()
         await trace.pause("连接与订阅完成，按 Enter 开始下发命令")
 
-        trace.title("第 2 幕：甲方依次下发 4 类命令，我方返回确认和状态")
+        trace.title("第 2 幕：生产环境依次下发 4 类命令，我方返回确认和状态")
         for command in sample_commands(client_no):
             command_no = str(command["commandNo"])
             topic = command_topic(client_no)
             trace.frame(
-                "甲方地面站",
+                "生产环境地面站",
                 "WebSocket JAR",
                 f"PUBLISH {command_no} {COMMAND_LABELS[command_no]}",
                 topic=topic,
@@ -308,7 +308,7 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
         }
         trace.frame(
             "本地验收",
-            "甲方地面站",
+            "生产环境地面站",
             "计算两轮消息的接收间隔",
             payload={
                 "0A_interval_seconds": round(intervals["0A"], 3),
@@ -325,7 +325,7 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
         other_monitor_ack = await other_monitor.subscribe(status_topic(other_client_no))
         trace.frame(
             "WebSocket JAR",
-            "甲方地面站",
+            "生产环境地面站",
             "SUB_ACK 第二架飞机状态主题",
             topic=status_topic(other_client_no),
             payload=other_monitor_ack,
@@ -346,7 +346,7 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
         await other_client.start()
         other_command = sample_commands(other_client_no)[1]
         trace.frame(
-            "甲方地面站",
+            "生产环境地面站",
             "WebSocket JAR",
             "只向 UAV01002 下发 03 执行巡检",
             topic=command_topic(other_client_no),
@@ -364,7 +364,7 @@ async def run_showcase(url: str, trace: LiveTrace) -> None:
         except asyncio.TimeoutError:
             trace.frame(
                 "本地验收",
-                "甲方地面站",
+                "生产环境地面站",
                 "UAV01001 状态主题在隔离窗口内无消息",
                 payload={"isolated": True, "window_seconds": 0.4},
                 note="确认 UAV01002 的响应没有串入 UAV01001",
@@ -396,7 +396,7 @@ def parse_args() -> argparse.Namespace:
     """解析现场节奏、JAR 和外部服务参数。"""
 
     parser = argparse.ArgumentParser(
-        description="逐帧显示甲方地面站、JAR 和我方地面站之间的完整通讯过程。"
+        description="逐帧显示生产环境地面站、JAR 和我方地面站之间的完整通讯过程。"
     )
     parser.add_argument(
         "--delay",
@@ -423,7 +423,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--java", help="Java 8 可执行文件")
     parser.add_argument(
         "--server-url",
-        help="连接已启动的甲方服务，不在本机启动 JAR",
+        help="连接已启动的生产环境服务，不在本机启动 JAR",
     )
     return parser.parse_args()
 
@@ -446,7 +446,7 @@ async def async_main(args: argparse.Namespace) -> int:
             java = resolve_java_8(args.java)
             server = ManagedJarServer(args.jar.resolve(), java)
             url = server.url
-            trace.title("准备现场环境：启动甲方提供的原始 WebSocket JAR")
+            trace.title("准备现场环境：启动生产环境提供的原始 WebSocket JAR")
             trace.frame(
                 "本地验收",
                 "WebSocket JAR",

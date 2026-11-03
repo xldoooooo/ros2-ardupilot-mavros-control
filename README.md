@@ -256,7 +256,7 @@ onboard_control 和相关 RViz；只有服务 inactive 且目标进程全部退�
 
 媒体由地面`ground-media.service`集中提供，默认匿名只读FTP端口为2121，虚拟根为媒体配置的`root/public`。
 串行巡检的08最多发送一次，其中`videoPath`是已生成任务MP4在FTP根下的路径；`JPGPath`为同会话照片目录。
-甲方按已配置的地面FTP主机/端口下载该路径，不使用飞机旧`/home/share`或HTTP下载URL。
+生产环境按已配置的地面FTP主机/端口下载该路径，不使用飞机旧`/home/share`或HTTP下载URL。
 
 ```bash
 curl "ftp://<ground-ip>:2121/uav002/<session>/<video-id>.mp4" -O

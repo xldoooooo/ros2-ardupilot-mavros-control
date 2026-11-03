@@ -46,7 +46,7 @@ def load_onboard_settings(path: Path | None = None) -> OnboardVideoSettings:
     ip_value = parser.get("rtsp", "advertise_ip", fallback="auto").strip()
     image_format = parser.get("storage", "image_format", fallback="jpg").strip().lower()
     if image_format not in {"jpg", "jpeg"}:
-        raise ValueError("甲方协议要求 image_format=jpg")
+        raise ValueError("生产环境协议要求 image_format=jpg")
     camera = CameraConfig(
         device=default_camera_device() if device_value.lower() == "auto" else device_value,
         codec=parser.get("camera", "codec", fallback="h264").strip().lower(),

@@ -24,7 +24,7 @@ def media_api_url(config_path: str | Path | None = None) -> str:
 
 
 def processed_download(record: Mapping[str, Any]) -> str:
-    """返回已公开处理文件的 FTP 根目录路径，不向甲方发送 HTTP URL。"""
+    """返回已公开处理文件的 FTP 根目录路径，不向生产环境发送 HTTP URL。"""
     if record.get("variant") not in {"experiment", "rebuilt"}:
         return ""
     if record.get("state") not in {"ready", "incomplete"}:

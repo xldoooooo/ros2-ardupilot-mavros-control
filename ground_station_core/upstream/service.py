@@ -185,7 +185,7 @@ class UpstreamCommunicationService:
             f"Z<{policy.z_tolerance_meters:.2f} m，"
             f"巡检后延时 {policy.inspection_delay_seconds:.1f} s",
         )
-        self._events.info("upstream", "甲方媒体路径由地面媒体目录独立更新")
+        self._events.info("upstream", "生产环境媒体路径由地面媒体目录独立更新")
 
     def connect(self, url: str, client_no: str) -> None:
         """应用面板配置并请求连接；可在地面站会话外独立执行。"""
@@ -342,7 +342,7 @@ class UpstreamCommunicationService:
         self._projector.observe_result(result)
 
     def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
-        """提供机载运行状态；机载路径不作为甲方下载入口。"""
+        """提供机载运行状态；机载路径不作为生产环境下载入口。"""
         self._projector.observe_video_status(snapshot)
 
     def observe_video_capture(self, event: VideoCaptureEvent) -> None:

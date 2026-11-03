@@ -1696,7 +1696,7 @@ class GroundStationWindow(QMainWindow):
     def _photo_nos_for(
         self, waypoints: tuple[tuple[float, float, float, float], ...]
     ) -> tuple[str, ...]:
-        """只在列表仍对应最近命令 02 时带出甲方 photoNo。"""
+        """只在列表仍对应最近命令 02 时带出生产环境 photoNo。"""
         if len(self._upstream_photo_nos) == len(waypoints):
             return self._upstream_photo_nos
         return ()

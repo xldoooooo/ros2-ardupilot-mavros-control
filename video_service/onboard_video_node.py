@@ -354,7 +354,7 @@ class OnboardVideoNode(Node):
         )
         if self._media:
             message.rtsp_url = self._media.settings['public_url']
-            # 机载缓存路径不能作为甲方可下载文件上报；地面文件目录由媒体 API 提供。
+            # 机载缓存路径不能作为生产环境可下载文件上报；地面文件目录由媒体 API 提供。
             message.video_directory = message.image_directory = ""
             message.current_video_path = message.last_video_path = message.last_image_path = ""
             message.last_error = message.last_error or self._media.error

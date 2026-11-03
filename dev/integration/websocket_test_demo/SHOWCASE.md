@@ -1,4 +1,4 @@
-# 甲方现场演示指引
+# 生产环境现场演示指引
 
 ## 最推荐的演示命令
 
@@ -8,7 +8,7 @@
 bash integration/websocket_test_demo/run_showcase.sh --step
 ```
 
-程序会自动启动甲方提供的原始 JAR。看到 `>>>` 时先讲解当前屏幕，再按 Enter 进入下一步。
+程序会自动启动生产环境提供的原始 JAR。看到 `>>>` 时先讲解当前屏幕，再按 Enter 进入下一步。
 随时可以按 Ctrl+C；程序只清理自己启动的 JAR 和 WebSocket 连接。
 默认完整 JSON 以单行显示，现场更容易跟随；需要展开缩进时追加 `--pretty-json`。
 
@@ -26,8 +26,8 @@ bash integration/websocket_test_demo/run_showcase.sh --delay 1.2
 
 终端支持颜色时：
 
-- 青色：甲方地面站模拟端；
-- 紫色：甲方原始 WebSocket JAR；
+- 青色：生产环境地面站模拟端；
+- 紫色：生产环境原始 WebSocket JAR；
 - 绿色：我方地面站 client；
 - 黄色：本地验收和计时结论。
 
@@ -38,7 +38,7 @@ bash integration/websocket_test_demo/run_showcase.sh --delay 1.2
 重点指出：
 
 1. JAR 真实返回 `SYSTEM: Connected successfully`。
-2. 甲方端订阅 `drone/UAV01001/status`。
+2. 生产环境端订阅 `drone/UAV01001/status`。
 3. 我方 client 订阅 `drone/UAV01001/command`。
 4. 双方均收到真实 `SUB_ACK`，不是本地伪造成功。
 
@@ -46,12 +46,12 @@ bash integration/websocket_test_demo/run_showcase.sh --delay 1.2
 
 程序依次演示 `02/03/05/07`。以 `02` 为例说明：
 
-1. 甲方发送完整 `PUBLISH` 信封，`data` 中包含两个巡检点。
+1. 生产环境发送完整 `PUBLISH` 信封，`data` 中包含两个巡检点。
 2. JAR 转成 `BROADCAST`，我方收到完整原始信封。
 3. 我方解析 `clientNo`、`commandNo` 和全部航点字段。
 4. 我方向状态主题发布协议表 1 的 `{clientNo, commandNo}` 确认。
 5. 我方再发布对应 `uavStatus`。
-6. 甲方状态订阅端收到两条带真实 `sender` 会话 ID 的 `BROADCAST`。
+6. 生产环境状态订阅端收到两条带真实 `sender` 会话 ID 的 `BROADCAST`。
 
 屏幕上的“仅记录模拟业务动作”是刻意的安全边界：本次不连接飞控，不执行真实紧急停机、
 返航、降落或起飞。
@@ -67,7 +67,7 @@ bash integration/websocket_test_demo/run_showcase.sh --delay 1.2
 - `0B`：XYZ 位置；
 - `0C`：电量不足、暂停巡检并返航充电。
 
-`0C` 来自权威 DOCX 表 2；甲方随附 TXT 漏掉了该行。
+`0C` 来自权威 DOCX 表 2；生产环境随附 TXT 漏掉了该行。
 
 ### 第 4 幕：1 秒周期遥测
 
@@ -83,22 +83,22 @@ bash integration/websocket_test_demo/run_showcase.sh --delay 1.2
 - 响应只发布到 `drone/UAV01002/status`；
 - `UAV01001` 精确状态主题在隔离观察窗口中没有收到消息。
 
-这对应“甲方一个地面站维护多个 WebSocket/主题，我方每个地面站只控制一架飞机”。
+这对应“生产环境一个地面站维护多个 WebSocket/主题，我方每个地面站只控制一架飞机”。
 
-## 连接甲方实际测试服务器
+## 连接生产环境实际测试服务器
 
-如果甲方已经在局域网启动服务器，不让脚本启动本地 JAR：
+如果生产环境已经在局域网启动服务器，不让脚本启动本地 JAR：
 
 ```bash
 bash integration/websocket_test_demo/run_showcase.sh --step \
-  --server-url ws://甲方服务器IP:8581/ws
+  --server-url ws://生产环境服务器IP:8581/ws
 ```
 
-只有在甲方确认实际路径后替换 URL。协议文档示例路径和本次 JAR 路径不同，不能自行猜测。
+只有在生产环境确认实际路径后替换 URL。协议文档示例路径和本次 JAR 路径不同，不能自行猜测。
 
 ## 保存演示记录
 
-保存无颜色、可直接发给甲方的终端全文：
+保存无颜色、可直接发给生产环境的终端全文：
 
 ```bash
 bash integration/websocket_test_demo/run_showcase.sh --delay 0.8 --no-color \

@@ -1,10 +1,10 @@
 # WebSocket 双端通讯模拟 Demo
 
-本目录是任务 19 的完全独立实现。它模拟“甲方地面站 → WebSocket 通道 → 我方地面站
+本目录是任务 19 的完全独立实现。它模拟“生产环境地面站 → WebSocket 通道 → 我方地面站
 client”的通讯，只收发 JSON，不导入现有地面站、ROS、MAVROS 或飞控代码，也不会执行真实
 解锁、起飞、返航、降落或停机。
 
-## 给甲方现场演示（推荐）
+## 给生产环境现场演示（推荐）
 
 不要用下面的快速验收入口作为主要演示。现场建议使用逐帧入口：
 
@@ -41,7 +41,7 @@ bash integration/websocket_test_demo/run_demo.sh
 ```
 
 入口会在本目录创建 `.venv`，安装 `websockets`/`pytest`，依次运行协议单测并在随机本机
-端口启动甲方原始 `websocket-server-1.0.0.jar`。结束时会逐项显示 PASS/FAIL，并只清理本次
+端口启动生产环境原始 `websocket-server-1.0.0.jar`。结束时会逐项显示 PASS/FAIL，并只清理本次
 启动的 JAR 进程组。
 
 如需同时保存 JSON 结果：
@@ -66,7 +66,7 @@ bash integration/websocket_test_demo/run_demo.sh \
 
 ## 已覆盖内容
 
-- 甲方 JAR `/ws` 端点的 `SYSTEM` 首帧。
+- 生产环境 JAR `/ws` 端点的 `SYSTEM` 首帧。
 - `SUBSCRIBE`、`SUB_ACK`、`PUBLISH`、`BROADCAST`、`HEARTBEAT`、
   `HEARTBEAT_ACK` 和无效 JSON 的 `ERROR`。
 - 命令 `02` 巡检任务下发、`03` 执行巡检、`05` 一键返航、`07` 紧急停机。
@@ -80,7 +80,7 @@ bash integration/websocket_test_demo/run_demo.sh \
 
 ## 协议与 JAR 的两层 JSON
 
-甲方 JAR 是主题路由通道，业务消息不能直接作为 WebSocket 顶层帧发送。订阅命令主题：
+生产环境 JAR 是主题路由通道，业务消息不能直接作为 WebSocket 顶层帧发送。订阅命令主题：
 
 ```json
 {"type":"SUBSCRIBE","topic":"drone/UAV01001/command"}
@@ -109,7 +109,7 @@ bash integration/websocket_test_demo/run_demo.sh \
 
 ## 单独运行我方 client
 
-先启动甲方 JAR：
+先启动生产环境 JAR：
 
 ```bash
 /usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java \
@@ -130,17 +130,17 @@ client 会订阅 `drone/UAV01001/command`，收到合法命令后向
 “紧急停机”等只会形成模拟状态日志，不会连接真实飞机。
 
 协议文档中的生产示例 URL 是
-`ws://192.168.80.xx:8501/s12-websocket/ws`，甲方测试 JAR 的实际 URL 是
+`ws://192.168.80.xx:8501/s12-websocket/ws`，生产环境测试 JAR 的实际 URL 是
 `ws://<host>:8581/ws`；使用 `--url` 或验收入口的 `--server-url` 切换，不在代码中猜测生产地址。
 
 ## 目录说明
 
 - `ws_demo/protocol.py`：协议主题、四种命令、十种状态与最小字段校验。
-- `ws_demo/transport.py`：甲方 JAR 的主题信封适配。
+- `ws_demo/transport.py`：生产环境 JAR 的主题信封适配。
 - `ws_demo/client.py`：我方单飞机地面站 client。
 - `run_client.py`：长期运行的独立 client 入口。
 - `run_showcase.py` / `run_showcase.sh`：逐帧现场演示入口。
-- `run_acceptance.py`：甲方侧模拟、JAR 生命周期和 25 项端到端验收。
+- `run_acceptance.py`：生产环境侧模拟、JAR 生命周期和 25 项端到端验收。
 - `tests/test_protocol.py`：23 项协议单元测试。
 - `report-2026-08-12-task19-websockettest.md`：本次执行证据和限制。
 

@@ -68,7 +68,7 @@ class ResultBook:
         """按类别打印直观验收结果。"""
 
         print("\n" + "=" * 72)
-        print("协议 V2.0 × 甲方 JAR WebSocket 双端通讯验收")
+        print("协议 V2.0 × 生产环境 JAR WebSocket 双端通讯验收")
         print(f"测试端点: {server_url}")
         print("=" * 72)
         current_group = ""
@@ -103,7 +103,7 @@ class ResultBook:
 
 
 class ManagedJarServer:
-    """在随机空闲端口启动并只清理本次创建的甲方 JAR 进程组。"""
+    """在随机空闲端口启动并只清理本次创建的生产环境 JAR 进程组。"""
 
     def __init__(self, jar_path: Path, java: str) -> None:
         self.jar_path = jar_path
@@ -178,7 +178,7 @@ class ManagedJarServer:
         log_tail = ""
         if self.log_path is not None and self.log_path.exists():
             log_tail = self.log_path.read_text(errors="replace")[-4000:]
-        raise RuntimeError(f"甲方 JAR 未在 {self.port} 端口就绪。\n{log_tail}")
+        raise RuntimeError(f"生产环境 JAR 未在 {self.port} 端口就绪。\n{log_tail}")
 
     @staticmethod
     def _reserve_port() -> int:
@@ -229,7 +229,7 @@ def response_parts(
 
 
 async def run_acceptance(url: str, results: ResultBook) -> None:
-    """用两个飞机 client 和三个甲方侧会话覆盖完整收发及隔离行为。"""
+    """用两个飞机 client 和三个生产环境侧会话覆盖完整收发及隔离行为。"""
 
     client_no = "UAV01001"
     other_client_no = "UAV01002"
@@ -247,7 +247,7 @@ async def run_acceptance(url: str, results: ResultBook) -> None:
                 == {"type": "SYSTEM", "msg": "Connected successfully"}
                 for connection in connections
             ),
-            "3 个甲方侧会话均收到原始 JAR 首帧",
+            "3 个生产环境侧会话均收到原始 JAR 首帧",
         )
 
         subscription_acks = [
@@ -437,7 +437,7 @@ def parse_args() -> argparse.Namespace:
     """解析权威 JAR、本机 JDK 和结果导出参数。"""
 
     parser = argparse.ArgumentParser(
-        description="自动启动权威 JAR，模拟甲方与我方双端并验收协议全部消息。"
+        description="自动启动权威 JAR，模拟生产环境与我方双端并验收协议全部消息。"
     )
     parser.add_argument(
         "--jar",

@@ -360,7 +360,7 @@ def test_status_projector_never_reports_unfinalized_recording_as_video_path() ->
 
 
 def test_status_projector_waits_when_video_is_unavailable() -> None:
-    """地面媒体尚未就绪时，不发送甲方无法下载的空路径08。"""
+    """地面媒体尚未就绪时，不发送生产环境无法下载的空路径08。"""
     sent: list[dict[str, object]] = []
     projector = UpstreamStatusProjector(
         lambda: "UAV01001",
