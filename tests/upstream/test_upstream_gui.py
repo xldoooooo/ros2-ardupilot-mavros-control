@@ -33,7 +33,7 @@ def test_land_button_and_upstream_land_bypass_pending_and_workflow_locks() -> No
         assert ros.calls == [("land", None)]
         assert window.operations.land_button.isEnabled()
 
-        command = parse_command({"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001")
+        command = parse_command({"clientNo": "UAV01001", "type": 1, "commandNo": "06"}, "UAV01001")
         window._handle_upstream_command(command)
         assert ros.calls == [("land", None), ("land", None)]
     finally:
@@ -48,7 +48,7 @@ def test_inspection_standby_locks_takeoff_until_sequence_really_completes(
     window, ros = _window(replace(
         _operational_snapshot(armed=False), navigation_frame=navigation_frame,
     ))
-    execute = parse_command({"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001")
+    execute = parse_command({"clientNo": "UAV01001", "type": 1, "commandNo": "03"}, "UAV01001")
     try:
         window._initialize_simulation()
         window.waypoints.replace_waypoints(((1.0, 0.0, 0.5, 0.0),), "组合锁测试")
@@ -96,7 +96,7 @@ def test_inspection_standby_locks_takeoff_until_sequence_really_completes(
         assert window.operations.takeoff_button.isEnabled()
 
         next_task = parse_command({
-            "clientNo": "UAV01001", "commandNo": "02",
+            "clientNo": "UAV01001", "type": 1, "commandNo": "02",
             "taskPoints": [{
                 "index": 9, "x": 3.0, "y": 0.0, "z": 0.5,
                 "forwardAngle": 0, "cameraAngle": 1495, "photoNo": "round-2",
@@ -118,7 +118,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
     upstream = window._upstream
     task = parse_command(
         {
-            "clientNo": "UAV01001",
+            "clientNo": "UAV01001", "type": 1,
             "commandNo": "02",
             "taskPoints": [
                 {
@@ -139,10 +139,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         window._handle_upstream_command(task)
         assert not window.waypoints.waypoints
         assert not ros.calls
-        assert any(
-            "尚未启动仿真或连接实机" in event.message
-            for event in window.event_log.snapshot()
-        )
+        assert not window._upstream_point_indexes
 
         window._initialize_simulation()
         window._handle_upstream_command(task)
@@ -157,7 +154,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         ]
         assert len(ignored_logs) == 1
 
-        execute = parse_command({"clientNo": "UAV01001", "commandNo": "03"}, "UAV01001")
+        execute = parse_command({"clientNo": "UAV01001", "type": 1, "commandNo": "03"}, "UAV01001")
         window._handle_upstream_command(execute)
         assert ros.calls[-1] == (
             "takeoff",
@@ -168,7 +165,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         assert window._upstream_sequence.phase == "takeoff"
 
         return_home = parse_command(
-            {"clientNo": "UAV01001", "commandNo": "05"}, "UAV01001"
+            {"clientNo": "UAV01001", "type": 1, "commandNo": "05"}, "UAV01001"
         )
         calls_before_return = len(ros.calls)
         window._handle_upstream_command(return_home)
@@ -230,7 +227,7 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         ros.current_snapshot = _operational_snapshot(armed=True)
         window._refresh()
         emergency_land = parse_command(
-            {"clientNo": "UAV01001", "commandNo": "07"}, "UAV01001"
+            {"clientNo": "UAV01001", "type": 1, "commandNo": "07"}, "UAV01001"
         )
         window._handle_upstream_command(emergency_land)
         assert ros.calls[-1][0] == "land"
@@ -249,7 +246,7 @@ def test_upstream_command_06_reuses_normal_land_path() -> None:
     try:
         window._initialize_simulation()
         normal_land = parse_command(
-            {"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001"
+            {"clientNo": "UAV01001", "type": 1, "commandNo": "06"}, "UAV01001"
         )
         window._handle_upstream_command(normal_land)
         assert ros.calls[-1][0] == "land"
@@ -260,14 +257,14 @@ def test_upstream_command_06_reuses_normal_land_path() -> None:
 
 
 @pytest.mark.parametrize("number", ["05", "07"])
-def test_emergency_land_keeps_standby_blocked_until_hangar_threshold(number) -> None:
-    """05/07 降落在机库外时不释放 01，进入 XYZ 阈值后才释放。"""
+def test_simulation_emergency_land_releases_standby_outside_hangar(number) -> None:
+    """仿真05/07在任意末点落地均可接续下一轮，实机规则不变。"""
     window, ros = _window(replace(_operational_snapshot(armed=True), x=2.0))
     upstream = window._upstream
     try:
         window._initialize_simulation()
         emergency_land = parse_command(
-            {"clientNo": "UAV01001", "commandNo": number}, "UAV01001"
+            {"clientNo": "UAV01001", "type": 1, "commandNo": number}, "UAV01001"
         )
         window._handle_upstream_command(emergency_land)
         assert window._upstream_sequence is not None
@@ -276,20 +273,14 @@ def test_emergency_land_keeps_standby_blocked_until_hangar_threshold(number) -> 
         ros.results.append(CommandResult(1, 1, "land", True, "机库外降落完成"))
         ros.current_snapshot = replace(_operational_snapshot(armed=False), x=2.0)
         window._refresh()
-        assert window._upstream_sequence is not None
-        assert window._upstream_sequence.phase == "standby"
-        releases = upstream.calls.count(("standby_release", None))
-
-        ros.current_snapshot = replace(ros.current_snapshot, x=0.5)
-        window._refresh()
         assert window._upstream_sequence is None
-        assert upstream.calls.count(("standby_release", None)) == releases + 1
+        assert upstream.calls.count(("standby_release", None)) == 1
     finally:
         _close_window(window)
 
 
 def test_low_power_and_abnormal_states_drive_return_and_recovery_sequences() -> None:
-    """WebSocket 在线仿真才执行低电量/异常返航与恢复组合。"""
+    """仿真忽略低电量自动返航，其他异常恢复保持原流程。"""
     low_window, low_ros = _window(_operational_snapshot(armed=True))
     low_upstream = low_window._upstream
     try:
@@ -299,11 +290,8 @@ def test_low_power_and_abnormal_states_drive_return_and_recovery_sequences() -> 
         low_window._refresh()
 
         waypoint_calls = [call for call in low_ros.calls if call[0] == "waypoints"]
-        assert len(waypoint_calls) == 1
-        assert waypoint_calls[0][1][0][0][:3] == (0.0, 0.0, 0.3)
-        assert low_window._upstream_sequence is not None
-        assert low_window._upstream_sequence.kind == "low_power"
-        assert ("mission", (1, "return", (1,))) in low_upstream.calls
+        assert waypoint_calls == []
+        assert low_window._upstream_sequence is None
     finally:
         _close_window(low_window)
 

@@ -34,6 +34,9 @@ class UpstreamCommand:
     point_indexes: tuple[int, ...] = ()
     photo_nos: tuple[str, ...] = ()
     ignored_camera_fields: bool = False
+    command_id: str = ""
+    flight_type: int = 0
+    timestamp_ms: int | None = None
 
 
 @dataclass(frozen=True)

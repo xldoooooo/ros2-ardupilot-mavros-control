@@ -50,7 +50,8 @@ def test_finished_flight_waits_for_media_and_reports_completion_only_once() -> N
     assert [item["uavStatus"] for item in sent] == ["07"]
     projector.reset_runtime()
     projector.observe_ground_media((_record(), _record("video")))
-    assert sent[-2:] == [
+    assert all(isinstance(item["timestamp"], int) and item["type"] == 0 for item in sent)
+    assert [{k: v for k, v in item.items() if k not in {"timestamp", "type"}} for item in sent[-2:]] == [
         {"clientNo": "UAV01001", "uavStatus": "09", "data": {
             "pointNo": "10", "pointName": "巡检点位 10", "pointPic": "/refresh/session/image",
         }},
@@ -396,3 +397,45 @@ def test_reader_restores_unsent_failure_after_restart(tmp_path, monkeypatch) -> 
         assert json.loads(spool.read_text()) == []
     finally:
         assert resumed.stop()
+
+
+def test_simulated_media_keeps_command_identity_across_rounds_and_mode_changes(tmp_path) -> None:
+    """仿真到点使用样例图，落地交付样例视频，延迟结果保留本轮03身份。"""
+    from ground_station_core.models import VehicleSnapshot, FlightMode
+    from ground_station_core.upstream.simulation_media import SimulationMedia
+
+    public = tmp_path / 'public'
+    (public / 'examples/pictures').mkdir(parents=True)
+    (public / 'examples/videos').mkdir(parents=True)
+    (public / 'examples/pictures/sample.jpg').write_bytes(b'image')
+    (public / 'examples/videos/sample.mp4').write_bytes(b'video')
+    config = tmp_path / 'simulation.json'
+    config.write_text(json.dumps({'public_root': str(public)}))
+    sent = []
+    media = SimulationMedia(EventLog(), config)
+    projector = UpstreamStatusProjector(
+        lambda: 'UAV01001', lambda payload: not sent.append(dict(payload)),
+        EventLog(), simulation_media=media,
+    )
+    ready = VehicleSnapshot(connected=True, onboard_available=True, local_position_valid=True, x=8)
+    for ticket, command_id in ((10, 'mission-one'), (20, 'mission-two')):
+        projector.observe_vehicle(ready, 'simulation', now=0, can_takeoff=True)
+        projector.report_waypoints_staged('stage-' + command_id)
+        projector.begin_mission(ticket, 'inspection', (7,), command_id=command_id)
+        projector.observe_vehicle(VehicleSnapshot(
+            active_mode=FlightMode.WAYPOINT, active_command_sequence=ticket,
+        ), 'simulation', now=0)
+        projector.observe_result(CommandResult(ticket, ticket, 'waypoints', True, '到点'))
+        projector.begin_landing(ticket + 1, command_id)
+        # 切换当前遥测类型也不能改变已关联任务和LAND的消息身份。
+        projector.observe_vehicle(ready, 'hardware', now=0)
+        projector.observe_result(CommandResult(ticket + 1, ticket + 1, 'land', True, '落地'))
+        mission = [p for p in sent if p.get('id') == command_id]
+        assert [p['uavStatus'] for p in mission] == ['03', '09', '07', '08']
+        assert all(p['type'] == 1 and isinstance(p['timestamp'], int) for p in mission)
+        assert mission[1]['data']['pointPic'] == '/examples/pictures/sample.jpg'
+        assert mission[-1]['data'] == {
+            'videoPath': '/examples/videos/sample.mp4', 'JPGPath': '/examples/pictures/',
+        }
+    assert not projector._completed_missions
+    assert any(p['uavStatus'] == '01' and p['type'] == 1 for p in sent)

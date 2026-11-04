@@ -1,6 +1,12 @@
 <!-- 只维护当前基线、部署差异和未解决风险；实验过程与数据查阅 agent/report。 -->
 # 项目重要记忆
 
+- **Task13 上位机仿真巡检（V2.2）**：地面业务确认/状态包含 Unix 毫秒 `timestamp`、实机0/仿真1的 `type`；02状态回02 UUID，03及其08/09回本轮03 UUID，直接05/07降落回该命令UUID。未建立飞行会话或type不匹配时忽略命令，不自动启动SITL。05保持原地降落，实机0A仍为电压，仿真为百分比。
+  仿真复用既有起飞→航点→落地→默认60秒待机流程，上位机任务固定直线；仿真待机不受机库位置限制，禁用地面低电量返航及本地SITL电池迫降/容量起飞限制。媒体独立由 `upstream/simulation_media.py` 随空中/落地状态启停，随机循环 `root/public/examples/videos`，到点与落地分别选现有图片/视频发送FTP路径；不启动/改动机载媒体或去畸变服务。
+  默认直接发布本机现有 MediaMTX `/uav002/rectified`，与mini实机外部入口一致；`config/ground/simulation_media.json` 可配置。片段切换会重建RTSP，读者需允许重连；不与实机同时占用同路径。使用说明见[仿真流程](docs/simulation-workflow.md)。
+  开发机及mini-ground-tailscale已同步本轮地面代码；mini旧主窗口未重启，用户需重开后手动启动SITL。mini存在较旧地面GUI基线，本轮只合入main_window的相关改动，未连带引入其他UI/避障配置。refresh无需机载修改未连接；new/hp及refresh副本中的地面代码尚未同步本轮。验收见[Task13报告](agent/report/report-2026-11-04-simulation-workflow.md)。
+
+
 维护日期：2026-10-30。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
@@ -175,10 +181,9 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
   LAND 在持权且可靠连接时允许幂等重发，不能被普通 GUI busy 或诊断异常锁死。
 - FCU 热重启只允许未解锁、落地、待机且无任务；必须观察启动时钟回退，恢复原点、
   参数和新鲜遥测后才成功。遥测恢复/重启 ACK 不等于控制链恢复，不自动恢复任务。
-- 上位机映射唯一在 `ground_station_core/upstream/mapping.py`；自动低电量/异常返航目前
-  只在 WebSocket 在线的仿真会话启用，实机仅提示。机库判定仅为 ENU 阈值；
+- 上位机映射唯一在 `ground_station_core/upstream/mapping.py`；异常返航仍仅在 WebSocket 在线的仿真会话启用，实机仅提示；仿真低电量不触发返航。实机机库判定仅为 ENU 阈值；
   `cameraAngle` 尚未实现。`pointNo` 用任务点索引，`photoNo` 原样用于文件命名；
-  08/09 使用视频服务实际结果，占位路径不代表已生成媒体。协议详见 [对接说明](docs/上位机-WebSocket%20对接.md)。
+  实机08/09使用视频服务实际结果，仿真使用公开样例媒体；占位路径不代表已生成媒体。协议详见 [对接说明](docs/上位机-WebSocket%20对接.md)。
 - 视频使用单次 V4L2 采集，FFmpeg 同时推流和录像，截图从 RTSP 获取；RTSP 固定 TCP。
   MediaMTX 使用系统 `/usr/local/bin/mediamtx`，当前部署 v1.20.0，仓库不带二进制。
   地面统一去畸变后对外提供直播与下载；重复序列号摄像头使用 by-path 区分，不能依赖 `/dev/videoN`。

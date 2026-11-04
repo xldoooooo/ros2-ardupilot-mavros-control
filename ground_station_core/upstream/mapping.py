@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from .models import UpstreamAction, UpstreamCommand
 from ..config import (MAX_WAYPOINT_COUNT, WAYPOINT_HORIZONTAL_LIMIT_METERS,
@@ -46,15 +47,17 @@ COMMAND_MAPPINGS: tuple[CommandMapping, ...] = (
     CommandMapping(
         "05",
         "一键返航",
-        # 一键返航尚未完成，暂时复用 07 的紧急原地降落逻辑。
+        # 按已确认约定，05 保持与 07 相同的紧急原地降落动作。
         UpstreamAction.EMERGENCY_LAND,
         "暂按紧急降落处理，原地降落",
     ),
     CommandMapping("06", "降落", UpstreamAction.LAND, "执行地面站降落操作"),
     CommandMapping("07", "紧急停机", UpstreamAction.EMERGENCY_LAND, "立即原地降落"),
 )
+# 按命令编号索引，避免各调用方重复定义映射。
 _MAPPINGS_BY_NO = {item.command_no: item for item in COMMAND_MAPPINGS}
 
+# 航点必须提供的协议字段。
 _REQUIRED_POINT_FIELDS = (
     "index",
     "x",
@@ -82,6 +85,32 @@ def parse_command(
     if mapping is None:
         raise UpstreamProtocolError(f"不支持的 commandNo: {command_no!r}")
 
+    # 旧工具可省略元数据；显式提供时严格校验，不按时间新鲜度拒绝。
+    command_id = payload.get("id", "")
+    if "id" in payload:
+        try:
+            if (
+                not isinstance(command_id, str)
+                or str(UUID(command_id)) != command_id.lower()
+            ):
+                raise ValueError("UUID 格式不标准")
+        except ValueError as exc:
+            raise UpstreamProtocolError("id 必须是标准 UUID 字符串") from exc
+    flight_type = payload.get("type", 0)
+    if (
+        isinstance(flight_type, bool)
+        or not isinstance(flight_type, int)
+        or flight_type not in (0, 1)
+    ):
+        raise UpstreamProtocolError("type 必须是整数 0（实机）或 1（仿真）")
+    timestamp_ms = payload.get("timestamp")
+    if "timestamp" in payload and (
+        isinstance(timestamp_ms, bool)
+        or not isinstance(timestamp_ms, int)
+        or timestamp_ms < 0
+    ):
+        raise UpstreamProtocolError("timestamp 必须是非负整数毫秒时间戳")
+
     waypoints: tuple[tuple[float, float, float, float], ...] = ()
     point_indexes: tuple[int, ...] = ()
     photo_nos: tuple[str, ...] = ()
@@ -101,6 +130,9 @@ def parse_command(
         point_indexes=point_indexes,
         photo_nos=photo_nos,
         ignored_camera_fields=ignored,
+        command_id=command_id,
+        flight_type=flight_type,
+        timestamp_ms=timestamp_ms,
     )
 
 
@@ -145,7 +177,7 @@ def _parse_task_points(
             WAYPOINT_HORIZONTAL_LIMIT_METERS
         ):
             raise UpstreamProtocolError(f"taskPoints[{position}] 的 X/Y 超出地面站范围")
-        # Map altitude may be negative; the aircraft checks transformed local Z.
+        # 地图高度可为负值，由机载端校验转换后的本地 Z。
         low, high = ((WAYPOINT_Z_MIN_METERS, WAYPOINT_Z_MAX_METERS)
                      if coordinate_frame == "map" else (0.1, 50.0))
         if not low <= z <= high:

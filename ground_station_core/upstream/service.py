@@ -41,6 +41,7 @@ from .protocol import (
     subscribe_envelope,
 )
 from .status_projector import UpstreamStatusProjector
+from .simulation_media import SimulationMedia
 
 
 class UpstreamCommunicationService:
@@ -120,6 +121,7 @@ class UpstreamCommunicationService:
         self._journal = RawFrameJournal()
         self._state_lock = threading.RLock()
         self._coordinate_frame = "odom"
+        self._connection_mode = ""
         self._url = configured_url.strip()
         self._client_no = configured_client.strip()
         self._desired_connected = bool(auto_connect)
@@ -137,12 +139,14 @@ class UpstreamCommunicationService:
         self._pending_events: list[tuple[str, dict[str, Any]]] = []
         self._media_warning = ""
         self._media_reader = GroundMediaReader(self._observe_ground_media)
+        self._simulation_media = SimulationMedia(self._events)
         self._projector = UpstreamStatusProjector(
             self._current_client_no,
             self.publish_status,
             self._events,
             standby_policy,
             fail_delivery=self._media_reader.fail_delivery,
+            simulation_media=self._simulation_media,
         )
 
     @property
@@ -244,6 +248,7 @@ class UpstreamCommunicationService:
 
     def stop(self, timeout: float = 3.0) -> bool:
         """在地面站退出时限时停止插件；失败也不阻断主体清理。"""
+        self._simulation_media.close()
         media_stopped = self._media_reader.stop(timeout=min(2.0, max(0.0, timeout)))
         with self._state_lock:
             thread = self._thread
@@ -298,9 +303,9 @@ class UpstreamCommunicationService:
                 return retained
         return True
 
-    def report_waypoints_staged(self) -> bool:
+    def report_waypoints_staged(self, command_id: str = "") -> bool:
         """转发 GUI 成功替换航点的 02 事件。"""
-        return self._projector.report_waypoints_staged()
+        return self._projector.report_waypoints_staged(command_id)
 
     def begin_mission(
         self,
@@ -310,15 +315,17 @@ class UpstreamCommunicationService:
         *,
         source_id: str = "",
         aircraft_id: str = "",
+        command_id: str = "",
     ) -> None:
         """绑定由上位机触发的航点任务与本地可靠命令 ticket。"""
         self._projector.begin_mission(
-            ticket, kind, point_indexes, source_id=source_id, aircraft_id=aircraft_id
+            ticket, kind, point_indexes, source_id=source_id, aircraft_id=aircraft_id,
+            command_id=command_id
         )
 
-    def begin_landing(self, ticket: int) -> None:
+    def begin_landing(self, ticket: int, command_id: str = "") -> None:
         """绑定由上位机触发的降落与本地可靠命令 ticket。"""
-        self._projector.begin_landing(ticket)
+        self._projector.begin_landing(ticket, command_id)
 
     def observe_vehicle(
         self,
@@ -330,6 +337,11 @@ class UpstreamCommunicationService:
         """投影权威快照；仅在 WebSocket 在线时开放低电量动作触发。"""
         with self._state_lock:
             self._coordinate_frame = snapshot.navigation_frame
+            self._connection_mode = connection_mode if snapshot.connected and snapshot.onboard_available else ""
+        if connection_mode == "simulation" and snapshot.armed and not snapshot.on_ground:
+            self._simulation_media.start()
+        else:
+            self._simulation_media.stop()
         low_power_return_required = self._projector.observe_vehicle(
             snapshot, connection_mode, can_takeoff=can_takeoff
         )
@@ -363,6 +375,9 @@ class UpstreamCommunicationService:
 
     def reset_runtime(self) -> None:
         """仿真或实机会话断开后清空任务事件关联。"""
+        with self._state_lock:
+            self._connection_mode = ""
+        self._simulation_media.stop()
         self._projector.reset_runtime()
 
     def block_standby(self) -> None:
@@ -595,11 +610,17 @@ class UpstreamCommunicationService:
                     data = envelope.get("data")
                     with self._state_lock:
                         coordinate_frame = self._coordinate_frame
+                        connection_mode = self._connection_mode
+                    if connection_mode not in {"simulation", "hardware"}:
+                        continue
                     command = parse_command(data, client_no, coordinate_frame)
+                    if command.flight_type != int(connection_mode == "simulation"):
+                        continue
                     self._queue_outbound(
                         publish_envelope(
                             client_no,
-                            command_ack(client_no, command.command_no),
+                            command_ack(client_no, command.command_no,
+                                        command_id=command.command_id, flight_type=command.flight_type),
                         )
                     )
                     self._events.info(

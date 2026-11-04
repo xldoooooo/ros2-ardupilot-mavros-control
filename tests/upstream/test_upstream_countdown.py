@@ -229,7 +229,7 @@ def test_land_countdown_does_not_advance_an_old_inspection_result() -> None:
     try:
         window._connection_mode = "simulation"
         window.waypoints.replace_waypoints(((1.0, 0.0, 0.5, 0.0),), "降落抢占测试")
-        window._handle_upstream_command(_command("03"))
+        window._handle_upstream_command(replace(_command("03"), flight_type=1))
         window._connection_mode = "hardware"
         ros.current_snapshot = _operational_snapshot(armed=True)
         QTimer.singleShot(150, finish_takeoff)

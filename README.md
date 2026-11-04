@@ -380,3 +380,7 @@ Nvidia SDK Manager
 3. 替换硬盘
 
 不同Jetpack的Jetson直接换硬盘是无法进系统
+
+### 上位机仿真巡检
+
+支持 V2.2 的 `id`、毫秒时间戳与实机/仿真 `type` 区分。手动启动 SITL 后，上位机可反复执行直线巡检，并通过与实机相同的 RTSP/FTP 入口测试样例媒体；参见[仿真巡检说明](docs/simulation-workflow.md)。

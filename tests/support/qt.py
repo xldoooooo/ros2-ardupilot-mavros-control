@@ -246,18 +246,18 @@ class _FakeUpstreamService:
     def reset_runtime(self) -> None:
         self.calls.append(("reset", None))
 
-    def report_waypoints_staged(self) -> bool:
+    def report_waypoints_staged(self, command_id: str = "") -> bool:
         self.calls.append(("staged", None))
         return True
 
     def begin_mission(
         self, ticket: int, kind: str, point_indexes: tuple[int, ...],
-        *, source_id: str = "", aircraft_id: str = "",
+        *, source_id: str = "", aircraft_id: str = "", command_id: str = "",
     ) -> None:
         """Accept mission identity while preserving existing call assertions."""
         self.calls.append(("mission", (ticket, kind, point_indexes)))
 
-    def begin_landing(self, ticket: int) -> None:
+    def begin_landing(self, ticket: int, command_id: str = "") -> None:
         self.calls.append(("landing", ticket))
 
     def block_standby(self) -> None:

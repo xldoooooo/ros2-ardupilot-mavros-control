@@ -7,6 +7,7 @@ import json
 import math
 import time
 from dataclasses import replace
+from uuid import UUID
 
 import pytest
 
@@ -23,7 +24,14 @@ from ground_station_core.upstream.mapping import (
     parse_command,
 )
 from ground_station_core.upstream.models import UpstreamStandbyPolicy
-from ground_station_core.upstream.protocol import command_topic, status_topic
+from ground_station_core.upstream import protocol
+from ground_station_core.upstream.protocol import (
+    command_ack,
+    command_topic,
+    json_examples,
+    make_status,
+    status_topic,
+)
 from ground_station_core.upstream.service import UpstreamCommunicationService
 from ground_station_core.upstream.status_projector import (
     UpstreamStatusProjector,
@@ -79,6 +87,9 @@ def test_command_mapping_converts_yaw_and_covers_added_interfaces() -> None:
     """02 保留点号并做角度到弧度转换，01/06 使用同一业务格式。"""
     command = parse_command(_task_payload(), "UAV01001")
     assert command.command_no == "02"
+    assert command.command_id == ""
+    assert command.flight_type == 0
+    assert command.timestamp_ms is None
     assert command.point_indexes == (10, 20)
     assert command.photo_nos == ("3", "4")
     assert command.ignored_camera_fields
@@ -97,6 +108,12 @@ def test_command_mapping_converts_yaw_and_covers_added_interfaces() -> None:
             {"clientNo": "UAV01001", "commandNo": "06"}, "UAV01001"
         ).action.value
         == "land"
+    )
+    assert (
+        parse_command(
+            {"clientNo": "UAV01001", "commandNo": "05"}, "UAV01001"
+        ).action.value
+        == "emergency_land"
     )
     assert command_topic("UAV01001") == "drone/UAV01001/command"
     assert status_topic("UAV01001") == "drone/UAV01001/status"
@@ -141,8 +158,128 @@ def test_command_mapping_rejects_unsafe_or_ambiguous_values(
         parse_command(payload, "UAV01001")
 
 
+@pytest.mark.parametrize(
+    ("flight_type", "timestamp_ms"), ((0, 0), (1, 1), (1, 4_102_444_800_000))
+)
+def test_command_mapping_v22_metadata(flight_type: int, timestamp_ms: int) -> None:
+    """保留标准 UUID 原值与毫秒时间戳，不拒绝旧时间或未来时间。"""
+    payload = _task_payload()
+    command_id = "550E8400-E29B-41D4-A716-446655440000"
+    payload.update(id=command_id, type=flight_type, timestamp=timestamp_ms)
+    command = parse_command(payload, "UAV01001")
+    assert command.command_id == command_id
+    assert command.flight_type == flight_type
+    assert command.timestamp_ms == timestamp_ms
+    assert command.raw_payload == payload
+    payload["id"] = "changed"
+    assert command.raw_payload["id"] == command_id
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("id", None),
+        ("id", 123),
+        ("id", ""),
+        ("id", "not-a-uuid"),
+        ("id", "550e8400e29b41d4a716446655440000"),
+        ("id", "{550e8400-e29b-41d4-a716-446655440000}"),
+        ("id", "urn:uuid:550e8400-e29b-41d4-a716-446655440000"),
+        ("type", None),
+        ("type", True),
+        ("type", 1.0),
+        ("type", "1"),
+        ("type", -1),
+        ("type", 2),
+        ("timestamp", None),
+        ("timestamp", False),
+        ("timestamp", -1),
+        ("timestamp", 1.5),
+        ("timestamp", "1793350657000"),
+    ),
+)
+def test_command_mapping_rejects_invalid_v22_metadata(field: str, value) -> None:
+    """显式提供的 UUID、飞行类型和时间戳不接受错误格式或隐式转换。"""
+    payload = {"clientNo": "UAV01001", "commandNo": "03", field: value}
+    with pytest.raises(UpstreamProtocolError, match=field):
+        parse_command(payload, "UAV01001")
+
+
+@pytest.mark.parametrize("flight_type", (0, 1))
+def test_protocol_v22_ack_and_status_metadata(monkeypatch, flight_type: int) -> None:
+    """确认与状态保留原编号、UUID 和飞行类型，统一使用整数 Unix 毫秒。"""
+    monkeypatch.setattr(protocol, "time_ns", lambda: 1_793_350_657_987_654_321)
+    command_id = "550E8400-E29B-41D4-A716-446655440000"
+    metadata = {"command_id": command_id, "flight_type": flight_type}
+    expected = {
+        "clientNo": "UAV01001", "id": command_id,
+        "type": flight_type, "timestamp": 1_793_350_657_987,
+    }
+    ack = command_ack("UAV01001", "03", **metadata)
+    assert ack == {**expected, "commandNo": "03"}
+    data = {"videoPath": "/video.mp4", "details": {"points": [1]}}
+    status = make_status("UAV01001", "08", data, **metadata)
+    assert status == {**expected, "uavStatus": "08", "data": data}
+    assert type(status["timestamp"]) is int
+    assert type(status["type"]) is int
+    assert type(ack["timestamp"]) is int
+    assert type(ack["type"]) is int
+    data["details"]["points"].append(2)
+    assert status["data"]["details"]["points"] == [1]
+
+    # 旧调用无需补参；未关联命令时不伪造 UUID。
+    assert command_ack("UAV01001", "02") == {
+        "clientNo": "UAV01001", "commandNo": "02",
+        "type": 0, "timestamp": 1_793_350_657_987,
+    }
+    assert make_status("UAV01001", "01") == {
+        "clientNo": "UAV01001", "uavStatus": "01",
+        "type": 0, "timestamp": 1_793_350_657_987,
+    }
+
+
+def test_protocol_v22_examples_keep_command_ids_and_power_units() -> None:
+    """示例均使用 V2.2 元数据，08/09 关联 03，实机电压与仿真百分比不变。"""
+    before_ms = time.time_ns() // 1_000_000
+    examples = json_examples("UAV01001")
+    after_ms = time.time_ns() // 1_000_000
+    commands = {}
+    statuses = {}
+    for _title, envelope in examples:
+        if envelope["type"] == "SUBSCRIBE":
+            assert envelope == {
+                "type": "SUBSCRIBE", "topic": command_topic("UAV01001")
+            }
+            continue
+        payload = envelope["data"]
+        assert str(UUID(payload["id"])) == payload["id"].lower()
+        assert type(payload["type"]) is int and payload["type"] in (0, 1)
+        assert type(payload["timestamp"]) is int
+        assert before_ms <= payload["timestamp"] <= after_ms
+        if envelope["type"] == "BROADCAST":
+            command = parse_command(payload, "UAV01001")
+            commands[command.command_no] = command
+            assert envelope["topic"] == command_topic("UAV01001")
+        else:
+            assert envelope["type"] == "PUBLISH"
+            assert envelope["topic"] == status_topic("UAV01001")
+            if "commandNo" in payload:
+                assert payload["id"] == commands[payload["commandNo"]].command_id
+            else:
+                statuses[(payload["uavStatus"], payload["type"])] = payload
+    assert set(commands) == {"01", "02", "03", "05", "06", "07"}
+    assert len({command.command_id for command in commands.values()}) == len(commands)
+    for status, command_no in (
+        ("02", "02"), ("03", "03"), ("05", "05"),
+        ("07", "07"), ("08", "03"), ("09", "03"),
+    ):
+        assert statuses[(status, 0)]["id"] == commands[command_no].command_id
+    assert statuses[("0A", 0)]["data"] == {"uavPower": 22.8}
+    assert statuses[("0A", 1)]["data"] == {"uavPower": 55.6}
+
+
 def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
-    """03/09/08 与已完成格数一致，遥测 1 Hz 且 0C 只上报一次。"""
+    """03/09/08 与已完成格数一致，仿真遥测1Hz且不触发低电量返航。"""
     sent: list[dict[str, object]] = []
     events = EventLog()
     projector = UpstreamStatusProjector(
@@ -150,15 +287,15 @@ def test_status_projector_matches_gui_progress_and_telemetry_rules() -> None:
     )
     snapshot = _telemetry_snapshot()
 
-    assert projector.observe_vehicle(snapshot, "simulation", now=10.0)
+    assert not projector.observe_vehicle(snapshot, "simulation", now=10.0)
     projector.observe_vehicle(snapshot, "simulation", now=10.5)
     statuses = [payload["uavStatus"] for payload in sent]
-    assert statuses == ["0A", "0B", "0C"]
+    assert statuses == ["0A", "0B"]
     assert sent[0]["data"] == {"uavPower": 19.0}
     assert sent[1]["data"] == {"X": 1.234, "Y": -2.346, "Z": 3.457}
 
-    assert projector.observe_vehicle(snapshot, "simulation", now=11.1)
-    assert [payload["uavStatus"] for payload in sent].count("0C") == 1
+    assert not projector.observe_vehicle(snapshot, "simulation", now=11.1)
+    assert [payload["uavStatus"] for payload in sent].count("0C") == 0
     assert [payload["uavStatus"] for payload in sent].count("0A") == 2
     assert [payload["uavStatus"] for payload in sent].count("0B") == 2
 
@@ -274,26 +411,26 @@ def test_status_projector_standby_hangar_blocking_and_return_completion_rules() 
         z=0.49,
     )
 
-    projector.observe_vehicle(ready, "simulation", now=0.0, can_takeoff=True)
-    projector.observe_vehicle(ready, "simulation", now=0.5, can_takeoff=True)
+    projector.observe_vehicle(ready, "hardware", now=0.0, can_takeoff=True)
+    projector.observe_vehicle(ready, "hardware", now=0.5, can_takeoff=True)
     assert [payload["uavStatus"] for payload in sent] == ["01"]
 
     # 武装后产生新待机边沿，但任务锁定期仍不可发送。
     projector.observe_vehicle(
-        replace(ready, armed=True), "simulation", now=0.6, can_takeoff=False
+        replace(ready, armed=True), "hardware", now=0.6, can_takeoff=False
     )
     projector.block_standby()
-    projector.observe_vehicle(ready, "simulation", now=0.7, can_takeoff=True)
+    projector.observe_vehicle(ready, "hardware", now=0.7, can_takeoff=True)
     assert [payload["uavStatus"] for payload in sent].count("01") == 1
     projector.release_standby()
-    projector.observe_vehicle(ready, "simulation", now=0.8, can_takeoff=True)
+    projector.observe_vehicle(ready, "hardware", now=0.8, can_takeoff=True)
     assert [payload["uavStatus"] for payload in sent].count("01") == 2
 
     outside = replace(ready, x=1.0)
     projector.observe_vehicle(
-        replace(ready, armed=True), "simulation", now=0.9, can_takeoff=False
+        replace(ready, armed=True), "hardware", now=0.9, can_takeoff=False
     )
-    projector.observe_vehicle(outside, "simulation", now=1.0, can_takeoff=True)
+    projector.observe_vehicle(outside, "hardware", now=1.0, can_takeoff=True)
     assert [payload["uavStatus"] for payload in sent].count("01") == 2
 
     projector.begin_mission(12, "return", (1,))
@@ -305,7 +442,7 @@ def test_status_projector_standby_hangar_blocking_and_return_completion_rules() 
         waypoint_index=1,
         waypoint_count=1,
     )
-    projector.observe_vehicle(returning, "simulation", now=1.1)
+    projector.observe_vehicle(returning, "hardware", now=1.1)
     projector.observe_result(
         CommandResult(1, 12, "waypoints", True, "返航点完成", True)
     )
@@ -389,7 +526,9 @@ def test_status_projector_uses_voltage_for_hardware_and_reports_landing_once() -
     )
     snapshot = replace(_telemetry_snapshot(), battery_voltage=22.1)
     projector.observe_vehicle(snapshot, "hardware", now=5.0)
-    assert sent[0] == {
+    assert isinstance(sent[0]["timestamp"], int)
+    assert sent[0]["type"] == 0
+    assert {k: v for k, v in sent[0].items() if k not in {"type", "timestamp"}} == {
         "clientNo": "UAV01001",
         "uavStatus": "0A",
         "data": {"uavPower": 22.1},
@@ -439,7 +578,7 @@ def test_disconnected_service_never_requests_low_power_return(tmp_path) -> None:
     )
 
     assert service.snapshot().connected is False
-    assert not service.observe_vehicle(_telemetry_snapshot(), "simulation")
+    assert not service.observe_vehicle(replace(_telemetry_snapshot(), armed=False), "simulation")
 
 
 def test_handshake_timeout_backoff_is_bounded_and_resets_after_success(
@@ -540,6 +679,7 @@ def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
             auto_connect=True,
             config_path=tmp_path / "upstream-websocket.json",
         )
+        service.observe_vehicle(replace(_telemetry_snapshot(), armed=False), "hardware")
         service.start()
 
         async def wait_until(predicate, timeout: float = 5.0) -> None:
@@ -570,6 +710,9 @@ def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
     )
     assert connection_count >= 2
     assert len(commands) >= 2
+    assert acknowledgements[0]["data"]["type"] == 0
+    assert isinstance(acknowledgements[0]["data"].pop("timestamp"), int)
+    acknowledgements[0]["data"].pop("type")
     assert acknowledgements[0] == {
         "type": "PUBLISH",
         "topic": "drone/UAV01001/status",
@@ -761,12 +904,44 @@ def test_local_websocket_replays_events_after_reconnect_and_refreshes_standby(tm
             await wait_for_connection(True)
             service.observe_vehicle(ready, 'simulation', can_takeoff=True)
             await asyncio.wait_for(delivered.wait(), 3)
-            standby = {'clientNo': 'UAV01001', 'uavStatus': '01'}
-            assert [p for p in received[0] if p.get('uavStatus') == '01'] == [standby]
-            assert [p for p in received[1] if p.get('uavStatus') != '0B'] == [*events, standby]
+            for batch in received:
+                notices = [p for p in batch if p.get('uavStatus') == '01']
+                assert len(notices) == 1 and notices[0]['type'] == 1
+                assert isinstance(notices[0]['timestamp'], int)
+            assert [p for p in received[1] if p.get('uavStatus') in {'07', '08', '09'}] == events
             assert not any(p.get('data', {}).get('X') == 999 for p in received[1])
         finally:
             assert await asyncio.to_thread(service.stop, 3)
             server.close()
             await server.wait_closed()
     asyncio.run(scenario())
+
+
+def test_reader_ignores_idle_and_wrong_flight_type_before_acknowledging(tmp_path) -> None:
+    """无飞行会话或type不匹配时既不确认也不投递，正确模式保留命令UUID。"""
+    delivered, outbound = [], []
+    service = UpstreamCommunicationService(
+        event_log=EventLog(), on_command=delivered.append, auto_connect=False,
+        config_path=tmp_path / 'upstream.json',
+    )
+    service._queue_outbound = outbound.append
+    ident = '550e8400-e29b-41d4-a716-446655440000'
+
+    async def frames(flight_type):
+        """提供一个不涉及网络或飞行器的输入帧。"""
+        yield json.dumps({'type': 'BROADCAST', 'topic': command_topic('UAV01001'),
+                          'data': {'clientNo': 'UAV01001', 'commandNo': '07',
+                                   'type': flight_type, 'id': ident}})
+
+    asyncio.run(service._reader(frames(1), 'UAV01001'))
+    assert not delivered and not outbound
+    service.observe_vehicle(replace(_telemetry_snapshot(), armed=False), 'simulation')
+    asyncio.run(service._reader(frames(0), 'UAV01001'))
+    assert not delivered and not outbound
+    asyncio.run(service._reader(frames(1), 'UAV01001'))
+    assert len(delivered) == 1 and delivered[0].command_id == ident
+    assert outbound[-1]['data']['id'] == ident and outbound[-1]['data']['type'] == 1
+    service.reset_runtime()
+    asyncio.run(service._reader(frames(1), 'UAV01001'))
+    assert len(delivered) == 1
+    service.stop()

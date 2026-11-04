@@ -451,6 +451,14 @@ class EnvironmentInitializer:
             "ArduCopter",
             "--param",
             "GUID_OPTIONS=8",
+            # Only local SITL ignores battery exhaustion, allowing repeated inspections.
+            "--param", "BATT_FS_LOW_ACT=0",
+            "--param", "BATT_FS_CRT_ACT=0",
+            "--param", "BATT_LOW_MAH=0",
+            "--param", "BATT_CRT_MAH=0",
+            "--param", "BATT_ARM_MAH=0",
+            "--param", "BATT_ARM_VOLT=0",
+            "--param", "SIM_BATT_CAP_AH=0",
             # Let onboard_control own telemetry rates, including MAVProxy's UDP output.
             "--mavproxy-args=--streamrate=-1",
         ]

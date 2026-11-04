@@ -37,6 +37,9 @@ class _MissionState:
     source_id: str = ""
     aircraft_id: str = ""
     client_no: str = ""
+    command_id: str = ""
+    flight_type: int = 0
+    simulated_photos: dict[int, str] = field(default_factory=dict)
     started: bool = False
     reported_points: int = 0
     completed_points: int = 0
@@ -52,9 +55,8 @@ class _MissionState:
 class UpstreamStatusProjector:
     """用锁保护 GUI 飞行事件与后台地面媒体快照，发送独立 JSON 副本。"""
 
-    # 遥测上报周期及仿真百分比低电量阈值；实机电压阈值与起飞门控共用。
+    # 遥测上报周期；实机电压阈值与起飞门控共用，仿真不触发低电量动作。
     TELEMETRY_PERIOD_SECONDS = 1.0
-    SIMULATION_LOW_PERCENTAGE = 20.0
 
     def __init__(
         self,
@@ -64,9 +66,14 @@ class UpstreamStatusProjector:
         standby_policy: UpstreamStandbyPolicy | None = None,
         *,
         fail_delivery: Callable[[Mapping[str, Any]], None] | None = None,
+        simulation_media: Any = None,
     ) -> None:
         """维护飞行边沿与独立地面媒体记录，不执行网络请求。"""
         self._client_no = client_no
+        self._simulation_media = simulation_media
+        self._flight_type = 0
+        self._landing_command_id = ""
+        self._landing_flight_type = 0
         self._emit = emit
         self._events = event_log
         self._standby_policy = standby_policy or UpstreamStandbyPolicy()
@@ -117,9 +124,9 @@ class UpstreamStatusProjector:
             and abs(snapshot.z) < policy.z_tolerance_meters
         )
 
-    def report_waypoints_staged(self) -> bool:
+    def report_waypoints_staged(self, command_id: str = "") -> bool:
         """GUI 已成功替换航点后发送一次 02 状态。"""
-        return self._send("02")
+        return self._send("02", command_id=command_id)
 
     def begin_mission(
         self,
@@ -129,6 +136,7 @@ class UpstreamStatusProjector:
         *,
         source_id: str = "",
         aircraft_id: str = "",
+        command_id: str = "",
     ) -> None:
         """绑定本地 ROS ticket，避免旧任务终态误关闭新返航任务。"""
         with self._lock:
@@ -139,12 +147,16 @@ class UpstreamStatusProjector:
                 source_id=source_id,
                 aircraft_id=aircraft_id,
                 client_no=self._client_no(),
+                command_id=command_id,
+                flight_type=self._flight_type,
             )
 
-    def begin_landing(self, ticket: int) -> None:
+    def begin_landing(self, ticket: int, command_id: str = "") -> None:
         """记录降落请求；真正进入 LAND 或收到运行回报后才发送 07。"""
         with self._lock:
             self._landing_ticket = int(ticket)
+            self._landing_command_id = command_id
+            self._landing_flight_type = self._flight_type
             self._landing_reported = False
 
     def observe_vehicle(
@@ -160,6 +172,7 @@ class UpstreamStatusProjector:
             return False
         current_time = time.monotonic() if now is None else float(now)
         with self._lock:
+            self._flight_type = int(connection_mode == "simulation")
             if not self._generic_state_notice_logged:
                 # TODO(上位机通用状态): 协议未给飞控/控制权变化独立编号；
                 # 现阶段只发送表 2 中有确定映射的任务状态与遥测。
@@ -192,7 +205,7 @@ class UpstreamStatusProjector:
                 can_takeoff
                 and not self._standby_blocked
                 and not self._standby_reported
-                and self.is_in_hangar(snapshot)
+                and (connection_mode == "simulation" or self.is_in_hangar(snapshot))
                 and self._send("01")
             ):
                 self._standby_reported = True
@@ -205,7 +218,9 @@ class UpstreamStatusProjector:
 
     def _flush_landing(self) -> None:
         """07入队失败时保留证据，即使可靠降落终态已清除ticket。"""
-        if self._landing_pending and self._send("07"):
+        if self._landing_pending and self._send(
+            "07", command_id=self._landing_command_id, flight_type=self._landing_flight_type
+        ):
             self._landing_pending = False
             self._landing_reported = True
 
@@ -261,7 +276,7 @@ class UpstreamStatusProjector:
     def observe_video_status(self, snapshot: VideoServiceSnapshot) -> None:
         """本地记录任务期间的视频故障，机载路径不作为生产环境下载入口。"""
         with self._lock:
-            if self._mission is None and not self._completed_missions:
+            if self._flight_type == 1 or (self._mission is None and not self._completed_missions):
                 return
             error = snapshot.last_error or ("视频服务不可用" if not snapshot.service_available else "")
             if error and error != self._video_error:
@@ -340,8 +355,8 @@ class UpstreamStatusProjector:
             and snapshot.active_command_sequence == mission.ticket
             and not mission.started
         ):
-            mission.started = self._send(
-                "05" if mission.kind == "return" else "03"
+            mission.started = self._send_mission(
+                mission, "05" if mission.kind == "return" else "03"
             )
         if not mission.started or snapshot.active_mode is not FlightMode.WAYPOINT:
             return
@@ -384,6 +399,14 @@ class UpstreamStatusProjector:
 
     def _point_media(self, mission: _MissionState, index: int) -> dict[str, Any]:
         """关联真实抓拍编号与地面处理结果，不信任机载本地路径。"""
+        if mission.flight_type == 1 and self._simulation_media is not None:
+            # 一次到点只选择一次图片，重连重试不改变媒体身份。
+            if index not in mission.simulated_photos:
+                mission.simulated_photos[index] = self._simulation_media.photo_path()
+            path = mission.simulated_photos[index]
+            return {"path": path, "state": "ready" if path else "missing",
+                    "pointNo": str(mission.point_indexes[index - 1]),
+                    "error": "仿真测试图片不可用" if not path else ""}
         event = mission.captures.get(index)
         records = []
         for record in self._mission_records(mission):
@@ -470,6 +493,9 @@ class UpstreamStatusProjector:
         """冻结实时/后备成品或失败结果，终态与上位机在线状态无关。"""
         if mission.completion_payload is not None:
             return
+        if mission.flight_type == 1 and self._simulation_media is not None:
+            mission.completion_payload = self._simulation_media.completion_payload()
+            return
         records = self._mission_records(mission)
         videos = [r for r in records if r.get("kind") == "video"]
         delivery = next((r for r in records if r.get("kind") == "delivery"), {})
@@ -524,11 +550,12 @@ class UpstreamStatusProjector:
         return sent
 
     def _send_mission(
-        self, mission: _MissionState, status: str, data: Mapping[str, Any]
+        self, mission: _MissionState, status: str, data: Mapping[str, Any] | None = None
     ) -> bool:
         """延迟媒体使用任务开始时的生产环境编号，避免切机后归属改变。"""
         try:
-            return self._emit(make_status(mission.client_no, status, data))
+            return self._emit(make_status(mission.client_no, status, data,
+                                          command_id=mission.command_id, flight_type=mission.flight_type))
         except Exception as exc:  # noqa: BLE001 - 媒体插件不得影响飞控。
             self._events.warn("upstream", f"上位机状态 {status} 排队失败：{exc}")
             return False
@@ -544,7 +571,7 @@ class UpstreamStatusProjector:
                 if math.isfinite(power):
                     power = max(0.0, min(100.0, power))
                     self._send("0A", {"uavPower": round(power, 2)})
-                    low_power = power < self.SIMULATION_LOW_PERCENTAGE
+                    low_power = False
             else:
                 voltage = snapshot.battery_voltage
                 if math.isfinite(voltage) and voltage > 0.0:
@@ -571,10 +598,14 @@ class UpstreamStatusProjector:
         # 低电量持续时每个遥测周期重申，直到组合被接受或飞行器降落。
         return low_power is True and snapshot.armed
 
-    def _send(self, status: str, data: Mapping[str, Any] | None = None) -> bool:
+    def _send(
+        self, status: str, data: Mapping[str, Any] | None = None, *,
+        command_id: str = "", flight_type: int | None = None,
+    ) -> bool:
         """使用当前面板配置的无人机编号生成并排队状态。"""
         try:
-            return self._emit(make_status(self._client_no(), status, data))
+            return self._emit(make_status(self._client_no(), status, data, command_id=command_id,
+                                          flight_type=self._flight_type if flight_type is None else flight_type))
         except Exception as exc:  # noqa: BLE001 - 状态插件故障不得影响 GUI 刷新。
             self._events.warn("upstream", f"上位机状态 {status} 排队失败：{exc}")
             return False

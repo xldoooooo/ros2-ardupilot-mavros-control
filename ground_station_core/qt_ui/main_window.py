@@ -129,6 +129,7 @@ class _UpstreamFlightSequence:
     )
     ticket: int | None = None
     standby_not_before: float = 0.0
+    command_id: str = ""
 
 
 class GroundStationWindow(QMainWindow):
@@ -1213,6 +1214,11 @@ class GroundStationWindow(QMainWindow):
         if not isinstance(command, UpstreamCommand):
             self._events.warn("upstream", "拒绝无法识别的上位机命令对象")
             return
+        # 网络线程初筛后，Qt 再核对当前会话，避免切换模式时执行旧命令。
+        if (not self._environment_active
+                or self._connection_mode not in {"simulation", "hardware"}
+                or command.flight_type != int(self._connection_mode == "simulation")):
+            return
         safety_land = command.action in {
             UpstreamAction.LAND,
             UpstreamAction.EMERGENCY_LAND,
@@ -1225,6 +1231,9 @@ class GroundStationWindow(QMainWindow):
             dialog = self._upstream_countdown
             self._upstream_countdown = None
             dialog.reject()
+        # 仿真上位机任务固定使用直线策略，忽略面板遗留的避障选择。
+        if self._connection_mode == "simulation" and command.action is UpstreamAction.EXECUTE_WAYPOINTS:
+            self.waypoints.strategy_combo.setCurrentIndex(0)
         # 使用与按钮相同的最新门控；不活动时绝不猜测仿真或实机目标。
         self._refresh()
         snapshot = self._ros.snapshot()
@@ -1261,7 +1270,7 @@ class GroundStationWindow(QMainWindow):
                 LogLevel.INFO,
             )
             try:
-                self._upstream.report_waypoints_staged()
+                self._upstream.report_waypoints_staged(command.command_id)
             except Exception as exc:
                 self._events.warn("upstream", f"状态 02 上报失败：{exc}")
             self._refresh()
@@ -1292,7 +1301,7 @@ class GroundStationWindow(QMainWindow):
                 self._reject_upstream_command(command, "降落操作已取消或未进入发送队列")
                 return
             try:
-                self._upstream.begin_landing(ticket)
+                self._upstream.begin_landing(ticket, command.command_id)
             except Exception as exc:
                 self._events.warn("upstream", f"降落状态关联失败：{exc}")
             if command.action is UpstreamAction.EMERGENCY_LAND:
@@ -1301,7 +1310,7 @@ class GroundStationWindow(QMainWindow):
                 except Exception as exc:
                     self._events.warn("upstream", f"待机状态锁定失败：{exc}")
                 self._upstream_sequence = _UpstreamFlightSequence(
-                    kind="emergency", phase="land", ticket=ticket
+                    kind="emergency", phase="land", ticket=ticket, command_id=command.command_id
                 )
             else:
                 self._upstream_sequence = None
@@ -1352,10 +1361,12 @@ class GroundStationWindow(QMainWindow):
         sequence = _UpstreamFlightSequence(
             kind="inspection",
             phase="takeoff",
+            command_id=command.command_id,
             waypoints=values,
             point_indexes=self._point_indexes_for(values),
             photo_nos=self._photo_nos_for(values),
-            strategy=self.waypoints.selected_strategy(),
+            strategy=(WaypointFlightStrategy.STRAIGHT if self._connection_mode == "simulation"
+                      else self.waypoints.selected_strategy()),
             reference_generator=self.waypoints.selected_reference_generator(),
             tracking_controller=self.waypoints.selected_tracking_controller(),
         )
@@ -1426,7 +1437,8 @@ class GroundStationWindow(QMainWindow):
             waypoints=(return_point,),
             point_indexes=(1,),
             photo_nos=(),
-            strategy=self.waypoints.selected_strategy(),
+            strategy=(WaypointFlightStrategy.STRAIGHT if self._connection_mode == "simulation"
+                      else self.waypoints.selected_strategy()),
             reference_generator=self.waypoints.selected_reference_generator(),
             tracking_controller=self.waypoints.selected_tracking_controller(),
         )
@@ -1539,7 +1551,7 @@ class GroundStationWindow(QMainWindow):
         try:
             self._upstream.begin_mission(
                 ticket, mission_kind, sequence.point_indexes,
-                source_id=self._ros.source_id,
+                source_id=self._ros.source_id, command_id=sequence.command_id,
             )
         except Exception as exc:
             self._events.warn("upstream", f"任务状态关联失败：{exc}")
@@ -1627,7 +1639,7 @@ class GroundStationWindow(QMainWindow):
             sequence.phase = "land"
             sequence.ticket = ticket
             try:
-                self._upstream.begin_landing(ticket)
+                self._upstream.begin_landing(ticket, sequence.command_id)
             except Exception as exc:
                 self._events.warn("upstream", f"降落状态关联失败：{exc}")
             self._refresh()
@@ -1645,7 +1657,7 @@ class GroundStationWindow(QMainWindow):
         except Exception as exc:
             self._events.warn("upstream", f"机库位置判定失败：{exc}")
             return
-        if not in_hangar:
+        if not in_hangar and self._connection_mode != "simulation":
             return
         if sequence.kind == "abnormal" and snapshot.vehicle_abnormal:
             # TODO(异常清除): 现阶段的近原点判定只是机库证据占位；
@@ -1972,7 +1984,7 @@ class GroundStationWindow(QMainWindow):
             # 必须同步重绑，否则解除武装后仍会永久等待已失效的终态。
             sequence.ticket = ticket
             try:
-                self._upstream.begin_landing(ticket)
+                self._upstream.begin_landing(ticket, sequence.command_id)
             except Exception as exc:
                 self._events.warn("upstream", f"降落状态重绑失败：{exc}")
         self.activity_banner.set_message("降落请求已发送，等待机载确认…", LogLevel.WARN, state="busy")
@@ -2393,7 +2405,7 @@ class GroundStationWindow(QMainWindow):
         try:
             low_power_return_required = self._upstream.observe_vehicle(
                 snapshot,
-                self._connection_mode,
+                self._connection_mode if self._environment_active else "",
                 can_takeoff=self._availability.takeoff,
             )
             if (
@@ -2403,12 +2415,6 @@ class GroundStationWindow(QMainWindow):
             ):
                 self._hardware_low_power_notice_latched = False
             if (
-                low_power_return_required
-                and upstream_connected
-                and self._connection_mode == "simulation"
-            ):
-                self._start_return_sequence("low_power", snapshot)
-            elif (
                 low_power_return_required
                 and upstream_connected
                 and self._connection_mode == "hardware"
