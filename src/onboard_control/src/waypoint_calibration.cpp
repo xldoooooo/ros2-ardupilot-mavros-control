@@ -301,8 +301,8 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
     {
       fail("修正后 extnav 速度不可用，无法安全衔接飞控融合"); return;
     }
-    // EKF coordinates move during fusion. Hold the measured vehicle, never chase the old origin.
-    reference_.position = vehicle_.position;
+    // Tag correction moves XY/yaw only. Follow fused XY without erasing the Z hold error.
+    reference_.position.head<2>() = vehicle_.position.head<2>();
     reference_.yaw = yaw_;
     reference_.velocity.setZero();
     reference_.acceleration.setZero();

@@ -283,3 +283,40 @@ def test_failure_lands_and_cancel_ignores_late_result(calibration_node, failure)
     h.until(lambda: not h.status[-1].calibration_active)
     assert any(r.final and r.command == "waypoints" and r.status == CommandResult.STATUS_FAILED
                for r in h.results)
+
+
+@pytest.mark.parametrize("avoidance_node", [{"waypoint_hold_seconds": .1}], indirect=True)
+def test_calibration_application_and_fusion_preserve_height(calibration_node):
+    """Measured XY may follow fusion; Z must retain its target and restore altitude in both directions."""
+    from guided_interfaces.msg import CommandResult
+
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.starts) and h.status[-1].calibration_active)
+    target_z = h.status[-1].target_position.z
+    assert target_z == pytest.approx(1.)
+    h.external_x = 3.  # Keep fusion pending independently of the measured height.
+    for stage in ("applying", "fusion"):
+        if stage == "applying":
+            h.calibration.state = h.calibration.STATE_APPLYING
+        else:
+            h.finish_calibration()
+        for height, x in ((.65, .4), (1.25, -.2)):
+            h.height, h.position_x = height, x
+            h.spin(.3)
+            status = h.status[-1]
+            assert status.calibration_active and not h.land_calls
+            assert status.position.z == pytest.approx(height)
+            assert status.target_position.x == pytest.approx(x)
+            assert status.target_position.z == pytest.approx(target_z)
+            assert status.target_velocity.z == pytest.approx(0.)
+            assert status.target_acceleration.z == pytest.approx(0.)
+            # The fixture supplies MOT_THST_HOVER=.22; measured velocities stay zero.
+            if height < target_z:
+                assert h.attitudes[-1].thrust > .22
+            else:
+                assert h.attitudes[-1].thrust < .22
+    h.height, h.position_x = target_z, h.external_x
+    h.until(lambda: any(r.final and r.command == "waypoints" and
+                       r.status == CommandResult.STATUS_SUCCEEDED for r in h.results))
+    assert not h.land_calls
