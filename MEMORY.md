@@ -193,10 +193,11 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 ## AprilTag / Odin 当前基线与风险
 
 - **Task12 航点 Tag 自动校准（开发机与refresh基线）**：飞行接口已升至3.6，新增独立巡检/校准/Tag ID/沿窗字段；新点及旧CSV默认普通，旧上位机巡检点显式标巡检。支持odom绝对坐标直线和遇障悬停，不支持map/自主避障/local_coordinates。首点或新段先清窗但保留active correction；NEXT必须沿用同一服务实例/session/window revision，不静默降级FIRST。校准独占面板只读，结束后开放手动调试；异常复用LAND，取消/失联接管不恢复迟到任务。服务STATE_STOPPING也用于正常采集清理，控制端等待最终应用结果，不据此单独触发LAND；明确失败、应用拒绝/未知、owner/session异常及总超时保护保持。
-  本次job与extnav最终样本身份、应用状态及MAVROS融合均需确认；融合期间跟随当前位置，水平PD/DOB临时使用既有`/extnav/velocity_fcu`物理速度，防止EKF暂态速度导致错误制动，Z/算法/扰动历史保持。总体上限`calibration_timeout_seconds=120`秒。升级需一起原生重建消息、控制、修正服务及原生避障桥并重启旧进程，不能将新消息动态库配旧控制程序。
+  本次job与extnav最终样本身份、应用状态及MAVROS融合均需确认；融合期间跟随当前位置，水平PD/DOB临时使用既有`/extnav/velocity_fcu`物理速度，防止EKF暂态速度导致错误制动；Z速度源/算法/扰动历史不变，但当前全轴参考跟随误清Z位置误差，见下方严重风险。总体上限`calibration_timeout_seconds=120`秒。升级需一起原生重建消息、控制、修正服务及原生避障桥并重启旧进程，不能将新消息动态库配旧控制程序。
+  **自动校准高度保持缺陷尚未修复**：应用/融合分支每周期把整个位置参考改成当前位置，误清Z位置误差，失去对原高度的恢复项；生产PD+DOB原生离线对照已确认。平面Tag修正不应改变固定Z目标，最小方向为仅XY跟随。修复/隔离验证前不继续自动校准实飞；EKF切换附加影响尚缺连续Z/vz/推力证据。见[高度下降排查](agent/report/report-2026-11-05-task12-calibration-height-drop.md)。
   **遥测诊断已补齐**：开发机和refresh已构建/安装定长故障快照及独立1Hz诊断文件，接收年龄/有效性、DDS/回调时间、控制锁等待与慢代码段只用于取证，不改300ms等保护。正文不经ROS日志锁，默认`~/.ros/log/onboard-control-diagnostics-*.log`，启动INFO给出路径；refresh已由用户重启加载，运行Build ID与新安装版本一致，独立诊断文件已确认生效。new/hp/mini未同步。见[低开销诊断及部署](agent/report/report-2026-11-05-telemetry-diagnostics-low-overhead.md)。
   **未解决风险**：refresh发生过校准应用前的位置/速度健康保护，原报错未区分无效值与断流，不能把累计抖动直接当根因。隔离ROS图/图像流及地面单独相机启动未复现；新诊断在未武装地面状态捕获`status_locked`长持锁，应进一步分解状态回调，尚不能证明与旧故障同因。见[遥测保护排查](agent/report/report-2026-11-05-task12-telemetry-timeout-investigation.md)。
-  **目标Tag采样已修正**：仅对请求ID按其配置尺寸精修/PnP，同帧其他已配置/未知ID不参与采样准入；旧`reject_multiple_tags`只保留配置兼容，目标质量与同步检查保持。开发机与refresh源码/安装文件已更新，两端100项相关回归通过；refresh仍旧修正进程，待用户地面重启修正服务加载。new/hp/mini未同步。见[目标Tag最小修复](agent/report/report-2026-11-05-task12-target-tag-only.md)。
+  **目标Tag采样已修正**：仅对请求ID按其配置尺寸精修/PnP，同帧其他已配置/未知ID不参与采样准入；旧`reject_multiple_tags`只保留配置兼容，目标质量与同步检查保持。开发机与refresh源码/安装文件已更新，两端100项相关回归通过；refresh已由用户重启加载，运行新目标Tag版本。new/hp/mini未同步。见[目标Tag最小修复](agent/report/report-2026-11-05-task12-target-tag-only.md)。
   **自动校准待核对项**：应用后的融合等待缺少逐项门控证据，不能仅凭大yaw修正认定唯一根因。自动任务窗口容量取服务状态，面板未提交的长度输入不生效。见[首次校准耗时排查](agent/report/report-2026-11-05-task12-first-calibration-latency.md)。
   开发机与refresh已更新；refresh按文件同步并原生构建，未拉齐整机Git历史，现场参数/标定保持。new/hp/mini未同步Task12，下次需带3.6接口、新增owner服务及原生消费端；3.5地面站不能混接新接口。构建/测试入口按AVOIDANCE_WORKSPACE加载独立规划器overlay，测试检出范围与构建一致。部署范围见[refresh部署报告](agent/report/report-2026-11-05-task12-refresh-deployment.md)。采集清理修复见[修复报告](agent/report/report-2026-11-05-task12-cleanup-state-fix.md)，new/hp/mini后续同步须一并包含。SITL验证使用合成候选＋真实原生extnav/MAVROS/ArduPilot/control，不代表真实相机/PnP或实飞验收。开发入口见[航点校准工作流](docs/tag-waypoint-workflow.md)。
 
