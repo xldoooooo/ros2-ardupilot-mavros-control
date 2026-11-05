@@ -2533,6 +2533,7 @@ void OnboardControlNode::status_tick()
   }
   setpoint_conflict_ = conflict_observations_ >= 3U;
 
+  const auto maintenance_finished = SteadyClock::now();
   guided_interfaces::msg::ControlStatus message;
   message.header.stamp = get_clock()->now();
   message.interface_version = kInterfaceVersion;
@@ -2540,6 +2541,7 @@ void OnboardControlNode::status_tick()
   message.calibration_job_id = calibration_job_;
   message.calibration_detail = calibration_detail_;
   fill_navigation_status(message, now);
+  const auto navigation_finished = SteadyClock::now();
   message.fcu_connected = fcu_connected_ && last_state_time_ != SteadyTime{} &&
     std::chrono::duration<double>(now - last_state_time_).count() <= state_timeout_seconds_;
   message.armed = armed_;
@@ -2619,8 +2621,18 @@ void OnboardControlNode::status_tick()
   message.control_rate_hz = measured_control_rate_hz_;
   message.max_jitter_ms = max_jitter_ms_;
   message.deadline_miss_count = deadline_miss_count_;
+  const auto publish_started = SteadyClock::now();
   status_publisher_->publish(message);
-  record_slow_operation("status_locked", now, SteadyClock::now());
+  const auto finished = SteadyClock::now();
+  const auto milliseconds = [](SteadyTime start, SteadyTime end) {
+      return std::chrono::duration<double, std::milli>(end - start).count();
+    };
+  // Only slow/fault snapshots emit these durations; no periodic status logging.
+  status_diagnostic_ms_ = {milliseconds(graph_started, graph_finished),
+    milliseconds(graph_finished, now), milliseconds(now, maintenance_finished),
+    milliseconds(maintenance_finished, navigation_finished),
+    milliseconds(navigation_finished, publish_started), milliseconds(publish_started, finished)};
+  record_slow_operation("status_locked", now, finished);
 }
 
 void OnboardControlNode::publish_result(

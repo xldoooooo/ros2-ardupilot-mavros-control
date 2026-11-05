@@ -99,10 +99,33 @@ void OnboardControlNode::record_control_diagnostic(
   sample.pose = pose_diagnostic_;
   sample.velocity = velocity_diagnostic_;
   sample.slow = slow_operation_;
+  sample.status_ms = status_diagnostic_ms_;
+  sample.raw.receive = raw_diagnostic_;
+  sample.raw.age_ms = age_ms(calibration_odometry_time_);
+  sample.raw.follow_fusion = calibration_follow_fusion_;
+  sample.raw.revision = navigation_extnav_ ? navigation_extnav_->revision : 0;
+  const auto copy_text = [](auto & destination, const std::string & source) {
+      const auto length = std::min(destination.size() - 1, source.size());
+      std::memcpy(destination.data(), source.data(), length);
+      return source.size();
+    };
+  sample.raw.job_length = copy_text(sample.raw.job, calibration_job_);
+  if (calibration_odometry_) {
+    const auto & odometry = *calibration_odometry_;
+    const auto & p = odometry.pose.pose.position;
+    const auto & v = odometry.twist.twist.linear;
+    const auto & q = odometry.pose.pose.orientation;
+    sample.raw.present = true;
+    sample.raw.values = {p.x, p.y, p.z, v.x, v.y, v.z, q.x, q.y, q.z, q.w};
+    sample.raw.frame_length = copy_text(sample.raw.frame, odometry.header.frame_id);
+    sample.raw.child_length = copy_text(sample.raw.child, odometry.child_frame_id);
+  }
   if (fault) {
     pending_fault_diagnostic_ = sample;
     post_fault_pose_.reset();
     post_fault_velocity_.reset();
+    // Do not discard a post-fault sample still waiting for the diagnostic timer.
+    if (raw_fault_event_ns_ == 0) {raw_fault_event_ns_ = sample.event_ns;}
   } else {
     ++pending_timing_count_;
     const auto severity = [](const ControlDiagnostic & s) {
@@ -124,7 +147,7 @@ void OnboardControlNode::record_slow_operation(
   record_control_diagnostic("slow_operation", false, finished);
 }
 
-/** Try-copy two fixed slots, release the flight lock, then emit at most one batch per second. */
+/** Try-copy bounded slots, release the flight lock, then emit at most one batch per second. */
 void OnboardControlNode::flush_control_diagnostics()
 {
   // Fixed-size capture only; all derived metrics, formatting and I/O stay outside mutex_.
@@ -141,7 +164,8 @@ void OnboardControlNode::flush_control_diagnostics()
   };
   std::optional<FusionLog> fusion;
   std::optional<ControlDiagnostic> fault, timing;
-  std::optional<ReceiveDiagnostic> after_pose, after_velocity;
+  std::optional<ReceiveDiagnostic> after_pose, after_velocity, after_raw;
+  std::int64_t raw_event_ns = 0;
   std::uint64_t timing_count = 0;
   {
     // Logging must neither wait for nor retain the flight-state lock during any I/O.
@@ -151,6 +175,11 @@ void OnboardControlNode::flush_control_diagnostics()
     timing.swap(pending_timing_diagnostic_);
     after_pose.swap(post_fault_pose_);
     after_velocity.swap(post_fault_velocity_);
+    after_raw.swap(post_fault_raw_);
+    if (after_raw) {
+      raw_event_ns = raw_fault_event_ns_;
+      raw_fault_event_ns_ = 0;
+    }
     timing_count = pending_timing_count_;
     pending_timing_count_ = 0;
     if (calibration_stage_ == CalibrationStage::kFusion) {
@@ -187,12 +216,14 @@ void OnboardControlNode::flush_control_diagnostics()
         " pose_valid=%d velocity_valid=%d pose_age_ms=%.3f velocity_age_ms=%.3f state_age_ms=%.3f"
         " pose_timeout_ms=%.3f state_timeout_ms=%.3f control_period_ms=%.3f control_lock_wait_ms=%.3f previous_work_ms=%.3f"
         " slow_operation=%s slow_ms=%.3f slow_age_at_event_ms=%.3f"
+        " status_ms=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)"
         " position=(%.6f,%.6f,%.6f) velocity=(%.6f,%.6f,%.6f) rpy=(%.6f,%.6f,%.6f)\n",
         label, s.event_ns, s.event, count, s.mode, s.armed, s.connected, s.sequence, s.fcu_session,
         s.waypoint, s.calibration_stage, s.pose_valid, s.velocity_valid,
         s.pose_age_ms, s.velocity_age_ms, s.state_age_ms, s.timeout_ms, s.state_timeout_ms,
         s.period_ms, s.lock_wait_ms, s.previous_work_ms,
         s.slow.name, s.slow.duration_ms, slow_age_ms,
+        s.status_ms[0], s.status_ms[1], s.status_ms[2], s.status_ms[3], s.status_ms[4], s.status_ms[5],
         s.values[0], s.values[1], s.values[2], s.values[3], s.values[4], s.values[5],
         s.values[6], s.values[7], s.values[8]);
     };
@@ -205,14 +236,34 @@ void OnboardControlNode::flush_control_diagnostics()
         event_ns, phase, stream, s.count, s.header_ns, s.dds_source_ns, s.dds_receive_ns,
         s.callback_wall_ns, s.gap_ms, s.lock_wait_ms);
     };
+  const auto log_raw = [this, &log_receive](const ControlDiagnostic & s) {
+      const auto & raw = s.raw;
+      const auto & v = raw.values;
+      const double qnorm_squared = v[6]*v[6] + v[7]*v[7] + v[8]*v[8] + v[9]*v[9];
+      std::fprintf(diagnostic_log_.get(),
+        "[RAW_ODOMETRY] event_ns=%" PRId64 " event=%s present=%d age_ms=%.3f timeout_ms=%.3f"
+        " frame=%s child=%s job=%s text_lengths=(%zu,%zu,%zu) revision=%" PRIu64 " follow_fusion=%d"
+        " position=(%.6f,%.6f,%.6f) body_velocity=(%.6f,%.6f,%.6f)"
+        " quaternion_xyzw=(%.9f,%.9f,%.9f,%.9f) quaternion_norm_squared=%.9f\n",
+        s.event_ns, s.event, raw.present, raw.age_ms, s.timeout_ms,
+        raw.frame.data(), raw.child.data(), raw.job.data(), raw.frame_length, raw.child_length,
+        raw.job_length, raw.revision, raw.follow_fusion,
+        v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], qnorm_squared);
+      log_receive(s.event_ns, "before", "raw_odin", raw.receive);
+    };
   if (fault) {
     log_snapshot("TELEMETRY_FAULT", *fault, 1);
+    log_raw(*fault);
     log_receive(fault->event_ns, "before", "pose", fault->pose);
     log_receive(fault->event_ns, "before", "velocity", fault->velocity);
     if (after_pose) {log_receive(fault->event_ns, "first_after", "pose", *after_pose);}
     if (after_velocity) {log_receive(fault->event_ns, "first_after", "velocity", *after_velocity);}
   }
-  if (timing) {log_snapshot("CONTROL_TIMING", *timing, timing_count);}
+  if (timing) {
+    log_snapshot("CONTROL_TIMING", *timing, timing_count);
+    log_raw(*timing);
+  }
+  if (after_raw) {log_receive(raw_event_ns, "first_after", "raw_odin", *after_raw);}
   if (fusion) {
     const auto & f = *fusion;
     const auto & p = f.external_pose.position;
@@ -234,6 +285,6 @@ void OnboardControlNode::flush_control_diagnostics()
       f.position.x(), f.position.y(), f.position.z(), f.reference.x(), f.reference.y(), f.reference.z(),
       f.yaw, f.reference_yaw, f.frame_yaw, f.control_velocity.x(), f.control_velocity.y());
   }
-  if (fault || timing || fusion) {std::fflush(diagnostic_log_.get());}
+  if (fault || timing || fusion || after_raw) {std::fflush(diagnostic_log_.get());}
 }
 }  // namespace onboard_control

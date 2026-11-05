@@ -73,8 +73,14 @@ source install/setup.bash
 
 - `[TELEMETRY_FAULT]`：故障前的有效性、位置/速度/状态接收年龄、原阈值、实际值、航点、
   校准阶段、命令序号及FCU会话计数。年龄`-1`表示从未收到；不要只看累计最大抖动。
-- `[TELEMETRY_RX]`：故障前的最后一条样本，以及日志输出前已经处理到的首条后续样本
-  （`first_after`；无该行表示截至快照排出尚未收到）。记录header、DDS发送/接收、
+- `[RAW_ODOMETRY]`：关联同一`event_ns`的原始Odin快照，包含接收年龄/超时值、frame/child、
+  XYZ、body速度、四元数/平方范数、job、extnav revision和是否跟随融合；在取消任务前冻结。
+  `TELEMETRY_FAULT.event=calibration_raw_*`区分`missing`、`stale`、`frame`、`xy_nonfinite`、
+  `velocity_nonfinite`、`quaternion_invalid`；`calibration_fcu_pose_invalid`表示FCU位姿/yaw不可用。
+  初始等待未满原超时、主动取消不额外报故障。文本最多保留63字节，`text_lengths`给出原长度（frame/child/job）。
+- `[TELEMETRY_RX]`：故障前的最后一条样本，以及首条后续回调（`first_after`）。pose/velocity只保留
+  日志输出前已处理的首条；`stream=raw_odin`可跨日志批次等待首条，始终使用原故障`event_ns`，
+  不表示该帧数值有效或定位已恢复。无后续行不能单凭此判定源头停流。记录header、DDS发送/接收、
   回调处理墙钟时间、回调间隔和锁等待。DDS时间戳为原始中间件证据，0可能表示不支持；
   不跨主机直接相减，也不把不同实现的接收时间点当成相同语义。
 - `[CONTROL_TIMING]`：仅记录≥100ms的控制周期间隔或已标记代码段耗时。
@@ -82,8 +88,10 @@ source install/setup.bash
   二者都小时再结合DDS/回调时间检查调度或输入中断。
   `slow_operation`区分`status_graph`、`status_locked`、`control_dispatch`、
   `control_reference`（含校准推进）和`control_publish`；`slow_age_at_event_ms`用于识别历史慢调用。
+  `status_ms`是最近一次完成的状态回调六段耗时：图查询、等锁、维护、导航状态构造、其余字段、发布。
+  慢事件同样附带raw快照；回调间隔大但等锁小时，需继续区分默认回调组调度、DDS与源头，不能直接归咎Odin。
 
 高频路径只更新时间和定长内存快照，不格式化、不写盘、不增加高频话题。
 独立1Hz回调用try-lock提取后释放控制锁，再写独占文件（不经过ROS/stdio标准输出锁）；每批最多一个故障快照和一个合并后的
-最慢耗时快照，无无限队列。持续抖动的`count`是合并的事件数，不等于唯一超期周期数。
+最慢耗时快照及一条raw后续接收证据，无无限队列。持续抖动的`count`是合并的事件数，不等于唯一超期周期数。
 此诊断只需原生重建`onboard_control`并在地面重启加载新版，无消息接口或配置变更。

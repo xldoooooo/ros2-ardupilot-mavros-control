@@ -589,6 +589,17 @@ private:
     double duration_ms{0.0};
     SteadyTime finished{};
   };
+  // Raw payload is copied only on faults/slow events, not at the odometry rate.
+  struct RawDiagnostic
+  {
+    ReceiveDiagnostic receive;
+    bool present{false}, follow_fusion{false};
+    double age_ms{-1.0};
+    std::array<double, 10> values{};  // Position XYZ, body velocity XYZ, quaternion XYZW.
+    std::array<char, 64> frame{}, child{}, job{};  // Bounded text; lengths expose truncation.
+    std::size_t frame_length{0}, child_length{0}, job_length{0};
+    std::uint64_t revision{0};
+  };
   struct ControlDiagnostic
   {
     const char * event{"none"};
@@ -602,6 +613,9 @@ private:
     double pose_age_ms{0.0}, velocity_age_ms{0.0}, state_age_ms{0.0}, timeout_ms{0.0};
     double period_ms{0.0}, lock_wait_ms{0.0}, previous_work_ms{0.0}, state_timeout_ms{0.0};
     ReceiveDiagnostic pose, velocity;
+    RawDiagnostic raw;
+    // Last completed status callback: graph, lock wait, maintenance, navigation, fields, publish.
+    std::array<double, 6> status_ms{};
     SlowOperation slow;
   };
   /** Open a dedicated per-run sink, isolated from ROS logging and flight locks. */
@@ -615,7 +629,12 @@ private:
   void record_slow_operation(const char * name, SteadyTime started, SteadyTime finished);
   /** Drain snapshots outside flight locks on an independent, low-frequency callback group. */
   void flush_control_diagnostics();
-  ReceiveDiagnostic pose_diagnostic_, velocity_diagnostic_;
+  ReceiveDiagnostic pose_diagnostic_, velocity_diagnostic_, raw_diagnostic_;
+  const char * calibration_hold_failure_{"none"};  // Diagnostic reason only, not a control latch.
+  std::array<double, 6> status_diagnostic_ms_{};
+  // Keep one post-fault receive sample even when it arrives after the file flush.
+  std::int64_t raw_fault_event_ns_{0};
+  std::optional<ReceiveDiagnostic> post_fault_raw_;
   SlowOperation slow_operation_;
   std::optional<ControlDiagnostic> pending_fault_diagnostic_, pending_timing_diagnostic_;
   std::optional<ReceiveDiagnostic> post_fault_pose_, post_fault_velocity_;

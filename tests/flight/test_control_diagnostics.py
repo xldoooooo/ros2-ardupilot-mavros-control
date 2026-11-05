@@ -73,3 +73,79 @@ def test_fusion_metrics_are_deferred_and_rate_limited(calibration_node, tmp_path
     h.spin(1.2)
     assert not h.status[-1].calibration_active
     assert len([line for line in log.read_text().splitlines() if line.startswith("[CALIBRATION_FUSION]")]) == len(lines)
+
+
+@pytest.mark.parametrize("failure", ["stale", "frame", "xy_nonfinite", "velocity_nonfinite", "quaternion_invalid"])
+def test_sampling_raw_fault_keeps_payload_and_late_recovery(calibration_node, tmp_path, monkeypatch, failure):
+    """Capture pre-apply faults before cancellation; raw recovery may arrive after the 1 Hz flush."""
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.status[-1].calibration_job_id))
+    job = h.status[-1].calibration_job_id
+    log, = (tmp_path / "ros").glob("onboard-control-diagnostics-*.log")
+    h.spin(1.1)
+    assert "[TELEMETRY_FAULT]" not in log.read_text()
+    raw_pub = next(p for p in h.node.publishers if p.topic_name == "/odin1/odometry_highfreq")
+    original_publish = raw_pub.publish
+
+    def faulty_publish(message):
+        """Change exactly one original acceptance condition, not timestamps or FCU state."""
+        if failure == "stale":
+            return
+        if failure == "frame":
+            message.child_frame_id = "wrong_body"
+        elif failure == "xy_nonfinite":
+            message.pose.pose.position.x = float("nan")
+        elif failure == "velocity_nonfinite":
+            message.twist.twist.linear.z = float("nan")
+        else:
+            message.pose.pose.orientation.w = 0.
+        original_publish(message)
+
+    monkeypatch.setattr(raw_pub, "publish", faulty_publish)
+    h.until(lambda: h.land_calls == ["LAND"])
+    h.until(lambda: "[TELEMETRY_FAULT]" in log.read_text(), 3.)
+    text = log.read_text()
+    line, = [line for line in text.splitlines() if line.startswith("[TELEMETRY_FAULT]")]
+    fields = dict(token.split("=", 1) for token in line.split() if "=" in token)
+    assert fields["event"] == "calibration_raw_" + failure
+    assert fields["pose_valid"] == fields["velocity_valid"] == "1"
+    raw_line, = [line for line in text.splitlines() if line.startswith("[RAW_ODOMETRY]")
+                 and f"event_ns={fields['event_ns']} " in line]
+    assert f"job={job} " in raw_line and "revision=0 follow_fusion=0" in raw_line
+    assert "present=1" in raw_line and "timeout_ms=300.000" in raw_line
+    assert "phase=before stream=raw_odin" in text and "dds_source_ns=" in text
+    if failure == "stale":
+        raw_fields = dict(token.split("=", 1) for token in raw_line.split() if "=" in token)
+        assert float(raw_fields["age_ms"]) > 300.
+        assert "phase=first_after stream=raw_odin" not in text
+    elif failure == "frame":
+        assert "child=wrong_body" in raw_line
+    elif failure == "quaternion_invalid":
+        assert "quaternion_norm_squared=0.000000000" in raw_line
+    else:
+        assert "nan" in raw_line
+    monkeypatch.setattr(raw_pub, "publish", original_publish)
+    h.until(lambda: "phase=first_after stream=raw_odin" in log.read_text(), 3.)
+    h.spin(1.1)
+    assert log.read_text().count("[TELEMETRY_FAULT]") == 1
+    assert log.read_text().count("phase=first_after stream=raw_odin") == 1
+    assert h.land_calls == ["LAND"] and not h.status[-1].calibration_active
+
+
+@pytest.mark.parametrize("avoidance_node", [{"calibration_odometry_topic": "/diagnostic_test_missing_raw"}], indirect=True)
+def test_initial_raw_wait_logs_only_terminal_failure(calibration_node, tmp_path):
+    """Initial missing-data retries stay silent until the existing start timeout expires."""
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: h.status[-1].calibration_active)
+    log, = (tmp_path / "ros").glob("onboard-control-diagnostics-*.log")
+    h.spin(.5)
+    assert "[TELEMETRY_FAULT]" not in log.read_text()
+    assert not h.starts and not h.land_calls
+    h.until(lambda: h.land_calls == ["LAND"], 5.)
+    h.until(lambda: "[TELEMETRY_FAULT]" in log.read_text(), 3.)
+    text = log.read_text()
+    assert text.count("[TELEMETRY_FAULT]") == 1
+    assert "event=calibration_raw_missing" in text and "present=0 age_ms=-1.000" in text
+    assert "phase=before stream=raw_odin count=0" in text

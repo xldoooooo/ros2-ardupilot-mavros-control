@@ -39,10 +39,14 @@ void OnboardControlNode::initialize_calibration()
   calibration_odometry_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
     declare_parameter<std::string>("calibration_odometry_topic", "/odin1/odometry_highfreq"),
     rclcpp::SensorDataQoS().keep_last(1),
-    [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
+    [this](nav_msgs::msg::Odometry::ConstSharedPtr message, const rclcpp::MessageInfo & info) {
+      const auto entered = SteadyClock::now();
       std::lock_guard<std::recursive_mutex> lock(mutex_);
+      const auto acquired = SteadyClock::now();
       calibration_odometry_ = std::move(message);
       calibration_odometry_time_ = SteadyClock::now();
+      record_receive(raw_diagnostic_, info, calibration_odometry_->header.stamp, entered, acquired);
+      if (raw_fault_event_ns_ != 0 && !post_fault_raw_) {post_fault_raw_ = raw_diagnostic_;}
     });
   calibration_owner_client_ = create_client<CalibrationOwner>("/correction_service/set_calibration_owner");
   calibration_clear_client_ = create_client<CalibrationClear>("/correction_service/clear_window");
@@ -77,24 +81,32 @@ void OnboardControlNode::initialize_calibration()
 /** Preserve physical error in raw Odin, then rotate it into the FCU's evolving local frame. */
 bool OnboardControlNode::update_calibration_hold(const SteadyTime & now, const bool update_reference)
 {
-  if (!pose_valid_ || !std::isfinite(yaw_) || !calibration_odometry_ ||
-    std::chrono::duration<double>(now - calibration_odometry_time_).count() > pose_timeout_seconds_)
-  {
-    return false;
+  // Keep the original checks and order; retain the reason only for a terminal failure snapshot.
+  const auto invalid = [this](const char * reason) {
+      calibration_hold_failure_ = reason;
+      return false;
+    };
+  if (!pose_valid_ || !std::isfinite(yaw_)) {return invalid("calibration_fcu_pose_invalid");}
+  if (!calibration_odometry_) {return invalid("calibration_raw_missing");}
+  if (std::chrono::duration<double>(now - calibration_odometry_time_).count() > pose_timeout_seconds_) {
+    return invalid("calibration_raw_stale");
   }
   const auto & odometry = *calibration_odometry_;
-  if (odometry.header.frame_id != "odom" || odometry.child_frame_id != "fcu") {return false;}
+  if (odometry.header.frame_id != "odom" || odometry.child_frame_id != "fcu") {
+    return invalid("calibration_raw_frame");
+  }
   const auto & p = odometry.pose.pose.position;
   const auto & q = odometry.pose.pose.orientation;
   const auto & v = odometry.twist.twist.linear;
   const Eigen::Vector2d raw_position(p.x, p.y);
   const Eigen::Vector3d body_velocity(v.x, v.y, v.z);
   Eigen::Quaterniond raw_attitude(q.w, q.x, q.y, q.z);
-  if (!raw_position.allFinite() || !body_velocity.allFinite() ||
-    !raw_attitude.coeffs().allFinite() || !std::isfinite(raw_attitude.squaredNorm()) ||
+  if (!raw_position.allFinite()) {return invalid("calibration_raw_xy_nonfinite");}
+  if (!body_velocity.allFinite()) {return invalid("calibration_raw_velocity_nonfinite");}
+  if (!raw_attitude.coeffs().allFinite() || !std::isfinite(raw_attitude.squaredNorm()) ||
     raw_attitude.squaredNorm() <= 0.0)
   {
-    return false;
+    return invalid("calibration_raw_quaternion_invalid");
   }
   raw_attitude.normalize();
   const auto raw_rotation = raw_attitude.toRotationMatrix();
@@ -323,6 +335,7 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
       // Capture the raw-frame anchor before any service can apply a correction.
       if (!update_calibration_hold(now)) {
         if (std::chrono::duration<double>(now - calibration_started_).count() > kCalibrationStatusTimeout) {
+          record_control_diagnostic(calibration_hold_failure_, true, now);
           fail("原始Odin位姿/速度不可用，无法固定校准悬停点");
         }
         return;
@@ -379,6 +392,7 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
     }
   }
   if (!update_calibration_hold(now)) {
+    record_control_diagnostic(calibration_hold_failure_, true, now);
     fail("原始Odin位姿/速度无效或超时，无法保持校准悬停点"); return;
   }
   const bool applied = status.state == Status::STATE_SUCCEEDED && status.resources_released &&
