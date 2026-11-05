@@ -71,6 +71,7 @@ class DetectionSettings:
     corner_refinement: bool
     max_reprojection_error_px: float
     max_correction_tilt_deg: float
+    # 仅保留旧配置兼容；采样始终只选预期 ID，不再按同帧 Tag 数量拒绝。
     reject_multiple_tags: bool
 
 

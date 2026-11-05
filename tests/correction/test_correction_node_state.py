@@ -1,4 +1,4 @@
-"""correction_service 2.0 的窗口 CAS、clear、session 与应用对账事务测试。"""
+"""correction_service 2.0 的目标采样、窗口 CAS、clear、session 与应用对账测试。"""
 
 from __future__ import annotations
 
@@ -1197,3 +1197,69 @@ def test_application_service_failure_finishes_job_and_preserves_unknown(
     assert bool(client.requests) == (failure == "send_error")
     assert _owner_request(node, acquire=False).accepted
     assert not node._automatic_owner
+
+
+@pytest.mark.parametrize(
+    "target_id,marker_ids,pose_state,accepted,reason",
+    [
+        (0, (0, 1, 9), "valid", True, ""),
+        (1, (9, 0, 1), "valid", True, ""),
+        (0, (1, 9), "missing", False, "但预期 Tag 0"),
+        (0, (0, 9), "missing", False, "PnP 求解失败"),
+        (0, (0, 9), "poor", False, "重投影 RMS"),
+    ],
+)
+def test_sampling_uses_only_requested_tag(
+    correction_node, tmp_path, monkeypatch,
+    target_id, marker_ids, pose_state, accepted, reason,
+) -> None:
+    """其他已配置/未知ID不阻塞目标；目标缺失、PnP失败和质量差仍拒绝。"""
+    from nav_msgs.msg import Odometry
+    from sensor_msgs.msg import Image
+    from correction_service.detector import DetectionBatch, PoseDetection
+    from correction_service.estimator import CorrectionEstimator
+    from correction_service.geometry import configured_tag_from_standard, world_tag_transform
+
+    node = correction_node
+    tag = node.config.tags[target_id]
+    job = _job(node, tmp_path, _candidate(node))
+    job.expected_tag_id = target_id
+    job.estimator = CorrectionEstimator(node.config.quality, node.config.keyframe)
+    odometry = Odometry()
+    odometry.header.stamp.sec = 1
+    odometry.pose.pose.position.z = 1.0
+    odometry.pose.pose.orientation.w = 1.0
+    stamp_ns = 1_000_000_000
+    node._synchronizer.add(odometry, stamp_ns)
+    odin_from_fcu = np.eye(4)
+    odin_from_fcu[2, 3] = 1.0
+    camera_from_tag = (
+        np.linalg.inv(odin_from_fcu @ node.config.t_fcu_camera)
+        @ world_tag_transform(tag) @ np.linalg.inv(configured_tag_from_standard())
+    )
+    detection = PoseDetection(
+        target_id, camera_from_tag,
+        node.config.detection.max_reprojection_error_px + 1.0 if pose_state == "poor" else 0.1,
+        np.zeros((4, 2)),
+    )
+    seen_tags = {}
+
+    def detect(gray, tags):
+        """仅替代像素解码；后续真实同步、几何与样本入库路径照常执行。"""
+        seen_tags.update(tags)
+        return DetectionBatch(marker_ids, () if pose_state == "missing" else (detection,), 1.0)
+
+    monkeypatch.setattr(node, "_detector", SimpleNamespace(detect=detect))
+    image = Image(
+        height=node.config.camera.height, width=node.config.camera.width,
+        encoding="mono8", step=node.config.camera.width,
+        data=bytes(node.config.camera.width * node.config.camera.height),
+    )
+    node._process_image(job, image, stamp_ns)
+    assert job.samples_accepted == int(accepted)
+    assert job.samples_rejected == int(not accepted)
+    assert seen_tags == {target_id: tag}
+    if accepted:
+        assert job.detected_tag_id == target_id
+    else:
+        assert reason in job.message

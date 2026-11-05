@@ -59,7 +59,7 @@ class AprilTagDetector:
         parameters.maxMarkerPerimeterRate = 0.9
         # 印刷纸张的额外外框可能被旧版 OpenCV 与真正 Tag 合并，并优先保留
         # 无法解码的大框。缩小候选合并距离（相对周长），保留内部编码黑边；
-        # 不放宽字典纠错、黑边校验或后续 PnP/多 Tag 质量门。
+        # 不放宽字典纠错、黑边校验或后续 PnP 质量门。
         parameters.minMarkerDistanceRate = 0.02
         # 解码后按每个 Tag 的像素格尺寸精修。固定7px半径对小Tag会跨入
         # 相邻编码格/印刷外框，可能吸附错角点或回退为整数角点。

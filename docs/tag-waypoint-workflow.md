@@ -55,6 +55,8 @@ source install/setup.bash
 - `correction_service/correction_service/node.py`：复用校准算法及跨操作独占；面板逻辑在 `correction_panel.py`、`ros_client.py`。
 - `ground_station_core/upstream/status_projector.py`：只统计巡检点，并处理抓拍/校准并发。
 
+每次校准只处理请求指定的 Tag ID，按该 ID 配置的 `size_m` 求解位姿；同帧其他已配置或未知 ID 不参与 PnP 或样本准入。旧 `reject_multiple_tags` 字段仅为配置兼容保留，不再生效。目标缺失、PnP失败、重投影/倾斜质量不合格及时间同步失败仍按原逻辑拒绝。
+
 自动校准不替代原有算法质量检查。SITL 注入候选可以检验真实桥、EKF 和控制衔接，但不等于相机检测或实机验收；实机解锁、起飞仍只能由用户手动完成。
 
 ## 遥测保护诊断

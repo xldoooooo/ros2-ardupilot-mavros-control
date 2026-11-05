@@ -1,4 +1,4 @@
-"""印刷外框不能吞掉真实 Tag；检测角点仍必须位于编码黑边。"""
+"""印刷外框与多 Tag 画面的检测回归；角点与目标尺寸必须保持正确。"""
 
 from dataclasses import replace
 from pathlib import Path
@@ -78,3 +78,28 @@ def test_small_tag_pose_with_independent_projected_truth(angle_deg, outer_frame)
     assert np.linalg.norm(camera_position[:2] - expected_camera_position[:2]) < 0.012
     assert np.max(np.linalg.norm(detected.corners - pixels.reshape(4, 2) * 0.5,
                                  axis=1)) < 0.8
+
+
+def test_mixed_frame_solves_only_target_with_its_configured_size(monkeypatch):
+    """真实解码0/1/9同帧，仅对目标1按其尺寸精修和求解PnP。"""
+    cfg = load_config(Path(__file__).resolve().parents[2] / "config/aircraft/simulation/correction")
+    dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    draw = getattr(cv2.aruco, "generateImageMarker", None) or cv2.aruco.drawMarker
+    frame = np.full((1080, 1920), 255, np.uint8)
+    for tag_id, x in ((0, 400), (1, 800), (9, 1200)):
+        frame[400:560, x:x + 160] = draw(dictionary, tag_id, 160)
+    tag = replace(cfg.tags[1], size_m=0.245)
+    detector = AprilTagDetector(cfg.intrinsics, cfg.detection)
+    solve = detector._estimate_pose
+    solved = []
+
+    def record_pose(tag_id, corners, size_m):
+        """记录真实PnP调用，确认其他ID未进入求解器。"""
+        solved.append((tag_id, size_m))
+        return solve(tag_id, corners, size_m)
+
+    monkeypatch.setattr(detector, "_estimate_pose", record_pose)
+    batch = detector.detect(frame, {tag.tag_id: tag})
+    assert set(batch.marker_ids) == {0, 1, 9}
+    assert [item.tag_id for item in batch.detections] == [tag.tag_id]
+    assert solved == [(tag.tag_id, tag.size_m)]

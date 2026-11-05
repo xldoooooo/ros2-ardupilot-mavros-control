@@ -1298,9 +1298,13 @@ class CorrectionServiceNode(Node):
         return pixels.reshape(int(image.height), int(image.width))
 
     def _process_image(self, job: _Job, image: Image, image_stamp_ns: int) -> None:
-        """按图像时间匹配 raw，完整 SE(3) 后同时形成粗修正和原始 Q。"""
+        """仅采样指定 Tag，按图像时间匹配 raw 并形成粗修正和原始 Q。"""
         assert job.estimator is not None
-        batch = self._detector.detect(self._image_to_gray(image), self.config.tags)
+        tag = self.config.tags[job.expected_tag_id]
+        # 其他 ID 只保留解码统计，不精修、不求解 PnP，也不阻塞目标采样。
+        batch = self._detector.detect(
+            self._image_to_gray(image), {job.expected_tag_id: tag}
+        )
         job.estimator.record_processing(image_stamp_ns, batch.processing_time_ms)
         with self._lock:
             job.frames_processed += 1
@@ -1309,9 +1313,6 @@ class CorrectionServiceNode(Node):
 
         if not batch.marker_ids:
             self._reject_sample(job, "未检测到 Tag", journal=False)
-            return
-        if self.config.detection.reject_multiple_tags and len(batch.marker_ids) > 1:
-            self._reject_sample(job, f"同帧检测到多个 Tag：{batch.marker_ids}")
             return
         if job.expected_tag_id not in batch.marker_ids:
             self._reject_sample(
@@ -1354,7 +1355,7 @@ class CorrectionServiceNode(Node):
         )
         correction = compute_planar_correction(
             detection.camera_from_tag_standard,
-            self.config.tags[job.expected_tag_id],
+            tag,
             self.config.t_fcu_camera,
             odin_from_fcu,
         )
@@ -1390,7 +1391,6 @@ class CorrectionServiceNode(Node):
             job.samples_accepted += 1
             job.snapshot = snapshot
             job.message = snapshot.reason
-        tag = self.config.tags[job.expected_tag_id]
         job.journal.write(
             "sample_accepted",
             image_stamp_ns=image_stamp_ns,
