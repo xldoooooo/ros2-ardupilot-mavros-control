@@ -5,10 +5,14 @@ from __future__ import annotations
 import io
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from types import SimpleNamespace
 
 from ground_station_core.event_log import EventLog
 from ground_station_core.ground_media_reader import GroundMediaReader, processed_download
-from ground_station_core.models import CommandResult, VideoCaptureEvent, VideoServiceSnapshot
+from ground_station_core.models import CommandResult, FlightMode, VehicleSnapshot, VideoCaptureEvent, VideoServiceSnapshot
+from ground_station_core.waypoint_io import Waypoint
 from ground_station_core.upstream.status_projector import UpstreamStatusProjector
 
 
@@ -439,3 +443,110 @@ def test_simulated_media_keeps_command_identity_across_rounds_and_mode_changes(t
         }
     assert not projector._completed_missions
     assert any(p['uavStatus'] == '01' and p['type'] == 1 for p in sent)
+
+
+def test_mixed_point_types_skip_ordinary_and_report_combined_during_calibration() -> None:
+    """普通/纯校准点不取仿真图或发09，组合点不等校准完成且保持原点号。"""
+    sent, photos = [], []
+    projector = UpstreamStatusProjector(
+        lambda: "UAV01001", lambda payload: not sent.append(dict(payload)), EventLog(),
+        simulation_media=SimpleNamespace(photo_path=lambda: photos.append("selected") or "/photo.jpg"),
+    )
+    points = (
+        Waypoint(0.0, 0.0, 1.0, 0.0),
+        Waypoint(1.0, 0.0, 1.0, 0.0, is_calibration=True),
+        Waypoint(2.0, 0.0, 1.0, 0.0, True, True, 7, True),
+        Waypoint(3.0, 0.0, 1.0, 0.0, is_inspection=True),
+    )
+    projector.observe_vehicle(VehicleSnapshot(), "simulation", now=0)
+    projector.begin_mission(8, "inspection", (10, 20, 30, 40), waypoints=points, source_id="gui-one")
+    snapshot = VehicleSnapshot(
+        active_mode=FlightMode.WAYPOINT, active_command_sequence=8,
+        waypoint_index=1, waypoint_count=4, calibration_active=True,
+    )
+    projector.observe_vehicle(snapshot, "simulation", now=0)
+    # 即使收到错误关联的普通点抓拍，类型仍是硬过滤条件。
+    projector.observe_video_capture(VideoCaptureEvent(1, "gui-one", 42, True, 2, 8, 1, "ordinary", "", ""))
+    projector.observe_vehicle(replace(snapshot, waypoint_index=2), "simulation", now=0)
+    assert photos == []
+    assert not any(item["uavStatus"] == "09" for item in sent)
+    projector.observe_vehicle(replace(snapshot, waypoint_index=3, active_command_sequence=9), "simulation", now=0)
+    assert photos == []  # 其他任务的校准不能推进本轮。
+    projector.observe_vehicle(replace(snapshot, waypoint_index=3), "simulation", now=0)
+    assert photos == ["selected"]
+    assert [item["data"]["pointNo"] for item in sent if item["uavStatus"] == "09"] == ["30"]
+    projector.observe_vehicle(replace(snapshot, waypoint_index=3), "simulation", now=0)
+    assert len(photos) == 1
+    projector.observe_result(CommandResult(1, 8, "waypoints", True, "完成"))
+    assert [item["data"]["pointNo"] for item in sent if item["uavStatus"] == "09"] == ["30", "40"]
+
+
+def test_capture_receipt_reports_combined_point_without_waiting_for_index_or_job() -> None:
+    """同源抓拍加地面成品即可发09；末点校准未结束不发08，取消后迟到不重启。"""
+    sent = []
+    projector = _projector(sent)
+    projector.begin_mission(
+        8, "inspection", (10,), source_id="gui-one", aircraft_id="refresh",
+        waypoints=(Waypoint(0.0, 0.0, 1.0, 0.0, True, True, 7, False),),
+    )
+    projector.observe_vehicle(VehicleSnapshot(
+        active_mode=FlightMode.WAYPOINT, active_command_sequence=8, waypoint_index=1,
+        waypoint_count=1, calibration_active=False,
+    ), "hardware", now=0)
+    projector.observe_ground_media((_record(),))
+    assert not any(item["uavStatus"] == "09" for item in sent)
+    event = VideoCaptureEvent(1, "gui-one", 42, True, 2, 8, 1, "-3", "/aircraft/raw.jpg", "已保存")
+    projector.observe_video_capture(event)
+    projector.observe_video_capture(event)
+    assert [item["uavStatus"] for item in sent].count("09") == 1
+    assert not any(item["uavStatus"] == "08" for item in sent)
+    projector.observe_result(CommandResult(1, 8, "waypoints", False, "用户取消"))
+    count = len(sent)
+    projector.observe_video_capture(event)
+    projector.observe_ground_media((_record(), _record("video")))
+    assert len(sent) == count
+
+
+def test_combined_capture_media_and_calibration_callbacks_report_once_concurrently() -> None:
+    """抓拍、媒体和校准遥测并发到达时只发一次09，不等校准结束或误发08。"""
+    sent = []
+    projector = _projector(sent)
+    projector.begin_mission(
+        8, "inspection", (10,), source_id="gui-one", aircraft_id="refresh",
+        waypoints=(Waypoint(0.0, 0.0, 1.0, 0.0, True, True, 7, False),),
+    )
+    snapshot = VehicleSnapshot(
+        active_mode=FlightMode.WAYPOINT, active_command_sequence=8,
+        waypoint_index=1, waypoint_count=1, calibration_active=True,
+    )
+    projector.observe_vehicle(replace(snapshot, calibration_active=False), "hardware", now=0)
+    event = VideoCaptureEvent(1, "gui-one", 42, True, 2, 8, 1, "-3", "", "已保存")
+    start = threading.Barrier(3)
+
+    def observe(callback) -> None:
+        """同步三个既有回调入口，线程异常由 Future 回传给测试。"""
+        start.wait(timeout=5.0)
+        callback()
+
+    callbacks = (
+        lambda: projector.observe_vehicle(snapshot, "hardware", now=0),
+        lambda: projector.observe_video_capture(event),
+        lambda: projector.observe_ground_media((_record(),)),
+    )
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(observe, callback) for callback in callbacks]
+        for future in futures:
+            future.result(timeout=5.0)
+    assert [item["uavStatus"] for item in sent] == ["03", "09"]
+    assert sent[-1]["data"]["pointNo"] == "10"
+    mission = projector._mission
+    assert mission is not None and not mission.flight_completed
+    assert mission.reported_points == 1
+    for callback in callbacks:
+        callback()
+    assert [item["uavStatus"] for item in sent] == ["03", "09"]
+    projector.observe_result(CommandResult(1, 8, "waypoints", False, "用户取消"))
+    for callback in callbacks:
+        callback()
+    assert projector._mission is None
+    assert [item["uavStatus"] for item in sent] == ["03", "09"]

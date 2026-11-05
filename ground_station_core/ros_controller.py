@@ -22,6 +22,7 @@ from .config import (
     INTERFACE_PREFIX,
     INTERFACE_VERSION,
     LEASE_DURATION_MS,
+    MAX_WAYPOINT_COUNT,
     detect_ros_distro,
 )
 from .event_log import EventLog
@@ -37,8 +38,32 @@ from .models import (
     WaypointReferenceGenerator,
     WaypointTrackingController,
 )
+from .waypoint_io import WaypointCollection, normalize_waypoint
 
 
+def validate_waypoint_task(
+    waypoints, *, coordinate_frame: str, strategy: object, local_coordinates: bool = False,
+) -> WaypointCollection:
+    """校验地面提交字段与已知支持范围；Tag 配置/滑窗由机载端权威复核。"""
+    points = []
+    for index, point in enumerate(waypoints, start=1):
+        try:
+            points.append(normalize_waypoint(point))
+        except ValueError as exc:
+            raise ValueError(f"航点 #{index}：{exc}") from exc
+    if not 1 <= len(points) <= MAX_WAYPOINT_COUNT:
+        raise ValueError(f"航点数量必须为 1 到 {MAX_WAYPOINT_COUNT}")
+    # TODO(task12-map-avoidance): 校准暂不支持 map、自主避障或 FCU local 输入。
+    if any(point.is_calibration for point in points) and (
+        coordinate_frame != "odom"
+        or local_coordinates
+        or int(strategy) == WaypointFlightStrategy.AVOID.value
+    ):
+        raise ValueError("校准点仅支持 odom 绝对坐标＋直线/遇障悬停，不支持 map、自主避障或 local_coordinates")
+    return tuple(points)
+
+
+# 机载模式编号到地面快照枚举的固定协议映射。
 _REMOTE_MODE_MAP = {
     0: FlightMode.IDLE,
     1: FlightMode.TAKEOFF,
@@ -104,7 +129,7 @@ def task_waypoint_to_local(
             z + qw * uz + qx * uy - qy * ux,
         )
 
-    x, y, z, yaw = waypoint
+    x, y, z, yaw = waypoint[:4]
     x, y, z = rotate(x, y, z)
     hx, hy, _ = rotate(math.cos(yaw), math.sin(yaw), 0.0)
     return x + tx, y + ty, z + tz, math.atan2(hy, hx)
@@ -140,6 +165,9 @@ class _VehicleStateStore:
             armed=message.armed,
             on_ground=bool(getattr(message, "on_ground", False)),
             reboot_in_progress=bool(getattr(message, "reboot_in_progress", False)),
+            calibration_active=bool(getattr(message, "calibration_active", False)),
+            calibration_job_id=str(getattr(message, "calibration_job_id", "")),
+            calibration_detail=str(getattr(message, "calibration_detail", "")),
             autopilot_mode=message.autopilot_mode,
             navigation_frame=str(getattr(message, "navigation_frame", "odom")),
             navigation_ready=bool(getattr(message, "navigation_ready", True)),
@@ -787,7 +815,16 @@ class GroundStationRosController:
         controller_value = int(WaypointTrackingController(int(tracking_controller)))
         if generator_value == WaypointReferenceGenerator.PLANNER_TRAJECTORY.value:
             raise ValueError("规划器带时间轨迹仅用于状态回读，不能作为上传输入")
-        waypoint_values = tuple(waypoints)
+        records = tuple(waypoints)
+        points = validate_waypoint_task(
+            records, coordinate_frame=self.snapshot().navigation_frame,
+            strategy=strategy_value, local_coordinates=local_coordinates,
+        )
+        # 保留旧四项调用的队列载荷形状；传输层仍显式填写普通点默认值。
+        waypoint_values = tuple(
+            point[:4] if isinstance(record, (tuple, list)) and len(record) == 4 else point
+            for record, point in zip(records, points, strict=True)
+        )
         photo_no_values = tuple(str(value) for value in photo_nos)
         if photo_no_values and len(photo_no_values) != len(waypoint_values):
             raise ValueError("photoNo 数量必须与航点数量一致")
@@ -808,7 +845,7 @@ class GroundStationRosController:
         """把最新航点快照交给 ROS 线程；不申请租约也不发送飞行命令。"""
         try:
             normalized = tuple(
-                tuple(float(value) for value in waypoint)
+                tuple(float(value) for value in waypoint[:4])
                 for waypoint in waypoints
             )
         except (TypeError, ValueError) as exc:
@@ -1826,17 +1863,23 @@ class GroundStationRosController:
                     bool(payload.get("local_coordinates", False)) if isinstance(payload, dict) else False
                 )
                 for position, values in enumerate(waypoint_values):
+                    point = normalize_waypoint(values)
                     waypoint = ros_entities["Waypoint"]()
-                    waypoint.position.x = float(values[0])
-                    waypoint.position.y = float(values[1])
-                    waypoint.position.z = float(values[2])
-                    waypoint.yaw = float(values[3])
+                    waypoint.position.x = point.x
+                    waypoint.position.y = point.y
+                    waypoint.position.z = point.z
+                    waypoint.yaw = point.yaw
                     waypoint.has_photo_no = position < len(photo_no_values)
                     waypoint.photo_no = (
                         str(photo_no_values[position])
                         if waypoint.has_photo_no
                         else ""
                     )
+                    # 旧四项记录也显式写普通点默认值，不继承消息构造器的行为。
+                    waypoint.is_inspection = point.is_inspection
+                    waypoint.is_calibration = point.is_calibration
+                    waypoint.calibration_tag_id = point.calibration_tag_id
+                    waypoint.continue_window = point.continue_window
                     request.waypoints.append(waypoint)
                 future = client.call_async(request)
             elif command.name == "set_gp_origin":

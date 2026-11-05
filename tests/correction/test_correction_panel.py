@@ -259,8 +259,8 @@ def test_panel_defers_apply_until_frozen_candidate_confirmation(monkeypatch) -> 
         window.close()
 
 
-def test_panel_derives_dynamic_next_and_window_lock_from_server() -> None:
-    """N/按钮/窗口长度必须来自服务端窗口，GUI 不自行计数。"""
+def test_panel_derives_dynamic_next_but_allows_manual_window_debugging() -> None:
+    """N 来自服务端；手动空闲可尝试 FIRST/改窗口，准入由服务检查。"""
     application = _application()
     client = _FakeCorrectionClient()
     client.current_status["correction"].update(
@@ -287,10 +287,10 @@ def test_panel_derives_dynamic_next_and_window_lock_from_server() -> None:
     try:
         window.show()
         application.processEvents()
-        assert not window.first_button.isEnabled()
+        assert window.first_button.isEnabled()
         assert window.next_button.isEnabled()
         assert window.next_button.text() == "开始第 2 次校准"
-        assert not window.window_size_input.isEnabled()
+        assert window.window_size_input.isEnabled()
         window.tag_id_input.setValue(1)
         window.next_button.click()
         application.processEvents()
@@ -327,7 +327,7 @@ def test_panel_only_enables_stop_for_active_job() -> None:
 
 
 def test_panel_apply_saved_confirmation_and_unknown_gate(monkeypatch) -> None:
-    """保存候选和 unknown 都只能经详细确认调用 apply_saved，冲突写操作禁用。"""
+    """保存候选和 unknown 经详细确认调用 apply_saved；空闲时允许调试服务拒绝。"""
     application = _application()
     client = _FakeCorrectionClient()
     client.current_status["correction"].update(
@@ -364,8 +364,8 @@ def test_panel_apply_saved_confirmation_and_unknown_gate(monkeypatch) -> None:
             application_state="unknown", window_state="application_unknown"
         )
         window._refresh()
-        assert not window.next_button.isEnabled()
-        assert not window.clear_button.isEnabled()
+        assert window.next_button.isEnabled()
+        assert window.clear_button.isEnabled()
         assert window.apply_saved_button.isEnabled()
         assert "未知" in window.apply_saved_button.text()
     finally:
@@ -528,7 +528,7 @@ def test_tag_editor_roundtrip_sort_validation_and_draft_preservation() -> None:
 
 
 def test_tag_toolbar_moves_parameters_preserves_ids_and_clears_draft() -> None:
-    """移动交换五项参数但不动ID；减号删末行，清空禁用空表保存。"""
+    """移动交换五项参数但不动 ID；减号删末行，清空后仍可尝试调试保存。"""
     application = _application()
     window = CorrectionPanelWindow(client=_FakeCorrectionClient())
     try:
@@ -550,7 +550,7 @@ def test_tag_toolbar_moves_parameters_preserves_ids_and_clears_draft() -> None:
         assert editor.table.rowCount() == 1 and editor.table.item(0, 0).text() == "2"
         editor.clear_button.click()
         assert editor.table.rowCount() == 0
-        assert not editor.save_button.isEnabled()
+        assert editor.save_button.isEnabled()
         assert not editor.clear_button.isEnabled() and not editor.delete_button.isEnabled()
         editor.x_input.lineEdit().setText("1.2345")
         editor.y_input.setValue(-2.5)
@@ -570,3 +570,68 @@ def test_tag_toolbar_moves_parameters_preserves_ids_and_clears_draft() -> None:
         assert editor.save_button.isEnabled()
     finally:
         window.close()
+
+
+def test_automatic_owner_makes_idle_and_active_panel_readonly_then_restores_manual():
+    """独占覆盖 job 前后间隙；查看/重读可用，释放后恢复原有编辑和校准门控。"""
+    from PySide6.QtWidgets import QAbstractItemView
+
+    _application()
+    client = _FakeCorrectionClient()
+    window = CorrectionPanelWindow(client=client)
+    try:
+        window._refresh()
+        editor = window.tag_editor
+        triggers = editor.table.editTriggers()
+        for active in (False, True):
+            client.current_status["correction"].update(
+                automatic_owner="onboard-calibration-test", active=active,
+            )
+            window._refresh()
+            assert "只读" in window.command_message.text()
+            for button in (window.first_button, window.next_button, window.stop_button,
+                           window.clear_button, window.apply_saved_button,
+                           editor.save_button, editor.add_button, editor.up_button,
+                           editor.down_button, editor.delete_button, editor.clear_button):
+                assert not button.isEnabled()
+            assert editor.reload_button.isEnabled() and editor.table.isEnabled()
+            assert editor.table.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers
+            editor._load()  # 异步读取完成也不能重新开放配置写入。
+            assert not editor.save_button.isEnabled()
+            editor.table.selectRow(0)
+            assert not editor.delete_button.isEnabled()
+            window._start()
+            window._stop()
+            window._clear()
+            window._apply_saved()
+            assert not client.start_requests and not client.stop_requests
+            assert not client.clear_requests and not client.apply_saved_requests
+        client.current_status["correction"].update(automatic_owner="", active=False)
+        window._refresh()
+        for button in (window.first_button, window.next_button, window.stop_button,
+                       window.clear_button, window.apply_saved_button):
+            assert button.isEnabled()
+        assert editor.save_button.isEnabled() and editor.add_button.isEnabled()
+        assert editor.delete_button.isEnabled()
+        assert editor.table.editTriggers() == triggers
+        client.current_status["correction"]["active"] = True
+        window._refresh()
+        assert window.stop_button.isEnabled()  # 普通手动任务仍允许用户停止。
+    finally:
+        window.close()
+
+
+def test_client_rejects_manual_writes_under_owner_but_keeps_tag_reads():
+    """客户端提交与队列出队共用 owner 门控，不新增手动权限限制。"""
+    from correction_service.ros_client import _Command
+
+    client = CorrectionPanelClient(domain_id=225)
+    errors = []
+    client._snapshots["correction"] = {"automatic_owner": "onboard-calibration-test"}
+    for command in ("start", "stop", "clear", "apply_saved", "tags"):
+        request = _Command(command, save=command == "tags", callback=lambda payload, error: errors.append(error))
+        assert not client._manual_command_allowed(request)
+    assert len(errors) == 5 and all("只读" in message for message in errors)
+    assert client._manual_command_allowed(_Command("tags", save=False))
+    client._snapshots["correction"]["automatic_owner"] = ""
+    assert client._manual_command_allowed(_Command("start"))

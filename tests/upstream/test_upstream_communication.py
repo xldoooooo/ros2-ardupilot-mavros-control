@@ -93,6 +93,7 @@ def test_command_mapping_converts_yaw_and_covers_added_interfaces() -> None:
     assert command.point_indexes == (10, 20)
     assert command.photo_nos == ("3", "4")
     assert command.ignored_camera_fields
+    assert all(point.is_inspection and not point.is_calibration for point in command.waypoints)
     assert command.waypoints[0][:3] == (1.0, -2.0, 1.2)
     assert math.isclose(command.waypoints[0][3], -math.pi / 2.0)
     assert math.isclose(command.waypoints[1][3], math.pi / 4.0)

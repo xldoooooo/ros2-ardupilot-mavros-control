@@ -19,6 +19,7 @@ from correction_service.window import (
     WindowCandidate,
 )
 
+# 当前源码根目录和本机仿真档案；测试不使用飞机配置。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "correction"
 
@@ -296,19 +297,23 @@ def test_stale_service_instance_and_window_revision_are_rejected(
         assert reason == ""
 
 
+@pytest.mark.parametrize("has_window", [True, False])
 def test_session_change_automatically_invalidates_saved_window(
-    correction_node, tmp_path: Path
+    correction_node, tmp_path: Path, has_window
 ) -> None:
-    """extnav 权威 session 改变会清空原始 Q，不能跨建系拼接。"""
+    """session 改变清空 Q；空窗也递增 CAS/释放 owner，不能跨建系迟到 FIRST。"""
     from correction_interfaces.msg import ExtnavCorrectionStatus
 
     node = correction_node
     candidate = _candidate(node)
     job = _job(node, tmp_path, candidate)
-    with node._lock:
-        node._commit_new_window_locked(
-            job, candidate, application_state="not_requested"
-        )
+    if has_window:
+        with node._lock:
+            node._commit_new_window_locked(
+                job, candidate, application_state="not_requested"
+            )
+    else:
+        assert _owner_request(node).accepted
     before_revision = node._window_revision
     status = ExtnavCorrectionStatus()
     status.interface_version = "2.0"
@@ -325,6 +330,9 @@ def test_session_change_automatically_invalidates_saved_window(
     assert node._saved_candidate is None
     assert node._successful_calibrations == 0
     assert node._window_revision == before_revision + 1
+    assert not node._automatic_owner
+    if not has_window:
+        assert not _owner_request(node).accepted
 
 
 class _ImmediateFuture:
@@ -690,3 +698,502 @@ def test_tag_config_save_is_atomic_and_invalidates_old_geometry_only(
     response = node._on_configure_tags(request, ConfigureTags.Response())
     assert not response.accepted
     assert path.read_bytes() == saved_bytes
+
+
+def _owner_request(node: Any, *, source: str = "onboard-calibration-test",
+                   acquire: bool = True, instance: str | None = None):
+    """通过真实 ROS 请求类型调用 owner 入口，不启动相机或飞行控制。"""
+    from correction_interfaces.srv import SetCalibrationOwner
+
+    return node._on_set_calibration_owner(
+        SetCalibrationOwner.Request(
+            source_id=source, acquire=acquire,
+            expected_service_instance_id=node._service_instance_id if instance is None else instance,
+        ),
+        SetCalibrationOwner.Response(),
+    )
+
+
+def test_owner_claim_renew_clear_release_keeps_extnav_and_window_rules(correction_node):
+    """同源续租不改 revision，owner 清窗只丢历史，释放后恢复手动清窗权限。"""
+    from correction_service.ros_client import CorrectionPanelClient
+
+    from correction_interfaces.srv import ClearWindow
+
+    node = correction_node
+    assert not _owner_request(node, instance="old-instance").accepted
+    assert not _owner_request(node, source="").accepted
+    assert _owner_request(node).accepted
+    original_deadline = node._owner_deadline
+    assert _owner_request(node).accepted
+    assert node._owner_deadline >= original_deadline
+    assert node._window_revision == 0
+    assert not _owner_request(node, source="other").accepted
+    assert not _owner_request(node, source="other", acquire=False).accepted
+    statuses = []
+    node._status_pub = SimpleNamespace(publish=statuses.append)
+    node._publish_status()
+    projected = CorrectionPanelClient._correction_status(statuses[-1])
+    assert projected["automatic_owner"] == "onboard-calibration-test"
+    assert projected["configured_tag_ids"] == sorted(node.config.tags)
+    assert projected["service_instance_id"] == node._service_instance_id
+    assert projected["window_revision"] == 0
+    assert projected["service_session"] == "odin-a"
+    assert projected["window_session"] == ""
+    node._window = (_candidate(node).keyframes[0],)
+    active_extnav = node._extnav
+    response = node._on_clear_window(ClearWindow.Request(
+        source_id="onboard-calibration-test", sequence=1,
+        expected_service_instance_id=node._service_instance_id,
+        expected_window_revision=0,
+    ), ClearWindow.Response())
+    assert response.accepted and node._window_revision == 1
+    assert not node._window and node._extnav is active_extnav
+    assert _owner_request(node, acquire=False).accepted
+    assert _owner_request(node, acquire=False).accepted
+    response = node._on_clear_window(ClearWindow.Request(
+        source_id="manual", sequence=1, expected_service_instance_id=node._service_instance_id,
+        expected_window_revision=1,
+    ), ClearWindow.Response())
+    assert response.accepted and not node._automatic_owner
+
+
+@pytest.mark.parametrize("service_name,handler", [
+    ("StartCorrection", "_on_start"), ("StopCorrection", "_on_stop"),
+    ("ClearWindow", "_on_clear_window"), ("ApplySavedCorrection", "_on_apply_saved"),
+    ("ConfigureTags", "_on_configure_tags"),
+])
+def test_automatic_owner_rejects_every_nonowner_write(correction_node, service_name, handler):
+    """所有现有写入口拒绝非 owner，且不消耗手动 sequence。"""
+    from correction_interfaces import srv
+
+    node = correction_node
+    assert _owner_request(node).accepted
+    service = getattr(srv, service_name)
+    request = service.Request(
+        source_id="manual", sequence=1, expected_service_instance_id=node._service_instance_id,
+    )
+    if service_name == "ConfigureTags":
+        request.save = True
+    response = getattr(node, handler)(request, service.Response())
+    assert not response.accepted and "独占" in response.message
+    assert "manual" not in node._last_sequences
+    assert node._window_revision == 0
+
+
+def test_owner_allows_read_and_rejects_claim_over_existing_job_or_unknown(correction_node, tmp_path):
+    """自动期间配置读取仍可用；claim 不劫持手动 job 或 unknown 事务。"""
+    from correction_interfaces.srv import ConfigureTags
+
+    node = correction_node
+    candidate = _candidate(node)
+    job = _job(node, tmp_path, candidate)
+    node._job = job
+    assert not _owner_request(node).accepted
+    job.active = False
+    node._pending_candidate = candidate
+    assert not _owner_request(node).accepted
+    node._pending_candidate = None
+    assert _owner_request(node).accepted
+    response = node._on_configure_tags(ConfigureTags.Request(save=False), ConfigureTags.Response())
+    assert response.accepted and "tag_id" in response.csv
+
+
+@pytest.mark.parametrize("expire,already_sent", [(False, False), (True, False), (False, True)])
+def test_release_or_lease_expiry_waits_for_full_job_thread(
+    correction_node, tmp_path, expire, already_sent,
+):
+    """释放不等待；终态线程未退时仍独占，已发送的 apply 保持原对账语义。"""
+    import threading
+
+    node = correction_node
+    assert _owner_request(node).accepted
+    candidate = _candidate(node)
+    job = _job(node, tmp_path, candidate)
+    job.source_id = node._automatic_owner
+    job.apply_request_sent = already_sent
+    node._job = job
+    done = threading.Event()
+    job.thread = threading.Thread(target=lambda: done.wait(timeout=2.0))
+    job.thread.start()
+    try:
+        node._window = candidate.keyframes
+        node._saved_candidate = candidate
+        if expire:
+            node._owner_deadline = time.monotonic() - 1.0
+            node._publish_status()
+        else:
+            assert _owner_request(node, acquire=False).accepted
+        assert node._automatic_owner and node._owner_releasing
+        assert job.user_stop and job.stop_event.is_set() != already_sent
+        assert node._window == candidate.keyframes and node._saved_candidate is candidate
+        assert not _owner_request(node).accepted
+        assert not node._validate_owner_locked("manual")[0]
+        job.active = False
+        node._publish_status()
+        assert node._automatic_owner  # 终态发布不等于线程退出。
+    finally:
+        job.active = False
+        done.set()
+        job.thread.join(timeout=2.0)
+    node._publish_status()
+    assert not node._automatic_owner
+    assert node._validate_owner_locked("manual")[0]
+    assert not node._validate_owner_locked(job.source_id)[0]
+    assert not _owner_request(node).accepted
+
+
+def test_release_blocks_apply_that_arrives_after_service_discovery(correction_node, tmp_path):
+    """Stop 可在 wait_for_service 期间到达；发现服务后不能发送迟到的修正。"""
+    node = correction_node
+    assert _owner_request(node).accepted
+    candidate = _candidate(node)
+    job = _job(node, tmp_path, candidate)
+    job.source_id = node._automatic_owner
+    node._job = job
+    client = _FakeSetClient(_NeverFuture())
+
+    def release_during_discovery(timeout_sec):
+        """模拟服务发现返回前自动任务取消。"""
+        assert _owner_request(node, acquire=False).accepted
+        return True
+
+    client.wait_for_service = release_during_discovery
+    node._set_client = client
+    outcome = node._apply_to_extnav(job, candidate)
+    assert outcome.state == "rejected" and not client.requests
+    assert not job.apply_request_sent and not node._window
+    node._save_dry_run_and_finalize(job)
+    assert not job.window_saved and not node._window
+    assert node._successful_calibrations == 0 and job.outcome == "stopped_before_commit"
+
+
+def test_automatic_ack_requires_matching_authoritative_status(correction_node, tmp_path):
+    """自动 owner 使用既有对账确认，错 job 的状态不能升级 ACK。"""
+    node = correction_node
+    node.config = replace(node.config, timeouts=replace(
+        node.config.timeouts, extnav_apply_seconds=0.01, extnav_reconcile_seconds=0.02,
+    ))
+    assert _owner_request(node).accepted
+    candidate = _candidate(node)
+    job = _job(node, tmp_path, candidate)
+    job.source_id = node._automatic_owner
+    response = SimpleNamespace(accepted=True, applied=True, odin_session_id="odin-a", revision=1, message="ACK")
+
+    def expose_status(request):
+        """复制实际提交值到权威 extnav 快照。"""
+        node._extnav.revision = 1
+        node._extnav.correction_valid = True
+        node._extnav.applied_job_id = request.job_id
+        node._extnav.correction_x_m = request.correction_x_m
+        node._extnav.correction_y_m = request.correction_y_m
+        node._extnav.correction_yaw_rad = request.correction_yaw_rad
+        node._extnav.received_monotonic = time.monotonic()
+
+    node._set_client = _FakeSetClient(_ImmediateFuture(response), expose_status)
+    outcome = node._apply_to_extnav(job, candidate)
+    assert outcome.state == "applied_status" and outcome.confirmed_by_status
+    node._extnav.revision = 0
+    node._extnav.applied_job_id = "different-job"
+    node._set_client = _FakeSetClient(_ImmediateFuture(response))
+    outcome = node._apply_to_extnav(job, candidate)
+    assert outcome.state == "applied_ack" and not outcome.confirmed_by_status
+
+    # ACK 对账窗口后才到达的状态也应升级，但必须精确匹配 job 和 ACK revision。
+    node._job = job
+    job.active = False
+    job.application_state = "applied_ack"
+    job.extnav_revision = 1
+    job.candidate = replace(
+        candidate, application_state="applied_ack", saved=True,
+        expected_extnav_revision=1, saved_window_revision=node._window_revision,
+    )
+    node._saved_candidate = job.candidate
+    statuses = []
+    node._status_pub = SimpleNamespace(publish=statuses.append)
+    node._publish_status()
+    assert job.application_state == "applied_ack"
+    node._extnav.revision = 2
+    node._extnav.applied_job_id = candidate.application_job_id
+    node._publish_status()
+    assert job.application_state == "applied_ack"  # 状态 revision 必须与 ACK 精确一致。
+    node._extnav.revision = 1
+    for flag in ("service_available", "odin_available"):
+        setattr(node._extnav, flag, False)
+        node._publish_status()
+        assert job.application_state == "applied_ack"
+        setattr(node._extnav, flag, True)
+    node._publish_status()
+    assert job.application_state == "applied_status" and job.application_confirmed_by_status
+    assert statuses[-1].application_state == statuses[-1].APPLICATION_APPLIED_STATUS
+    assert statuses[-1].application_confirmed_by_status
+
+
+def test_owner_start_keeps_first_next_tag_validation_and_default_window(correction_node, monkeypatch):
+    """owner 只管并发；真实 Start 入口继续使用既有窗口/Tag 检查和 apply 字段。"""
+    from correction_interfaces.msg import CorrectionStatus
+    from correction_interfaces.srv import ClearWindow, StartCorrection
+
+    node = correction_node
+    assert _owner_request(node).accepted
+    assert ("/correction_service/set_calibration_owner", [
+        "correction_interfaces/srv/SetCalibrationOwner"
+    ]) in node.get_service_names_and_types()
+    source = node._automatic_owner
+    sequence = 0
+
+    def start(operation, tag_id):
+        """携带当前实例与 CAS revision 调用 Start，不跳过服务校验。"""
+        nonlocal sequence
+        sequence += 1
+        return node._on_start(StartCorrection.Request(
+            source_id=source, sequence=sequence, operation=operation,
+            expected_tag_id=tag_id, window_size=node._window_size, apply=True,
+            expected_service_instance_id=node._service_instance_id,
+            expected_window_revision=node._window_revision,
+            expected_extnav_revision=node._extnav.revision,
+        ), StartCorrection.Response())
+
+    assert not start(CorrectionStatus.OPERATION_NEXT, 0).accepted
+    assert not start(CorrectionStatus.OPERATION_FIRST, max(node.config.tags) + 1).accepted
+    node._window = _candidate(node).keyframes
+    assert not start(CorrectionStatus.OPERATION_FIRST, 0).accepted
+    assert "相同 Tag ID" in start(CorrectionStatus.OPERATION_NEXT, 0).message
+    assert "未配置 Tag" in start(CorrectionStatus.OPERATION_NEXT, max(node.config.tags) + 1).message
+    saved_window = node._window
+    node._window = (replace(saved_window[0], created_monotonic=(
+        time.monotonic() - node.config.window.maximum_keyframe_gap_seconds - 1.0
+    )),)
+    assert "过期" in start(CorrectionStatus.OPERATION_NEXT, 1).message
+    node._window = (replace(saved_window[0], odin_session_id="old-session"),)
+    assert "session 已失效" in start(CorrectionStatus.OPERATION_NEXT, 1).message
+    node._window = saved_window
+    sequence += 1
+    response = node._on_clear_window(ClearWindow.Request(
+        source_id=source, sequence=sequence,
+        expected_service_instance_id=node._service_instance_id,
+        expected_window_revision=node._window_revision,
+    ), ClearWindow.Response())
+    assert response.accepted
+
+    def no_camera_capture():
+        """测试只覆盖请求准入，不订阅传感器或启动相机。"""
+        return None
+
+    def finish_admission_test(job):
+        """不执行估计或应用，也不将请求准入伪装成成功校准。"""
+        job.active = False
+        job.resources_released = True
+
+    monkeypatch.setattr(node, "_start_image_capture", no_camera_capture)
+    monkeypatch.setattr(node, "_start_odometry_capture", no_camera_capture)
+    monkeypatch.setattr(node, "_run_sampling_job", finish_admission_test)
+    response = start(CorrectionStatus.OPERATION_FIRST, 0)
+    assert response.accepted
+    node._job.thread.join(timeout=2.0)
+    assert node._job.apply_requested and node._job.source_id == source
+    assert node._job.window_size == node.config.window.default_size
+    assert node._automatic_owner == source and not node._window
+
+    def fail_input_creation():
+        """模拟订阅创建失败，不启动摄像头。"""
+        raise RuntimeError("synthetic input creation failure")
+
+    monkeypatch.setattr(node, "_start_image_capture", fail_input_creation)
+    response = start(CorrectionStatus.OPERATION_FIRST, 0)
+    assert not response.accepted and "synthetic input creation failure" in response.message
+    assert node._job.state == CorrectionStatus.STATE_FAILED
+    assert node._job.resources_released and not node._job.active
+    assert node._job.application_state == "rejected"
+    assert _owner_request(node, acquire=False).accepted
+
+
+@pytest.mark.parametrize("cancel", [
+    "release", "expiry", "release_before_acquire", "release_while_other_owner",
+])
+def test_retired_owner_rejects_late_start_stop_and_renewal(correction_node, tmp_path, cancel):
+    """owner 已完全消失仍不把迟到写当手动；取消可先于 acquire 到达。"""
+    from correction_interfaces.srv import StartCorrection, StopCorrection
+
+    node = correction_node
+    source = "cancelled-owner"
+    if cancel == "release_while_other_owner":
+        assert _owner_request(node, source="blocking-owner").accepted
+    elif cancel != "release_before_acquire":
+        assert _owner_request(node, source=source).accepted
+    if cancel == "expiry":
+        node._owner_deadline = time.monotonic() - 1.0
+        node._publish_status()
+    elif cancel == "release_while_other_owner":
+        assert not _owner_request(node, source=source, acquire=False).accepted
+        assert node._automatic_owner == "blocking-owner"
+        assert _owner_request(node, source="blocking-owner", acquire=False).accepted
+    else:
+        assert _owner_request(node, source=source, acquire=False).accepted
+    assert not node._automatic_owner
+    assert not _owner_request(node, source=source).accepted
+    start = StartCorrection.Request(
+        source_id=source, sequence=100, operation=StartCorrection.Request.OPERATION_FIRST,
+        expected_tag_id=0, window_size=node.config.window.default_size, apply=True,
+        expected_service_instance_id=node._service_instance_id,
+        expected_window_revision=node._window_revision,
+        expected_extnav_revision=node._extnav.revision,
+    )
+    assert not node._on_start(start, StartCorrection.Response()).accepted
+    assert node._job is None and not node._window
+    # 未取得下一轮 owner 的手动 job 也不会被旧来源的空 job_id Stop 误停。
+    job = _job(node, tmp_path, _candidate(node))
+    node._job = job
+    stop = StopCorrection.Request(
+        source_id=source, sequence=101, expected_service_instance_id=node._service_instance_id,
+    )
+    assert not node._on_stop(stop, StopCorrection.Response()).accepted
+    assert job.active and not job.user_stop and not job.stop_event.is_set()
+    job.active = False
+    assert _owner_request(node, source="new-owner").accepted
+    assert not _owner_request(node, source=source, acquire=False).accepted
+    assert node._automatic_owner == "new-owner"
+
+
+def test_stop_ordering_and_job_identity_do_not_cancel_new_transaction(correction_node, tmp_path):
+    """Stop 先到时消费序号拦旧 Start；后续旧 job Stop 不影响新 job。"""
+    from correction_interfaces.srv import StartCorrection, StopCorrection
+
+    node = correction_node
+    assert _owner_request(node).accepted
+    source = node._automatic_owner
+    stop = StopCorrection.Request(
+        source_id=source, sequence=2, expected_service_instance_id=node._service_instance_id,
+    )
+    assert not node._on_stop(stop, StopCorrection.Response()).accepted
+    response = node._on_start(StartCorrection.Request(
+        source_id=source, sequence=1, operation=StartCorrection.Request.OPERATION_FIRST,
+        expected_tag_id=0, window_size=node.config.window.default_size, apply=True,
+        expected_service_instance_id=node._service_instance_id,
+    ), StartCorrection.Response())
+    assert not response.accepted and "乱序" in response.message
+    job = _job(node, tmp_path, _candidate(node))
+    job.source_id = source
+    node._job = job
+    stop.sequence = 3
+    stop.job_id = "previous-job"
+    assert not node._on_stop(stop, StopCorrection.Response()).accepted
+    assert not job.user_stop and not job.stop_event.is_set()
+    job.active = False
+
+
+def test_status_separates_latest_job_from_service_session_and_candidate(correction_node, tmp_path):
+    """旧窗口的应用状态不能投影为新 job 完成，当前 session 不由最近 job 替代。"""
+    from correction_service.ros_client import CorrectionPanelClient
+
+    node = correction_node
+    previous = replace(_candidate(node, saved=True), application_state="applied_status",
+                       application_confirmed_by_status=True)
+    node._window = previous.keyframes
+    node._saved_candidate = previous
+    node._job = _job(node, tmp_path, _candidate(node))
+    node._job.base_window_revision = 7
+    node._job.application_state = "rejected"
+    node._job.active = False
+    node._extnav.odin_session_id = "new-session"
+    statuses = []
+    node._status_pub = SimpleNamespace(publish=statuses.append)
+    node._publish_status()
+    projected = CorrectionPanelClient._correction_status(statuses[-1])
+    assert projected["service_session"] == "new-session"
+    assert projected["window_session"] == projected["session"] == "odin-a"
+    assert projected["job_source_id"] == node._job.source_id
+    assert projected["base_window_revision"] == 7
+    assert projected["window_revision"] == node._window_revision
+    assert projected["application_state"] == "rejected"
+    assert not projected["application_confirmed_by_status"] and not projected["extnav_applied"]
+
+
+def test_automatic_ack_alone_fails_without_undoing_applied_correction(correction_node, tmp_path):
+    """自动完成必须见权威状态；后到事实可更新，但不能恢复已失败任务。"""
+    from correction_service.node import _ApplicationOutcome
+    from correction_interfaces.msg import CorrectionStatus
+
+    node = correction_node
+    assert _owner_request(node).accepted
+    job = _job(node, tmp_path, _candidate(node))
+    job.source_id = node._automatic_owner
+    job.apply_requested = True
+    job.apply_request_sent = True
+    node._job = job
+    node._apply_to_extnav = lambda *_args: _ApplicationOutcome("applied_ack", 1, "ACK")
+    results = []
+    node._result_pub = SimpleNamespace(publish=results.append)
+    node._apply_and_finalize(job)
+    assert job.state == CorrectionStatus.STATE_FAILED
+    assert job.application_state == "applied_ack" and not job.application_confirmed_by_status
+    assert job.window_saved and not results[-1].success
+    assert _owner_request(node, acquire=False).accepted
+    node._extnav.correction_valid = True
+    node._extnav.revision = 1
+    node._extnav.applied_job_id = job.candidate.application_job_id
+    node._extnav.correction_x_m = job.candidate.x_m
+    node._extnav.correction_y_m = job.candidate.y_m
+    node._extnav.correction_yaw_rad = job.candidate.yaw_rad
+    node._publish_status()
+    assert job.application_confirmed_by_status
+    assert job.state == CorrectionStatus.STATE_FAILED and not results[-1].success
+    assert node._extnav.correction_valid and node._extnav.revision == 1
+
+
+@pytest.mark.parametrize("failure", ["status_unavailable", "unavailable", "discovery_error", "send_error"])
+@pytest.mark.parametrize("retrying_unknown", [False, True])
+def test_application_service_failure_finishes_job_and_preserves_unknown(
+    correction_node, tmp_path, failure, retrying_unknown,
+):
+    """服务故障必须结束 job；发送异常或旧 unknown 不能伪装成确定未应用。"""
+    from correction_interfaces.msg import CorrectionStatus
+
+    node = correction_node
+    assert _owner_request(node).accepted
+    candidate = _candidate(node)
+    job = _job(node, tmp_path, candidate)
+    job.source_id = node._automatic_owner
+    job.apply_requested = True
+    job.retrying_unknown = retrying_unknown
+    node._job = job
+    node._window = candidate.keyframes
+    node._saved_candidate = replace(candidate, saved=True)
+    if retrying_unknown:
+        node._pending_candidate = replace(candidate, application_state="unknown")
+    old_window = node._window
+    old_saved = node._saved_candidate
+    active_extnav = node._extnav
+    if failure == "status_unavailable":
+        node._extnav.service_available = False
+    results = []
+    node._result_pub = SimpleNamespace(publish=results.append)
+    client = _FakeSetClient(_NeverFuture())
+
+    def discover(timeout_sec):
+        """模拟发现失败或抛异常，不连接外部服务。"""
+        if failure == "discovery_error":
+            raise RuntimeError("synthetic discovery failure")
+        return failure != "unavailable"
+
+    def send(request):
+        """模拟发送异常；不能保证远端从未收到请求。"""
+        client.requests.append(request)
+        raise RuntimeError("synthetic send failure")
+
+    client.wait_for_service = discover
+    client.call_async = send
+    node._set_client = client
+    node._apply_and_finalize(job)
+
+    expected_state = "unknown" if retrying_unknown or failure == "send_error" else "rejected"
+    assert not job.active and job.state == CorrectionStatus.STATE_FAILED
+    assert job.application_state == expected_state
+    assert not results[-1].success and job.resources_released
+    assert not job.window_saved and node._window is old_window
+    assert node._saved_candidate is old_saved and node._extnav is active_extnav
+    assert node._successful_calibrations == 0 and node._window_revision == 0
+    assert (node._pending_candidate is not None) == (expected_state == "unknown")
+    assert bool(client.requests) == (failure == "send_error")
+    assert _owner_request(node, acquire=False).accepted
+    assert not node._automatic_owner

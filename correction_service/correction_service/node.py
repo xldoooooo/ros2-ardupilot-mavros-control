@@ -37,6 +37,7 @@ from correction_interfaces.srv import (
     ApplySavedCorrection,
     ClearWindow,
     ConfigureTags,
+    SetCalibrationOwner,
     SetCorrection,
     StartCorrection,
     StopCorrection,
@@ -74,6 +75,7 @@ from .window import (
     residual_under_correction,
 )
 
+# ROS 状态枚举的可读文本映射。
 STATE_TEXT = {
     CorrectionStatus.STATE_IDLE: "idle",
     CorrectionStatus.STATE_STARTING: "starting",
@@ -84,12 +86,14 @@ STATE_TEXT = {
     CorrectionStatus.STATE_FAILED: "failed",
     CorrectionStatus.STATE_STOPPING: "stopping",
 }
+# ROS 操作枚举的可读文本映射。
 OPERATION_TEXT = {
     CorrectionStatus.OPERATION_NONE: "none",
     CorrectionStatus.OPERATION_FIRST: "first",
     CorrectionStatus.OPERATION_NEXT: "next",
     CorrectionStatus.OPERATION_APPLY_SAVED: "apply_saved",
 }
+# 应用事务状态到 ROS 枚举的映射。
 APPLICATION_TO_MESSAGE = {
     "none": CorrectionStatus.APPLICATION_NONE,
     "not_requested": CorrectionStatus.APPLICATION_NOT_REQUESTED,
@@ -187,6 +191,8 @@ class CorrectionServiceNode(Node):
 
     # extnav 权威状态的可用接收年龄。
     EXTNAV_STATUS_MAX_AGE_S = 2.0
+    # 自动 owner 每 2 秒续租，允许约 15 秒短暂通信中断。
+    CALIBRATION_OWNER_LEASE_SECONDS = 15.0
 
     def __init__(self, **node_kwargs) -> None:
         """严格加载 2.0 配置并仅创建低频状态接口，默认不订高频 Odin。"""
@@ -208,6 +214,11 @@ class CorrectionServiceNode(Node):
         self._synchronizer = OdometrySynchronizer(self.config.synchronization)
         self._lock = threading.RLock()
         self._job: _Job | None = None
+        self._automatic_owner = ""
+        self._owner_deadline = 0.0
+        self._owner_releasing = False
+        # 退休来源保留到服务重启，阻止释放后迟到事务重新取得手动写权限。
+        self._retired_owners: set[str] = set()
         self._image_queue: queue.Queue[Image] = queue.Queue(maxsize=1)
         self._last_sequences: dict[str, int] = {}
         self._extnav = _ExtnavSnapshot()
@@ -278,6 +289,11 @@ class CorrectionServiceNode(Node):
         )
         self.create_service(
             ConfigureTags, "/correction_service/configure_tags", self._on_configure_tags
+        )
+        self.create_service(
+            SetCalibrationOwner,
+            "/correction_service/set_calibration_owner",
+            self._on_set_calibration_owner,
         )
         self.create_timer(0.25, self._publish_status)
 
@@ -524,6 +540,7 @@ class CorrectionServiceNode(Node):
             ),
         )
         with self._lock:
+            previous_session = self._extnav.odin_session_id
             self._extnav = snapshot
             job = self._job
             explicit_unavailable = snapshot.interface_version == INTERFACE_VERSION and (
@@ -532,14 +549,18 @@ class CorrectionServiceNode(Node):
                 or not snapshot.odin_session_id
             )
             session_changed = bool(
-                self._window
-                and snapshot.odin_session_id
-                and snapshot.odin_session_id != self._window[0].odin_session_id
+                (previous_session and snapshot.odin_session_id != previous_session)
+                or (self._window and snapshot.odin_session_id != self._window[0].odin_session_id)
             )
-            if self._window and (explicit_unavailable or session_changed):
+            # 空窗时 session/revision 也可能重置，递增窗口 CAS 拦截旧 FIRST 请求。
+            if session_changed or (self._window and explicit_unavailable):
                 self._invalidate_window_locked(
                     "extnav 明确报告 Odin session 不可用或已改变"
                 )
+            if self._automatic_owner and (
+                session_changed or explicit_unavailable or snapshot.interface_version != INTERFACE_VERSION
+            ):
+                self._release_owner_locked("自动校准的 extnav 接口/session 已改变或失效")
             if (
                 job is not None
                 and job.active
@@ -571,6 +592,114 @@ class CorrectionServiceNode(Node):
             return False, "extnav 没有可信 Odin session"
         return True, ""
 
+    def _job_running_locked(self) -> bool:
+        """终态发布期间线程仍可能运行；释放 owner 必须等整个线程结束。"""
+        job = self._job
+        return job is not None and (
+            job.active or (job.thread is not None and job.thread.is_alive())
+        )
+
+    def _request_job_stop_locked(self, message: str) -> None:
+        """复用显式 Stop：未提交则取消，已提交则只继续对账。"""
+        job = self._job
+        if job is None or not job.active:
+            return
+        job.user_stop = True
+        if job.apply_request_sent:
+            job.message = f"{message}；应用已发出，继续等待 ACK/状态对账"
+        else:
+            job.state = CorrectionStatus.STATE_STOPPING
+            job.message = f"{message}；正在丢弃临时 keyframe 并释放资源"
+            job.stop_event.set()
+        job.journal.write(
+            "stop_requested", reason=message, apply_request_sent=job.apply_request_sent
+        )
+
+    def _job_is_automatic_locked(self, job: _Job) -> bool:
+        """应用已发出后 owner 可能释放；仍按原自动来源判定完成证据。"""
+        return bool(job.source_id) and (
+            job.source_id == self._automatic_owner or job.source_id in self._retired_owners
+        )
+
+    def _release_owner_locked(self, reason: str) -> None:
+        """异步请求停止并延迟开放写入口，不触碰旧窗口或 extnav active。"""
+        if not self._owner_releasing:
+            self._owner_releasing = True
+            self._retired_owners.add(self._automatic_owner)
+            self._request_job_stop_locked(reason)
+            self._audit.write(
+                "automatic_owner_releasing", source_id=self._automatic_owner, reason=reason
+            )
+        if not self._job_running_locked():
+            self._audit.write("automatic_owner_released", source_id=self._automatic_owner)
+            self._automatic_owner = ""
+            self._owner_deadline = 0.0
+            self._owner_releasing = False
+
+    def _expire_owner_locked(self) -> None:
+        """状态定时器及入口检查租约；过期停止，不清空历史或撤销修正。"""
+        if self._automatic_owner and (
+            self._owner_releasing or time.monotonic() >= self._owner_deadline
+        ):
+            self._release_owner_locked("自动校准 owner 租约到期或已请求释放")
+
+    def _validate_owner_locked(self, source_id: str) -> tuple[bool, str]:
+        """恢复手动权限但不复活已释放来源；释放阶段写入口暂不可用。"""
+        self._expire_owner_locked()
+        source = source_id.strip()
+        if self._automatic_owner:
+            if self._owner_releasing:
+                return False, "自动校准正在停止并释放资源，请等待任务线程结束"
+            if source != self._automatic_owner:
+                return False, f"自动校准独占中：{self._automatic_owner}；手动面板只读"
+        if source in self._retired_owners:
+            return False, "自动校准来源已释放或过期；新操作必须使用新的 source_id"
+        return True, ""
+
+    def _on_set_calibration_owner(self, request, response):
+        """跨 clear/start/apply/融合确认持有 owner，同源幂等续租或异步释放。"""
+        response.accepted = False
+        with self._lock:
+            self._expire_owner_locked()
+            source = str(request.source_id).strip()
+            if not source or str(request.expected_service_instance_id) != self._service_instance_id:
+                response.message = "source_id 不能为空且 service instance 必须匹配"
+                return response
+            if not request.acquire:
+                # 即使另一来源当前持有 owner，取消也不能让本来源迟到 acquire 复活。
+                self._retired_owners.add(source)
+            if self._automatic_owner and source != self._automatic_owner:
+                response.message = f"自动校准已由 {self._automatic_owner} 独占"
+                if not request.acquire:
+                    response.message += "；本请求来源已取消，不影响当前 owner"
+                return response
+            if request.acquire:
+                if source in self._retired_owners:
+                    response.message = "自动校准来源已释放或过期，不能恢复；请使用新的 source_id"
+                    return response
+                if self._owner_releasing:
+                    response.message = "owner 正在释放，不能续租恢复已取消任务"
+                    return response
+                if not self._automatic_owner:
+                    if self._job_running_locked() or self._pending_candidate is not None:
+                        response.message = "已有活动 job 或 application_unknown，不能取得 owner"
+                        return response
+                    self._automatic_owner = source
+                    self._audit.write("automatic_owner_acquired", source_id=source)
+                self._owner_deadline = time.monotonic() + self.CALIBRATION_OWNER_LEASE_SECONDS
+                response.message = "自动校准 owner 已取得/续租"
+            else:
+                # 无 owner 时重复 release 幂等成功；活动 job 只异步请求停止。
+                if self._automatic_owner:
+                    self._release_owner_locked("自动校准 owner 显式释放")
+                response.message = (
+                    "已请求停止；owner 将在任务线程结束后释放"
+                    if self._automatic_owner else "自动校准 owner 已释放"
+                )
+            response.accepted = True
+        self._publish_status()
+        return response
+
     def _accept_sequence(self, source_id: str, sequence: int) -> tuple[bool, str]:
         """对每个地面面板来源执行单调序号防重放。"""
         source = source_id.strip()
@@ -589,7 +718,10 @@ class CorrectionServiceNode(Node):
         expected_instance: str,
         expected_window_revision: int,
     ) -> tuple[bool, str]:
-        """统一校验 sequence、实例、窗口 revision、并发和 unknown 锁。"""
+        """统一校验 owner、sequence、实例、窗口 revision、并发和 unknown 锁。"""
+        accepted, reason = self._validate_owner_locked(source_id)
+        if not accepted:
+            return False, reason
         accepted, reason = self._accept_sequence(source_id, sequence)
         if not accepted:
             return False, reason
@@ -600,7 +732,7 @@ class CorrectionServiceNode(Node):
                 f"window revision 冲突：期望 {expected_window_revision}，"
                 f"当前 {self._window_revision}"
             )
-        if self._job is not None and self._job.active:
+        if self._job_running_locked():
             return False, f"已有操作运行：{self._job.job_id}"
         if self._pending_candidate is not None:
             return False, "存在 application_unknown；只能用应用当前结果幂等重试/对账"
@@ -645,6 +777,9 @@ class CorrectionServiceNode(Node):
             if operation == CorrectionStatus.OPERATION_NEXT and not self._window:
                 response.message = "后续校准需要同 session 的已有 keyframe"
                 return response
+            if self._window and self._window[0].odin_session_id != self._extnav.odin_session_id:
+                response.message = "已有滑窗 Odin session 已失效，必须显式清空后首次校准"
+                return response
             window_size = int(request.window_size)
             if not 2 <= window_size <= self.config.window.maximum_size:
                 response.message = "滑窗长度超出配置范围"
@@ -673,7 +808,7 @@ class CorrectionServiceNode(Node):
             )
             job = _Job(
                 job_id=job_id,
-                source_id=str(request.source_id),
+                source_id=str(request.source_id).strip(),
                 operation=operation,
                 expected_tag_id=expected_tag_id,
                 window_size=window_size,
@@ -693,10 +828,12 @@ class CorrectionServiceNode(Node):
                 self._start_odometry_capture()
                 self._start_image_capture()
             except Exception as exc:  # noqa: BLE001 - ROS 创建实体会透传多类运行时异常
-                job.active = False
-                self._stop_image_capture()
-                self._stop_odometry_capture()
+                image_released = self._stop_image_capture()
+                odom_released = self._stop_odometry_capture()
+                job.resources_released = image_released and odom_released
+                job.application_state = "rejected" if job.apply_requested else "not_requested"
                 response.message = f"无法创建任务输入订阅：{exc}"
+                self._finish_job(job, success=False, message=response.message)
                 return response
             job.journal.write(
                 "job_started",
@@ -744,6 +881,10 @@ class CorrectionServiceNode(Node):
         response.accepted = False
         response.message = "请求被拒绝"
         with self._lock:
+            accepted, reason = self._validate_owner_locked(str(request.source_id))
+            if not accepted:
+                response.message = reason
+                return response
             accepted, reason = self._accept_sequence(
                 str(request.source_id), int(request.sequence)
             )
@@ -760,16 +901,7 @@ class CorrectionServiceNode(Node):
             if request.job_id and str(request.job_id) != job.job_id:
                 response.message = f"job_id 不匹配，当前为 {job.job_id}"
                 return response
-            job.user_stop = True
-            if job.apply_request_sent:
-                job.message = "stop 到达时应用已发出；继续等待 ACK/状态对账"
-            else:
-                job.state = CorrectionStatus.STATE_STOPPING
-                job.message = "收到 stop，正在丢弃临时 keyframe 并释放资源"
-                job.stop_event.set()
-            job.journal.write(
-                "stop_requested", apply_request_sent=job.apply_request_sent
-            )
+            self._request_job_stop_locked("收到 stop")
             response.accepted = True
             response.message = job.message
         self._publish_status()
@@ -858,6 +990,10 @@ class CorrectionServiceNode(Node):
         response.window_revision = self._window_revision
         response.message = "请求被拒绝"
         with self._lock:
+            accepted, reason = self._validate_owner_locked(str(request.source_id))
+            if not accepted:
+                response.message = reason
+                return response
             accepted, reason = self._accept_sequence(
                 str(request.source_id), int(request.sequence)
             )
@@ -870,7 +1006,7 @@ class CorrectionServiceNode(Node):
             if int(request.expected_window_revision) != self._window_revision:
                 response.message = "window revision 已改变"
                 return response
-            if self._job is not None and self._job.active:
+            if self._job_running_locked():
                 response.message = f"已有操作运行：{self._job.job_id}"
                 return response
             ready, reason = self._extnav_ready_locked()
@@ -934,7 +1070,7 @@ class CorrectionServiceNode(Node):
             application_job_id = candidate.application_job_id
             job = _Job(
                 job_id=application_job_id,
-                source_id=str(request.source_id),
+                source_id=str(request.source_id).strip(),
                 operation=CorrectionStatus.OPERATION_APPLY_SAVED,
                 expected_tag_id=-1,
                 window_size=self._window_size,
@@ -963,8 +1099,10 @@ class CorrectionServiceNode(Node):
             try:
                 self._start_odometry_capture()
             except Exception as exc:  # noqa: BLE001 - ROS 创建实体会透传多类运行时异常
-                job.active = False
+                job.resources_released = self._stop_odometry_capture()
+                job.application_state = "rejected"
                 response.message = f"无法创建短时 Odin 订阅：{exc}"
+                self._finish_job(job, success=False, message=response.message)
                 return response
             job.journal.write(
                 "apply_saved_started",
@@ -1566,12 +1704,18 @@ class CorrectionServiceNode(Node):
         assert job.candidate is not None
         try:
             with self._lock:
+                self._expire_owner_locked()
+                self._raise_if_stopping(job)
                 candidate = self._commit_new_window_locked(
                     job, job.candidate, application_state="not_requested"
                 )
                 job.candidate = candidate
                 job.application_state = "not_requested"
                 job.outcome = "saved_unapplied"
+        except _UserStopped:
+            job.outcome = "stopped_before_commit"
+            self._finish_job(job, success=False, message="显式停止；未保存临时窗口")
+            return
         except RuntimeError as exc:
             self._finish_job(job, success=False, message=str(exc))
             return
@@ -1587,7 +1731,6 @@ class CorrectionServiceNode(Node):
         with self._lock:
             job.state = CorrectionStatus.STATE_APPLYING
             job.message = "资源已释放；正在提交冻结候选并等待 ACK/权威状态对账"
-            job.apply_request_sent = True
             job.application_state = "pending"
             job.candidate = replace(job.candidate, application_state="pending")
             self._pending_candidate = job.candidate
@@ -1623,7 +1766,10 @@ class CorrectionServiceNode(Node):
                         job.candidate = self._saved_candidate
                     self._pending_candidate = None
                     job.outcome = outcome.state
-                    success = True
+                    # 自动任务只有权威状态确认才成功；ACK 事实仍保存，不撤销已生效修正。
+                    success = not self._job_is_automatic_locked(job) or outcome.confirmed_by_status
+                    if not success:
+                        job.outcome = "applied_ack_without_status"
                 elif outcome.state == "rejected":
                     if (
                         self._pending_candidate is not None
@@ -1662,7 +1808,10 @@ class CorrectionServiceNode(Node):
                 message=f"{outcome.message}；但本地窗口保存失败：{exc}",
             )
             return
-        self._finish_job(job, success=success, message=outcome.message)
+        message = outcome.message
+        if job.outcome == "applied_ack_without_status":
+            message += "；自动校准未获权威状态确认，任务失败；不能据 ACK 继续飞行"
+        self._finish_job(job, success=success, message=message)
 
     def _commit_new_window_locked(
         self,
@@ -1715,10 +1864,11 @@ class CorrectionServiceNode(Node):
         self, job: _Job, candidate: WindowCandidate
     ) -> _ApplicationOutcome:
         """提交一次幂等 job；丢 ACK 后只凭新鲜权威状态有限对账。"""
+        failure_state = "unknown" if job.retrying_unknown else "rejected"
         with self._lock:
             ready, reason = self._extnav_ready_locked()
             if not ready:
-                return _ApplicationOutcome("rejected", self._extnav.revision, reason)
+                return _ApplicationOutcome(failure_state, self._extnav.revision, reason)
             if (
                 self._extnav.odin_session_id != candidate.odin_session_id
                 or self._extnav.revision != candidate.expected_extnav_revision
@@ -1729,9 +1879,16 @@ class CorrectionServiceNode(Node):
                     self._extnav.revision,
                     "提交前 extnav session/revision 已改变；不能强行刷新 CAS",
                 )
-        if not self._set_client.wait_for_service(timeout_sec=2.0):
+        try:
+            available = self._set_client.wait_for_service(timeout_sec=2.0)
+        except Exception as exc:  # noqa: BLE001 - DDS 故障必须落为任务终态
             return _ApplicationOutcome(
-                "rejected",
+                failure_state, candidate.expected_extnav_revision,
+                f"发现 extnav SetCorrection 服务时异常：{exc}",
+            )
+        if not available:
+            return _ApplicationOutcome(
+                failure_state,
                 candidate.expected_extnav_revision,
                 "未发现 extnav SetCorrection 服务",
             )
@@ -1750,6 +1907,35 @@ class CorrectionServiceNode(Node):
         request.yaw_std_rad = candidate.yaw_std_rad
         request.reprojection_error_px = candidate.reprojection_error_px
         request.odom_match_error_ms = candidate.odom_match_error_ms
+        with self._lock:
+            # Stop/release 与实际发送共用锁，避免资源清理/服务发现后的迟到 apply。
+            self._expire_owner_locked()
+            if not job.apply_request_sent and (
+                job.user_stop or job.stop_event.is_set() or self._closing.is_set()
+                or job.failure_reason
+            ):
+                state = "unknown" if job.retrying_unknown else "rejected"
+                return _ApplicationOutcome(
+                    state, candidate.expected_extnav_revision, "提交前操作已停止；未发送新的 extnav 请求"
+                )
+            ready, reason = self._extnav_ready_locked()
+            if (
+                not ready or self._extnav.odin_session_id != candidate.odin_session_id
+                or self._extnav.revision != candidate.expected_extnav_revision
+                or self._window_revision != job.base_window_revision
+            ):
+                state = "unknown" if job.retrying_unknown else "rejected"
+                return _ApplicationOutcome(
+                    state, self._extnav.revision, reason or "发送前 session/window/extnav revision 已改变"
+                )
+            try:
+                future = self._set_client.call_async(request)
+            except Exception as exc:  # noqa: BLE001 - 发送抛异常不能证明远端未收到
+                return _ApplicationOutcome(
+                    "unknown", candidate.expected_extnav_revision,
+                    f"SetCorrection 发送异常：{exc}；应用事实未知，保留 pending 对账",
+                )
+            job.apply_request_sent = True
         job.journal.write(
             "extnav_request_sent",
             job_id=request.job_id,
@@ -1763,7 +1949,6 @@ class CorrectionServiceNode(Node):
             fcu_reference_mode="tag_world_xy_local_z",
             lever_arm_m=self.config.fcu_reference.lever_arm_m.tolist(),
         )
-        future = self._set_client.call_async(request)
         completed = threading.Event()
         future.add_done_callback(lambda _future: completed.set())
         if completed.wait(timeout=self.config.timeouts.extnav_apply_seconds):
@@ -1785,6 +1970,15 @@ class CorrectionServiceNode(Node):
                     revision=int(response.revision),
                     response=str(response.message),
                 )
+                with self._lock:
+                    automatic = self._job_is_automatic_locked(job)
+                if automatic:
+                    # 自动航点必须另见权威状态；ACK 仍不能代表飞控已融合。
+                    confirmed = self._reconcile_application(
+                        candidate, "extnav ACK 已确认应用", applied_revision=int(response.revision)
+                    )
+                    if confirmed.confirmed_by_status:
+                        return confirmed
                 return _ApplicationOutcome(
                     "applied_ack",
                     int(response.revision),
@@ -1805,38 +1999,40 @@ class CorrectionServiceNode(Node):
             )
         return self._reconcile_application(candidate, "等待 extnav ACK 超时")
 
+    def _application_matches_extnav_locked(
+        self, candidate: WindowCandidate, expected_revision: int
+    ) -> bool:
+        """复用既有 job/session/revision/数值对账，不把 ACK 当作权威状态。"""
+        extnav = self._extnav
+        return bool(
+            extnav.received_monotonic > 0.0
+            and time.monotonic() - extnav.received_monotonic <= self.EXTNAV_STATUS_MAX_AGE_S
+            and extnav.interface_version == INTERFACE_VERSION
+            and extnav.service_available
+            and extnav.odin_available
+            and extnav.odin_session_id == candidate.odin_session_id
+            and extnav.correction_valid
+            and extnav.applied_job_id == candidate.application_job_id
+            and extnav.revision > expected_revision
+            and np.allclose(
+                (extnav.correction_x_m, extnav.correction_y_m, extnav.correction_yaw_rad),
+                (candidate.x_m, candidate.y_m, candidate.yaw_rad), atol=1e-9, rtol=0.0,
+            )
+        )
+
     def _reconcile_application(
-        self, candidate: WindowCandidate, trigger: str
+        self, candidate: WindowCandidate, trigger: str, *, applied_revision: int | None = None
     ) -> _ApplicationOutcome:
         """ACK 不确定时检查 applied_job_id/session/revision/数值的权威状态证据。"""
         deadline = time.monotonic() + self.config.timeouts.extnav_reconcile_seconds
         while time.monotonic() < deadline:
             with self._lock:
                 extnav = self._extnav
-                fresh = (
-                    extnav.received_monotonic > 0.0
-                    and time.monotonic() - extnav.received_monotonic
-                    <= self.EXTNAV_STATUS_MAX_AGE_S
-                )
-                matches = (
-                    fresh
-                    and extnav.interface_version == INTERFACE_VERSION
-                    and extnav.odin_session_id == candidate.odin_session_id
-                    and extnav.correction_valid
-                    and extnav.applied_job_id == candidate.application_job_id
-                    and extnav.revision > candidate.expected_extnav_revision
-                    and np.allclose(
-                        (
-                            extnav.correction_x_m,
-                            extnav.correction_y_m,
-                            extnav.correction_yaw_rad,
-                        ),
-                        (candidate.x_m, candidate.y_m, candidate.yaw_rad),
-                        atol=1e-9,
-                        rtol=0.0,
-                    )
+                matches = self._application_matches_extnav_locked(
+                    candidate, candidate.expected_extnav_revision
                 )
                 revision = extnav.revision
+                matches = matches and (applied_revision is None or revision == applied_revision)
             if matches:
                 return _ApplicationOutcome(
                     "applied_status",
@@ -2013,7 +2209,32 @@ class CorrectionServiceNode(Node):
     def _publish_status(self) -> None:
         """发布任务之外仍完整保留的服务端窗口、候选和 pending 状态。"""
         with self._lock:
+            self._expire_owner_locked()
             job = self._job
+            if (
+                job is not None and not job.active
+                and job.application_state == "applied_ack" and job.candidate is not None
+                and self._extnav.revision == job.extnav_revision
+                and self._application_matches_extnav_locked(job.candidate, job.base_revision)
+            ):
+                # ACK 后稍晚到达的权威状态仍可确认，机载继续单独验证飞控融合。
+                job.application_state = "applied_status"
+                job.application_confirmed_by_status = True
+                job.candidate = replace(
+                    job.candidate, application_state="applied_status",
+                    application_confirmed_by_status=True,
+                )
+                if (
+                    self._saved_candidate is not None
+                    and self._saved_candidate.application_job_id == job.candidate.application_job_id
+                ):
+                    self._saved_candidate = job.candidate
+                if job.outcome == "applied_ack":
+                    job.outcome = "applied_status"
+                job.journal.write("extnav_applied_status", revision=job.extnav_revision)
+                self._result_pub.publish(self._make_result(
+                    job, job.state == CorrectionStatus.STATE_SUCCEEDED
+                ))
             candidate = (
                 job.candidate
                 if job is not None and job.active and job.candidate is not None
@@ -2026,6 +2247,11 @@ class CorrectionServiceNode(Node):
             message.service_instance_id = self._service_instance_id
             message.window_revision = self._window_revision
             message.config_fingerprint = self.config.config_fingerprint
+            message.automatic_owner = self._automatic_owner
+            message.automatic_owner_releasing = self._owner_releasing
+            message.configured_tag_ids = sorted(self.config.tags)
+            message.service_odin_session_id = self._extnav.odin_session_id
+            message.window_odin_session_id = self._window[0].odin_session_id if self._window else ""
             message.window_size = self._window_size
             message.window_count = len(self._window)
             message.successful_calibrations = self._successful_calibrations
@@ -2051,6 +2277,8 @@ class CorrectionServiceNode(Node):
                 message.operation = job.operation
                 message.operation_text = OPERATION_TEXT.get(job.operation, "unknown")
                 message.job_id = job.job_id
+                message.job_source_id = job.source_id
+                message.base_window_revision = job.base_window_revision
                 message.expected_tag_id = job.expected_tag_id
                 message.detected_tag_id = job.detected_tag_id
                 message.apply_requested = job.apply_requested
@@ -2082,6 +2310,12 @@ class CorrectionServiceNode(Node):
                 message.message = job.message
                 message.last_error = job.last_error
             self._fill_candidate_status(message, candidate)
+            if job is not None:
+                # 最近 job 的应用证据不能来自前一轮保存候选。
+                message.application_state = APPLICATION_TO_MESSAGE[job.application_state]
+                message.application_state_text = job.application_state
+                message.application_confirmed_by_status = job.application_confirmed_by_status
+                message.extnav_applied = job.application_state in ("applied_ack", "applied_status")
             if self._resource_fault:
                 message.last_error = self._resource_fault
                 message.message = f"资源故障：{self._resource_fault}"

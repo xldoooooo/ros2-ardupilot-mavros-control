@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CorrectionResult.msg"
   "msg/CorrectionStatus.msg"
   "msg/ExtnavCorrectionStatus.msg"
+  "srv/SetCalibrationOwner.srv"
   "srv/SetCorrection.srv"
   "srv/StartCorrection.srv"
   "srv/StopCorrection.srv"

@@ -215,7 +215,8 @@ def avoidance_node(tmp_path, monkeypatch, request):
             request.ttl_ms = 3000
             request.flight_strategy = strategy
             request.reference_generator, request.tracking_controller = generator, tracking
-            waypoint = Waypoint()
+            # These existing arrival/capture regressions explicitly exercise inspection points.
+            waypoint = Waypoint(is_inspection=True)
             waypoint.position.x, waypoint.position.z = goal_x, 1.
             waypoint.yaw = goal_yaw
             request.waypoints = [waypoint]

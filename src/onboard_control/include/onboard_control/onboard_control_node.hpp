@@ -36,6 +36,11 @@
 #include <guided_interfaces/srv/set_gps_origin.hpp>
 #include <guided_interfaces/srv/set_navigation_mode.hpp>
 #include <correction_interfaces/msg/extnav_correction_status.hpp>
+#include <correction_interfaces/msg/correction_status.hpp>
+#include <correction_interfaces/srv/clear_window.hpp>
+#include <correction_interfaces/srv/start_correction.hpp>
+#include <correction_interfaces/srv/stop_correction.hpp>
+#include <correction_interfaces/srv/set_calibration_owner.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
@@ -230,6 +235,18 @@ private:
   void trigger_failsafe_land(const std::string & reason);
   void publish_attitude_setpoint(double dt_seconds);
   void initialize_waypoint_segment();
+  /** Observe the existing calibration service and create nonblocking service clients. */
+  void initialize_calibration();
+  /** Reject unsupported modes, unknown Tags and duplicates in each predicted window segment. */
+  bool validate_calibration_task(const ExecuteWaypoints::Request & request, std::string & reason) const;
+  /** Start exactly one owned calibration after the existing arrival gate succeeds. */
+  void start_waypoint_calibration(const SteadyTime & now);
+  /** Poll ownership, sampling/application and actual FCU fusion without blocking control. */
+  void update_waypoint_calibration(const SteadyTime & now);
+  /** Stop and release asynchronously; cancelled jobs can never resume a waypoint task. */
+  void stop_waypoint_calibration();
+  /** Advance the arrived point only after all its required actions have completed. */
+  void complete_waypoint();
   // 独立规划结果只能改变当前航点参考；所有飞控输出仍通过原 PD+DOB。
   void avoidance_tick();
   void on_avoidance_result(const guided_interfaces::msg::AvoidanceResult::SharedPtr message);
@@ -400,6 +417,41 @@ private:
   double relative_home_altitude_{0.0};
   SteadyTime last_relative_altitude_time_{}, takeoff_height_wait_started_{};
   bool takeoff_waiting_for_height_{false}, takeoff_request_accepted_{false};
+
+  // Auto calibration owns only the current arrival action, not the flight controller.
+  enum class CalibrationStage { kIdle, kClaim, kClear, kStart, kRun, kFusion };
+  using CalibrationOwner = correction_interfaces::srv::SetCalibrationOwner;
+  using CalibrationClear = correction_interfaces::srv::ClearWindow;
+  using CalibrationStart = correction_interfaces::srv::StartCorrection;
+  using CalibrationStop = correction_interfaces::srv::StopCorrection;
+  CalibrationStage calibration_stage_{CalibrationStage::kIdle};
+  std::optional<correction_interfaces::msg::CorrectionStatus> calibration_status_;
+  SteadyTime calibration_status_time_{}, calibration_started_{}, calibration_renewed_{};
+  SteadyTime calibration_stable_since_{}, calibration_pose_time_{};
+  std::string calibration_source_, calibration_instance_, calibration_session_, calibration_job_;
+  std::string calibration_detail_;
+  std::uint64_t calibration_sequence_{0}, calibration_window_revision_{0}, calibration_base_revision_{0};
+  std::uint64_t task_calibration_window_revision_{0};
+  std::string task_calibration_instance_, task_calibration_session_;
+  bool task_has_calibrated_{false}, calibration_follow_fusion_{false};
+  std::int64_t calibration_application_stamp_{0}, calibration_pose_stamp_{0};
+  geometry_msgs::msg::PoseStamped calibration_external_pose_;
+  double calibration_timeout_seconds_{120.0};  // Entire arrival calibration including FCU fusion.
+  rclcpp::Subscription<correction_interfaces::msg::CorrectionStatus>::SharedPtr calibration_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr calibration_pose_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr calibration_velocity_subscription_;
+  Eigen::Vector3d calibration_external_velocity_{Eigen::Vector3d::Zero()};
+  SteadyTime calibration_velocity_time_{};
+  std::int64_t calibration_velocity_stamp_{0};
+  rclcpp::Client<CalibrationOwner>::SharedPtr calibration_owner_client_;
+  rclcpp::Client<CalibrationClear>::SharedPtr calibration_clear_client_;
+  rclcpp::Client<CalibrationStart>::SharedPtr calibration_start_client_;
+  rclcpp::Client<CalibrationStop>::SharedPtr calibration_stop_client_;
+  rclcpp::Client<CalibrationOwner>::SharedFuture calibration_owner_future_, calibration_renew_future_;
+  rclcpp::Client<CalibrationClear>::SharedFuture calibration_clear_future_;
+  rclcpp::Client<CalibrationStart>::SharedFuture calibration_start_future_;
+  std::int64_t calibration_owner_request_{0}, calibration_clear_request_{0}, calibration_start_request_{0};
+  std::int64_t calibration_renew_request_{0};
 
   // Waypoint queue and arrival dwell state live onboard, never in the GUI process.
   std::vector<guided_interfaces::msg::Waypoint> waypoints_;

@@ -61,7 +61,7 @@ from ..models import (
     WaypointTrackingController,
 )
 from ..process_manager import CleanupReport
-from ..ros_controller import GroundStationRosController
+from ..ros_controller import GroundStationRosController, validate_waypoint_task
 from ..startup import (
     ICON_PATH,
     PREFERENCES_PATH,
@@ -1370,6 +1370,14 @@ class GroundStationWindow(QMainWindow):
             reference_generator=self.waypoints.selected_reference_generator(),
             tracking_controller=self.waypoints.selected_tracking_controller(),
         )
+        try:
+            sequence.waypoints = validate_waypoint_task(
+                values, coordinate_frame=snapshot.navigation_frame, strategy=sequence.strategy,
+            )
+        except ValueError as exc:
+            self._reject_upstream_command(command, str(exc))
+            self.waypoints.set_result(str(exc), running=False)
+            return
         self._upstream_sequence = sequence
         try:
             self._upstream.block_standby()
@@ -1552,6 +1560,7 @@ class GroundStationWindow(QMainWindow):
             self._upstream.begin_mission(
                 ticket, mission_kind, sequence.point_indexes,
                 source_id=self._ros.source_id, command_id=sequence.command_id,
+                waypoints=sequence.waypoints,
             )
         except Exception as exc:
             self._events.warn("upstream", f"任务状态关联失败：{exc}")
@@ -2073,6 +2082,17 @@ class GroundStationWindow(QMainWindow):
                     "避障必须使用连续参考和轨迹 PD+DOB。", LogLevel.WARN, state="warning"
                 )
                 return None
+        try:
+            values = validate_waypoint_task(
+                values, coordinate_frame=self._ros.snapshot().navigation_frame,
+                strategy=flight_strategy, local_coordinates=local_coordinates,
+            )
+        except ValueError as exc:
+            message = f"航点提交被拒绝：{exc}"
+            self.waypoints.set_result(message, running=False)
+            self.activity_banner.set_message(message, LogLevel.WARN)
+            self._events.warn("waypoints", message)
+            return None
         first = values[0]
         last = values[-1]
         combination_warnings: list[str] = []
@@ -2125,20 +2145,24 @@ class GroundStationWindow(QMainWindow):
                 f"（避障={flight_strategy.label}，命令生成={generator_label}，"
                 f"跟踪={controller.label}）",
             )
+        coordinate_options = {"local_coordinates": True} if local_coordinates and self._ros.snapshot().navigation_frame == "map" else {}
+        try:
+            ticket = self._ros.request_waypoints(
+                values, flight_strategy, generator, controller,
+                tuple(photo_nos) if photo_nos is not None else (),
+                **coordinate_options,
+            )
+        except ValueError as exc:
+            message = f"航点提交被拒绝：{exc}"
+            self.waypoints.set_result(message, running=False)
+            self.activity_banner.set_message(message, LogLevel.WARN)
+            self._events.warn("waypoints", message)
+            return None
         self._waypoint_running = True
         self._pending_commands.add("waypoints")
-        # 新任务先清掉上一任务的完成进度；同一任务后续 RUNNING 回报不会重置。
+        # 新任务先清掉上一任务进度；同一任务后续 RUNNING 回报不会重置。
         self.waypoints.reset_progress()
         self.waypoints.set_result("航点已排队，等待机载服务接收…", running=True)
-        coordinate_options = {"local_coordinates": True} if local_coordinates and self._ros.snapshot().navigation_frame == "map" else {}
-        ticket = self._ros.request_waypoints(
-            values,
-            flight_strategy,
-            generator,
-            controller,
-            tuple(photo_nos) if photo_nos is not None else (),
-            **coordinate_options,
-        )
         self.activity_banner.set_message(
             "航点已排队，等待机载服务接收…", LogLevel.INFO, state="busy"
         )

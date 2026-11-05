@@ -1,0 +1,10 @@
+# 自动校准跨窗口操作持有租约；同来源 acquire 续租，release 异步停止并释放。
+# 每轮使用唯一 source_id；释放/过期（含 acquire 前 release）后同来源不得重新 acquire 或写入。
+# accepted 仅表示请求准入；释放完成须观察 status.automatic_owner 为空。
+# 非 owner 的 release 不释放他人，但仍取消本来源；被拒绝后也不得用本来源重新 acquire。
+string source_id
+string expected_service_instance_id
+bool acquire
+---
+bool accepted
+string message

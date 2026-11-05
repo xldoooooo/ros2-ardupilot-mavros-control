@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from ground_station_core.config import INTERFACE_VERSION
+from ground_station_core.waypoint_io import Waypoint
 from ground_station_core.models import VehicleSnapshot
 from ground_station_core.ros_controller import (
     GroundStationRosController,
@@ -118,11 +119,16 @@ def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
     controller._state._last_status_time = time.monotonic()
     controller.enable_control()
     ticket = controller.request_waypoints(
-        ((4.0, -1.0, 1.5, 0.25),),
+        (
+            (4.0, -1.0, 1.5, 0.25),
+            Waypoint(5.0, 0.0, 1.5, 0.0, is_inspection=True),
+            Waypoint(6.0, 0.0, 1.5, 0.0, False, True, 7, True),
+            Waypoint(7.0, 0.0, 1.5, 0.0, True, True, 7, False),
+        ),
         strategy=2,
         reference_generator=3,
         tracking_controller=1,
-        photo_nos=("客户/A-7",),
+        photo_nos=("客户/A-7", "inspection", "calibration", "combined"),
     )
     client = FakeClient()
     pending: dict[int, tuple] = {}
@@ -153,6 +159,11 @@ def test_waypoint_transport_writes_all_method_fields_to_ros_request() -> None:
     assert waypoint.yaw == 0.25
     assert waypoint.has_photo_no
     assert waypoint.photo_no == "客户/A-7"
+    assert [(point.is_inspection, point.is_calibration, point.calibration_tag_id, point.continue_window)
+            for point in request.waypoints] == [
+        (False, False, 0, False), (True, False, 0, False),
+        (False, True, 7, True), (True, True, 7, False),
+    ]
 
 
 @pytest.mark.parametrize("navigation_frame", ["odom", "map"])
@@ -325,3 +336,52 @@ def test_waypoint_preview_builds_retained_markers_path_and_live_pose(navigation_
     assert len(marker_publisher.messages[-1].markers) == 1
     assert marker_publisher.messages[-1].markers[0].action == Marker.DELETEALL
     assert path_publisher.messages[-1].poses == []
+
+
+@pytest.mark.parametrize("point", [
+    (0.0, 0.0, 1.0, 0.0, True),
+    Waypoint(0.0, 0.0, 1.0, 0.0, "false"),
+    Waypoint(0.0, 0.0, 1.0, 0.0, False, True, True),
+    Waypoint(0.0, 0.0, 1.0, 0.0, False, True, 2**31),
+    Waypoint(float("nan"), 0.0, 1.0, 0.0),
+])
+def test_invalid_waypoint_fields_never_enter_command_queue(point) -> None:
+    """所有提交入口都拒绝不完整、非布尔、非法 ID 或非有限坐标。"""
+    controller = GroundStationRosController()
+    with pytest.raises(ValueError):
+        controller.request_waypoints((point,))
+    assert controller._command_queue.empty()
+
+
+@pytest.mark.parametrize("frame,strategy,local", [("map", 0, False), ("odom", 1, False), ("odom", 0, True)])
+def test_calibration_rejects_unsupported_task_modes_before_queue(frame, strategy, local) -> None:
+    """只限制校准点的已知不支持组合；普通巡检仍沿用既有模式。"""
+    controller = GroundStationRosController()
+    controller._state._snapshot = VehicleSnapshot(navigation_frame=frame)
+    calibration = Waypoint(0.0, 0.0, 1.0, 0.0, is_calibration=True)
+    with pytest.raises(ValueError, match="校准点仅支持"):
+        controller.request_waypoints((calibration,), strategy=strategy, local_coordinates=local)
+    assert controller._command_queue.empty()
+    controller.request_waypoints((calibration._replace(is_calibration=False),), strategy=strategy, local_coordinates=local)
+    assert not controller._command_queue.empty()
+
+
+def test_control_status_preserves_authoritative_calibration_fields() -> None:
+    """使用已安装 ROS 消息核对校准 job 和失败原因进入地面快照。"""
+    from guided_interfaces.msg import ControlStatus
+
+    controller = GroundStationRosController()
+    message = ControlStatus()
+    message.calibration_active = True
+    message.calibration_job_id = "job-42"
+    message.calibration_detail = "等待融合结果"
+    controller._state.update(message)
+    snapshot = controller.snapshot()
+    assert (snapshot.calibration_active, snapshot.calibration_job_id, snapshot.calibration_detail) == (
+        True, "job-42", "等待融合结果",
+    )
+    message.calibration_active = False
+    message.calibration_detail = "自动校准失败：相机打开失败"
+    controller._state.update(message)
+    assert not controller.snapshot().calibration_active
+    assert "相机打开失败" in controller.snapshot().calibration_detail

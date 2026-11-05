@@ -182,6 +182,8 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         assert ros.calls[-1][1][4] == ("1",)
         assert window._waypoint_running
         assert ("mission", (2, "inspection", (8,))) in upstream.calls
+        assert upstream.mission_waypoints == window._upstream_sequence.waypoints
+        assert upstream.mission_waypoints[0].is_inspection
         assert not window.waypoints.send_button.isEnabled()
 
         # 巡检航点终态后立即在末点进入 LAND。

@@ -7,7 +7,7 @@
   开发机及mini-ground-tailscale已同步本轮地面代码；mini旧主窗口未重启，用户需重开后手动启动SITL。mini存在较旧地面GUI基线，本轮只合入main_window的相关改动，未连带引入其他UI/避障配置。refresh无需机载修改未连接；new/hp及refresh副本中的地面代码尚未同步本轮。验收见[Task13报告](agent/report/report-2026-11-04-simulation-workflow.md)。
 
 
-维护日期：2026-10-30。开发机、refresh与new已原生部署Task6 odom/map导航、三策略地图任务和安装外参转换，飞行接口3.5；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-11-05。开发机Task12飞行接口为3.6；refresh/new/hp仍为3.5，refresh/new/hp/mini均未同步Task12。Task6 odom/map导航、三策略地图任务和安装外参转换已在开发机、refresh与new原生部署；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -22,7 +22,7 @@
 
 ## 当前架构与入口
 
-- **Task10 FPGA 可移除旁路已在开发机和 new 原生安装**：权威交付源码及独立构建/环境/配置在 `fpga_avoidance/`，`COLCON_IGNORE` 隔离默认构建；CPU 模式不读模块配置、不加载 overlay、不探板。原避障启动入口带标准 ROS 管理器，地面站独立选择 CPU/FPGA，只有新鲜落地、未解锁、空闲无任务才可切换；桥 `native_namespace` 单选结果源且每次启动强制 CPU，飞行公共协议仍 3.5，PD+DOB/策略/参数不变。模块删除不需修主程序；接口和维护见[模块说明](fpga_avoidance/README.md)。
+- **Task10 FPGA 可移除旁路已在开发机和 new 原生安装**：权威交付源码及独立构建/环境/配置在 `fpga_avoidance/`，`COLCON_IGNORE` 隔离默认构建；CPU 模式不读模块配置、不加载 overlay、不探板。原避障启动入口带标准 ROS 管理器，地面站独立选择 CPU/FPGA，只有新鲜落地、未解锁、空闲无任务才可切换；桥 `native_namespace` 单选结果源且每次启动强制 CPU，该旁路不改变飞行公共协议（各机版本见下文），PD+DOB/策略/参数不变。模块删除不需修主程序；接口和维护见[模块说明](fpga_avoidance/README.md)。
   本项目原对象导出层按段长配时、联立内点速度，导出实测起速、零终速的 C2 Hermite 三次，解析限 v/a、连续体素碰撞检查；取消内点零速回退，同目标重规划参考已发布曲线的空间配时，冗余节点仅经连续碰撞验证才直连。近目标仅保持仍有效的零速末段，故障空失败；不保证跨计划 a/jerk 连续。该平滑修复已在开发机和new原生构建部署，new的ARM回归及落地FPGA选择通过；refresh/hp/mini-ground未部署；实际算法是 CPU A* + FPGA Ising/QUBO，source/回退/MOCK 必须如实显示。失败任务的计时/CPU 使用本次值，规划错误保持到成功、更换目标或取消，不因成功 PING 隐藏。
   CPU 模块拔除/三策略、ARM 原生 DDS/轨迹契约及落地 CPU→FPGA→CPU 已验证；新参数真板卡参与的隔离 SITL 绕障、恢复、换目标、取消和断板超时 LAND 五项通过，**全程未解锁或起飞实机**。原几何搜索仍可能产生无法通过闭体素认证的路线；平滑导出失败会尝试经认证的冗余节点直连，仍不通过则拒绝。跨计划/实际跟踪净空风险未关闭，历史归因见[曲线归因](agent/report/report-2026-10-29-task10-fpga-curve-rejection-analysis.md)。板卡 `192.168.2.10:4000`，new 网口 `192.168.2.100`，runtime `0x04010351` / build `0x44325257`。默认近点捷径与3.5ms fuse保留，硬件参与和采用FPGA输出分别记录。
   开发机与new现场FPGA参数由用户调整为0.1m格、名义净空0.18m、v=2/a=1、采样0.02s、重规划距离10m；周期开发机2s、new现场10s（同步保留），含补偿的膨胀函数半径约0.3532m（现场YAML改动未混入本次修复提交）。其余原数值参考uav002；**new实选uav001**，其CPU为净空0.25、XY/Z速度1/0.2、加速度0.35/0.15，不能再称二者已完全对齐。max_z_cells已补100以覆盖实机0.2–10m的98层。ARM两策略各9/10（各5 FPGA输出、4 CPU回退）；桌面真实起点Z约−0.05低于0.2下界而拒绝，实际下采样云的虚拟高度诊断5/9通过，不是实飞。部署及实景证据见[新参数硬件报告](agent/report/report-2026-10-29-task10-fpga-new-parameters-live-cloud.md)。
@@ -36,7 +36,7 @@
   该工具未加入自动启动；refresh 本次未核对或部署，需要时从开发机 `dev/` 单独复制即可。
 - 开发机及两架现役飞机均为 Ubuntu 24.04 / ROS 2 Jazzy；机载为 Jetson Orin NX / ARM64。
   Python 使用项目 `.venv`。旧 Ubuntu 22.04/Humble 台架数据不再代表现役环境。
-- 开发机、refresh、new及hp-desktop飞行协议 **3.5**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.5.0**；不能混用新旧接口及安装产物。
+- 开发机飞行协议 **3.6**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.6.0**；refresh/new/hp/mini仍为3.5，未同步Task12。升级须联动重建控制/接口/修正服务并重启旧进程，不能混用新旧安装产物。
   独立视频协议 **3.2**，AprilTag 修正协议 **2.0**。地面与机载共享接口必须同步重建。
 - PySide6 地面站是薄客户端；`src/onboard_control` 是唯一飞行控制权威，负责租约、安全状态机、
   航点推进及 100 Hz PD+DOB。唯一生产输出为 `/mavros/setpoint_raw/attitude`；GUI、规划器、
@@ -109,7 +109,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 | new / uav001 / 1号机 | Task10 可选 FPGA / 3.5；主工程、CPU规划器、项目Odin及FPGA均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂与自动pitch/回退角保留，保持odom，reloc地图未配置；飞控/避障停止，视频/修正保持原运行状态；相机和实飞未验收 |
 | hp-desktop | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；逐机参数与控制/规划配置随主线同步，旧TODO/RViz等现场改动保留；机载服务未启用 |
 | mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
-| 开发机 | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`，SITL始终显式使用仿真档案；实机档案不影响仿真。配置重启生效已实际验证；原有TODO、RViz及文档现场改动保留 |
+| 开发机 | Task7统一配置 / Task12 3.6，控制/接口/修正服务原生重建 | 本机选择`simulation`，SITL始终显式使用仿真档案；实机档案不影响仿真。配置重启生效已实际验证；原有TODO、RViz及文档现场改动保留 |
 
 - **集中媒体服务（Task8）**：飞机仅保留回环RTSP，按逐机`video/camera.conf`主动推流和rsync/SSH上传到mini-ground；外部使用地面`<aircraft>/rectified`、HTTP8090与只读FTP2121。原片/暂存私有，去畸变成品才公开。地面独立`ground-media.service`拥有处理、封装、图片入库、容量清理与原片重建；GUI关闭不影响后台。
   机载SQLite队列从大小/SHA-256核验入库ACK开始计算默认24小时保留期；未确认原片不清理。总容量默认100GiB，跳过活动文件，超限明确告警。归属为飞机/session/source_id/mission_sequence，photo_no与waypoint_index分开。08飞行完成与媒体就绪分开，09只提供地面已处理图片或明确失败。
@@ -192,6 +192,10 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 
 ## AprilTag / Odin 当前基线与风险
 
+- **Task12 航点 Tag 自动校准（本机基线）**：飞行接口已升至3.6，新增独立巡检/校准/Tag ID/沿窗字段；新点及旧CSV默认普通，旧上位机巡检点显式标巡检。支持odom绝对坐标直线和遇障悬停，不支持map/自主避障/local_coordinates。首点或新段先清窗但保留active correction；NEXT必须沿用同一服务实例/session/window revision，不静默降级FIRST。校准独占面板只读，结束后开放手动调试；异常复用LAND，取消/失联接管不恢复迟到任务。
+  本次job与extnav最终样本身份、应用状态及MAVROS融合均需确认；融合期间跟随当前位置，水平PD/DOB临时使用既有`/extnav/velocity_fcu`物理速度，防止EKF暂态速度导致错误制动，Z/算法/扰动历史保持。总体上限`calibration_timeout_seconds=120`秒。升级需一起原生重建消息、控制和修正服务并重启旧进程，不能将新消息动态库配旧控制程序。
+  仅开发机更新；refresh/new/hp/mini均未同步本Task12，下次同步需带3.6接口和新增owner服务，保留现场参数。SITL验证使用合成候选＋真实原生extnav/MAVROS/ArduPilot/control，不代表真实相机/PnP或实飞验收。开发入口见[航点校准工作流](docs/tag-waypoint-workflow.md)。
+
 - extnav权威源码为`correction_service/extnav_patch/`的单线程C++/固定尺寸数学；公共入口仍`ros2 run extnav_bridge extnav_to_vision_pose`。
   安装器以Release迁移外部`/home/nvidia/vrpn_mavros`包并备份旧source/build/install；开发机隔离验证、refresh/new生产安装已完成，hp-desktop已同步维护源码，但无外部vrpn_mavros，未新增该机载安装。原Python仅保留作比较参考。
   raw全频、vision/辅助timer仍40/100Hz，CAS/session、冻结样本和计数保持；corrected保留原门控，两路辅助输出无读者时跳过构造/publish，有读者恢复，control计数仍推进。控制器消费MAVROS EKF。
@@ -215,7 +219,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
   ACK 未决锁存 `application_unknown`，只允许同一候选幂等对账/重试。
 - 首次候选保持 `planar_xy_yaw(H_WI * inverse(H_OI))`，**不能改为单点 `P-RQ` 重锚**。
   从第二个不同 Tag 起，滑窗才从原始 P/Q 点对按绝对逆方差重算 SE(2)，不累计增量或平均单 Tag yaw。
-  同帧多 Tag 联合估计、自动航点触发未实现；相机/400 Hz raw 订阅只在任务期间启用，idle 释放。
+  同帧多 Tag 联合估计未实现；自动航点校准以本机Task12基线为准；相机/400 Hz raw 订阅只在任务期间启用，idle 释放。
 - **修正服务性能待优化**：当前仍为四线程Python executor，实体共用默认互斥回调组，采样/apply另有任务线程。
   本地真实DDS同400Hz输入对照已证实单线程可显著降低CPU；正式修改与事务回归尚未实施。后续原生化应重点评估400Hz采样/同步前端，
   OpenCV检测已原生、滑窗/PnP不是主要热点；不要直接将30Hz相机发布改10Hz，现有时间戳门会降低实际检测频率。

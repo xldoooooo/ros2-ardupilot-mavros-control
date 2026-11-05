@@ -27,6 +27,9 @@ bool service_available
 string service_instance_id
 uint64 window_revision
 string config_fingerprint
+# 当前权威 Odin session 与滑窗所属 session；与下方最近 job 的 session 分离。
+string service_odin_session_id
+string window_odin_session_id
 
 bool active
 uint8 state
@@ -34,6 +37,9 @@ string state_text
 uint8 operation
 string operation_text
 string job_id
+# 最近 job 的请求来源及启动时窗口 revision，不是当前窗口 revision。
+string job_source_id
+uint64 base_window_revision
 int32 expected_tag_id
 int32 detected_tag_id
 bool apply_requested
@@ -104,3 +110,10 @@ uint64 extnav_revision
 string log_path
 string message
 string last_error
+
+# 自动校准独占来源；空字符串表示手动写权限恢复。
+string automatic_owner
+# release accepted 不代表线程/资源已释放；此阶段 owner 仍非空。
+bool automatic_owner_releasing
+# 当前 Tag 配置中的全部 ID，仅供任务校验读取。
+int32[] configured_tag_ids

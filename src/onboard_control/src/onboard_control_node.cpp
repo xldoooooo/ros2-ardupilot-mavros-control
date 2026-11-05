@@ -24,8 +24,8 @@ namespace onboard_control
 namespace
 {
 
-// 3.5 adds map task coordinates, localization state and ground-only mode restarts.
-constexpr char kInterfaceVersion[] = "3.5";
+// 3.6 adds independent inspection/calibration waypoint actions and calibration status.
+constexpr char kInterfaceVersion[] = "3.6";
 constexpr std::uint32_t kMinimumTtlMs = 50;
 constexpr std::uint32_t kMaximumTtlMs = 10000;
 constexpr std::uint32_t kMinimumLeaseMs = 300;
@@ -374,6 +374,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 
   initialize_reboot();
   initialize_navigation();
+  initialize_calibration();
   set_mode_client_ = create_client<mavros_msgs::srv::SetMode>(mavros_prefix_ + "/set_mode");
   arming_client_ = create_client<mavros_msgs::srv::CommandBool>(mavros_prefix_ + "/cmd/arming");
   takeoff_client_ = create_client<mavros_msgs::srv::CommandTOL>(mavros_prefix_ + "/cmd/takeoff");
@@ -1164,6 +1165,10 @@ void OnboardControlNode::on_execute_waypoints(
     return;
   }
 
+  if (!validate_calibration_task(*request, reason)) {
+    response->message = reason;
+    return;
+  }
   CommandIdentity command{request->source_id, request->sequence, "waypoints"};
   cancel_active_task("旧任务已被新的航点任务覆盖");
   waypoint_flight_strategy_ = request->flight_strategy;
@@ -1323,6 +1328,9 @@ void OnboardControlNode::start_waypoint_task(
   active_task_started_ = SteadyClock::now();
   waypoints_ = waypoints;
   waypoint_index_ = 0;
+  task_has_calibrated_ = false;
+  task_calibration_instance_.clear();
+  task_calibration_session_.clear();
   waypoint_start_tracker_.reset();
   waypoint_start_pending_ = false;
   waypoint_arrival_tracker_.reset();
@@ -1486,8 +1494,13 @@ void OnboardControlNode::activate_tracking_controller(
   active_tracking_controller_ = type;
 }
 
+/** Retire waypoint references and pending calibration on every control handover. */
 void OnboardControlNode::reset_waypoint_reference_state()
 {
+  if (calibration_stage_ != CalibrationStage::kIdle) {
+    calibration_detail_ = "自动校准已停止：航点控制已被接管";
+    stop_waypoint_calibration();
+  }
   navigation_reference_join_.clear();
   reset_avoidance();
   reference_generator_.reset();
@@ -1567,6 +1580,7 @@ void OnboardControlNode::initialize_waypoint_segment()
 
 void OnboardControlNode::cancel_active_task(const std::string & reason)
 {
+  stop_waypoint_calibration();
   task_waypoints_.clear();
   if (active_task_ == ActiveTask::kTakeoff || active_task_ == ActiveTask::kWaypoint) {
     publish_result(
@@ -1586,6 +1600,7 @@ void OnboardControlNode::cancel_active_task(const std::string & reason)
 
 void OnboardControlNode::fail_active_task(const std::string & reason, const bool request_land)
 {
+  stop_waypoint_calibration();
   const CommandIdentity failed = active_command_;
   active_task_ = ActiveTask::kNone;
   waypoints_.clear();
@@ -2163,6 +2178,10 @@ void OnboardControlNode::update_waypoint_executor(
     return;
   }
 
+  if (calibration_stage_ != CalibrationStage::kIdle) {
+    update_waypoint_calibration(now);
+    return;
+  }
   if (!generator_waypoint_initialized_ || generator_waypoint_index_ != waypoint_index_) {
     initialize_waypoint_segment();
   }
@@ -2231,9 +2250,21 @@ void OnboardControlNode::update_waypoint_executor(
     return;
   }
 
-  // 到达事件是拍照的唯一权威触发点；先带出当前点元数据，再推进索引。
+  // 仅巡检点到达事件触发拍照；校准点先保持索引，完成融合确认后推进。
   // 发布完全非阻塞，视频服务不存在或失败都不能改变飞行任务终态。
-  publish_waypoint_capture(waypoint);
+  if (waypoint.is_inspection) {
+    publish_waypoint_capture(waypoint);
+  }
+  if (waypoint.is_calibration) {
+    start_waypoint_calibration(now);
+    return;
+  }
+  complete_waypoint();
+}
+
+/** Complete a plain/inspection point, or a calibration point after verified fusion. */
+void OnboardControlNode::complete_waypoint()
+{
   ++waypoint_index_;
   if (waypoint_index_ >= waypoints_.size()) {
     const CommandIdentity completed = active_command_;
@@ -2357,6 +2388,7 @@ void OnboardControlNode::trigger_failsafe_land(const std::string & reason)
   start_land(command, true);
 }
 
+/** Publish the shared controller output, with physical XY velocity during Tag fusion. */
 void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
 {
   const SteadyTime now = SteadyClock::now();
@@ -2379,8 +2411,14 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
   } else if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_FAILSAFE_HOLD) {
     use_output_jerk = failsafe_hold_output_jerk_;
   }
+  VehicleKinematics control_vehicle = vehicle_;
+  if (calibration_stage_ != CalibrationStage::kIdle && calibration_follow_fusion_) {
+    // EKF position fusion can create fictitious horizontal velocity. Use the existing bridge's
+    // physical velocity for PD/DOB during this transition; retain EKF Z and verify EKF agreement.
+    control_vehicle.velocity.head<2>() = calibration_external_velocity_.head<2>();
+  }
   const ControlOutput output = controller_.compute(
-    vehicle_, reference_, dt_seconds, use_acceleration_feedforward, use_output_jerk);
+    control_vehicle, reference_, dt_seconds, use_acceleration_feedforward, use_output_jerk);
   if (!output.valid) {
     trigger_failsafe_land("PD+DOB 产生非有限控制输出");
     return;
@@ -2462,6 +2500,9 @@ void OnboardControlNode::status_tick()
   guided_interfaces::msg::ControlStatus message;
   message.header.stamp = get_clock()->now();
   message.interface_version = kInterfaceVersion;
+  message.calibration_active = calibration_stage_ != CalibrationStage::kIdle;
+  message.calibration_job_id = calibration_job_;
+  message.calibration_detail = calibration_detail_;
   fill_navigation_status(message, now);
   message.fcu_connected = fcu_connected_ && last_state_time_ != SteadyTime{} &&
     std::chrono::duration<double>(now - last_state_time_).count() <= state_timeout_seconds_;

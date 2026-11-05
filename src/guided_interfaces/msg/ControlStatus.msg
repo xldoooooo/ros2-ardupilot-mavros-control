@@ -99,3 +99,8 @@ string status_message
 float64 control_rate_hz
 float64 max_jitter_ms
 uint64 deadline_miss_count
+
+# 当前自动校准阶段；索引仍指向该点，融合确认后才推进。
+bool calibration_active
+string calibration_job_id
+string calibration_detail

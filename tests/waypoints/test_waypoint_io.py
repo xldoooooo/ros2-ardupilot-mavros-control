@@ -10,6 +10,7 @@ import pytest
 
 from ground_station_core.config import MAX_WAYPOINT_COUNT, PROJECT_ROOT
 from ground_station_core.waypoint_io import (
+    Waypoint,
     WaypointExportError,
     WaypointImportError,
     default_waypoint_export_path,
@@ -25,7 +26,7 @@ def test_example_csv_preserves_order_and_converts_yaw_to_radians() -> None:
     waypoints = load_waypoint_file(PROJECT_ROOT / "examples/waypoints-example.csv")
 
     assert len(waypoints) == 5
-    assert waypoints[0] == (0.0, 0.0, 1.5, 0.0)
+    assert waypoints[0] == Waypoint(0.0, 0.0, 1.5, 0.0)
     assert waypoints[2][:3] == (2.0, 2.0, 1.8)
     assert math.isclose(waypoints[2][3], math.pi / 2.0)
     assert math.isclose(waypoints[-1][3], -math.pi / 2.0)
@@ -43,7 +44,7 @@ def test_csv_accepts_utf8_bom_trimmed_header_and_trailing_blank_lines(
     )
 
     assert load_waypoint_file(source) == (
-        (1.25, -2.5, 3.75, math.pi),
+        Waypoint(1.25, -2.5, 3.75, math.pi),
     )
 
 
@@ -56,6 +57,8 @@ def test_csv_accepts_utf8_bom_trimmed_header_and_trailing_blank_lines(
         ("index,x,y,z,yaw\n1,0,0,1,181\n", "yaw 超出允许范围"),
         ("index,x,y,z,yaw\n1,0,0,1\n", "应有 5 列"),
         ("index,x,y,z,yaw\n", "没有可导入"),
+        ('index,x,y,z,yaw\n1,0,0,1,"0\n', "CSV 语法错误"),
+        ("index,x,y,z,yaw\n1,0,0,1,0\n,,,,\n", "index 必须是整数"),
     ),
 )
 def test_csv_rejects_ambiguous_or_unsafe_rows(
@@ -98,7 +101,7 @@ def test_file_format_dispatcher_exposes_csv_and_reserves_other_formats(
 def test_csv_export_uses_import_schema_and_round_trips_current_list(
     tmp_path: Path,
 ) -> None:
-    """导出沿用五列表头、顺序和角度单位，未写扩展名时自动补 CSV。"""
+    """导出追加属性表头、保留顺序和角度单位，未写扩展名时自动补 CSV。"""
     waypoints = (
         (1.25, -2.5, 3.75, math.pi / 2.0),
         (-4.0, 5.5, 6.0, -math.pi),
@@ -108,14 +111,15 @@ def test_csv_export_uses_import_schema_and_round_trips_current_list(
 
     assert destination == tmp_path / "current-waypoints.csv"
     assert destination.read_text(encoding="utf-8").splitlines() == [
-        "index,x,y,z,yaw",
-        "1,1.25,-2.5,3.75,90",
-        "2,-4,5.5,6,-180",
+        "index,x,y,z,yaw,is_inspection,is_calibration,calibration_tag_id,continue_window",
+        "1,1.25,-2.5,3.75,90,false,false,0,false",
+        "2,-4,5.5,6,-180,false,false,0,false",
     ]
     loaded = load_waypoint_file(destination)
     assert len(loaded) == len(waypoints)
     for exported, original in zip(loaded, waypoints, strict=True):
-        assert exported == pytest.approx(original)
+        assert exported[:4] == pytest.approx(original)
+        assert exported[4:] == (False, False, 0, False)
 
 
 def test_export_path_filter_and_invalid_exports_are_rejected(tmp_path: Path) -> None:
@@ -130,3 +134,73 @@ def test_export_path_filter_and_invalid_exports_are_rejected(tmp_path: Path) -> 
         save_waypoint_file(tmp_path / "waypoints.txt", ((0.0, 0.0, 1.0, 0.0),))
     with pytest.raises(WaypointExportError, match="列表为空"):
         save_waypoint_file(tmp_path / "empty.csv", ())
+
+
+def test_named_waypoint_defaults_and_updated_examples_are_ordinary() -> None:
+    """旧四元素构造与全部既有示例均默认普通点，前四索引与属性一致。"""
+    point = Waypoint(1.0, 2.0, 3.0, 0.5)
+    assert point[:4] == (point.x, point.y, point.z, point.yaw)
+    assert point[4:] == (False, False, 0, False)
+    for source in (PROJECT_ROOT / "examples").glob("waypoints*.csv"):
+        assert all(point[4:] == (False, False, 0, False) for point in load_waypoint_file(source))
+
+
+def test_csv_round_trip_preserves_independent_flags_and_repeated_tag_ids(tmp_path: Path) -> None:
+    """Tag 次序与重复不由 IO 判定；独立标志与窗口选项完整往返。"""
+    points = (
+        Waypoint(0.0, 0.0, 1.0, 0.0, True, True, 42, False),
+        Waypoint(1.0, 2.0, 1.5, math.pi / 2.0, False, True, 7, True),
+        Waypoint(3.0, 2.0, 2.0, 0.0, True, False, 42, True),
+    )
+    destination = save_waypoint_file(tmp_path / "attributes.csv", points)
+    assert load_waypoint_file(destination) == points
+    text = destination.read_text().replace("true", "1").replace("false", "0")
+    destination.write_text(text)
+    assert load_waypoint_file(destination) == points
+
+
+@pytest.mark.parametrize(
+    ("attributes", "message"),
+    (
+        ("maybe,false,0,false", "is_inspection.*布尔值"),
+        ("false,,0,false", "is_calibration.*布尔值"),
+        ("false,true,-1,false", "calibration_tag_id.*非负整数"),
+        ("false,true,1.5,false", "calibration_tag_id.*非负整数"),
+        ("false,true,2147483648,false", "calibration_tag_id.*非负32位整数"),
+        ("false,true,true,false", "calibration_tag_id.*非负整数"),
+        ("false,true,0,2", "continue_window.*布尔值"),
+        ("false,true,0", "应有 9 列"),
+    ),
+)
+def test_csv_rejects_invalid_waypoint_attributes(
+    tmp_path: Path, attributes: str, message: str,
+) -> None:
+    """新字段必须明确合法，禁止空值、负 ID 或非布尔字符串静默变普通点。"""
+    source = tmp_path / "invalid-attributes.csv"
+    source.write_text(
+        "index,x,y,z,yaw,is_inspection,is_calibration,calibration_tag_id,continue_window\n"
+        f"1,0,0,1,0,{attributes}\n"
+    )
+    with pytest.raises(WaypointImportError, match=message):
+        load_waypoint_file(source)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("is_inspection", "false"), ("is_calibration", 1), ("continue_window", None),
+     ("calibration_tag_id", -1), ("calibration_tag_id", True), ("calibration_tag_id", 2**31)),
+)
+def test_csv_export_rejects_invalid_attribute_types(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    """内存中的非法标志和 ID 不能被 bool/int 隐式转换后导出。"""
+    point = Waypoint(0.0, 0.0, 1.0, 0.0)._replace(**{field: value})
+    with pytest.raises(WaypointExportError, match=field):
+        save_waypoint_file(tmp_path / "invalid.csv", (point,))
+
+
+@pytest.mark.parametrize("extra_fields", [(True,), (True, False), (True, False, 0)])
+def test_export_rejects_partial_behavior_records(tmp_path: Path, extra_fields: tuple) -> None:
+    """五到七项输入不能借具名元组的默认值偷偷补齐。"""
+    with pytest.raises(WaypointExportError, match="八项完整记录"):
+        save_waypoint_file(tmp_path / "partial.csv", ((0.0, 0.0, 1.0, 0.0, *extra_fields),))

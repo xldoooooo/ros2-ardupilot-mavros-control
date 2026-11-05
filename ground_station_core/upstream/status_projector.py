@@ -13,6 +13,7 @@ from typing import Any
 from .models import UpstreamStandbyPolicy
 from .protocol import make_status
 from ..config import HARDWARE_LOW_VOLTAGE
+from ..waypoint_io import WaypointCollection, normalize_waypoint
 from ..event_log import EventLog
 from ..ground_media_reader import processed_download
 from ..models import (
@@ -34,6 +35,7 @@ class _MissionState:
     ticket: int
     kind: str
     point_indexes: tuple[int, ...]
+    waypoints: WaypointCollection | None = None
     source_id: str = ""
     aircraft_id: str = ""
     client_no: str = ""
@@ -137,13 +139,18 @@ class UpstreamStatusProjector:
         source_id: str = "",
         aircraft_id: str = "",
         command_id: str = "",
+        waypoints: WaypointCollection | None = None,
     ) -> None:
-        """绑定本地 ROS ticket，避免旧任务终态误关闭新返航任务。"""
+        """绑定 ticket、原始点号与点位类型；旧巡检调用省略类型时仍全部视为巡检。"""
+        points = None if waypoints is None else tuple(normalize_waypoint(point) for point in waypoints)
+        if points is not None and len(points) != len(point_indexes):
+            raise ValueError("上位机任务点位类型数量必须与点号数量一致")
         with self._lock:
             self._mission = _MissionState(
                 ticket=int(ticket),
                 kind=str(kind),
                 point_indexes=tuple(point_indexes),
+                waypoints=points,
                 source_id=source_id,
                 aircraft_id=aircraft_id,
                 client_no=self._client_no(),
@@ -318,12 +325,15 @@ class UpstreamStatusProjector:
                 and event.mission_sequence == item.ticket
                 and (not item.source_id or event.source_id == item.source_id)
                 and 1 <= event.waypoint_index <= len(item.point_indexes)
+                and (item.waypoints is None or item.waypoints[event.waypoint_index - 1].is_inspection)
             )), None)
             if mission is None:
                 return
             if not mission.source_id:
                 mission.source_id = event.source_id
             mission.captures[event.waypoint_index] = event
+            # 同源同任务的抓拍回执就是到点证据；组合点不能等校准完毕或索引推进。
+            mission.completed_points = max(mission.completed_points, event.waypoint_index)
             if not event.success:
                 self._events.warn(
                     "upstream",
@@ -358,11 +368,16 @@ class UpstreamStatusProjector:
             mission.started = self._send_mission(
                 mission, "05" if mission.kind == "return" else "03"
             )
-        if not mission.started or snapshot.active_mode is not FlightMode.WAYPOINT:
+        if (not mission.started or snapshot.active_mode is not FlightMode.WAYPOINT
+                or snapshot.active_command_sequence != mission.ticket):
             return
         if mission.kind != "inspection":
             return
         completed = max(0, int(snapshot.waypoint_index) - 1)
+        if (snapshot.calibration_active and mission.waypoints is not None
+                and 1 <= snapshot.waypoint_index <= len(mission.waypoints)
+                and mission.waypoints[snapshot.waypoint_index - 1].is_calibration):
+            completed += 1
         completed = min(completed, len(mission.point_indexes))
         mission.completed_points = max(mission.completed_points, completed)
         self._report_points(mission)
@@ -446,6 +461,10 @@ class UpstreamStatusProjector:
             return
         while mission.reported_points < mission.completed_points:
             index = mission.reported_points + 1
+            if mission.waypoints is not None and not mission.waypoints[index - 1].is_inspection:
+                # 普通/纯校准点不等图片，不选仿真媒体，也不发送巡检09。
+                mission.reported_points += 1
+                continue
             media = self._point_media(mission, index)
             if not media["path"] and media["state"] in MEDIA_FAILURE_STATES:
                 self._events.error(

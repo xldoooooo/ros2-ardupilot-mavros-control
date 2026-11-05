@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from ..waypoint_io import Waypoint, WaypointCollection
 from .models import UpstreamAction, UpstreamCommand
 from ..config import (MAX_WAYPOINT_COUNT, WAYPOINT_HORIZONTAL_LIMIT_METERS,
                       WAYPOINT_Z_MIN_METERS, WAYPOINT_Z_MAX_METERS)
@@ -111,7 +112,7 @@ def parse_command(
     ):
         raise UpstreamProtocolError("timestamp 必须是非负整数毫秒时间戳")
 
-    waypoints: tuple[tuple[float, float, float, float], ...] = ()
+    waypoints: WaypointCollection = ()
     point_indexes: tuple[int, ...] = ()
     photo_nos: tuple[str, ...] = ()
     ignored = False
@@ -139,7 +140,7 @@ def parse_command(
 def _parse_task_points(
     value: Any, coordinate_frame: str = "odom",
 ) -> tuple[
-    tuple[tuple[float, float, float, float], ...],
+    WaypointCollection,
     tuple[int, ...],
     tuple[str, ...],
 ]:
@@ -149,7 +150,7 @@ def _parse_task_points(
     if len(value) > MAX_WAYPOINT_COUNT:
         raise UpstreamProtocolError(f"taskPoints 最多允许 {MAX_WAYPOINT_COUNT} 个航点")
 
-    normalized: list[tuple[float, float, float, float]] = []
+    normalized: list[Waypoint] = []
     indexes: list[int] = []
     photo_nos: list[str] = []
     for position, point in enumerate(value, start=1):
@@ -185,7 +186,7 @@ def _parse_task_points(
                 f"taskPoints[{position}].z 必须在 [{low:g}, {high:g}] m 范围内（{coordinate_frame}）"
             )
         normalized_angle = ((angle + 180.0) % 360.0) - 180.0
-        normalized.append((x, y, z, math.radians(normalized_angle)))
+        normalized.append(Waypoint(x, y, z, math.radians(normalized_angle), is_inspection=True))
         indexes.append(index)
         # photoNo 是生产环境文件标识，不校验递增、重复、正负、类型或范围。
         # JSON 紧凑序列化保留结构和值；文件名层再做可逆转义。

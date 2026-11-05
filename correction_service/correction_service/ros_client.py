@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+# Qt 无关的异步操作完成回调。
 ResultCallback = Callable[[dict[str, Any], str], None]
 
 
@@ -36,10 +37,13 @@ class _Command:
 class CorrectionPanelClient:
     """在真机 DDS 域内提供无飞行指令的修正任务控制和对照状态。"""
 
+    # 面板状态显示的宽松接收年龄。
     STATUS_STALE_SECONDS = 3.0
+    # 单次服务发现等待上限。
     SERVICE_DISCOVERY_TIMEOUT_SECONDS = 2.0
 
     def __init__(self, *, domain_id: int | None = None) -> None:
+        """建立独立面板来源与异步命令队列。"""
         configured = os.environ.get("CORRECTION_ROS_DOMAIN_ID", "0")
         self.domain_id = int(configured) if domain_id is None else int(domain_id)
         if not 0 <= self.domain_id <= 232:
@@ -186,13 +190,26 @@ class CorrectionPanelClient:
         self._thread = None
 
     def _enqueue(self, command: _Command) -> None:
-        """有界排队；面板主线程永不等待 DDS。"""
+        """有界排队；自动期间允许读 Tag，其余写入由状态和服务双重门控。"""
+        if not self._manual_command_allowed(command):
+            return
         if self._thread is None or not self._thread.is_alive():
             self.start()
         try:
             self._commands.put_nowait(command)
         except queue.Full:
             self._callback(command.callback, {}, "修正命令队列已满")
+
+    def _manual_command_allowed(self, command: _Command) -> bool:
+        """提交时重查 owner，防止排队命令或确认弹窗跨入自动校准期间。"""
+        if command.kind == "tags" and not command.save:
+            return True
+        with self._lock:
+            owner = self._snapshots.get("correction", {}).get("automatic_owner", "")
+        if owner:
+            self._callback(command.callback, {}, f"自动校准独占中：{owner}；面板只读")
+            return False
+        return True
 
     def _next_sequence(self) -> int:
         """返回面板进程内单调请求序号。"""
@@ -329,6 +346,8 @@ class CorrectionPanelClient:
                         "clear": clear_client,
                         "apply_saved": apply_saved_client,
                     }
+                    if not self._manual_command_allowed(command):
+                        continue
                     client = clients[command.kind]
                     if not client.wait_for_service(
                         timeout_sec=self.SERVICE_DISCOVERY_TIMEOUT_SECONDS
@@ -338,6 +357,9 @@ class CorrectionPanelClient:
                             {},
                             f"未发现 correction_service {command.kind} 接口",
                         )
+                        continue
+                    # 服务发现会阻塞；发送前再核对 owner，不让旧队列跨过自动接管。
+                    if not self._manual_command_allowed(command):
                         continue
                     if command.kind == "tags":
                         request = ConfigureTags.Request()
@@ -446,10 +468,17 @@ class CorrectionPanelClient:
             "service_instance_id": str(message.service_instance_id),
             "window_revision": int(message.window_revision),
             "config_fingerprint": str(message.config_fingerprint),
+            "automatic_owner": str(message.automatic_owner),
+            "automatic_owner_releasing": bool(message.automatic_owner_releasing),
+            "service_session": str(message.service_odin_session_id),
+            "window_session": str(message.window_odin_session_id),
+            "configured_tag_ids": list(message.configured_tag_ids),
             "active": bool(message.active),
             "state": str(message.state_text),
             "operation": str(message.operation_text),
             "job_id": str(message.job_id),
+            "job_source_id": str(message.job_source_id),
+            "base_window_revision": int(message.base_window_revision),
             "expected_tag_id": int(message.expected_tag_id),
             "detected_tag_id": int(message.detected_tag_id),
             "apply_requested": bool(message.apply_requested),

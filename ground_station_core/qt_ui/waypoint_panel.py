@@ -1,18 +1,27 @@
-"""odom/map 任务坐标航点编辑、排序、进度与上传面板。"""
+"""odom/map 航点坐标、巡检/校准属性编辑、排序、进度与上传面板。"""
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import ClassVar
 
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QIcon
+from PySide6.QtCore import QRegularExpression, QSignalBlocker, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QIcon,
+    QRegularExpressionValidator,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -37,10 +46,15 @@ from ..models import (
     WaypointReferenceGenerator,
     WaypointTrackingController,
 )
+from ..waypoint_io import Waypoint, WaypointCollection
 from .state import UiAvailability
+from .theme import COLORS
 from .widgets import (
-    Card, DownwardComboBox, NoWheelDoubleSpinBox,
-    set_text_if_changed, set_tooltip_if_changed,
+    Card,
+    DownwardComboBox,
+    NoWheelDoubleSpinBox,
+    set_text_if_changed,
+    set_tooltip_if_changed,
 )
 
 
@@ -136,11 +150,58 @@ class WaypointCoordinateDelegate(QStyledItemDelegate):
         pass
 
 
+class WaypointTagDelegate(QStyledItemDelegate):
+    """用非负整数文本编辑 Tag ID，避免数值控件的上限截断导入值。"""
+
+    def __init__(self, panel: WaypointPanel) -> None:
+        """绑定面板，沿用实时编辑与预览通知链。"""
+        super().__init__(panel.table)
+        self._panel = panel
+
+    def createEditor(self, parent, option, index):
+        """只接受十进制数字；清空输入时先保留原 ID，等待继续键入。"""
+        editor = QLineEdit(parent)
+        editor.setValidator(QRegularExpressionValidator(QRegularExpression("[0-9]+"), editor))
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        editor.setFrame(False)
+        editor.setStyleSheet(
+            "QLineEdit, QLineEdit:focus { min-height: 0; padding: 0;"
+            " border: none; border-radius: 0; }"
+        )
+        editor.textEdited.connect(
+            lambda text: self._panel._edit_waypoint_attribute(
+                index.row(), "calibration_tag_id", int(text)
+            ) if editor.hasAcceptableInput() else None
+        )
+        return editor
+
+    def setEditorData(self, editor, index) -> None:
+        """读取完整整数，不用显示宽度或控件范围截断原值。"""
+        value = self._panel.waypoints[index.row()].calibration_tag_id
+        if not editor.hasAcceptableInput() or int(editor.text()) != value:
+            with QSignalBlocker(editor):
+                editor.setText(str(value))
+
+    def setModelData(self, editor, model, index) -> None:
+        """实时信号已写回；未完成的空输入不覆盖原有效值。"""
+        return None
+
+
 class WaypointPanel(QWidget):
     """维护尚未上传的本地航点副本，并把最终列表作为单一信号发出。"""
 
     # 顶部输入、表头和航点行共用的紧凑高度，单位为像素。
     _ROW_HEIGHT = 28
+
+    # 三个复选框所在表格列与具名字段一一对应；第 7 列单独编辑 Tag ID。
+    _BOOLEAN_FIELDS: ClassVar[dict[int, str]] = {5: "is_inspection", 6: "is_calibration", 8: "continue_window"}
+    # 复用工程主题区分普通、巡检、校准与双标志；文字说明同时保留。
+    _TYPE_STYLES: ClassVar[dict[tuple[bool, bool], tuple[str, str, str]]] = {
+        (False, False): ("普通航点", "muted", "surface"),
+        (True, False): ("巡检航点", "success", "success_soft"),
+        (False, True): ("校准航点", "warning", "warning_soft"),
+        (True, True): ("巡检 + 校准航点", "accent", "warning_soft"),
+    }
 
     # 参数依次为航点、飞行策略、命令生成方式和跟踪控制方式。
     send_requested = Signal(object, object, object, object)
@@ -154,9 +215,11 @@ class WaypointPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         """构建数值输入、航点表、排序按钮和执行进度。"""
         super().__init__(parent)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
         self.setMinimumHeight(500)
-        self._waypoints: list[tuple[float, float, float, float]] = []
+        self._waypoints: list[Waypoint] = []
+        self._result_message = ""
+        self._progress_completed = False
         self._editing_enabled = True
         self._configuration_enabled = False
         self._locked_configuration = False
@@ -174,8 +237,8 @@ class WaypointPanel(QWidget):
         """创建航点输入与可伸缩表格：仅中间列表随面板高度变长。"""
         card = Card(
             "航点任务",
-            "航点按当前 odom/map 任务坐标系解释；上传的是列表副本，\n"
-            "到达判定与推进由机载服务完成。",
+            "坐标按当前 odom/map 任务系解释；新点默认普通。\n"
+            "巡检与校准可同时勾选；沿窗仅校准点使用，首个校准点忽略。",
         )
         self.editor_card = card
         card.setSizePolicy(
@@ -241,10 +304,10 @@ class WaypointPanel(QWidget):
         # stretch=0：坐标与添加操作固定为单行，把纵向空间留给表格。
         card.content_layout.addLayout(coords, 0)
 
-        self.table = WaypointDropTable(0, 5)
+        self.table = WaypointDropTable(0, 9)
         self.table.setObjectName("waypointTable")
         self.table.setHorizontalHeaderLabels(
-            ("#", "X / m", "Y / m", "Z / m", "Yaw / °")
+            ("#", "X / m", "Y / m", "Z / m", "Yaw / °", "巡检", "校准", "Tag ID", "沿窗")
         )
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -254,12 +317,19 @@ class WaypointPanel(QWidget):
             | QAbstractItemView.EditTrigger.EditKeyPressed
             | QAbstractItemView.EditTrigger.AnyKeyPressed
         )
-        self.table.setItemDelegate(WaypointCoordinateDelegate(self))
+        coordinate_delegate = WaypointCoordinateDelegate(self)
+        for column in range(1, 5):
+            self.table.setItemDelegateForColumn(column, coordinate_delegate)
+        self.table.setItemDelegateForColumn(7, WaypointTagDelegate(self))
         self.table.setMinimumHeight(95)
-        self.table.setToolTip("双击数值直接修改，即时生效并更新已开启的预览；支持拖入 CSV 文件")
+        self.table.setToolTip(
+            "双击坐标或非负 Tag ID 编辑，单击复选框切换属性；"
+            "巡检抓拍上报、校准执行 Tag 修正，两者可同时勾选；支持拖入 CSV 文件"
+        )
         self.table.setProperty("baseToolTip", self.table.toolTip())
         self.table.setAccessibleDescription(
-            "当前 odom/map 坐标系航点列表；双击数值即时修改；支持拖入一个 CSV 文件并在确认后替换列表"
+            "当前 odom/map 航点列表；可独立勾选巡检、校准和沿窗；"
+            "双击数值即时修改；支持拖入一个 CSV 文件并在确认后替换列表"
         )
         # 取消固定最大高度，使中间列表成为唯一纵向伸缩区。
         self.table.setSizePolicy(
@@ -271,9 +341,17 @@ class WaypointPanel(QWidget):
         vertical_header.setDefaultSectionSize(self._ROW_HEIGHT)
         header = self.table.horizontalHeader()
         header.setFixedHeight(self._ROW_HEIGHT)
+        header.setMinimumSectionSize(42)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         for column in range(1, 5):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+        for column in range(5, 9):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeaderItem(5).setToolTip("勾选后到点抓拍并上报巡检消息")
+        self.table.horizontalHeaderItem(6).setToolTip("勾选后到点执行 Tag 校准；不影响巡检标志")
+        self.table.horizontalHeaderItem(7).setToolTip("校准 Tag ID，非负整数；仅校准点执行时使用")
+        self.table.horizontalHeaderItem(8).setToolTip("校准时沿用历史滑窗；本任务首个校准点忽略此项")
+        self.table.itemChanged.connect(self._waypoint_item_changed)
         self.table.itemSelectionChanged.connect(self._update_local_controls)
         self.table.files_dropped.connect(self.files_dropped.emit)
         card.content_layout.addWidget(self.table, 1)
@@ -342,7 +420,7 @@ class WaypointPanel(QWidget):
         )
         self.export_button.setProperty("compact", True)
         self.export_button.setToolTip(
-            "将地面站当前列表按 index,x,y,z,yaw 格式导出为 CSV 文件"
+            "将当前坐标及巡检、校准、Tag ID、沿窗属性完整导出为 CSV 文件"
         )
         self.export_button.setProperty("baseToolTip", self.export_button.toolTip())
         self.export_button.setAccessibleName("导出当前航点列表到文件")
@@ -383,10 +461,11 @@ class WaypointPanel(QWidget):
         action_row.addWidget(self.progress, 2)
         action_row.addWidget(self.send_button, 1)
         card.content_layout.addLayout(action_row)
-        # 保留非可视状态接收器，使现有结果更新链与内部接口不变；
-        # 不加入布局，避免灰色说明行占用执行卡高度。
+        # 平时隐藏说明行；校准进度与可靠拒绝/失败结果必须在执行卡内可见。
         self.status_label = QLabel("请先编辑航点，再在飞行器就绪后发送。", card)
         self.status_label.setObjectName("mutedLabel")
+        self.status_label.setWordWrap(True)
+        card.content_layout.addWidget(self.status_label)
         self.status_label.hide()
 
         # 三列只负责选择；飞行中由状态门控统一锁定，任务内部不做热切换。
@@ -612,13 +691,13 @@ class WaypointPanel(QWidget):
         return button
 
     @property
-    def waypoints(self) -> tuple[tuple[float, float, float, float], ...]:
+    def waypoints(self) -> WaypointCollection:
         """返回待上传航点的不可变副本。"""
         return tuple(self._waypoints)
 
     def _add_waypoint(self) -> None:
         """读取已约束数值并追加一个弧度偏航航点。"""
-        waypoint = (
+        waypoint = Waypoint(
             self.x_input.value(),
             self.y_input.value(),
             self.z_input.value(),
@@ -646,30 +725,67 @@ class WaypointPanel(QWidget):
         if self._editing_enabled and self._current_pose is not None:
             self._append_waypoint(self._current_pose)
 
-    def _append_waypoint(self, waypoint: tuple[float, float, float, float]) -> None:
+    def _append_waypoint(self, waypoint: Waypoint | tuple[float, float, float, float]) -> None:
         """统一追加、选中末行并通知日志与预览刷新。"""
-        self._waypoints.append(waypoint)
+        self._waypoints.append(Waypoint(*waypoint))
         self._refresh_table(len(self._waypoints) - 1)
         self.status_label.setText(f"本地列表包含 {len(self._waypoints)} 个航点，尚未上传。")
         self.waypoints_changed.emit(f"已添加航点 #{len(self._waypoints)}")
 
     def _edit_waypoint(self, row: int, column: int, value: float) -> None:
         """只修改目标分量并复用现有通知，让预览与待上传副本即时一致。"""
-        if not self._editing_enabled or not 0 <= row < len(self._waypoints):
+        if (not self._editing_enabled or not 0 <= row < len(self._waypoints)
+                or column not in range(1, 5)):
             return
-        waypoint = list(self._waypoints[row])
+        waypoint = self._waypoints[row]
         coordinate = math.radians(value) if column == 4 else value
         previous = math.degrees(waypoint[3]) if column == 4 else waypoint[column - 1]
         # Qt 在回车时也会发出同值信号；保留未实际修改的采点/导入精度。
         if round(previous, 1 if column == 4 else 2) == value:
             return
-        waypoint[column - 1] = coordinate
-        self._waypoints[row] = tuple(waypoint)
+        # 用具名替换保留类型及巡检/校准属性，不能退回四元组或普通 tuple。
+        self._waypoints[row] = waypoint._replace(**{Waypoint._fields[column - 1]: coordinate})
         self.table.item(row, column).setText(
             f"{value:+.1f}" if column == 4 else f"{value:+.2f}"
         )
         self.status_label.setText(f"已修改本地航点 #{row + 1}，尚未上传。")
         self.waypoints_changed.emit(f"已修改航点 #{row + 1} 的 {('X', 'Y', 'Z', 'Yaw')[column - 1]}")
+
+    def _waypoint_item_changed(self, item: QTableWidgetItem) -> None:
+        """复选框变化只修改对应布尔字段；刷新与数值编辑不走此分支。"""
+        field = self._BOOLEAN_FIELDS.get(item.column())
+        if field is not None:
+            self._edit_waypoint_attribute(
+                item.row(), field, item.checkState() == Qt.CheckState.Checked
+            )
+
+    def _edit_waypoint_attribute(self, row: int, field: str, value: bool | int) -> None:
+        """修改单项属性并刷新类型色，复用原有日志及预览通知。"""
+        if not self._editing_enabled or not 0 <= row < len(self._waypoints):
+            return
+        waypoint = self._waypoints[row]
+        if getattr(waypoint, field) == value:
+            return
+        self._waypoints[row] = waypoint._replace(**{field: value})
+        if field == "calibration_tag_id":
+            self.table.item(row, 7).setText(str(value))
+        self._refresh_row_style(row)
+        self.status_label.setText(f"已修改本地航点 #{row + 1} 的属性，尚未上传。")
+        self.waypoints_changed.emit(f"已修改航点 #{row + 1} 的 {field}")
+
+    def _refresh_row_style(self, row: int) -> None:
+        """用编号与属性列的颜色及文字提示区分航点类型，不改变坐标值。"""
+        waypoint = self._waypoints[row]
+        label, foreground, background = self._TYPE_STYLES[
+            (waypoint.is_inspection, waypoint.is_calibration)
+        ]
+        with QSignalBlocker(self.table):
+            for column in (0, 5, 6):
+                item = self.table.item(row, column)
+                item.setForeground(QColor(COLORS[foreground]))
+                item.setBackground(QColor(COLORS[background]))
+                item.setToolTip(label)
+
 
     def _remove_selected(self) -> None:
         """删除当前选中行并保持邻近选择。"""
@@ -705,11 +821,11 @@ class WaypointPanel(QWidget):
 
     def replace_waypoints(
         self,
-        waypoints: tuple[tuple[float, float, float, float], ...],
+        waypoints: WaypointCollection | tuple[tuple[float, float, float, float], ...],
         source_label: str,
     ) -> None:
         """在主窗口完成文件校验与确认后原子替换本地航点列表。"""
-        self._waypoints[:] = waypoints
+        self._waypoints[:] = [Waypoint(*waypoint) for waypoint in waypoints]
         self._refresh_table(0)
         self.reset_progress()
         count = len(self._waypoints)
@@ -719,27 +835,39 @@ class WaypointPanel(QWidget):
     def reset_progress(self) -> None:
         """清除已结束任务的进度，并忽略机载端短期残留的旧快照。"""
         self._progress_tracking = False
+        self._progress_completed = False
+        self._result_message = ""
+        self.status_label.hide()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.progress.setFormat("尚未执行")
 
     def _refresh_table(self, selected_row: int | None = None) -> None:
-        """由内存列表重建表格，仅编号只读，保持弧度/角度转换一致。"""
-        self.table.setRowCount(len(self._waypoints))
-        for row, waypoint in enumerate(self._waypoints):
-            values = (
-                str(row + 1),
-                f"{waypoint[0]:+.2f}",
-                f"{waypoint[1]:+.2f}",
-                f"{waypoint[2]:+.2f}",
-                f"{math.degrees(waypoint[3]):+.1f}",
-            )
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                if column == 0:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(row, column, item)
+        """重建坐标、独立复选框和 Tag ID；阻断刷新信号，保留全部属性。"""
+        with QSignalBlocker(self.table):
+            self.table.setRowCount(len(self._waypoints))
+            for row, waypoint in enumerate(self._waypoints):
+                values = (
+                    str(row + 1),
+                    f"{waypoint.x:+.2f}",
+                    f"{waypoint.y:+.2f}",
+                    f"{waypoint.z:+.2f}",
+                    f"{math.degrees(waypoint.yaw):+.1f}",
+                    "", "", str(waypoint.calibration_tag_id), "",
+                )
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if column == 0 or column in self._BOOLEAN_FIELDS:
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if column in self._BOOLEAN_FIELDS:
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setCheckState(
+                            Qt.CheckState.Checked if getattr(waypoint, self._BOOLEAN_FIELDS[column])
+                            else Qt.CheckState.Unchecked
+                        )
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.table.setItem(row, column, item)
+                self._refresh_row_style(row)
         if selected_row is not None and 0 <= selected_row < self.table.rowCount():
             self.table.selectRow(selected_row)
         self._update_local_controls()
@@ -870,24 +998,35 @@ class WaypointPanel(QWidget):
                 combo.setCurrentIndex(combo.findData(value))
                 combo.blockSignals(blocked)
             self._apply_strategy_constraints()
+        details = []
+        if snapshot.calibration_active or snapshot.calibration_detail:
+            phase = "校准中" if snapshot.calibration_active else "校准状态"
+            job = f"（job: {snapshot.calibration_job_id}）" if snapshot.calibration_job_id else ""
+            details.append(
+                f"航点 #{snapshot.waypoint_index} {phase}{job}："
+                f"{snapshot.calibration_detail or '等待校准服务状态'}"
+            )
         if snapshot.flight_strategy != WaypointFlightStrategy.STRAIGHT:
             state = {0: "未启用", 1: "等待可行路线", 2: "执行中", 3: "制动", 4: "超时降落"}
             detail = state.get(snapshot.avoidance_state, "未知状态")
             if snapshot.avoidance_state in (1, 3):
                 detail += f"（剩余 {snapshot.avoidance_wait_remaining_seconds:.1f} s）"
-            set_tooltip_if_changed(self.progress, detail + "：" + snapshot.avoidance_detail)
-            set_text_if_changed(self.status_label, detail + "：" + snapshot.avoidance_detail)
-            self.status_label.show()
-        else:
-            set_tooltip_if_changed(self.progress, "")
-            self.status_label.hide()
+            details.append(detail + "：" + snapshot.avoidance_detail)
+        # 任务失败后普通直线模式也保留可靠结果，不能被下一帧遥测隐藏。
+        if self._result_message:
+            details.append(self._result_message)
+        message = "\n".join(details)
+        set_tooltip_if_changed(self.progress, message)
+        set_text_if_changed(self.status_label, message)
+        self.status_label.setVisible(bool(message))
         if self._progress_tracking and snapshot.waypoint_count > 0:
             self.progress.setRange(0, snapshot.waypoint_count)
-            # WAYPOINT 模式中的索引指向“正在飞往”的目标，因此完成数少一；
-            # 可靠终态切到 HOVER 后索引等于总数，最后一格才真正填满。
-            progress_value = snapshot.waypoint_index
-            if snapshot.active_mode is FlightMode.WAYPOINT:
-                progress_value = max(0, progress_value - 1)
+            # 校准/接管后的索引仍可能停在末点；只有可靠成功终态能填满最后一格。
+            progress_value = self.progress.value()
+            if self._progress_completed:
+                progress_value = snapshot.waypoint_count
+            elif snapshot.active_mode is FlightMode.WAYPOINT:
+                progress_value = max(0, snapshot.waypoint_index - 1)
             progress_value = min(progress_value, snapshot.waypoint_count)
             self.progress.setValue(progress_value)
             self.progress.setFormat(
@@ -899,6 +1038,7 @@ class WaypointPanel(QWidget):
         if waypoint_count <= 0 or waypoint_index != waypoint_count:
             return
         self._progress_tracking = True
+        self._progress_completed = True
         self.progress.setRange(0, waypoint_count)
         self.progress.setValue(waypoint_count)
         self.progress.setFormat(f"已完成 {waypoint_count}/{waypoint_count}")
@@ -909,8 +1049,11 @@ class WaypointPanel(QWidget):
         # 把已经推进的进度短暂重置成“等待”，否则界面会每到一个点闪烁。
         if running and not self._progress_tracking:
             self._progress_tracking = True
+            self._progress_completed = False
             self.progress.setRange(0, max(1, len(self._waypoints)))
             self.progress.setValue(0)
             self.progress.setFormat("等待机载任务进度…")
+        self._result_message = message
         self.status_label.setText(message)
+        self.status_label.setVisible(bool(message))
         self.send_button.setText("任务执行中…" if running else "发送并执行航点")

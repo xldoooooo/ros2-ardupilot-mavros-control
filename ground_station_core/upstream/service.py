@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from ..waypoint_io import WaypointCollection
 from ..event_log import EventLog
 from ..ground_media_reader import GroundMediaReader
 from ..models import (
@@ -316,11 +317,12 @@ class UpstreamCommunicationService:
         source_id: str = "",
         aircraft_id: str = "",
         command_id: str = "",
+        waypoints: WaypointCollection | None = None,
     ) -> None:
-        """绑定由上位机触发的航点任务与本地可靠命令 ticket。"""
+        """绑定原始航点类型与可靠 ticket，避免普通点被当成巡检点。"""
         self._projector.begin_mission(
             ticket, kind, point_indexes, source_id=source_id, aircraft_id=aircraft_id,
-            command_id=command_id
+            command_id=command_id, waypoints=waypoints,
         )
 
     def begin_landing(self, ticket: int, command_id: str = "") -> None:

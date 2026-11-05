@@ -42,6 +42,7 @@ add_executable(onboard_control_node
   src/fcu_reboot.cpp
   src/avoidance_execution.cpp
   src/navigation_frame.cpp
+  src/waypoint_calibration.cpp
 )
 target_include_directories(onboard_control_node PRIVATE include ${EIGEN3_INCLUDE_DIRS})
 ament_target_dependencies(onboard_control_node

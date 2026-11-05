@@ -118,6 +118,9 @@ class VehicleSnapshot:
     armed: bool = False
     on_ground: bool = False
     reboot_in_progress: bool = False
+    calibration_active: bool = False
+    calibration_job_id: str = ""
+    calibration_detail: str = ""
     autopilot_mode: str = ""
     navigation_frame: str = "odom"
     navigation_ready: bool = True

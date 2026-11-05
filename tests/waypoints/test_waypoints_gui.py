@@ -10,8 +10,11 @@ from tests.support.qt import (
     _window,
 )
 import math
+import time
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -20,6 +23,8 @@ from ground_station_core.config import PROJECT_ROOT
 from ground_station_core.event_log import LogLevel
 from ground_station_core.models import CommandResult, FlightMode
 from ground_station_core.qt_ui.widgets import NoWheelDoubleSpinBox
+from ground_station_core.ros_controller import GroundStationRosController
+from ground_station_core.waypoint_io import Waypoint
 
 
 def test_add_current_waypoint_uses_displayed_pose_and_rejects_invalid_pose() -> None:
@@ -46,7 +51,7 @@ def test_add_current_waypoint_uses_displayed_pose_and_rejects_invalid_pose() -> 
         # 后端变化尚未渲染时，应记录用户眼前那一帧。
         ros.current_snapshot = replace(snapshot, x=8.76543)
         panel.add_current_button.click()
-        assert panel.waypoints == original + (pose,)
+        assert panel.waypoints == original + (Waypoint(*pose),)
         assert panel.x_input.value() == 0.0
         assert panel.table.currentRow() == 1
         assert panel.add_current_button.width() == panel.add_current_button.height()
@@ -55,7 +60,7 @@ def test_add_current_waypoint_uses_displayed_pose_and_rejects_invalid_pose() -> 
         assert ros.calls == calls
         window._refresh()
         panel.add_current_button.click()
-        assert panel.waypoints[-1] == (8.76543, *pose[1:])
+        assert panel.waypoints[-1] == Waypoint(8.76543, *pose[1:])
         count = len(panel.waypoints)
         for invalid in (
             replace(snapshot, local_position_valid=False),
@@ -326,7 +331,7 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
         assert editor is not None
         QTest.keyClick(editor, Qt.Key.Key_Return)
         _application().processEvents()
-        assert panel.waypoints == original
+        assert panel.waypoints == tuple(Waypoint(*point) for point in original)
         assert len(ros.calls) == 1
 
         for column, text in ((1, "-12.34"), (2, "23.45"), (3, "-0.75"), (4, "-45.6")):
@@ -346,8 +351,8 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
             value = math.radians(float(text)) if column == 4 else float(text)
             # 不失焦、不按回车、不点确认时，内部列表与预览已更新。
             assert math.isclose(panel.waypoints[1][column - 1], value)
-            assert panel.waypoints[0] == original[0]
-            assert panel.waypoints[2] == original[2]
+            assert panel.waypoints[0] == Waypoint(*original[0])
+            assert panel.waypoints[2] == Waypoint(*original[2])
             assert ros.calls[-1] == ("waypoint_preview", panel.waypoints)
             assert editor.lineEdit().text() == text
             window._refresh()
@@ -458,15 +463,16 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         assert panel.progress.width() > panel.send_button.width() * 1.8
         assert panel.reference_combo.count() == 4
         assert panel.tracking_combo.count() == 2
-        # 结果状态仍按原链路更新，但不再作为灰色说明行参与布局。
+        # 状态行平时隐藏，校准及命令结果可在执行卡内展开。
         assert not panel.status_label.isVisible()
         assert panel.status_label.parentWidget() is not None
         assert (
             panel.status_label.parentWidget().content_layout.indexOf(panel.status_label)
-            == -1
+            >= 0
         )
         panel.set_result("航点状态回归", running=False)
         assert panel.status_label.text() == "航点状态回归"
+        assert panel.status_label.isVisible()
         assert "QProgressBar#waypointProgress::chunk" in STYLE_SHEET
         assert COLORS["success"] in STYLE_SHEET
 
@@ -550,7 +556,7 @@ def test_waypoint_file_button_and_table_drop_replace_only_after_confirmation(
         chooser_arguments = chooser.call_args.args
         assert Path(chooser_arguments[2]) == PROJECT_ROOT / "examples"
         assert "*.csv" in chooser_arguments[3]
-        assert panel.waypoints == original
+        assert panel.waypoints == tuple(Waypoint(*point) for point in original)
         assert confirmations[-1][0] == "从文件导入航点"
         assert "清空并替换当前列表中的 1 个航点" in confirmations[-1][1]
         assert "绝对本地 ENU" in confirmations[-1][1]
@@ -641,8 +647,8 @@ def test_waypoint_export_button_saves_only_current_gui_list_as_csv(
         assert (tmp_path / "chosen-waypoints.csv").read_text(
             encoding="utf-8"
         ).splitlines() == [
-            "index,x,y,z,yaw",
-            "1,1.25,-2.5,3,90",
+            "index,x,y,z,yaw,is_inspection,is_calibration,calibration_tag_id,continue_window",
+            "1,1.25,-2.5,3,90,false,false,0,false",
         ]
         assert not any(call[0] == "waypoints" for call in ros.calls)
         assert any(
@@ -677,12 +683,12 @@ def test_invalid_or_multiple_dropped_files_preserve_existing_waypoints(
         )
 
         window.waypoints.files_dropped.emit((str(invalid),))
-        assert window.waypoints.waypoints == original
+        assert window.waypoints.waypoints == tuple(Waypoint(*point) for point in original)
         assert notices[-1][0] == "航点导入失败"
         assert "不是有效数字" in notices[-1][1]
 
         window.waypoints.files_dropped.emit((str(invalid), str(second)))
-        assert window.waypoints.waypoints == original
+        assert window.waypoints.waypoints == tuple(Waypoint(*point) for point in original)
         assert "一次只能导入一个" in notices[-1][1]
     finally:
         _close_window(window)
@@ -697,6 +703,7 @@ def test_clearing_completed_waypoints_resets_stale_onboard_progress() -> None:
         stale_snapshot = replace(
             ros.current_snapshot, waypoint_count=1, waypoint_index=1
         )
+        window.waypoints.complete_progress(1, 1)
         window.waypoints.update_progress(stale_snapshot)
         assert window.waypoints.progress.value() == 1
         assert "1/1" in window.waypoints.progress.format()
@@ -768,6 +775,9 @@ def test_waypoint_progress_counts_reached_points_not_current_target() -> None:
         assert window.waypoints.progress.format() == "已完成 1/2"
 
         complete = replace(to_second, active_mode=FlightMode.HOVER)
+        window.waypoints.update_progress(complete)
+        assert window.waypoints.progress.value() == 1
+        window.waypoints.complete_progress(2, 2)
         window.waypoints.update_progress(complete)
         assert window.waypoints.progress.value() == 2
         assert window.waypoints.progress.format() == "已完成 2/2"
@@ -873,5 +883,67 @@ def test_overridden_waypoint_task_ignores_old_cancellation_result() -> None:
         assert window._active_waypoint_ticket == 2
         assert "waypoints" in window._pending_commands
         assert window.waypoints.status_label.text() == "新任务执行中"
+    finally:
+        _close_window(window)
+
+
+def test_gui_rejects_calibration_map_task_before_upstream_takeoff_or_manual_queue() -> None:
+    """已知不支持的校准组合必须在地面可见，不锁任务或先发起飞。"""
+    from ground_station_core.upstream.mapping import parse_command
+
+    window, ros = _window(replace(_operational_snapshot(armed=False), navigation_frame="map"))
+    try:
+        window._initialize_simulation()
+        window.waypoints.replace_waypoints((Waypoint(0.0, 0.0, 1.0, 0.0, is_calibration=True),), "测试")
+        window._refresh()
+        command = parse_command({"clientNo": "UAV01001", "type": 1, "commandNo": "03"}, "UAV01001")
+        window._handle_upstream_command(command)
+        assert not any(name == "takeoff" for name, _ in ros.calls)
+        assert window._upstream_sequence is None
+        assert "校准点仅支持" in window.waypoints.status_label.text()
+        ros.current_snapshot = replace(ros.current_snapshot, armed=True)
+        window._refresh()
+        assert window._send_waypoints(window.waypoints.waypoints) is None
+        assert not window._waypoint_running and "waypoints" not in window._pending_commands
+        assert not any(name == "waypoints" for name, _ in ros.calls)
+        assert "校准点仅支持" in window.waypoints.status_label.text()
+    finally:
+        _close_window(window)
+
+
+def test_unknown_tag_service_rejection_is_visible_in_gui() -> None:
+    """未知 Tag 的服务拒绝经真实结果队列显示到 GUI，不冒充运行或完成。"""
+    window, ros = _window(_operational_snapshot(armed=True))
+    controller = GroundStationRosController(source_id="task12-gui-rejection")
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        ros.request_waypoints = controller.request_waypoints
+        ros.results_after = controller.results_after
+        point = Waypoint(0.0, 0.0, 1.0, 0.0, is_calibration=True, calibration_tag_id=999)
+        window.waypoints.replace_waypoints((point,), "测试")
+        window._refresh()
+        window.waypoints.send_button.click()
+        ticket = window._active_waypoint_ticket
+        assert ticket is not None and window._waypoint_running
+        command = controller._command_queue.get_nowait()
+        assert command.argument["waypoints"] == (point,)
+        message = "航点 1 使用未知 Tag 999"
+        response = Future()
+        response.set_result(SimpleNamespace(accepted=False, message=message))
+        pending = {ticket: (response, command, time.monotonic() + 6.0)}
+        controller._poll_pending_services(pending)
+        window._refresh()
+        _application().processEvents()
+        assert pending == {}
+        assert window.waypoints.status_label.isVisible()
+        assert window.waypoints.status_label.text() == message
+        assert message in window.waypoints.progress.toolTip()
+        assert not window._waypoint_running and window._active_waypoint_ticket is None
+        assert "waypoints" not in window._pending_commands
+        assert window.waypoints.send_button.isEnabled()
+        assert window.waypoints.progress.value() == 0
+        controller._poll_pending_services(pending)
+        assert len(controller.results_after(0)) == 1
     finally:
         _close_window(window)

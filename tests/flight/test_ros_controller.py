@@ -226,6 +226,10 @@ def test_status_store_maps_remote_mode_and_lease_owner(monkeypatch) -> None:
     assert snapshot.waypoint_index == 2
     assert snapshot.active_command_sequence == 44
     assert snapshot.waypoint_arrival_failure_count == 9
+    # 未包含校准扩展字段的消息替身仍按“未校准”回读。
+    assert (snapshot.calibration_active, snapshot.calibration_job_id, snapshot.calibration_detail) == (
+        False, "", "",
+    )
     assert snapshot.vehicle_abnormal
     assert snapshot.vehicle_abnormal_reason == "航点入点失败"
     assert snapshot.control_rate_hz == 99.8
@@ -284,7 +288,7 @@ def test_previous_interface_version_is_rejected_before_command_transport() -> No
     controller._process_one_command({}, {})
     result = controller.wait_for_result(ticket, timeout=0.1)
 
-    assert INTERFACE_VERSION == "3.5"
+    assert INTERFACE_VERSION == "3.6"
     assert result is not None
     assert not result.success
     assert "接口版本不兼容" in result.message

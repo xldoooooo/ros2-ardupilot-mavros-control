@@ -4,15 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, Signal, Qt
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QFormLayout,
     QFrame,
     QGridLayout,
-    QHBoxLayout,
     QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -22,8 +24,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
-    QAbstractItemView,
     QVBoxLayout,
     QWidget,
 )
@@ -105,6 +105,44 @@ class _NoWheelSpinBox(QSpinBox):
         event.ignore()
 
 
+class _AutomaticReadOnlyTagEditor(TagConfigEditor):
+    """复用现有配置编辑器；自动校准期间只保留查看和重新读取。"""
+
+    def set_service_status(self, status: dict[str, Any]) -> None:
+        """将 owner 作为保存门控，不改变真实校准状态或覆盖编辑草稿。"""
+        super().set_service_status({
+            **status, "active": bool(status.get("active") or status.get("automatic_owner"))
+        })
+        # 手动空闲可尝试保存；空表/unknown 的拒绝仍由原保存逻辑和服务负责。
+        if (
+            not status.get("automatic_owner") and not status.get("active")
+            and status.get("fresh") and status.get("service_available")
+            and status.get("interface_version") == INTERFACE_VERSION
+        ):
+            self.save_button.setEnabled(not self._busy)
+        if status.get("automatic_owner"):
+            self.connection_notice.setText(f"自动校准独占中：{status['automatic_owner']}；Tag 配置只读")
+        self._update_row_controls()
+
+    def _update_row_controls(self, *_args: Any) -> None:
+        """读取完成和选中行变化也不能重新开放自动期间的编辑按钮。"""
+        super()._update_row_controls(*_args)
+        if not hasattr(self, "_manual_edit_triggers"):
+            self._manual_edit_triggers = self.table.editTriggers()
+        automatic = bool(self._status.get("automatic_owner"))
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+            if automatic else self._manual_edit_triggers
+        )
+        self.add_button.setEnabled(not automatic and not self._busy)
+        for widget in self._parameter_inputs:
+            widget.setEnabled(not automatic and not self._busy)
+        if automatic:
+            for button in (self.save_button, self.up_button, self.down_button,
+                           self.delete_button, self.clear_button):
+                button.setEnabled(False)
+
+
 class _PanelBridge(QObject):
     """把 ROS 客户端线程的请求结果投递到 Qt 主线程。"""
 
@@ -180,7 +218,7 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         calibration_layout.setContentsMargins(0, 0, 0, 0)
         calibration_layout.setSpacing(10)
         self._tag_group = QGroupBox("Tag 配置")
-        self.tag_editor = TagConfigEditor(self.client)
+        self.tag_editor = _AutomaticReadOnlyTagEditor(self.client)
         tag_layout = QVBoxLayout(self._tag_group)
         tag_layout.setContentsMargins(6, 8, 6, 6)
         tag_layout.addWidget(self.tag_editor)
@@ -419,6 +457,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
     def _start(self, operation: int = OPERATION_FIRST) -> None:
         """先异步 dry-run；选中应用时待候选冻结后再逐值二次确认。"""
         correction = self._latest_status.get("correction", {})
+        if correction.get("automatic_owner"):
+            self.command_message.setText("自动校准期间面板只读，请通过飞行任务取消/接管")
+            return
         extnav = self._latest_status.get("extnav", {})
         self._deferred_apply_requested = self.apply_checkbox.isChecked()
         self._deferred_apply_job_id = ""
@@ -443,6 +484,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
     def _stop(self) -> None:
         """停止状态中唯一 job；提交已发出时后端仍会如实完成对账。"""
         correction = self._latest_status.get("correction", {})
+        if correction.get("automatic_owner"):
+            self.command_message.setText("自动校准期间面板只读，请通过飞行任务取消/接管")
+            return
         self._request_busy = True
         self.command_message.setText("正在提交 stop 请求…")
         self.client.request_stop(
@@ -455,6 +499,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
     def _clear(self) -> None:
         """默认取消确认后只清空服务窗口，明确说明 extnav active 不受影响。"""
         correction = self._latest_status.get("correction", {})
+        if correction.get("automatic_owner"):
+            self.command_message.setText("自动校准期间面板只读，请通过飞行任务取消/接管")
+            return
         answer = QMessageBox.warning(
             self,
             "确认清空滑窗",
@@ -476,6 +523,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
     def _apply_saved(self) -> None:
         """逐值展示保存候选、阶段、revisions 和预计跳变后再显式应用。"""
         correction = self._latest_status.get("correction", {})
+        if correction.get("automatic_owner"):
+            self.command_message.setText("自动校准期间面板只读，请通过飞行任务取消/接管")
+            return
         extnav = self._latest_status.get("extnav", {})
         unknown = correction.get("application_state") == "unknown"
         text = (
@@ -585,7 +635,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
             self.window_revisions.setText(
                 f"{correction.get('service_instance_id', '—')[:12]} / "
                 f"window r{correction.get('window_revision', 0)} / "
-                f"extnav r{extnav.get('revision', 0)}"
+                f"extnav r{extnav.get('revision', 0)}\n"
+                f"service session={correction.get('service_session', '—')} / "
+                f"window session={correction.get('window_session', '—')}"
             )
             keyframes = correction.get("keyframes", [])
             self.window_tags.setText(
@@ -710,6 +762,9 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         self, result: dict[str, Any], correction: dict[str, Any]
     ) -> None:
         """只为匹配 job 的已保存 dry-run 候选弹出一次逐值应用确认。"""
+        if correction.get("automatic_owner"):
+            self._deferred_apply_job_id = ""
+            return
         if not self._deferred_apply_job_id:
             return
         if str(result.get("job_id", "")) != self._deferred_apply_job_id:
@@ -758,60 +813,31 @@ class CorrectionPanelWindow(ShadowWindowChromeMixin, QMainWindow):
         )
 
     def _refresh_controls(self) -> None:
-        """从 2.0 权威窗口/application 状态派生全部按钮门控。"""
+        """自动期间只读；手动空闲时开放调试，由服务保留原有准入规则。"""
         correction = self._latest_status.get("correction", {})
-        extnav = self._latest_status.get("extnav", {})
         correction_ready = bool(
             correction.get("fresh")
             and correction.get("service_available")
             and correction.get("interface_version") == INTERFACE_VERSION
         )
-        extnav_ready = bool(
-            extnav.get("fresh")
-            and extnav.get("service_available")
-            and extnav.get("odin_available")
-            and extnav.get("interface_version") == INTERFACE_VERSION
-        )
+        manual = not bool(correction.get("automatic_owner"))
         active = bool(correction.get("active"))
-        window_count = int(correction.get("window_count", 0))
-        window_state = str(correction.get("window_state", ""))
         unknown = correction.get("application_state") == "unknown"
-        common = (
-            correction_ready
-            and extnav_ready
-            and not active
-            and not self._request_busy
-            and not unknown
-            and window_state != "stale"
-        )
-        self.first_button.setEnabled(common and window_count == 0)
-        self.next_button.setEnabled(common and window_count > 0)
-        self.stop_button.setEnabled(
-            correction_ready and active and not self._request_busy
-        )
-        self.clear_button.setEnabled(
-            correction_ready and not active and not self._request_busy and not unknown
-        )
+        # 手动空闲时允许调试全部命令；窗口、Tag 和应用准入由服务解释拒绝原因。
+        writable = correction_ready and manual and not active and not self._request_busy
+        self.first_button.setEnabled(writable)
+        self.next_button.setEnabled(writable)
+        self.stop_button.setEnabled(correction_ready and manual and not self._request_busy)
+        self.clear_button.setEnabled(writable)
         self.apply_saved_button.setText(
             "重试/对账未知应用" if unknown else "应用当前滑窗结果"
         )
-        self.apply_saved_button.setEnabled(
-            correction_ready
-            and extnav_ready
-            and not active
-            and not self._request_busy
-            and not correction.get("candidate_stale")
-            and (
-                unknown
-                or (
-                    correction.get("candidate_saved")
-                    and correction.get("candidate_valid")
-                )
-            )
-        )
-        self.tag_id_input.setEnabled(common)
-        self.window_size_input.setEnabled(common and window_count == 0)
-        self.apply_checkbox.setEnabled(common)
+        self.apply_saved_button.setEnabled(writable)
+        self.tag_id_input.setEnabled(writable)
+        self.window_size_input.setEnabled(writable)
+        self.apply_checkbox.setEnabled(writable)
+        if not manual:
+            self.command_message.setText(f"自动校准独占中：{correction['automatic_owner']}；面板只读")
 
     def closeEvent(self, event: Any) -> None:
         """关闭本地面板连接，但不把 UI 生命周期当成 stop/clear。"""
