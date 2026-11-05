@@ -314,7 +314,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     std::bind(&OnboardControlNode::on_extended_state, this, std::placeholders::_1));
   pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(
     mavros_prefix_ + "/local_position/pose", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_pose, this, std::placeholders::_1));
+    std::bind(&OnboardControlNode::on_pose, this, std::placeholders::_1, std::placeholders::_2));
   relative_altitude_subscription_ = create_subscription<std_msgs::msg::Float64>(
     mavros_prefix_ + "/global_position/rel_alt", rclcpp::SensorDataQoS().keep_last(1),
     [this](std_msgs::msg::Float64::ConstSharedPtr message) {
@@ -326,7 +326,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     });
   velocity_subscription_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     mavros_prefix_ + "/local_position/velocity_local", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1));
+    std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1, std::placeholders::_2));
   battery_subscription_ = create_subscription<sensor_msgs::msg::BatteryState>(
     mavros_prefix_ + "/battery", rclcpp::SensorDataQoS().keep_last(1),
     std::bind(&OnboardControlNode::on_battery, this, std::placeholders::_1));
@@ -406,6 +406,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     control_period, std::bind(&OnboardControlNode::control_tick, this),
     control_callback_group_);
   status_timer_ = create_wall_timer(status_period, std::bind(&OnboardControlNode::status_tick, this));
+  initialize_control_diagnostics();
 
   RCLCPP_INFO(
     get_logger(),
@@ -544,9 +545,13 @@ void OnboardControlNode::on_extended_state(
   }
 }
 
-void OnboardControlNode::on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message)
+/** Update flight state unchanged; retain constant-size receive timing for fault diagnosis. */
+void OnboardControlNode::on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message,
+  const rclcpp::MessageInfo & info)
 {
+  const auto entered = SteadyClock::now();
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  const auto acquired = SteadyClock::now();
   vehicle_.position = Eigen::Vector3d(
     message->pose.position.x, message->pose.position.y, message->pose.position.z);
   tf2::Quaternion attitude;
@@ -555,15 +560,27 @@ void OnboardControlNode::on_pose(const geometry_msgs::msg::PoseStamped::SharedPt
   pose_valid_ = vehicle_.position.allFinite() && std::isfinite(roll_) &&
     std::isfinite(pitch_) && std::isfinite(yaw_);
   last_pose_time_ = SteadyClock::now();
+  record_receive(pose_diagnostic_, info, message->header.stamp, entered, acquired);
+  if (pending_fault_diagnostic_ && !post_fault_pose_) {
+    post_fault_pose_ = pose_diagnostic_;
+  }
 }
 
-void OnboardControlNode::on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message)
+/** Update flight state unchanged; retain constant-size receive timing for fault diagnosis. */
+void OnboardControlNode::on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message,
+  const rclcpp::MessageInfo & info)
 {
+  const auto entered = SteadyClock::now();
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  const auto acquired = SteadyClock::now();
   vehicle_.velocity = Eigen::Vector3d(
     message->twist.linear.x, message->twist.linear.y, message->twist.linear.z);
   velocity_valid_ = vehicle_.velocity.allFinite();
   last_velocity_time_ = SteadyClock::now();
+  record_receive(velocity_diagnostic_, info, message->header.stamp, entered, acquired);
+  if (pending_fault_diagnostic_ && !post_fault_velocity_) {
+    post_fault_velocity_ = velocity_diagnostic_;
+  }
 }
 
 void OnboardControlNode::on_battery(
@@ -2064,8 +2081,10 @@ void OnboardControlNode::check_thrust_mode_parameter()
     });
 }
 
+/** Execute the unchanged flight cycle, retaining timings without synchronous logging. */
 void OnboardControlNode::control_tick()
 {
+  const auto entered = SteadyClock::now();
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   const double expected_period = 1.0 / control_frequency_hz_;
@@ -2084,6 +2103,10 @@ void OnboardControlNode::control_tick()
     }
   }
   last_control_tick_ = now;
+  diagnostic_period_ms_ = dt_seconds * 1000.0;
+  diagnostic_lock_wait_ms_ = std::chrono::duration<double, std::milli>(now - entered).count();
+  // This threshold only selects diagnostic events; it does not gate the controller.
+  if (diagnostic_period_ms_ >= kDiagnosticSlowMs) {record_control_diagnostic("control_gap", false, now);}
 
   navigation_tick(now, dt_seconds);
   enforce_safety(now);
@@ -2132,6 +2155,8 @@ void OnboardControlNode::control_tick()
     set_status_message(stream.str(), StatusLogLevel::kError);
   }
 
+  const auto reference_started = SteadyClock::now();
+  record_slow_operation("control_dispatch", now, reference_started);
   if (active_task_ == ActiveTask::kWaypoint && waypoint_start_pending_) {
     update_waypoint_start(now);
   }
@@ -2141,6 +2166,8 @@ void OnboardControlNode::control_tick()
     update_waypoint_executor(now, dt_seconds);
   }
 
+  const auto reference_finished = SteadyClock::now();
+  record_slow_operation("control_reference", reference_started, reference_finished);
   if (control_mode_ == guided_interfaces::msg::ControlStatus::MODE_MOTION ||
     control_mode_ == guided_interfaces::msg::ControlStatus::MODE_HOVER ||
     control_mode_ == guided_interfaces::msg::ControlStatus::MODE_WAYPOINT ||
@@ -2148,6 +2175,9 @@ void OnboardControlNode::control_tick()
   {
     publish_attitude_setpoint(dt_seconds);
   }
+  const auto finished = SteadyClock::now();
+  record_slow_operation("control_publish", reference_finished, finished);
+  previous_control_work_ms_ = std::chrono::duration<double, std::milli>(finished - now).count();
 }
 
 void OnboardControlNode::update_motion_reference(const double dt_seconds)
@@ -2319,6 +2349,7 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     (!fcu_connected_ || last_state_time_ == SteadyTime{} ||
     std::chrono::duration<double>(now - last_state_time_).count() > state_timeout_seconds_))
   {
+    record_control_diagnostic("state_fault", true, now);
     trigger_failsafe_land("飞控状态遥测超时或连接中断");
     return;
   }
@@ -2332,6 +2363,8 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     std::chrono::duration<double>(now - last_pose_time_).count() > pose_timeout_seconds_ ||
     std::chrono::duration<double>(now - last_velocity_time_).count() > pose_timeout_seconds_))
   {
+    // Freeze evidence before LAND changes task state; the existing protection executes immediately.
+    record_control_diagnostic("telemetry_fault", true, now);
     trigger_failsafe_land("本地位置或速度遥测无效/超时");
     return;
   }
@@ -2444,6 +2477,7 @@ void OnboardControlNode::status_tick()
   if (!rclcpp::ok()) {
     return;
   }
+  const auto graph_started = SteadyClock::now();
   std::size_t publisher_count = 0U;
   try {
     publisher_count = count_publishers(attitude_topic_);
@@ -2453,8 +2487,10 @@ void OnboardControlNode::status_tick()
     }
     throw;
   }
+  const auto graph_finished = SteadyClock::now();
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
+  record_slow_operation("status_graph", graph_started, graph_finished);
   reboot_tick(now);
   check_origin_confirmation_timeout(now);
   request_priority_parameters(now);
@@ -2584,6 +2620,7 @@ void OnboardControlNode::status_tick()
   message.max_jitter_ms = max_jitter_ms_;
   message.deadline_miss_count = deadline_miss_count_;
   status_publisher_->publish(message);
+  record_slow_operation("status_locked", now, SteadyClock::now());
 }
 
 void OnboardControlNode::publish_result(

@@ -56,3 +56,28 @@ source install/setup.bash
 - `ground_station_core/upstream/status_projector.py`：只统计巡检点，并处理抓拍/校准并发。
 
 自动校准不替代原有算法质量检查。SITL 注入候选可以检验真实桥、EKF 和控制衔接，但不等于相机检测或实机验收；实机解锁、起飞仍只能由用户手动完成。
+
+## 遥测保护诊断
+
+新增证据写入独立的 `onboard-control-diagnostics-<PID>-<启动时间ns>.log`，默认在
+`~/.ros/log/`（优先遵循 `ROS_LOG_DIR`，其次 `ROS_HOME/log`）。启动时的 `onboard.log`
+或服务 journal 会打印绝对路径；诊断正文不进入 `/rosout` 或地面站日志，以免共用ROS全局日志锁。
+出问题时同时保留该文件与原 `onboard.log`。按 `event_ns` 关联实际事件，通常延迟约1秒输出；
+锁忙或磁盘慢时可更晚。文件无法创建仅在启动时告警，不阻止飞行。它们不改变控制/校准逻辑和保护阈值。
+
+- `[TELEMETRY_FAULT]`：故障前的有效性、位置/速度/状态接收年龄、原阈值、实际值、航点、
+  校准阶段、命令序号及FCU会话计数。年龄`-1`表示从未收到；不要只看累计最大抖动。
+- `[TELEMETRY_RX]`：故障前的最后一条样本，以及日志输出前已经处理到的首条后续样本
+  （`first_after`；无该行表示截至快照排出尚未收到）。记录header、DDS发送/接收、
+  回调处理墙钟时间、回调间隔和锁等待。DDS时间戳为原始中间件证据，0可能表示不支持；
+  不跨主机直接相减，也不把不同实现的接收时间点当成相同语义。
+- `[CONTROL_TIMING]`：仅记录≥100ms的控制周期间隔或已标记代码段耗时。
+  `control_lock_wait_ms`大指向状态锁竞争；`previous_work_ms`大指向上个控制周期内部耗时；
+  二者都小时再结合DDS/回调时间检查调度或输入中断。
+  `slow_operation`区分`status_graph`、`status_locked`、`control_dispatch`、
+  `control_reference`（含校准推进）和`control_publish`；`slow_age_at_event_ms`用于识别历史慢调用。
+
+高频路径只更新时间和定长内存快照，不格式化、不写盘、不增加高频话题。
+独立1Hz回调用try-lock提取后释放控制锁，再写独占文件（不经过ROS/stdio标准输出锁）；每批最多一个故障快照和一个合并后的
+最慢耗时快照，无无限队列。持续抖动的`count`是合并的事件数，不等于唯一超期周期数。
+此诊断只需原生重建`onboard_control`并在地面重启加载新版，无消息接口或配置变更。

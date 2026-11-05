@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <future>
 #include <memory>
@@ -129,8 +130,10 @@ private:
   // ROS subscription callbacks update the authoritative vehicle state.
   void on_fcu_state(const mavros_msgs::msg::State::SharedPtr message);
   void on_extended_state(const mavros_msgs::msg::ExtendedState::SharedPtr message);
-  void on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message);
-  void on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message);
+  void on_pose(const geometry_msgs::msg::PoseStamped::SharedPtr message,
+    const rclcpp::MessageInfo & info);
+  void on_velocity(const geometry_msgs::msg::TwistStamped::SharedPtr message,
+    const rclcpp::MessageInfo & info);
   void on_battery(const sensor_msgs::msg::BatteryState::SharedPtr message);
   void on_global_origin(
     const geographic_msgs::msg::GeoPointStamped::SharedPtr message);
@@ -557,6 +560,60 @@ private:
   geographic_msgs::msg::GeoPoint requested_origin_;
   CommandIdentity origin_command_;
   SteadyTime origin_confirmation_started_{};
+
+  // Diagnostics-only slow-event threshold; never changes a flight or telemetry timeout.
+  static constexpr double kDiagnosticSlowMs = 100.0;
+
+  // Fixed-size, diagnostics-only samples; all access is protected by mutex_.
+  struct ReceiveDiagnostic
+  {
+    SteadyTime entered{};
+    std::uint64_t count{0};
+    std::int64_t header_ns{0}, dds_source_ns{0}, dds_receive_ns{0}, callback_wall_ns{0};
+    double gap_ms{0.0}, lock_wait_ms{0.0};
+  };
+  struct SlowOperation
+  {
+    const char * name{"none"};
+    double duration_ms{0.0};
+    SteadyTime finished{};
+  };
+  struct ControlDiagnostic
+  {
+    const char * event{"none"};
+    SteadyTime captured_at{};
+    std::int64_t event_ns{0};
+    std::uint64_t sequence{0}, fcu_session{0};
+    std::array<double, 9> values{};  // Position, velocity, and RPY at the event.
+    std::uint32_t waypoint{0};
+    unsigned mode{0}, calibration_stage{0};
+    bool pose_valid{false}, velocity_valid{false}, connected{false}, armed{false};
+    double pose_age_ms{0.0}, velocity_age_ms{0.0}, state_age_ms{0.0}, timeout_ms{0.0};
+    double period_ms{0.0}, lock_wait_ms{0.0}, previous_work_ms{0.0}, state_timeout_ms{0.0};
+    ReceiveDiagnostic pose, velocity;
+    SlowOperation slow;
+  };
+  /** Open a dedicated per-run sink, isolated from ROS logging and flight locks. */
+  void initialize_control_diagnostics();
+  /** Cache receive metadata only; never use middleware timestamps for flight decisions. */
+  void record_receive(ReceiveDiagnostic & sample, const rclcpp::MessageInfo & info,
+    const builtin_interfaces::msg::Time & stamp, SteadyTime entered, SteadyTime acquired);
+  /** Freeze a bounded fault/timing snapshot without formatting, I/O, or allocation. */
+  void record_control_diagnostic(const char * event, bool fault, const SteadyTime & now);
+  /** Retain only unusually slow operations for deferred correlation. */
+  void record_slow_operation(const char * name, SteadyTime started, SteadyTime finished);
+  /** Drain snapshots outside flight locks on an independent, low-frequency callback group. */
+  void flush_control_diagnostics();
+  ReceiveDiagnostic pose_diagnostic_, velocity_diagnostic_;
+  SlowOperation slow_operation_;
+  std::optional<ControlDiagnostic> pending_fault_diagnostic_, pending_timing_diagnostic_;
+  std::optional<ReceiveDiagnostic> post_fault_pose_, post_fault_velocity_;
+  std::uint64_t pending_timing_count_{0};
+  double diagnostic_period_ms_{0.0}, diagnostic_lock_wait_ms_{0.0}, previous_control_work_ms_{0.0};
+  // Only the diagnostic callback writes this file; it never enters the shared ROS logger.
+  std::unique_ptr<std::FILE, int (*)(std::FILE *)> diagnostic_log_{nullptr, &std::fclose};
+  rclcpp::CallbackGroup::SharedPtr diagnostic_callback_group_;
+  rclcpp::TimerBase::SharedPtr diagnostic_timer_;
 
   // Timer diagnostics and publisher-conflict protection.
   SteadyTime last_control_tick_{};
