@@ -85,24 +85,31 @@ def test_existing_paths_random_choice_and_missing_resources(tmp_path, monkeypatc
 
 
 def test_playlist_order_and_restart_from_first(tmp_path, monkeypatch):
-    """按路径顺序循环，取消后重启也从第一个视频开始。"""
+    """单进程循环有序列表，取消后重启也从第一个视频开始。"""
     media = _make_media(tmp_path, monkeypatch)
     for name in ("b.mp4", "a.mp4", "c.mp4"):
         (media.videos_dir / name).write_bytes(b"sample")
     played = []
 
-    def publish(video, stop):
-        """记录一整轮和下一轮首个片段后取消，覆盖中途重启。"""
-        played.append(video.name)
-        if len(played) == 4:
-            stop.set()
-        return True
+    def execute(args, stop, *, probe=False):
+        """检查真实生成的concat列表与输入循环参数，不连接媒体服务。"""
+        if probe:
+            return 0, "h264\n", ""
+        assert args[args.index("-stream_loop") + 1] == "-1"
+        assert args[args.index("-f") + 1] == "concat"
+        playlist = Path(args[args.index("-i") + 1]).read_text().splitlines()
+        assert playlist == ["ffconcat version 1.0"] + [
+            f"file '{media.videos_dir / name}'" for name in ("a.mp4", "b.mp4", "c.mp4")
+        ]
+        played.append(playlist)
+        stop.set()
+        return 0, "", ""
 
-    monkeypatch.setattr(media, "_publish", publish)
+    monkeypatch.setattr(media, "_execute", execute)
     for _ in range(2):
-        played.clear()
         media._play(threading.Event())
-        assert played == ["a.mp4", "b.mp4", "c.mp4", "a.mp4"]
+    assert len(played) == 2
+    assert played[0] == played[1]
 
 
 def test_stop_during_spawn_restart_and_process_ownership(tmp_path, monkeypatch):
@@ -181,7 +188,7 @@ def test_publish_failure_is_logged_and_retry_is_cancellable(tmp_path, monkeypatc
 
     monkeypatch.setattr(media, "_execute", execute)
     monkeypatch.setattr(module, "_RETRY_SECONDS", 30)
-    assert not media._publish(video, threading.Event())
+    assert not media._publish([video], threading.Event())
     assert any("publish rejected" in event.message for event in media._events.snapshot())
     failed.clear()
     try:
@@ -197,28 +204,32 @@ def test_publish_failure_is_logged_and_retry_is_cancellable(tmp_path, monkeypatc
 @pytest.mark.parametrize("source_codec", ["libx264", "mpeg4"])
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="需要 FFmpeg")
 def test_real_rtsp_decodes_on_isolated_port(tmp_path, monkeypatch, source_codec):
-    """临时 FFmpeg 接收并解码真实 RTSP，不启动 MediaMTX 或触碰现有服务。"""
+    """同一个RTSP接收连接跨片段和两轮循环，逐帧核对颜色顺序，无黑帧。"""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     url = f"rtsp://127.0.0.1:{port}/uav002/rectified"
     media = _make_media(tmp_path, monkeypatch, rtsp_url=url)
-    video = media.videos_dir / "tiny.mp4"
-    subprocess.run([
-        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=128x96:rate=10",
-        "-t", "1.5", "-an", "-c:v", source_codec, "-threads", "1", str(video),
-    ], check=True, capture_output=True, timeout=15)
+    for name, color in (("b.mp4", "blue"), ("a.mp4", "red")):
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color={color}:size=128x96:rate=10",
+            "-t", "0.6", "-an", "-c:v", source_codec, "-threads", "1", str(media.videos_dir / name),
+        ], check=True, capture_output=True, timeout=15)
+    # 保留含B帧输入的启动负PTS，不让测试接收器默认CFR丢掉首帧。
     receiver = subprocess.Popen([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-rtsp_flags", "listen", "-rtsp_transport", "tcp", "-listen_timeout", "8",
-        "-i", url, "-frames:v", "3", "-threads", "1", "-f", "framemd5", "-",
-    ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        "-copyts", "-i", url, "-frames:v", "27", "-threads", "1", "-vf", "scale=1:1",
+        "-fps_mode", "passthrough", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
+    ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         media.start()
         output, error = receiver.communicate(timeout=15)
-        assert receiver.returncode == 0, error
-        frames = [line for line in output.splitlines() if line and not line.startswith("#")]
-        assert len(frames) == 3, (output, error)
+        assert receiver.returncode == 0, error.decode(errors="replace")
+        assert len(output) == 27 * 3, (len(output), error)
+        colors = ["red" if output[i] > output[i + 2] else "blue" for i in range(0, len(output), 3)]
+        assert colors == (["red"] * 6 + ["blue"] * 6) * 2 + ["red"] * 3
+        assert all(max(output[i:i + 3]) > 200 for i in range(0, len(output), 3))
         expected = "copy" if source_codec == "libx264" else "libx264"
         assert any(f"（{expected}）" in event.message for event in media._events.snapshot())
     finally:

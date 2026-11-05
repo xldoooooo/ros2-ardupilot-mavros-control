@@ -12,6 +12,7 @@ from pathlib import Path
 import random
 import subprocess
 import threading
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 from ..event_log import EventLog
@@ -184,8 +185,9 @@ class SimulationMedia:
                 if self._process is process:
                     self._process = None
 
-    def _publish(self, video: Path, cancel: threading.Event) -> bool:
-        """H.264 原样复用，其他编码保守转为 H.264；失败输出真实错误。"""
+    def _publish(self, videos: list[Path], cancel: threading.Event) -> bool:
+        """同编码及流参数的片段用单进程循环；H.264 复用，其他编码转为 H.264。"""
+        video = videos[0]
         code, codec, error = self._execute([
             "ffprobe", "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(video),
@@ -199,18 +201,27 @@ class SimulationMedia:
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-pix_fmt", "yuv420p", "-threads", "2",
         ]
-        self._events.info("simulation-media", f"尝试发布仿真片段 {video.name}（{encoding[1]}）")
-        code, _, error = self._execute([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-re", "-i", str(video), "-map", "0:v:0", "-an", "-sn", "-dn",
-            *encoding, "-f", "rtsp", "-rtsp_transport", "tcp", self.rtsp_url,
-        ], cancel)
+        self._events.info(
+            "simulation-media",
+            f"尝试连续发布 {len(videos)} 个仿真片段，从 {video.name} 开始（{encoding[1]}）",
+        )
+        # concat 与输入循环保持同一 RTSP 连接，切片和回到首片均不重建发布者。
+        with TemporaryDirectory(prefix="simulation-media-") as directory:
+            playlist = Path(directory) / "playlist.ffconcat"
+            entries = ["file '" + str(path).replace("'", "'\\''") + "'" for path in videos]
+            playlist.write_text("ffconcat version 1.0\n" + "\n".join(entries) + "\n", encoding="utf-8")
+            code, _, error = self._execute([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-re", "-stream_loop", "-1", "-f", "concat", "-safe", "0", "-i", str(playlist),
+                "-map", "0:v:0", "-an", "-sn", "-dn",
+                *encoding, "-f", "rtsp", "-rtsp_transport", "tcp", self.rtsp_url,
+            ], cancel)
         if code and not cancel.is_set():
             self._events.warn("simulation-media", f"RTSP 发布失败 {video.name}：{error[-2000:]}")
         return code == 0
 
     def _play(self, cancel: threading.Event) -> None:
-        """每次从首个视频按路径排序循环播放；片段间重建发布，不修改媒体服务。"""
+        """每次从首个视频按路径排序连续循环播放；仅发布失败时重新尝试。"""
         url = urlsplit(self.rtsp_url)
         if url.scheme not in {"rtsp", "rtsps"} or not url.hostname:
             raise ValueError("rtsp_url 必须是 RTSP 地址")
@@ -219,12 +230,9 @@ class SimulationMedia:
             if not videos:
                 self._events.warn("simulation-media", f"没有仿真视频：{self.videos_dir}")
                 return
-            for video in videos:
-                if cancel.is_set():
+            if not self._publish(videos, cancel):
+                if cancel.wait(_RETRY_SECONDS):
                     return
-                if not self._publish(video, cancel):
-                    if cancel.wait(_RETRY_SECONDS):
-                        return
 
     def _run(self) -> None:
         """串行管理各轮发布；停止后保留空闲线程，快速重启也不并发抢流。"""
