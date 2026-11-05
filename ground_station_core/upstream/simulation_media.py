@@ -210,7 +210,7 @@ class SimulationMedia:
         return code == 0
 
     def _play(self, cancel: threading.Event) -> None:
-        """每轮重新枚举并洗牌；片段之间重建发布，不修改媒体服务。"""
+        """每次从首个视频按路径排序循环播放；片段间重建发布，不修改媒体服务。"""
         url = urlsplit(self.rtsp_url)
         if url.scheme not in {"rtsp", "rtsps"} or not url.hostname:
             raise ValueError("rtsp_url 必须是 RTSP 地址")
@@ -219,7 +219,6 @@ class SimulationMedia:
             if not videos:
                 self._events.warn("simulation-media", f"没有仿真视频：{self.videos_dir}")
                 return
-            random.shuffle(videos)
             for video in videos:
                 if cancel.is_set():
                     return

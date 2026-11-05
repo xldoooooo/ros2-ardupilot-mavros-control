@@ -84,31 +84,25 @@ def test_existing_paths_random_choice_and_missing_resources(tmp_path, monkeypatc
     assert any("没有仿真视频" in event.message for event in media._events.snapshot())
 
 
-def test_playlist_reshuffles_each_cycle(tmp_path, monkeypatch):
-    """每轮覆盖所有片段后重新洗牌，取消后不再发布。"""
+def test_playlist_order_and_restart_from_first(tmp_path, monkeypatch):
+    """按路径顺序循环，取消后重启也从第一个视频开始。"""
     media = _make_media(tmp_path, monkeypatch)
-    for name in ("a.mp4", "b.mp4"):
+    for name in ("b.mp4", "a.mp4", "c.mp4"):
         (media.videos_dir / name).write_bytes(b"sample")
-    cancel = threading.Event()
-    played, shuffled = [], []
-
-    def shuffle(files):
-        """固定反转次序以核对每轮确实洗牌。"""
-        shuffled.append(True)
-        files.reverse()
+    played = []
 
     def publish(video, stop):
-        """只记录播放次序，在第二轮结束时取消。"""
+        """记录一整轮和下一轮首个片段后取消，覆盖中途重启。"""
         played.append(video.name)
         if len(played) == 4:
             stop.set()
         return True
 
-    monkeypatch.setattr(module.random, "shuffle", shuffle)
     monkeypatch.setattr(media, "_publish", publish)
-    media._play(cancel)
-    assert played == ["b.mp4", "a.mp4"] * 2
-    assert len(shuffled) == 2
+    for _ in range(2):
+        played.clear()
+        media._play(threading.Event())
+        assert played == ["a.mp4", "b.mp4", "c.mp4", "a.mp4"]
 
 
 def test_stop_during_spawn_restart_and_process_ownership(tmp_path, monkeypatch):
