@@ -108,6 +108,13 @@ source_overlay() {
   source_setup "${WORKSPACE_ROOT}/install/setup.bash"
 }
 
+# Resolve the independent planner overlay using the same host configuration as its launcher.
+source_planner_overlay() {
+  source "${WORKSPACE_ROOT}/scripts/lib/project_config.bash"
+  project_config_load "${WORKSPACE_ROOT}"
+  source_setup "${AVOIDANCE_WORKSPACE:-${WORKSPACE_ROOT%/*}/dyn_small_obs_avoidance-ros2}/install/setup.bash"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command is missing: $1"
 }
@@ -239,8 +246,10 @@ check_dependencies() {
   log "dependency check passed (${ROS_DISTRO_RESOLVED}, ${#ros_packages[@]} ROS packages, video tools present)"
 }
 
+# Build the controller and native consumers against the same generated interfaces.
 build_workspace() {
   source_underlay
+  source_planner_overlay
   require_command colcon
   validate_workspace_layout
   build_ensure_control_dependencies
@@ -252,6 +261,7 @@ build_workspace() {
       --base-paths src correction_service \
       --packages-select \
         guided_interfaces correction_interfaces onboard_control correction_service \
+        avoidance_bridge \
       --cmake-force-configure \
       --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
@@ -259,14 +269,19 @@ build_workspace() {
   )
 }
 
+# Test all packages rebuilt by the minimal onboard entrypoint.
 test_workspace() {
+  source_underlay
+  source_planner_overlay
   source_overlay
   require_command colcon
   (
     cd -- "${WORKSPACE_ROOT}"
     colcon test \
+      --base-paths src correction_service \
       --packages-select \
         guided_interfaces correction_interfaces onboard_control correction_service \
+        avoidance_bridge \
       --event-handlers console_direct+
     colcon test-result --verbose
   )

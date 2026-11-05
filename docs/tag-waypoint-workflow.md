@@ -37,12 +37,14 @@ index,x,y,z,yaw,is_inspection,is_calibration,calibration_tag_id,continue_window
 
 ## 构建与维护
 
-飞行接口为 **3.6**，视频仍为 3.2，校准/extnav仍为 2.0。部署须更新两端源码、原生重建消息与控制服务，并重启旧进程，不能混用旧可执行程序与新消息动态库：
+飞行接口为 **3.6**，视频仍为 3.2，校准/extnav仍为 2.0。部署须更新两端源码，先停止旧进程，再原生重建消息、控制/修正服务及消费 `ControlStatus` 的 `avoidance_bridge`，不能混用旧可执行程序与新消息动态库：
 
 ```bash
 source /opt/ros/jazzy/setup.bash
+# 先加载本机配置的独立规划器 overlay（以下为相邻目录默认路径）。
+source ../dyn_small_obs_avoidance-ros2/install/setup.bash
 colcon build --base-paths src correction_service \
-  --packages-select correction_interfaces guided_interfaces onboard_control guided_sim correction_service \
+  --packages-select correction_interfaces guided_interfaces onboard_control guided_sim correction_service avoidance_bridge \
   --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```

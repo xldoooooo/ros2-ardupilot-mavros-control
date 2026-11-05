@@ -546,7 +546,9 @@ RViz 轨迹默认显示；点云默认关闭。`preview:=true` 仅限量转发�
 ## 航点自动 Tag 校准（飞行接口 3.6）
 
 新增巡检/校准标志及自动校准状态；必须同时原生重建 `correction_interfaces`、
-`guided_interfaces`、`onboard_control` 和 `correction_service`，更新地面站后重启相关进程。
-旧进程不能继续加载新消息库，勿混用新旧安装产物。现有构建入口已包含这些依赖。
+`guided_interfaces`、`onboard_control`、`correction_service` 及消费新接口的 `avoidance_bridge`；
+若安装了 `guided_sim` 也一起更新；地面站更新后重启相关进程。
+旧进程不能继续加载新消息库，勿混用新旧安装产物。现有构建/测试入口已包含原生桥，
+并按主机配置的 `AVOIDANCE_WORKSPACE`（默认相邻 `dyn_small_obs_avoidance-ros2`）加载已构建的规划器 overlay。
 本次只支持 odom 绝对坐标的直线及遇障悬停；配置、窗口规则和开发入口见
 [航点校准工作流](../../../docs/tag-waypoint-workflow.md)。未同步的设备不得仅复制新 Python 文件后直接运行。

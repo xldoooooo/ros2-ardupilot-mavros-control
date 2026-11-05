@@ -7,7 +7,7 @@
   开发机及mini-ground-tailscale已同步本轮地面代码；mini旧主窗口未重启，用户需重开后手动启动SITL。mini存在较旧地面GUI基线，本轮只合入main_window的相关改动，未连带引入其他UI/避障配置。refresh无需机载修改未连接；new/hp及refresh副本中的地面代码尚未同步本轮。验收见[Task13报告](agent/report/report-2026-11-04-simulation-workflow.md)。
 
 
-维护日期：2026-11-05。开发机Task12飞行接口为3.6；refresh/new/hp仍为3.5，refresh/new/hp/mini均未同步Task12。Task6 odom/map导航、三策略地图任务和安装外参转换已在开发机、refresh与new原生部署；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
+维护日期：2026-11-05。开发机与refresh已部署Task12（飞行接口3.6）；new/hp/mini仍为3.5，尚未同步Task12。Task6 odom/map导航、三策略地图任务和安装外参转换已在开发机、refresh与new原生部署；hp-desktop已同步3.5并原生重建地面站、控制/接口、独立避障、修正服务及项目Odin。项目Odin驱动和机载MAVROS九插件配置已在三机落地，refresh保留MAVROS2.16.0修复overlay。Task5及自主避障输出jerk的跟踪/净空风险仍未关闭，实机飞行尚未验收。
 源码与实际运行结果优先于本文件；更新时替换旧结论，实验过程写报告，不追加开发流水账。
 
 ## 工作边界
@@ -36,7 +36,7 @@
   该工具未加入自动启动；refresh 本次未核对或部署，需要时从开发机 `dev/` 单独复制即可。
 - 开发机及两架现役飞机均为 Ubuntu 24.04 / ROS 2 Jazzy；机载为 Jetson Orin NX / ARM64。
   Python 使用项目 `.venv`。旧 Ubuntu 22.04/Humble 台架数据不再代表现役环境。
-- 开发机飞行协议 **3.6**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.6.0**；refresh/new/hp/mini仍为3.5，未同步Task12。升级须联动重建控制/接口/修正服务并重启旧进程，不能混用新旧安装产物。
+- 开发机与refresh飞行协议 **3.6**，`guided_interfaces/onboard_control/guided_sim` 包版本 **3.6.0**；new/hp/mini仍为3.5，未同步Task12。升级须先停止旧进程，联动重建控制/接口/修正服务及avoidance_bridge，再启动新进程，不能混用新旧安装产物。
   独立视频协议 **3.2**，AprilTag 修正协议 **2.0**。地面与机载共享接口必须同步重建。
 - PySide6 地面站是薄客户端；`src/onboard_control` 是唯一飞行控制权威，负责租约、安全状态机、
   航点推进及 100 Hz PD+DOB。唯一生产输出为 `/mavros/setpoint_raw/attitude`；GUI、规划器、
@@ -105,7 +105,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh / uav002 / 2号机 | Task7统一配置 / 3.5；主工程与项目Odin均原生构建，MAVROS2.16.0修复overlay保持 | 配置直接读取`config/aircraft/uav002/`；杆臂(.10,-.04,.05)，自动pitch与-22°回退保留；导航仍map，当前未定位，不能视为map实飞验收。Wasintek推流及UQ212取帧通过，飞控/视频/修正最终停止；控制/避障参数按迁移前有效值保留 |
+| refresh / uav002 / 2号机 | Task12 / 3.6；源码基于2d168f5增量同步，机上Git HEAD仍e9927c1；控制/接口/修正/避障及guided_sim原生构建，MAVROS2.16.0 overlay保持 | 配置读取`config/aircraft/uav002/`；pitch=-25°、杆臂(.100,-.029,.060)m及现场标定保持，navigation.env=odom，reloc地图路径为空。飞控/避障/视频/修正均停止，自启设置未改；新安装产物只做隔离验证，真实相机及实飞未验收 |
 | new / uav001 / 1号机 | Task10 可选 FPGA / 3.5；主工程、CPU规划器、项目Odin及FPGA均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂与自动pitch/回退角保留，保持odom，reloc地图未配置；飞控/避障停止，视频/修正保持原运行状态；相机和实飞未验收 |
 | hp-desktop | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；逐机参数与控制/规划配置随主线同步，旧TODO/RViz等现场改动保留；机载服务未启用 |
 | mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
@@ -192,9 +192,9 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 
 ## AprilTag / Odin 当前基线与风险
 
-- **Task12 航点 Tag 自动校准（本机基线）**：飞行接口已升至3.6，新增独立巡检/校准/Tag ID/沿窗字段；新点及旧CSV默认普通，旧上位机巡检点显式标巡检。支持odom绝对坐标直线和遇障悬停，不支持map/自主避障/local_coordinates。首点或新段先清窗但保留active correction；NEXT必须沿用同一服务实例/session/window revision，不静默降级FIRST。校准独占面板只读，结束后开放手动调试；异常复用LAND，取消/失联接管不恢复迟到任务。
-  本次job与extnav最终样本身份、应用状态及MAVROS融合均需确认；融合期间跟随当前位置，水平PD/DOB临时使用既有`/extnav/velocity_fcu`物理速度，防止EKF暂态速度导致错误制动，Z/算法/扰动历史保持。总体上限`calibration_timeout_seconds=120`秒。升级需一起原生重建消息、控制和修正服务并重启旧进程，不能将新消息动态库配旧控制程序。
-  仅开发机更新；refresh/new/hp/mini均未同步本Task12，下次同步需带3.6接口和新增owner服务，保留现场参数。SITL验证使用合成候选＋真实原生extnav/MAVROS/ArduPilot/control，不代表真实相机/PnP或实飞验收。开发入口见[航点校准工作流](docs/tag-waypoint-workflow.md)。
+- **Task12 航点 Tag 自动校准（开发机与refresh基线）**：飞行接口已升至3.6，新增独立巡检/校准/Tag ID/沿窗字段；新点及旧CSV默认普通，旧上位机巡检点显式标巡检。支持odom绝对坐标直线和遇障悬停，不支持map/自主避障/local_coordinates。首点或新段先清窗但保留active correction；NEXT必须沿用同一服务实例/session/window revision，不静默降级FIRST。校准独占面板只读，结束后开放手动调试；异常复用LAND，取消/失联接管不恢复迟到任务。
+  本次job与extnav最终样本身份、应用状态及MAVROS融合均需确认；融合期间跟随当前位置，水平PD/DOB临时使用既有`/extnav/velocity_fcu`物理速度，防止EKF暂态速度导致错误制动，Z/算法/扰动历史保持。总体上限`calibration_timeout_seconds=120`秒。升级需一起原生重建消息、控制、修正服务及原生避障桥并重启旧进程，不能将新消息动态库配旧控制程序。
+  开发机与refresh已更新；refresh按文件同步并原生构建，未拉齐整机Git历史，现场参数/标定保持。new/hp/mini未同步Task12，下次需带3.6接口、新增owner服务及原生消费端；3.5地面站不能混接新接口。构建/测试入口按AVOIDANCE_WORKSPACE加载独立规划器overlay，测试检出范围与构建一致。部署范围见[refresh部署报告](agent/report/report-2026-11-05-task12-refresh-deployment.md)。SITL验证使用合成候选＋真实原生extnav/MAVROS/ArduPilot/control，不代表真实相机/PnP或实飞验收。开发入口见[航点校准工作流](docs/tag-waypoint-workflow.md)。
 
 - extnav权威源码为`correction_service/extnav_patch/`的单线程C++/固定尺寸数学；公共入口仍`ros2 run extnav_bridge extnav_to_vision_pose`。
   安装器以Release迁移外部`/home/nvidia/vrpn_mavros`包并备份旧source/build/install；开发机隔离验证、refresh/new生产安装已完成，hp-desktop已同步维护源码，但无外部vrpn_mavros，未新增该机载安装。原Python仅保留作比较参考。
