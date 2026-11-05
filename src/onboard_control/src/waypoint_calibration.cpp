@@ -283,7 +283,9 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
 
   if (calibration_stage_ != CalibrationStage::kRun && calibration_stage_ != CalibrationStage::kFusion) {return;}
   if (status.job_id != calibration_job_) {return;}
-  if (status.state == Status::STATE_FAILED || status.state == Status::STATE_STOPPING ||
+  // STOPPING also means normal capture cleanup before applying a frozen candidate.
+  // Wait for the terminal result; the existing total timeout still covers stalled cleanup.
+  if (status.state == Status::STATE_FAILED ||
     status.application_state == Status::APPLICATION_REJECTED ||
     status.application_state == Status::APPLICATION_UNKNOWN)
   {

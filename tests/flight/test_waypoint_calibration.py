@@ -194,6 +194,31 @@ def test_application_requires_fusion_and_preserves_absolute_goals(calibration_no
 
 
 @pytest.mark.parametrize("avoidance_node", [{"waypoint_hold_seconds": .1}], indirect=True)
+def test_normal_capture_cleanup_waits_for_application(calibration_node):
+    """Normal camera cleanup must not cancel a valid candidate or trigger LAND."""
+    from guided_interfaces.msg import CommandResult
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.starts) and h.status[-1].calibration_active)
+    h.calibration.state = h.calibration.STATE_STOPPING
+    h.calibration.application_state = h.calibration.APPLICATION_PENDING
+    h.calibration.message = "候选已冻结；正在释放采集资源"
+    h.calibration.resources_released = False
+    h.spin(.6)
+    assert not h.land_calls and not h.stops
+    assert h.status[-1].calibration_active and h.status[-1].waypoint_index == 1
+    assert not any(r.final and r.command == "waypoints" for r in h.results)
+    h.calibration.state = h.calibration.STATE_APPLYING
+    h.calibration.resources_released = True
+    h.spin(.2)
+    assert not h.land_calls and not h.stops
+    h.finish_calibration()
+    h.until(lambda: any(r.final and r.command == "waypoints" and
+                       r.status == CommandResult.STATUS_SUCCEEDED for r in h.results))
+    assert not h.land_calls
+
+
+@pytest.mark.parametrize("avoidance_node", [{"waypoint_hold_seconds": .1}], indirect=True)
 @pytest.mark.parametrize("strategy", [0, 2])
 def test_last_point_and_next_segment(calibration_node, strategy):
     """The final point waits for applied/fused evidence; FIRST/NEXT follow the task window."""
@@ -229,6 +254,9 @@ def test_failure_lands_and_cancel_ignores_late_result(calibration_node, failure)
     if failure == "failed":
         h.calibration.state = h.calibration.STATE_FAILED
         h.calibration.last_error = "camera open failed"
+    elif failure == "timeout":
+        # A cleanup phase that never completes remains subject to the existing total timeout.
+        h.calibration.state = h.calibration.STATE_STOPPING
     elif failure == "session":
         h.extnav.odin_session_id = "restarted-session"
     elif failure == "offline":
