@@ -105,7 +105,7 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 
 | 目标 | 最近确认的基线 | 下次操作必须注意 |
 | --- | --- | --- |
-| refresh / uav002 / 2号机 | Task12 / 3.6；源码含采集清理误降落修复及独立遥测诊断，机上Git HEAD仍e9927c1；控制/接口/修正/避障及guided_sim原生构建，MAVROS2.16.0 overlay保持 | 配置读取`config/aircraft/uav002/`；pitch=-25°、杆臂(.100,-.029,.060)m及现场标定保持，navigation.env=odom，reloc地图路径为空。飞控栈及视频/修正保留用户手动运行，自启未改；诊断版控制ELF已安装，旧PID54659未重启，须用户地面重启后生效。真实校准已观察到应用及融合，但应用前的位置/速度健康保护根因仍未定位；不代表实飞验收 |
+| refresh / uav002 / 2号机 | Task12 / 3.6；源码含采集清理误降落修复及独立遥测诊断，机上Git HEAD仍e9927c1；控制/接口/修正/避障及guided_sim原生构建，MAVROS2.16.0 overlay保持 | 配置读取`config/aircraft/uav002/`；pitch=-25°、杆臂(.100,-.029,.060)m及现场标定保持，navigation.env=odom，reloc地图路径为空。飞控栈及视频/修正保留用户手动运行，自启未改；诊断与Z保持新版控制ELF已实际加载；目标Tag专用版本也已加载。应用/融合期XY及yaw参考逐周期跟随的悬停缺陷已确认、尚未修复；融合长等待具体阻塞项及旧遥测保护根因仍未定位，不代表实飞验收 |
 | new / uav001 / 1号机 | Task10 可选 FPGA / 3.5；主工程、CPU规划器、项目Odin及FPGA均原生构建，系统MAVROS2.14.0保持 | 配置直接读取`config/aircraft/uav001/`；杆臂与自动pitch/回退角保留，保持odom，reloc地图未配置；飞控/避障停止，视频/修正保持原运行状态；相机和实飞未验收 |
 | hp-desktop | Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；逐机参数与控制/规划配置随主线同步，旧TODO/RViz等现场改动保留；机载服务未启用 |
 | mini-ground | Ubuntu24.04/Jazzy amd64；Task7统一配置 / 3.5，项目原生构建 | 本机选择`simulation`；本机模块overlay入口迁至`config/host.local.env`，桌面启动脚本统一读取；未启用机载服务，Qt/桌面其余基线与既有人工验收限制保留 |
@@ -194,11 +194,11 @@ mini-ground 从桌面入口启动；SSH 打开 GUI 时用 `systemd-run --user` �
 
 - **Task12 航点 Tag 自动校准（开发机与refresh基线）**：飞行接口已升至3.6，新增独立巡检/校准/Tag ID/沿窗字段；新点及旧CSV默认普通，旧上位机巡检点显式标巡检。支持odom绝对坐标直线和遇障悬停，不支持map/自主避障/local_coordinates。首点或新段先清窗但保留active correction；NEXT必须沿用同一服务实例/session/window revision，不静默降级FIRST。校准独占面板只读，结束后开放手动调试；异常复用LAND，取消/失联接管不恢复迟到任务。服务STATE_STOPPING也用于正常采集清理，控制端等待最终应用结果，不据此单独触发LAND；明确失败、应用拒绝/未知、owner/session异常及总超时保护保持。
   本次job与extnav最终样本身份、应用状态及MAVROS融合均需确认；应用/融合期间仅XY参考跟随当前位置、Z保留原固定目标，水平PD/DOB临时使用既有`/extnav/velocity_fcu`物理速度，防止EKF暂态速度导致错误制动；Z速度源/算法/扰动历史不变。总体上限`calibration_timeout_seconds=120`秒。升级需一起原生重建消息、控制、修正服务及原生避障桥并重启旧进程，不能将新消息动态库配旧控制程序。
-  **自动校准Z保持已最小修复（refresh待加载）**：仅把位置参考赋值改为XY两维，保留既有Z目标；两端13项真实节点校准流程及5组原生测试通过。开发机已构建，refresh新控制二进制已原生构建并安装，但旧控制进程未重启；须用户地面重启onboard_control/机载飞控栈，单独重启Tag服务无效。new/hp/mini未同步。未做实飞验收，EKF切换附加影响仍待查。见[Z目标保持修复](agent/report/report-2026-11-05-task12-calibration-z-hold-fix.md)。
+  **自动校准Z保持已最小修复并在refresh加载**：仅把位置参考赋值改为XY两维，保留既有Z目标；两端13项真实节点校准流程及5组原生测试通过。用户地面重启后已核验实际运行Build ID为`b31958abeb0a1bf4dab7358e4a924422d922ca0d`；不再是待加载状态。new/hp/mini未同步。该修复未解决XY/yaw保持及EKF融合等待，不代表自动校准实飞验收。见[Z目标保持修复](agent/report/report-2026-11-05-task12-calibration-z-hold-fix.md)。
   **遥测诊断已补齐**：开发机和refresh已构建/安装定长故障快照及独立1Hz诊断文件，接收年龄/有效性、DDS/回调时间、控制锁等待与慢代码段只用于取证，不改300ms等保护。正文不经ROS日志锁，默认`~/.ros/log/onboard-control-diagnostics-*.log`，启动INFO给出路径；refresh已由用户重启加载诊断版，独立诊断文件已确认生效；更新的控制二进制是否加载见Z保持项。new/hp/mini未同步。见[低开销诊断及部署](agent/report/report-2026-11-05-telemetry-diagnostics-low-overhead.md)。
   **未解决风险**：refresh发生过校准应用前的位置/速度健康保护，原报错未区分无效值与断流，不能把累计抖动直接当根因。隔离ROS图/图像流及地面单独相机启动未复现；新诊断在未武装地面状态捕获`status_locked`长持锁，应进一步分解状态回调，尚不能证明与旧故障同因。见[遥测保护排查](agent/report/report-2026-11-05-task12-telemetry-timeout-investigation.md)。
   **目标Tag采样已修正**：仅对请求ID按其配置尺寸精修/PnP，同帧其他已配置/未知ID不参与采样准入；旧`reject_multiple_tags`只保留配置兼容，目标质量与同步检查保持。开发机与refresh源码/安装文件已更新，两端100项相关回归通过；refresh已由用户重启加载，运行新目标Tag版本。new/hp/mini未同步。见[目标Tag最小修复](agent/report/report-2026-11-05-task12-target-tag-only.md)。
-  **自动校准待核对项**：应用后的融合等待缺少逐项门控证据，不能仅凭大yaw修正认定唯一根因。自动任务窗口容量取服务状态，面板未提交的长度输入不生效。见[首次校准耗时排查](agent/report/report-2026-11-05-task12-first-calibration-latency.md)。
+  **自动校准融合衔接仍有已证缺陷，未修复**：`waypoint_calibration.cpp`在APPLYING/融合等待期间每周期把XY/yaw参考覆盖为当前测量，导致位置P项消失、朝向目标随观测变化；原生隔离对照已复现。修复需保持同一坐标系下的物理锚点并处理坐标重对齐，不能仅永久锁旧FCU参考或放宽门限。实机应用后长等待伴随一次空中EKF lane切换，但没有连续门控量，具体阻塞项及全部实际漂移因素未排他定位；GUI实际yaw来自FCU。extnav速度与FCU轴向在yaw不一致时也须核对。见[XY/yaw漂移排查](agent/report/report-2026-11-05-task12-calibration-xy-yaw-drift.md)。自动任务窗口容量取服务状态，面板未提交的长度输入不生效。
   开发机与refresh已更新；refresh按文件同步并原生构建，未拉齐整机Git历史，现场参数/标定保持。new/hp/mini未同步Task12，下次需带3.6接口、新增owner服务及原生消费端；3.5地面站不能混接新接口。构建/测试入口按AVOIDANCE_WORKSPACE加载独立规划器overlay，测试检出范围与构建一致。部署范围见[refresh部署报告](agent/report/report-2026-11-05-task12-refresh-deployment.md)。采集清理修复见[修复报告](agent/report/report-2026-11-05-task12-cleanup-state-fix.md)，new/hp/mini后续同步须一并包含。SITL验证使用合成候选＋真实原生extnav/MAVROS/ArduPilot/control，不代表真实相机/PnP或实飞验收。开发入口见[航点校准工作流](docs/tag-waypoint-workflow.md)。
 
 - extnav权威源码为`correction_service/extnav_patch/`的单线程C++/固定尺寸数学；公共入口仍`ros2 run extnav_bridge extnav_to_vision_pose`。
