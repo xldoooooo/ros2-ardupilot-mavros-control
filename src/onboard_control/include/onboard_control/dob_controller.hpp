@@ -66,6 +66,12 @@ public:
   /** Clear observer history when releasing control or making a discontinuous control transition. */
   void reset();
 
+  /** Rotate observer and acceleration history when the horizontal world axes change. */
+  void rotate_horizontal_frame(double yaw_delta) noexcept;
+
+  /** Preserve disturbance/output when switching the horizontal velocity measurement source. */
+  void rebase_horizontal_velocity(const Eigen::Vector2d & velocity) noexcept;
+
   /** 用飞控已标定的 MOT_THST_HOVER 更新推力映射；非法值不会生效。 */
   bool set_hover_throttle(double hover_throttle) noexcept;
 

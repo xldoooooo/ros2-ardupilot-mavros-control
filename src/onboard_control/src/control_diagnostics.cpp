@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -126,6 +127,19 @@ void OnboardControlNode::record_slow_operation(
 /** Try-copy two fixed slots, release the flight lock, then emit at most one batch per second. */
 void OnboardControlNode::flush_control_diagnostics()
 {
+  // Fixed-size capture only; all derived metrics, formatting and I/O stay outside mutex_.
+  struct FusionLog
+  {
+    std::int64_t event_ns;
+    std::uint64_t revision;
+    Eigen::Vector3d position, reference, velocity, external_velocity, control_velocity;
+    geometry_msgs::msg::Pose external_pose;
+    double elapsed, yaw, reference_yaw, frame_yaw, stable_seconds;
+    std::array<double, 5> ages;  // FCU pose/velocity, extnav pose/velocity, raw odometry, in ms.
+    std::array<double, 2> post_apply;  // extnav pose/velocity stamp minus application stamp, in ms.
+    bool pose_valid, velocity_valid;
+  };
+  std::optional<FusionLog> fusion;
   std::optional<ControlDiagnostic> fault, timing;
   std::optional<ReceiveDiagnostic> after_pose, after_velocity;
   std::uint64_t timing_count = 0;
@@ -139,6 +153,28 @@ void OnboardControlNode::flush_control_diagnostics()
     after_velocity.swap(post_fault_velocity_);
     timing_count = pending_timing_count_;
     pending_timing_count_ = 0;
+    if (calibration_stage_ == CalibrationStage::kFusion) {
+      const auto now = SteadyClock::now();
+      const auto milliseconds = [&now](SteadyTime t) {
+          return t == SteadyTime{} ? -1.0 :
+                 std::chrono::duration<double, std::milli>(now - t).count();
+        };
+      fusion = FusionLog{
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count(),
+        navigation_extnav_ ? navigation_extnav_->revision : 0,
+        vehicle_.position, reference_.position, vehicle_.velocity, calibration_external_velocity_,
+        calibration_control_velocity_, calibration_external_pose_.pose,
+        std::chrono::duration<double>(now - calibration_started_).count(), yaw_, reference_.yaw,
+        calibration_control_frame_yaw_, calibration_stable_since_ == SteadyTime{} ? 0.0 :
+        milliseconds(calibration_stable_since_) / 1000.0,
+        {milliseconds(last_pose_time_), milliseconds(last_velocity_time_),
+          milliseconds(calibration_pose_time_), milliseconds(calibration_velocity_time_),
+          milliseconds(calibration_odometry_time_)},
+        {(calibration_pose_stamp_ - calibration_application_stamp_) / 1.e6,
+          (calibration_velocity_stamp_ - calibration_application_stamp_) / 1.e6},
+        pose_valid_, velocity_valid_};
+    }
   }
   const auto log_snapshot = [this](const char * label, const ControlDiagnostic & s,
       std::uint64_t count) {
@@ -177,6 +213,27 @@ void OnboardControlNode::flush_control_diagnostics()
     if (after_velocity) {log_receive(fault->event_ns, "first_after", "velocity", *after_velocity);}
   }
   if (timing) {log_snapshot("CONTROL_TIMING", *timing, timing_count);}
-  if (fault || timing) {std::fflush(diagnostic_log_.get());}
+  if (fusion) {
+    const auto & f = *fusion;
+    const auto & p = f.external_pose.position;
+    const auto & q = f.external_pose.orientation;
+    const double external_yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+      1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    std::fprintf(diagnostic_log_.get(),
+      "[CALIBRATION_FUSION] event_ns=%" PRId64 " revision=%" PRIu64
+      " elapsed_s=%.3f stable_s=%.3f valid=(%d,%d)"
+      " ages_ms=(%.3f,%.3f,%.3f,%.3f,%.3f) post_apply_ms=(%.3f,%.3f)"
+      " xy_error_m=%.6f yaw_error_rad=%.6f speeds_mps=(%.6f,%.6f,%.6f)"
+      " position=(%.6f,%.6f,%.6f) target=(%.6f,%.6f,%.6f)"
+      " yaw_rad=%.6f target_yaw_rad=%.6f raw_to_fcu_yaw_rad=%.6f control_vxy=(%.6f,%.6f)\n",
+      f.event_ns, f.revision, f.elapsed, f.stable_seconds, f.pose_valid, f.velocity_valid,
+      f.ages[0], f.ages[1], f.ages[2], f.ages[3], f.ages[4], f.post_apply[0], f.post_apply[1],
+      std::hypot(f.position.x() - p.x, f.position.y() - p.y), normalize_angle(f.yaw - external_yaw),
+      f.velocity.norm(), f.external_velocity.head<2>().norm(),
+      (f.velocity - f.external_velocity).head<2>().norm(),
+      f.position.x(), f.position.y(), f.position.z(), f.reference.x(), f.reference.y(), f.reference.z(),
+      f.yaw, f.reference_yaw, f.frame_yaw, f.control_velocity.x(), f.control_velocity.y());
+  }
+  if (fault || timing || fusion) {std::fflush(diagnostic_log_.get());}
 }
 }  // namespace onboard_control

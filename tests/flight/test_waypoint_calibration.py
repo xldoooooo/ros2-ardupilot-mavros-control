@@ -1,16 +1,19 @@
 """Exercise real onboard Tag arrival transitions with isolated localhost ROS services."""
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from test_avoidance_executor import avoidance_node  # Reuse measured-state/process isolation.
 
 
 @pytest.fixture
-def calibration_node(avoidance_node):
+def calibration_node(avoidance_node, monkeypatch):
     """Add calibration evidence and services, never emulate the onboard state machine."""
     from geometry_msgs.msg import PoseStamped, TwistStamped
     from mavros_msgs.srv import SetMode
+    from nav_msgs.msg import Odometry
     from correction_interfaces.msg import CorrectionStatus, ExtnavCorrectionStatus
     from correction_interfaces.srv import ClearWindow, SetCalibrationOwner, StartCorrection, StopCorrection
     from guided_interfaces.msg import VideoCapture
@@ -26,11 +29,24 @@ def calibration_node(avoidance_node):
         odin_session_id="calibration-session", final_sample_available=True,
         final_sample_odin_session_id="calibration-session")
     h.external_x, h.publish_calibration, h.publish_velocity = 0., True, True
+    h.raw_xy, h.raw_yaw, h.raw_body_velocity = (0., 0.), 0., (0., 0., 0.)
+    h.position_y, h.measured_yaw, h.publish_raw = 0., 0., True
+    original_pose_publish = h.pubs["local_position/pose"].publish
+
+    def measured_pose(message):
+        """Allow independent FCU Y/yaw without changing the shared flight fixture."""
+        message.pose.position.y = h.position_y
+        message.pose.orientation.z = math.sin(h.measured_yaw / 2.)
+        message.pose.orientation.w = math.cos(h.measured_yaw / 2.)
+        original_pose_publish(message)
+
+    monkeypatch.setattr(h.pubs["local_position/pose"], "publish", measured_pose)
     pubs = {
         "status": h.node.create_publisher(CorrectionStatus, "/correction_service/status", 10),
         "extnav": h.node.create_publisher(ExtnavCorrectionStatus, "/extnav/correction_status", 10),
         "pose": h.node.create_publisher(PoseStamped, "/extnav/pose_fcu", 10),
         "velocity": h.node.create_publisher(TwistStamped, "/extnav/velocity_fcu", 10),
+        "raw": h.node.create_publisher(Odometry, "/odin1/odometry_highfreq", 10),
     }
 
     def owner(req, res):
@@ -78,6 +94,14 @@ def calibration_node(avoidance_node):
         if not h.publish_calibration:
             return
         stamp = h.node.get_clock().now().to_msg()
+        raw = Odometry()
+        raw.header.stamp, raw.header.frame_id, raw.child_frame_id = stamp, "odom", "fcu"
+        raw.pose.pose.position.x, raw.pose.pose.position.y = h.raw_xy
+        raw.pose.pose.position.z = h.height
+        raw.pose.pose.orientation.z, raw.pose.pose.orientation.w = math.sin(h.raw_yaw/2), math.cos(h.raw_yaw/2)
+        raw.twist.twist.linear.x, raw.twist.twist.linear.y, raw.twist.twist.linear.z = h.raw_body_velocity
+        if h.publish_raw:
+            pubs["raw"].publish(raw)
         h.calibration.header.stamp = stamp
         h.extnav.header.stamp = stamp
         pubs["status"].publish(h.calibration)
@@ -243,7 +267,7 @@ def test_last_point_and_next_segment(calibration_node, strategy):
 
 @pytest.mark.parametrize("avoidance_node", [{"waypoint_hold_seconds": .1,
                                               "calibration_timeout_seconds": 2.5}], indirect=True)
-@pytest.mark.parametrize("failure", ["failed", "session", "offline", "velocity", "timeout", "cancel", "mode"])
+@pytest.mark.parametrize("failure", ["failed", "session", "offline", "velocity", "raw", "timeout", "cancel", "mode"])
 def test_failure_lands_and_cancel_ignores_late_result(calibration_node, failure):
     """Exceptions enter existing LAND, whereas explicit hover cancels without an automatic landing."""
     from guided_interfaces.srv import FlightCommand
@@ -261,9 +285,13 @@ def test_failure_lands_and_cancel_ignores_late_result(calibration_node, failure)
         h.extnav.odin_session_id = "restarted-session"
     elif failure == "offline":
         h.publish_calibration = False
-    elif failure == "velocity":
+    elif failure in ("velocity", "raw"):
         h.finish_calibration()
-        h.publish_velocity = False
+        if failure == "raw":
+            h.external_x = 3.  # Keep fusion pending until the last raw sample actually expires.
+            h.publish_raw = False
+        else:
+            h.publish_velocity = False
     elif failure in ("cancel", "mode"):
         if failure == "cancel":
             assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
@@ -319,4 +347,98 @@ def test_calibration_application_and_fusion_preserve_height(calibration_node):
     h.height, h.position_x = target_z, h.external_x
     h.until(lambda: any(r.final and r.command == "waypoints" and
                        r.status == CommandResult.STATUS_SUCCEEDED for r in h.results))
+    assert not h.land_calls
+
+
+@pytest.mark.parametrize("avoidance_node", [{
+    "waypoint_hold_seconds": .1, "trajectory_dob_L_xy": 0.,
+    "jerk_limit_modes.straight": False,
+}], indirect=True)
+def test_fusion_preserves_physical_anchor_across_coordinate_changes(calibration_node):
+    """Keep physical XY/yaw error and body velocity despite EKF/Tag frame jumps and yaw wrap."""
+    from test_avoidance_executor import _issued_acceleration
+
+    h = calibration_node
+    h.position_x, h.raw_xy = .08, (.5, -.2)
+    h.spin(.1)
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.starts))
+    # A pre-existing .08 m FCU hover error must not be discarded when anchoring in raw Odin.
+    anchor = (.42, -.2)
+    h.external_x = 5.  # Keep the independently corrected pose outside the fusion gate.
+    for stage in ("applying", "fusion"):
+        if stage == "applying":
+            h.calibration.state = h.calibration.STATE_APPLYING
+        else:
+            h.finish_calibration()
+        for offset, raw_yaw, body_velocity in [((0., 0.), 0., (0., 0., 0.)),
+                                              ((.28, .61), .35, (0., 0., 0.)),
+                                              ((0., 0.), .35, (.1, -.05, 0.))]:
+            previous_raw_acceleration = None
+            for frame_degrees in (0., 90., 179., -179.):
+                frame = math.radians(frame_degrees)
+                c, s = math.cos(frame), math.sin(frame)
+                h.raw_xy = (anchor[0] + offset[0], anchor[1] + offset[1])
+                h.raw_yaw, h.raw_body_velocity = raw_yaw, body_velocity
+                h.position_x = 1. + c * offset[0] - s * offset[1]
+                h.position_y = -.5 + s * offset[0] + c * offset[1]
+                h.measured_yaw = math.remainder(frame + raw_yaw, 2 * math.pi)
+                h.spin(.25)
+                status = h.status[-1]
+                assert status.calibration_active and not h.land_calls
+                assert (status.target_position.x, status.target_position.y) == pytest.approx((1., -.5))
+                assert math.remainder(status.target_yaw - frame, 2*math.pi) == pytest.approx(0., abs=1.e-6)
+                assert status.target_position.z == pytest.approx(1.)
+                acceleration = _issued_acceleration(h.attitudes[-1])
+                raw_acceleration = (c*acceleration[0] + s*acceleration[1],
+                                    -s*acceleration[0] + c*acceleration[1])
+                if previous_raw_acceleration is not None:
+                    assert raw_acceleration == pytest.approx(previous_raw_acceleration, abs=1.e-5)
+                previous_raw_acceleration = raw_acceleration
+                if offset != (0., 0.):
+                    assert sum(a*e for a, e in zip(raw_acceleration, offset)) < -.1
+                elif body_velocity != (0., 0., 0.):
+                    velocity = (math.cos(raw_yaw)*body_velocity[0] - math.sin(raw_yaw)*body_velocity[1],
+                                math.sin(raw_yaw)*body_velocity[0] + math.cos(raw_yaw)*body_velocity[1])
+                    assert sum(a*v for a, v in zip(raw_acceleration, velocity)) < -.01
+                else:
+                    assert raw_acceleration == pytest.approx((0., 0.), abs=1.e-6)
+
+
+@pytest.mark.parametrize("avoidance_node", [{
+    "control_frequency": 20., "status_frequency": 100., "waypoint_hold_seconds": .1,
+    "max_jerk_xy": .2, "dob_L_xy": 0., "trajectory_dob_L_xy": 0.,
+    "jerk_limit_modes.hover": True, "jerk_limit_modes.straight": True,
+}], indirect=True)
+def test_cancel_reframes_history_after_pose_callback_before_control_tick(calibration_node):
+    """A pose update just before cancel must rotate retained slew history, not the new hover target."""
+    from guided_interfaces.srv import FlightCommand
+    from test_avoidance_executor import _issued_acceleration
+
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.starts))
+    h.external_x = 3.
+    h.finish_calibration()
+    h.raw_xy, h.position_x = (.3, 0.), .3
+    h.spin(2.)
+    count = len(h.attitudes)
+    h.until(lambda: len(h.attitudes) > count)
+    before = _issued_acceleration(h.attitudes[-1])
+    assert before[0] < -.02 and abs(before[1]) < 1.e-6
+    # The intentionally slow control timer leaves room for pose + command callbacks between ticks.
+    count = len(h.attitudes)
+    h.position_x, h.position_y, h.measured_yaw = 0., .3, math.pi/2
+    from geometry_msgs.msg import PoseStamped
+    pose = PoseStamped()
+    pose.pose.position.z = h.height
+    h.pubs["local_position/pose"].publish(pose)
+    h.until(lambda: abs(h.status[-1].yaw - math.pi/2) < 1.e-6)
+    assert len(h.attitudes) == count  # Verify the intended interleaving, not a timing assumption.
+    assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
+    h.until(lambda: len(h.attitudes) > count)
+    after = _issued_acceleration(h.attitudes[count])
+    assert abs(after[0]) < 1.e-6 and after[1] < -.005
+    h.until(lambda: not h.status[-1].calibration_active)
+    assert (h.status[-1].target_position.x, h.status[-1].target_position.y) == pytest.approx((0., .3))
     assert not h.land_calls

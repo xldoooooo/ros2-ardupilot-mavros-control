@@ -31,7 +31,11 @@ index,x,y,z,yaw,is_inspection,is_calibration,calibration_tag_id,continue_window
 
 状态机非阻塞运行：申请独占 → 必要清窗 → 启动 FIRST/NEXT → 核对本次 job 的应用状态及 extnav revision/最终样本 → 等待实际 MAVROS EKF 与修正后辅助 pose 的 XY/yaw 一致、低速且持续稳定 → 推进下一点。ACK 或固定延时不能单独推进任务。
 
-应用/融合期间仅水平位置参考随当前融合XY衔接，Z保留校准前的固定目标高度，不追赶旧水平坐标参考；PD+DOB 的水平速度暂用既有 `/extnav/velocity_fcu` 物理速度，避免把 EKF 修正暂态速度当作机体运动。该速度失效时 LAND，融合完成还须核对 EKF 与桥速度一致；Z 与控制器算法/扰动历史不变。余下航点始终是校正世界里的原始绝对目标，不再次变换。末点同样等待校准与融合完成后才报告任务成功。
+应用前将原悬停目标（保留已有位置/朝向误差）保存到未经Tag修正的原始Odin坐标。应用/融合期间按最新raw与FCU位姿把固定物理锚点换算到当前FCU坐标：仅坐标重对齐不会指挥机体移动，实际漂移/转向仍产生回拉误差。水平速度从原始里程计的FCU机体系twist旋转到当前FCU世界轴；DOB与加速度历史随坐标轴旋转，仅在速度来源切换时重表达观测状态，不清零扰动。Z目标、速度来源及控制历史不变。
+
+原始输入参数为`calibration_odometry_topic`，默认`/odin1/odometry_highfreq`，要求`header.frame_id=odom`、`child_frame_id=fcu`，与项目Odin驱动一致；使用同一消息的pose/twist。订阅在节点启动时建立、仅保留最新一帧，避免空中创建ROS图；普通飞行不依赖该输入。校准前等待原始输入，应用/融合时输入无效或超时复用LAND。原extnav速度及融合门控保持；余下航点仍为修正世界里的原始绝对目标，不再次变换。末点也等待校准与融合后才报告成功。
+
+为定位融合等待，既有独立诊断文件每秒至多写一行`CALIBRATION_FUSION`：位置/yaw差、三组速度（FCU三维、extnav水平、两者水平差）、数据年龄（FCU pose/velocity、extnav pose/velocity、raw）、应用后时间戳、稳定持续时间和实际参考。诊断线程try-lock只拷贝定长快照，计算/格式化/落盘均在锁外，不参与飞行判定。
 
 既有采样/求解/应用分阶段超时保持不变；机载 `calibration_timeout_seconds` 默认 **120 秒**，包含申请、应用及飞控融合。异常结束任务并调用既有原地 LAND；用户悬停、取消、降落或失联接管则异步停止校准，迟到结果不能恢复旧任务。校准独占期间面板允许看状态，不允许并发启动、清窗、应用或保存 Tag 配置；释放资源后恢复按钮。
 

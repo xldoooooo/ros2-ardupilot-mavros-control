@@ -2446,9 +2446,9 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
   }
   VehicleKinematics control_vehicle = vehicle_;
   if (calibration_stage_ != CalibrationStage::kIdle && calibration_follow_fusion_) {
-    // EKF position fusion can create fictitious horizontal velocity. Use the existing bridge's
-    // physical velocity for PD/DOB during this transition; retain EKF Z and verify EKF agreement.
-    control_vehicle.velocity.head<2>() = calibration_external_velocity_.head<2>();
+    // Raw-Odin physical velocity is already rotated into the current FCU control axes.
+    // Do not use the independently corrected extnav axes while yaw fusion is still pending.
+    control_vehicle.velocity.head<2>() = calibration_control_velocity_.head<2>();
   }
   const ControlOutput output = controller_.compute(
     control_vehicle, reference_, dt_seconds, use_acceleration_feedforward, use_output_jerk);

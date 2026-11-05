@@ -1,6 +1,6 @@
 /**
  * @file test_dob_controller.cpp
- * @brief PD+DOB output, selectable jerk bounds, gain transitions and reset behavior.
+ * @brief PD+DOB output, frame/source transitions, selectable jerk bounds and reset behavior.
  */
 #include <gtest/gtest.h>
 
@@ -127,6 +127,112 @@ TEST(DobController, ContinuousGainSwitchPreservesDisturbanceAndPreviousInputWhil
     // With zero nominal input, preserving previous_input keeps the next estimate continuous too.
     EXPECT_LT((output.disturbance - disturbance).norm(), 1e-12);
     EXPECT_LT((output.acceleration + disturbance).norm(), 1e-12);
+  }
+}
+
+/** FCU frame realignment rotates the observer and active slew history without resetting either. */
+TEST(DobController, HorizontalFrameRotationPreservesObserverAndSlewHistory)
+{
+  ControllerParameters parameters;
+  parameters.max_jerk_xy = 2.0;
+  parameters.max_jerk_z = 1.0;
+  DobController baseline(parameters);
+  DobController rotated(parameters);
+  VehicleKinematics state;
+  state.position = Eigen::Vector3d(0.4, -0.2, 0.8);
+  state.velocity = Eigen::Vector3d(0.12, -0.08, 0.05);
+  ControlReference reference;
+  // Small errors keep the per-axis disturbance clamp and hard output limits inactive.
+  reference.position = state.position + Eigen::Vector3d(0.15, 0.1, 0.1);
+  reference.velocity = state.velocity + Eigen::Vector3d(0.04, 0.06, 0.03);
+  reference.acceleration = Eigen::Vector3d(0.08, -0.04, 0.03);
+  reference.yaw = 0.3;
+  ControlOutput previous;
+  for (int cycle = 0; cycle < 12; ++cycle) {
+    previous = baseline.compute(state, reference, 0.01, true, true);
+    ASSERT_TRUE(previous.valid);
+    ASSERT_TRUE(rotated.compute(state, reference, 0.01, true, true).valid);
+  }
+  ASSERT_GT(previous.acceleration.head<2>().norm(), 0.1);
+  ASSERT_GT(previous.acceleration.z(), 0.05);
+  ASSERT_GT(previous.disturbance.head<2>().norm(), 0.01);
+  ASSERT_GT(std::abs(previous.disturbance.z()), 0.001);
+
+  const double yaw_delta = 0.63;  // A non-cardinal angle exercises both horizontal components.
+  const Eigen::Matrix3d rotation =
+    Eigen::AngleAxisd(yaw_delta, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  rotated.rotate_horizontal_frame(yaw_delta);
+  EXPECT_LT((rotated.disturbance() - rotation * previous.disturbance).norm(), 1e-12);
+  EXPECT_DOUBLE_EQ(rotated.disturbance().z(), previous.disturbance.z());
+  VehicleKinematics rotated_state;
+  rotated_state.position = rotation * state.position;
+  rotated_state.velocity = rotation * state.velocity;
+  ControlReference rotated_reference;
+  rotated_reference.position = rotation * reference.position;
+  rotated_reference.velocity = rotation * reference.velocity;
+  rotated_reference.acceleration = rotation * reference.acceleration;
+  rotated_reference.yaw = reference.yaw + yaw_delta;
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    const auto expected = baseline.compute(state, reference, 0.01, true, true);
+    const auto actual = rotated.compute(rotated_state, rotated_reference, 0.01, true, true);
+    ASSERT_TRUE(expected.valid);
+    ASSERT_TRUE(actual.valid);
+    EXPECT_LT((actual.acceleration - rotation * expected.acceleration).norm(), 1e-12);
+    EXPECT_LT((actual.disturbance - rotation * expected.disturbance).norm(), 1e-12);
+    EXPECT_NEAR(actual.acceleration.z(), expected.acceleration.z(), 1e-12);
+    EXPECT_NEAR(actual.disturbance.z(), expected.disturbance.z(), 1e-12);
+    EXPECT_NEAR(actual.thrust, expected.thrust, 1e-12);
+    EXPECT_LT((actual.attitude.toRotationMatrix() -
+      rotation * expected.attitude.toRotationMatrix()).norm(), 1e-12);
+  }
+}
+
+/** A one-time velocity-source rebase preserves DOB, slew and vertical dynamics. */
+TEST(DobController, HorizontalVelocityRebaseAvoidsObserverImpulseAndPreservesZHistory)
+{
+  ControllerParameters parameters;
+  parameters.max_jerk_xy = 2.0;
+  parameters.max_jerk_z = 1.0;
+  DobController baseline(parameters);
+  DobController rebased(parameters);
+  VehicleKinematics state;
+  state.velocity = Eigen::Vector3d(0.12, -0.08, 0.05);
+  ControlReference reference;
+  reference.position = Eigen::Vector3d(0.15, 0.1, 0.1);
+  reference.velocity = state.velocity + Eigen::Vector3d(0.04, 0.06, 0.03);
+  ControlOutput previous;
+  for (int cycle = 0; cycle < 12; ++cycle) {
+    previous = baseline.compute(state, reference, 0.01, false, true);
+    ASSERT_TRUE(previous.valid);
+    ASSERT_TRUE(rebased.compute(state, reference, 0.01, false, true).valid);
+  }
+  ASSERT_GT(previous.acceleration.head<2>().norm(), 0.1);
+  ASSERT_GT(previous.acceleration.z(), 0.05);
+  ASSERT_GT(previous.disturbance.head<2>().norm(), 0.01);
+  ASSERT_GT(std::abs(previous.disturbance.z()), 0.001);
+
+  const Eigen::Vector2d source_jump(0.6, -0.4);
+  VehicleKinematics rebased_state = state;
+  rebased_state.velocity.head<2>() += source_jump;
+  ControlReference rebased_reference = reference;
+  rebased_reference.velocity.head<2>() += source_jump;  // Preserve the nominal PD error.
+  rebased.rebase_horizontal_velocity(rebased_state.velocity.head<2>());
+  EXPECT_LT((rebased.disturbance() - previous.disturbance).norm(), 1e-12);
+  EXPECT_DOUBLE_EQ(rebased.disturbance().z(), previous.disturbance.z());
+  for (int cycle = 0; cycle < 4; ++cycle) {
+    const auto expected = baseline.compute(state, reference, 0.01, false, true);
+    const auto actual = rebased.compute(rebased_state, rebased_reference, 0.01, false, true);
+    ASSERT_TRUE(expected.valid);
+    ASSERT_TRUE(actual.valid);
+    EXPECT_LT((actual.acceleration - expected.acceleration).norm(), 1e-12);
+    EXPECT_LT((actual.disturbance - expected.disturbance).norm(), 1e-12);
+    EXPECT_NEAR(actual.acceleration.z(), expected.acceleration.z(), 1e-12);
+    EXPECT_NEAR(actual.disturbance.z(), expected.disturbance.z(), 1e-12);
+    EXPECT_NEAR(actual.thrust, expected.thrust, 1e-12);
+    // Later velocity changes remain observer input; do not rebase every cycle.
+    const Eigen::Vector3d velocity_step(0.01, -0.005, 0.002);
+    state.velocity += velocity_step;
+    rebased_state.velocity += velocity_step;
   }
 }
 

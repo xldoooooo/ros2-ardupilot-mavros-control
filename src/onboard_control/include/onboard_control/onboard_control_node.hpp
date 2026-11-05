@@ -22,6 +22,7 @@
 #include <geographic_msgs/msg/geo_point_stamped.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <guided_interfaces/msg/command_result.hpp>
 #include <guided_interfaces/msg/avoidance_request.hpp>
 #include <guided_interfaces/msg/avoidance_result.hpp>
@@ -240,6 +241,8 @@ private:
   void initialize_waypoint_segment();
   /** Observe the existing calibration service and create nonblocking service clients. */
   void initialize_calibration();
+  /** Keep a physical raw-Odin anchor while expressing control in the current FCU axes. */
+  bool update_calibration_hold(const SteadyTime & now, bool update_reference = true);
   /** Reject unsupported modes, unknown Tags and duplicates in each predicted window segment. */
   bool validate_calibration_task(const ExecuteWaypoints::Request & request, std::string & reason) const;
   /** Start exactly one owned calibration after the existing arrival gate succeeds. */
@@ -439,6 +442,14 @@ private:
   bool task_has_calibrated_{false}, calibration_follow_fusion_{false};
   std::int64_t calibration_application_stamp_{0}, calibration_pose_stamp_{0};
   geometry_msgs::msg::PoseStamped calibration_external_pose_;
+  // Raw odometry does not jump when Tag corrections change the external world frame.
+  nav_msgs::msg::Odometry::ConstSharedPtr calibration_odometry_;
+  SteadyTime calibration_odometry_time_{};
+  Eigen::Vector2d calibration_hold_position_{Eigen::Vector2d::Zero()};
+  Eigen::Vector3d calibration_control_velocity_{Eigen::Vector3d::Zero()};
+  double calibration_hold_yaw_{0.0}, calibration_control_frame_yaw_{0.0};
+  bool calibration_hold_initialized_{false}, calibration_using_raw_velocity_{false};
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr calibration_odometry_subscription_;
   double calibration_timeout_seconds_{120.0};  // Entire arrival calibration including FCU fusion.
   rclcpp::Subscription<correction_interfaces::msg::CorrectionStatus>::SharedPtr calibration_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr calibration_pose_subscription_;

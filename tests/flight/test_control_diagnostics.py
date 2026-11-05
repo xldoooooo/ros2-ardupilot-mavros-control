@@ -50,3 +50,26 @@ def test_telemetry_fault_is_frozen_and_logged_once(calibration_node, tmp_path, f
     assert "dds_receive_ns=" in text and "callback_wall_ns=" in text
     assert h.land_calls == ["LAND"]
     assert h.status[-1].failsafe_reason == "本地位置或速度遥测无效/超时"
+
+
+def test_fusion_metrics_are_deferred_and_rate_limited(calibration_node, tmp_path):
+    """Pending fusion gets bounded evidence without changing references or completing the task."""
+    from guided_interfaces.srv import FlightCommand
+
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.starts))
+    h.external_x = .7
+    h.finish_calibration()
+    h.spin(2.3)
+    log, = (tmp_path / "ros").glob("onboard-control-diagnostics-*.log")
+    lines = [line for line in log.read_text().splitlines() if line.startswith("[CALIBRATION_FUSION]")]
+    assert 1 <= len(lines) <= 4
+    assert all("xy_error_m=0.700000" in line and "yaw_error_rad=0.000000" in line for line in lines)
+    assert all("ages_ms=" in line and "post_apply_ms=" in line and "target=" in line for line in lines)
+    assert h.status[-1].calibration_active and not h.land_calls
+    assert h.status[-1].target_position.x == pytest.approx(0.)
+    assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
+    h.spin(1.2)
+    assert not h.status[-1].calibration_active
+    assert len([line for line in log.read_text().splitlines() if line.startswith("[CALIBRATION_FUSION]")]) == len(lines)

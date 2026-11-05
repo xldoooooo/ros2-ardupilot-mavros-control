@@ -41,6 +41,21 @@ void DobController::reset()
   previous_input_.setZero();
 }
 
+/** Re-express all horizontal history together; leave vertical control untouched. */
+void DobController::rotate_horizontal_frame(const double yaw_delta) noexcept
+{
+  const Eigen::Rotation2Dd rotation(yaw_delta);
+  observer_state_.head<2>() = rotation * observer_state_.head<2>();
+  disturbance_.head<2>() = rotation * disturbance_.head<2>();
+  previous_input_.head<2>() = rotation * previous_input_.head<2>();
+}
+
+/** A source change is not physical acceleration; retain d and the previous applied input. */
+void DobController::rebase_horizontal_velocity(const Eigen::Vector2d & velocity) noexcept
+{
+  observer_state_.head<2>() = disturbance_.head<2>() - parameters_.observer_xy * velocity;
+}
+
 bool DobController::set_hover_throttle(const double hover_throttle) noexcept
 {
   // ArduPilot 对 MOT_THST_HOVER 的有效约束更窄；这里保留通用 (0, 1) 接口。

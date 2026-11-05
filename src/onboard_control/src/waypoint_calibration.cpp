@@ -35,6 +35,15 @@ void OnboardControlNode::initialize_calibration()
   if (!std::isfinite(calibration_timeout_seconds_) || calibration_timeout_seconds_ <= 0.0) {
     throw std::invalid_argument("calibration_timeout_seconds must be positive");
   }
+  // Create the subscription at startup, not in the airborne control loop. Retain one sample only.
+  calibration_odometry_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
+    declare_parameter<std::string>("calibration_odometry_topic", "/odin1/odometry_highfreq"),
+    rclcpp::SensorDataQoS().keep_last(1),
+    [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
+      std::lock_guard<std::recursive_mutex> lock(mutex_);
+      calibration_odometry_ = std::move(message);
+      calibration_odometry_time_ = SteadyClock::now();
+    });
   calibration_owner_client_ = create_client<CalibrationOwner>("/correction_service/set_calibration_owner");
   calibration_clear_client_ = create_client<CalibrationClear>("/correction_service/clear_window");
   calibration_start_client_ = create_client<CalibrationStart>("/correction_service/start");
@@ -63,6 +72,64 @@ void OnboardControlNode::initialize_calibration()
       calibration_velocity_time_ = SteadyClock::now();
       calibration_velocity_stamp_ = rclcpp::Time(message->header.stamp).nanoseconds();
     });
+}
+
+/** Preserve physical error in raw Odin, then rotate it into the FCU's evolving local frame. */
+bool OnboardControlNode::update_calibration_hold(const SteadyTime & now, const bool update_reference)
+{
+  if (!pose_valid_ || !std::isfinite(yaw_) || !calibration_odometry_ ||
+    std::chrono::duration<double>(now - calibration_odometry_time_).count() > pose_timeout_seconds_)
+  {
+    return false;
+  }
+  const auto & odometry = *calibration_odometry_;
+  if (odometry.header.frame_id != "odom" || odometry.child_frame_id != "fcu") {return false;}
+  const auto & p = odometry.pose.pose.position;
+  const auto & q = odometry.pose.pose.orientation;
+  const auto & v = odometry.twist.twist.linear;
+  const Eigen::Vector2d raw_position(p.x, p.y);
+  const Eigen::Vector3d body_velocity(v.x, v.y, v.z);
+  Eigen::Quaterniond raw_attitude(q.w, q.x, q.y, q.z);
+  if (!raw_position.allFinite() || !body_velocity.allFinite() ||
+    !raw_attitude.coeffs().allFinite() || !std::isfinite(raw_attitude.squaredNorm()) ||
+    raw_attitude.squaredNorm() <= 0.0)
+  {
+    return false;
+  }
+  raw_attitude.normalize();
+  const auto raw_rotation = raw_attitude.toRotationMatrix();
+  const double raw_yaw = std::atan2(raw_rotation(1, 0), raw_rotation(0, 0));
+  const double frame_yaw = normalize_angle(yaw_ - raw_yaw);
+  const Eigen::Rotation2Dd raw_to_fcu(frame_yaw);
+  if (!calibration_hold_initialized_) {
+    // Preserve the existing hover error, not the vehicle's slightly displaced current position.
+    calibration_hold_position_ = raw_position + raw_to_fcu.inverse() *
+      (reference_.position - vehicle_.position).head<2>();
+    calibration_hold_yaw_ = normalize_angle(raw_yaw + reference_.yaw - yaw_);
+    calibration_control_frame_yaw_ = frame_yaw;
+    calibration_hold_initialized_ = true;
+  }
+  if (calibration_follow_fusion_) {
+    // Translation/yaw estimator changes move the coordinate representation, never the anchor.
+    if (update_reference) {
+      reference_.position.head<2>() = vehicle_.position.head<2>() +
+        raw_to_fcu * (calibration_hold_position_ - raw_position);
+      reference_.yaw = normalize_angle(yaw_ + calibration_hold_yaw_ - raw_yaw);
+      reference_.velocity.setZero();
+      reference_.acceleration.setZero();
+      target_yaw_rate_ = 0.0;
+    }
+    const Eigen::Vector3d raw_velocity = raw_rotation * body_velocity;
+    calibration_control_velocity_ = vehicle_.velocity;
+    calibration_control_velocity_.head<2>() = raw_to_fcu * raw_velocity.head<2>();
+    controller_.rotate_horizontal_frame(normalize_angle(frame_yaw - calibration_control_frame_yaw_));
+    if (!calibration_using_raw_velocity_) {
+      controller_.rebase_horizontal_velocity(calibration_control_velocity_.head<2>());
+      calibration_using_raw_velocity_ = true;
+    }
+  }
+  calibration_control_frame_yaw_ = frame_yaw;
+  return true;
 }
 
 /** Validate the complete proposed window sequence before accepting any flight task. */
@@ -152,6 +219,8 @@ void OnboardControlNode::start_waypoint_calibration(const SteadyTime & now)
   calibration_source_ = "onboard-calibration-" + std::to_string(get_clock()->now().nanoseconds());
   calibration_job_.clear();
   calibration_follow_fusion_ = false;
+  calibration_hold_initialized_ = false;
+  calibration_using_raw_velocity_ = false;
   calibration_application_stamp_ = 0;
   calibration_stable_since_ = SteadyTime{};
   reference_.velocity.setZero();
@@ -251,6 +320,13 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
       calibration_stage_ = CalibrationStage::kStart;
     }
     if (calibration_stage_ == CalibrationStage::kStart && !calibration_start_future_.valid()) {
+      // Capture the raw-frame anchor before any service can apply a correction.
+      if (!update_calibration_hold(now)) {
+        if (std::chrono::duration<double>(now - calibration_started_).count() > kCalibrationStatusTimeout) {
+          fail("原始Odin位姿/速度不可用，无法固定校准悬停点");
+        }
+        return;
+      }
       const bool next = task_has_calibrated_ && waypoints_[waypoint_index_].continue_window;
       auto request = std::make_shared<CalibrationStart::Request>();
       request->stamp = get_clock()->now();
@@ -301,12 +377,9 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
     {
       fail("修正后 extnav 速度不可用，无法安全衔接飞控融合"); return;
     }
-    // Tag correction moves XY/yaw only. Follow fused XY without erasing the Z hold error.
-    reference_.position.head<2>() = vehicle_.position.head<2>();
-    reference_.yaw = yaw_;
-    reference_.velocity.setZero();
-    reference_.acceleration.setZero();
-    target_yaw_rate_ = 0.0;
+  }
+  if (!update_calibration_hold(now)) {
+    fail("原始Odin位姿/速度无效或超时，无法保持校准悬停点"); return;
   }
   const bool applied = status.state == Status::STATE_SUCCEEDED && status.resources_released &&
     status.window_saved && status.extnav_applied &&
@@ -361,6 +434,17 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
 void OnboardControlNode::stop_waypoint_calibration()
 {
   if (calibration_stage_ == CalibrationStage::kIdle) {return;}
+  if (calibration_using_raw_velocity_) {
+    // A pose callback can precede cancellation but follow the last control tick.
+    // Reframe history without overwriting a new hover reference; stale raw must not block cancel.
+    update_calibration_hold(SteadyClock::now(), false);
+    if (vehicle_.velocity.head<2>().allFinite()) {
+      controller_.rebase_horizontal_velocity(vehicle_.velocity.head<2>());
+    }
+  }
+  calibration_using_raw_velocity_ = false;
+  calibration_hold_initialized_ = false;
+  calibration_follow_fusion_ = false;
   calibration_stage_ = CalibrationStage::kIdle;
   if (calibration_stop_client_->service_is_ready()) {
     auto request = std::make_shared<CalibrationStop::Request>();
