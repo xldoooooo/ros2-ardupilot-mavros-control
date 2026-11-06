@@ -209,7 +209,9 @@ class CorrectionServiceNode(Node):
             )
 
         self._service_logger = configure_service_logger(self.config.logging)
-        self._detector = AprilTagDetector(self.config.intrinsics, self.config.detection)
+        self._detector = AprilTagDetector(
+            self.config.intrinsics, self.config.detection, prescaled=True
+        )
         self._odometry_fault_guard = self.create_guard_condition(self._on_odometry_fault)
         self._synchronizer = NativeOdometrySynchronizer(
             self.config.synchronization, self._odometry_fault_guard.trigger
@@ -1086,6 +1088,7 @@ class CorrectionServiceNode(Node):
             self.config.lens_controls,
             camera_log,
             self._service_logger,
+            image_scale=self.config.detection.image_scale,
         )
         job.camera = camera
         failure = ""
@@ -1234,13 +1237,13 @@ class CorrectionServiceNode(Node):
         """校验硬件相机节点的 mono8 紧凑帧，拒绝隐式颜色/步长猜测。"""
         if image.encoding != "mono8":
             raise ValueError(f"相机图像编码必须为 mono8，实际 {image.encoding}")
-        if (
-            int(image.width) != self.config.camera.width
-            or int(image.height) != self.config.camera.height
-        ):
+        scale = self.config.detection.image_scale
+        width = round(self.config.camera.width * scale)
+        height = round(self.config.camera.height * scale)
+        if int(image.width) != width or int(image.height) != height:
             raise ValueError(
-                f"相机图像尺寸 {image.width}x{image.height} 与标定 "
-                f"{self.config.camera.width}x{self.config.camera.height} 不一致"
+                f"相机图像尺寸 {image.width}x{image.height} 与检测尺寸 "
+                f"{width}x{height} 不一致"
             )
         if int(image.step) != int(image.width):
             raise ValueError(f"mono8 图像 step={image.step} 非紧凑宽度 {image.width}")

@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "correction_native/capture_clock.hpp"
+#include "correction_native/image.hpp"
 
 namespace correction_native {
 // Signal handlers only stop the loop; ROS context remains alive until publishers close.
@@ -220,7 +221,7 @@ class Capture {
 };
 }  // namespace correction_native
 
-// Preserve the existing camera executable's parameters, topic, timestamps and full mono8 frames.
+// Preserve capture parameters and source stamps while publishing the configured detection pixels.
 int main(int argc, char **argv) {
   using namespace correction_native;
   rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
@@ -234,13 +235,15 @@ int main(int argc, char **argv) {
     const int height = node->declare_parameter("image_height", 1080);
     const int fps = node->declare_parameter("framerate", 30);
     const double publish_fps = node->declare_parameter("publish_fps", 30.);
+    const double image_scale = node->declare_parameter("image_scale", 1.);
     const auto frame_id =
         node->declare_parameter("frame_id", std::string("correction_camera_optical_frame"));
     const auto topic =
         node->declare_parameter("image_topic", std::string("/correction_service/image_raw"));
     const double max_age = node->declare_parameter("max_capture_age_ms", 200.) * 1e6;
-    if (width <= 0 || height <= 0 || fps <= 0 || max_age <= 0)
-      throw std::invalid_argument("invalid UVC dimensions, fps or capture-age limit");
+    if (width <= 0 || height <= 0 || fps <= 0 || max_age <= 0 ||
+        !std::isfinite(image_scale) || image_scale <= 0. || image_scale > 1.)
+      throw std::invalid_argument("invalid UVC dimensions, fps, capture-age limit or image_scale");
     if (node->get_parameter("use_sim_time").as_bool())
       throw std::invalid_argument("UVC hardware capture requires the system ROS clock");
     CaptureRateLimiter limiter(publish_fps);
@@ -249,9 +252,10 @@ int main(int argc, char **argv) {
     Capture capture(device, width, height, fps);
     RCLCPP_INFO(node->get_logger(),
                 "UVC mmap started: %s %dx%d MJPEG requested_fps=%d negotiated_fps=(%u,%u) "
-                "publish_fps=%.3f timestamp=V4L2_CLOCK_MONOTONIC decoder=OpenCV native=true",
+                "publish_fps=%.3f timestamp=V4L2_CLOCK_MONOTONIC decoder=OpenCV native=true "
+                "image_scale=%.4f output_size=%dx%d",
                 device.c_str(), width, height, fps, capture.negotiated_num, capture.negotiated_den,
-                publish_fps);
+                publish_fps, image_scale, cvRound(width * image_scale), cvRound(height * image_scale));
     std::uint64_t count = 0, stale = 0, nonmonotonic = 0, rate_limited = 0, last_count = 0;
     std::int64_t last_stamp = 0, report_time = monotonic_ns(), last_frame = report_time;
     double age_sum = 0, age_max = 0;
@@ -275,6 +279,7 @@ int main(int argc, char **argv) {
         const auto frame = cv::imdecode(sample->jpeg, cv::IMREAD_GRAYSCALE);
         if (frame.empty() || frame.rows != height || frame.cols != width)
           throw std::runtime_error("UVC MJPEG decoder returned an invalid image/size");
+        const auto output = resize_gray(frame, image_scale);
         age += monotonic_ns() - mono;
         if (age > max_age)
           ++stale;
@@ -282,11 +287,11 @@ int main(int argc, char **argv) {
           auto image = std::make_unique<sensor_msgs::msg::Image>();
           image->header.stamp = rclcpp::Time(stamp);
           image->header.frame_id = frame_id;
-          image->height = height;
-          image->width = width;
+          image->height = output.rows;
+          image->width = output.cols;
           image->encoding = "mono8";
-          image->step = width;
-          image->data.assign(frame.datastart, frame.dataend);
+          image->step = output.cols;
+          image->data.assign(output.datastart, output.dataend);
           publisher->publish(std::move(image));
           last_stamp = stamp;
           ++count;

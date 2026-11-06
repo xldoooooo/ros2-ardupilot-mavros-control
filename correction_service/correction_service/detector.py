@@ -34,7 +34,9 @@ class DetectionBatch:
 class AprilTagDetector:
     """保留原Python接口，原生执行同一36h11搜索、亚像素精修和PnP。"""
 
-    def __init__(self, intrinsics: Intrinsics, settings: DetectionSettings) -> None:
+    def __init__(
+        self, intrinsics: Intrinsics, settings: DetectionSettings, *, prescaled: bool = False
+    ) -> None:
         """派生原有检测内参；编译和运行时OpenCV必须与Python一致。"""
         if settings.tag_family != "tag36h11":
             raise ValueError("只支持 tag36h11")
@@ -45,7 +47,10 @@ class AprilTagDetector:
         self._camera_matrix[0, :] *= self._scale
         self._camera_matrix[1, :] *= self._scale
         self._distortion = intrinsics.distortion.copy()
-        self._detector = native.Detector(self._scale, settings.corner_refinement)
+        # 相机已按相同INTER_AREA缩图时，仅缩放内参，不再二次缩像素。
+        self._detector = native.Detector(
+            1.0 if prescaled else self._scale, settings.corner_refinement
+        )
 
     @property
     def camera_matrix(self) -> np.ndarray:

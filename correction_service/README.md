@@ -310,8 +310,12 @@ Python 仅在处理观测或检查应用跳变时读取状态；异常通过 gua
 自适应亚像素精修及 IPPE square PnP 在同库 C++ 中执行，检测默认 `image_scale` 保持配置值。
 
 采集入口 `correction_service/uvc_camera_node` 用 `exec` 加载原生节点，直接打开 `camera.conf` 指定的系统
-UVC 设备，以 V4L2 mmap 读取 MJPEG，并用已有 OpenCV 依赖解码为原始 `mono8`；不裁剪、不旋转、
-不去畸变。采集时间直接来自内核 `CLOCK_MONOTONIC` 缓冲区时间戳，按帧龄映射至 ROS 系统时钟；
+UVC 设备，以 V4L2 mmap 持续读取 MJPEG。仅对调度选中的帧解码，并在发布前按
+`detection.image_scale` 用原有 `INTER_AREA` 缩图；检测直接消费该尺寸，内参只缩放一次。
+例如1920×1200、scale=0.5时只传960×600的 `mono8`，像素载荷减少75%；scale=1保留原分辨率。
+原生采集模式与标定内参尺寸仍为原始分辨率，不裁剪、不旋转、不去畸变。独立相机入口的
+`image_scale` 参数默认1，由校准任务传入既有检测配置值，无需维护第二个缩放配置。
+采集时间直接来自内核 `CLOCK_MONOTONIC` 缓冲区时间戳，按帧龄映射至 ROS 系统时钟；
 不按声明 fps 推算时间，不以到达时间掩盖无效时间戳。超过原有 `max_capture_age_ms` 的帧仍丢弃。
 构建增加 `pybind11-dev` 和 ROS `pybind11_vendor`；安装入口自动补齐。原生模块选择 Python `cv2`
 实际加载的 OpenCV 动态库。若 JetPack 开发头与 Python 版本不同，构建入口仅下载并解包匹配的

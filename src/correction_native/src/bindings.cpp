@@ -1,10 +1,12 @@
 // Convert only selected observations and on-demand raw state across the Python boundary.
+#include <cstring>
 #include <pybind11/functional.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include "correction_native/capture_clock.hpp"
+#include "correction_native/image.hpp"
 #include "correction_native/odometry.hpp"
 #include "correction_native/vision.hpp"
 
@@ -21,6 +23,17 @@ static cv::Mat gray_view(const py::array_t<std::uint8_t, py::array::c_style> &pi
 // Expose independent data-plane operations; Python continues to own every transaction.
 PYBIND11_MODULE(_correction_native, module) {
   module.attr("opencv_version") = CV_VERSION;
+  module.def("resize_gray", [](py::array_t<std::uint8_t, py::array::c_style> pixels, double scale) {
+    const auto image = gray_view(pixels);
+    cv::Mat result;
+    {
+      py::gil_scoped_release release;
+      result = resize_gray(image, scale);
+    }
+    py::array_t<std::uint8_t> output({result.rows, result.cols});
+    std::memcpy(output.mutable_data(), result.data, result.total());
+    return output;
+  });
   py::class_<CaptureRateLimiter>(module, "CaptureRateLimiter")
       .def(py::init<double>())
       .def("accept", &CaptureRateLimiter::accept);

@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+import _correction_native as native
 from correction_service.detector import AprilTagDetector
 from correction_service.geometry import (
     compute_planar_correction,
@@ -86,6 +87,14 @@ def test_official_print_to_first_correction_and_return_to_center(
     )
     frame = cv2.warpPerspective(marker, transform, (1920, 1080), borderValue=255)
     batch = detector.detect(frame, {0: tag})
+    transferred = native.resize_gray(frame, cfg.detection.image_scale)
+    direct = AprilTagDetector(intrinsics, cfg.detection, prescaled=True).detect(transferred, {0: tag})
+    assert direct.marker_ids == batch.marker_ids
+    assert len(direct.detections) == len(batch.detections)
+    for before, after in zip(batch.detections, direct.detections):
+        assert np.array_equal(before.corners, after.corners)
+        assert np.array_equal(before.camera_from_tag_standard, after.camera_from_tag_standard)
+        assert before.reprojection_error_px == after.reprojection_error_px
     assert batch.marker_ids == (0,)
     assert len(batch.detections) == 1
     # Odin 起始自建系归零，随后按真实刚体位移变化。

@@ -1,5 +1,6 @@
 // Keep the Python detector's full image algorithm and numerical representation.
 #include "correction_native/vision.hpp"
+#include "correction_native/image.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -34,9 +35,7 @@ Detector::Detector(double scale, bool refine)
 // grid.
 Corners Detector::detect(const cv::Mat &gray,
                          const std::set<int> &selected) const {
-  cv::Mat image = gray;
-  if (scale_ != 1.)
-    cv::resize(gray, image, {}, scale_, scale_, cv::INTER_AREA);
+  const auto image = resize_gray(gray, scale_);
   Corners result;
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
   detector_->detectMarkers(image, result.points, result.ids);

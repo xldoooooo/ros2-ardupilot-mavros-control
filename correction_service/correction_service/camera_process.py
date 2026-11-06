@@ -41,8 +41,12 @@ class CameraProcess:
         lens_controls: dict[str, int],
         log_path: Path,
         logger: logging.Logger,
+        *,
+        image_scale: float = 1.0,
     ) -> None:
+        """采集保持原生尺寸；可在发布前应用校准检测所需的唯一缩图。"""
         self._settings = settings
+        self._image_scale = float(image_scale)
         self._lens_controls = dict(lens_controls)
         self._log_path = log_path
         self._logger = logger
@@ -98,6 +102,8 @@ class CameraProcess:
             f"image_topic:={self._settings.image_topic}",
             "-p",
             f"max_capture_age_ms:={self._settings.max_capture_age_ms}",
+            "-p",
+            f"image_scale:={self._image_scale}",
         ]
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_stream = self._log_path.open("a", encoding="utf-8")

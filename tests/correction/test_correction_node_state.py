@@ -1306,10 +1306,11 @@ def test_sampling_uses_only_requested_tag(
         return DetectionBatch(marker_ids, () if pose_state == "missing" else (detection,), 1.0)
 
     monkeypatch.setattr(node, "_detector", SimpleNamespace(detect=detect))
+    width = round(node.config.camera.width * node.config.detection.image_scale)
+    height = round(node.config.camera.height * node.config.detection.image_scale)
     image = Image(
-        height=node.config.camera.height, width=node.config.camera.width,
-        encoding="mono8", step=node.config.camera.width,
-        data=bytes(node.config.camera.width * node.config.camera.height),
+        height=height, width=width, encoding="mono8", step=width,
+        data=bytes(width * height),
     )
     node._process_image(job, image, stamp_ns)
     assert job.samples_accepted == int(accepted)

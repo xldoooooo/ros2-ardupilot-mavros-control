@@ -2,6 +2,11 @@
 
 import queue
 import threading
+
+import cv2
+import numpy as np
+import pytest
+import _correction_native as native
 from types import SimpleNamespace
 
 from correction_service.node import CorrectionServiceNode
@@ -41,3 +46,11 @@ def test_detector_consumes_all_selected_frames_without_second_rate_gate():
     camera = SimpleNamespace(ensure_running=lambda: None)
     CorrectionServiceNode._sample_until_candidate(node, job, camera)
     assert processed == [stamps[0], stamps[1], stamps[3]]
+
+
+@pytest.mark.parametrize("shape,scale", [((1200, 1920), .5), ((121, 193), .6), ((1200, 1920), 1.)])
+def test_camera_resize_preserves_original_detection_pixels(shape, scale):
+    """前移缩图逐像素等价，非整数尺寸按原fx/fy取整，原分辨率不改像素。"""
+    image = np.random.default_rng(19).integers(0, 256, shape, dtype=np.uint8)
+    expected = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    assert np.array_equal(native.resize_gray(image, scale), expected)
