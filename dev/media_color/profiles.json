@@ -1,0 +1,11 @@
+{
+  "_description": "Fixed curves preserve black/white endpoints; grading never changes from frame to frame.",
+  "natural": {
+    "curve": "0/0 0.12/0.09 0.3/0.26 0.5/0.47 0.75/0.74 1/1",
+    "saturation": 1.14
+  },
+  "enhanced": {
+    "curve": "0/0 0.12/0.065 0.3/0.225 0.5/0.435 0.75/0.715 1/1",
+    "saturation": 1.24
+  }
+}
