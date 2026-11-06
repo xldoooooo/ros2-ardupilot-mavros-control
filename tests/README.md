@@ -1,4 +1,4 @@
-<!-- 自动化测试入口、功能闭环归属和本次重构验收记录。 -->
+<!-- 自动化测试入口、功能闭环归属与环境要求。 -->
 # 自动化测试
 
 日常修改按功能闭环回归，只有共享模块变更或明确验收才运行全部测试。
@@ -72,26 +72,3 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q tests/waypoints/test_way
 
 直接 `pytest tests` 是显式全量 Python 测试，不附带 C++/包内测试；推荐使用上述统一入口。
 测试失败不会被吞掉；pytest 的 skip 仍会如实显示，不能当作通过。
-
-## 2026-09-17 重构记录
-
-按“只改 test”要求，所有修改与本记录均位于 `tests/`，未更新根文档、MEMORY 或 agent/report。
-已有生产代码、文档工作区改动未纳入此次重构。
-
-删除三项不验证功能结果的检查：Qt success hover CSS 字符串、视频面板 disabled CSS 字符串、
-Qt 内部 opaque paint 标志。保留禁用/可用状态、确认交互、窗口行为、故障隔离和全部算法/事务回归。
-原自举测试中夹带的视频抓拍顺序与 QoS 检查迁至视频组，飞行协议版本检查迁至飞行组。
-
-初始未 source overlay 的全量结果为 257 passed、12 failed、13 errors、1 skipped，
-失败原因是找不到生成的 `guided_interfaces` / `correction_interfaces`。统一入口加载现有
-overlay 后验证，不通过增加 skip 或删除这些用例规避环境问题。
-
-最终验证：全量功能/包级 Python **286 passed**，选择器 **17 passed**，C++ **3 个套件通过**。
-七组还分别在独立 pytest 进程执行通过：runtime 51、flight 34、waypoints 32、upstream 25、
-video 42、correction（含包级）91、ui 11；未出现 skip。Shell 语法、未使用导入/未定义名称检查、
-Git diff 空白检查通过。C++ 使用当前已有构建产物，本次没有修改或重新构建生产源码。
-
-修正组独立执行退出时观察到一次 rclpy 异步清理消息：
-`The following exception was never retrieved: cannot use Destroyable because destruction was requested`。
-该次 91 项断言全部通过且退出码为 0；未屏蔽消息，也未据此修改生产节点。该异步清理现象尚未定位，
-不能将本轮结果表述为退出日志完全无异常。

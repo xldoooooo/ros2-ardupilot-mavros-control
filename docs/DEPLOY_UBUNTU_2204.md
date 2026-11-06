@@ -1,16 +1,15 @@
-<!-- Deployment prerequisites and project configuration entry points. -->
-# Ubuntu 22.04 / ROS 2 Humble 部署与无桨调试
+<!-- Ground station deployment and ROS distribution compatibility. -->
+# 地面站部署（Ubuntu 22.04 / 24.04）
 
-本文档用于在新电脑上部署完整项目。启动器从自身位置推导仓库根目录，并自动发现 ROS、
-项目 `.venv`、ArduPilot、Odin/extnav overlay 和唯一飞控串口；正常布局不需要编辑脚本。
+地面支持 Ubuntu 22.04/Humble 和24.04/Jazzy；当前正式飞机使用24.04/Jazzy。
+实机通信优先保持两端 ROS 发行版一致，跨发行版 DDS 需重新验证。
+机载安装、串口/overlay 和台架核验见[机载部署](../src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)。
 
-## 安全边界
+## 安装
 
-- 首次部署和台架调试必须拆除螺旋桨，并持续确认飞控 `armed=false`。
-- 脚本不允许自动解锁或起飞实机；这两项只能由操作者人工执行。
-- 串口或 ROS overlay 存在多个候选时，启动器会拒绝猜测并安全退出。
-
-## 1. 完整检出与自动部署
+先安装目标发行版 ROS、编译工具、FFmpeg/ffprobe、v4l2-ctl、匹配架构的 MediaMTX，
+视频依赖见[地面视频部署](../video_service/deploy/GROUND_VIDEO_DEPLOYMENT.md)。
+然后在普通用户目录检出：
 
 ```bash
 git clone https://github.com/xldoooooo/ros2-ardupilot-mavros-control.git
@@ -18,92 +17,30 @@ cd ros2-ardupilot-mavros-control
 bash scripts/ground/setup_ground_station.sh
 ```
 
-`scripts/ground/setup_ground_station.sh` 自动完成：
+安装器创建项目 `.venv`，安装 Python 依赖，原生构建/测试飞行、仿真及修正相关包，检查环境，
+安装应用菜单入口。它会用 sudo/apt 补装缺少的 Eigen、JSON 开发包及 `libxcb-cursor0`，
+不会启动 MAVROS、访问真实串口或发送飞行命令；其他缺包会报告名称，补齐后重新运行。
 
-- 依据 Ubuntu 22.04/24.04 选择 Humble/Jazzy；
-- 创建项目本地 `.venv` 并安装 Qt、MAVProxy/SITL 依赖；
-- 原生构建三个 ROS 包；
-- 执行 ROS/C++ 测试和地面站环境检查。
+## 本机配置
 
-脚本不会调用 `apt`、`sudo`、MAVROS、真实串口或任何飞行命令。若报告系统依赖缺失，
-先人工审查缺包名称，安装后重新执行同一命令。
+`config/host.local.env` 不入 Git，用于 `GROUND_STATION_ROS_DISTRO`、
+`GROUND_STATION_PYTHON`、overlay 路径、`GROUND_STATION_HARDWARE_DOMAIN_ID` 等本机设置；
+参照 `config/host.local.env.example`。不依赖旧用户配置目录或 shell 初始化文件。
+地面启动不读取飞机 `onboard.env`。实机 domain 默认0，应与飞机一致；231保留本地仿真。
 
-## 2. 地面站与 SITL
+仿真需要 ArduPilot `sim_vehicle.py` 和 MAVProxy。启动器从 PATH、项目虚拟环境和常见
+源码/虚拟环境位置发现；非标准位置可设置 `GROUND_STATION_MAVPROXY` 等对应覆盖，
+找不到时在启动仿真进程前报错。
+
+## 启动与验证
 
 ```bash
 bash scripts/ground/start_ground_all.sh --check-environment
 bash scripts/ground/start_ground_all.sh
 ```
 
-启动器优先使用仓库内 `.venv`，并在 22.04 上使用 Humble 的
-`ROS_LOCALHOST_ONLY`，在 24.04 上使用 Jazzy 的
-`ROS_AUTOMATIC_DISCOVERY_RANGE`。本地仿真仍固定为 domain 231，实机固定为 domain 0。
+先手动初始化本地仿真验证 UI、航点和媒体；上位机仿真见[工作流](simulation-workflow.md)。
+实机台架保持拆桨、未解锁，独立 Wi-Fi 图标只做被动通信检查；“连接实机服务”会申请租约并
+写入确认的 GPS 原点。实机解锁和起飞只能由用户手动执行。
 
-ArduPilot 会依次从当前 `PATH`、仓库同级目录、当前用户目录、`/opt` 与 `/usr/local/src`
-的常见源码布局中寻找 `sim_vehicle.py`。
-MAVProxy 会依次从显式 `GROUND_STATION_MAVPROXY`、当前 `PATH`、项目 `.venv` 与常见
-ArduPilot 虚拟环境中寻找；找不到时仿真会在启动任何进程前明确失败。
-
-## 3. 机载四组件发现检查
-
-先执行只发现、不启动：
-
-```bash
-bash scripts/onboard/start_onboard_control.sh --check
-```
-
-成功输出会列出 ROS 发行版、当前仓库、FCU 串口、Odin 和 extnav 的实际安装前缀。
-随后保持拆桨和未解锁，再由操作者运行：
-
-```bash
-bash scripts/onboard/start_onboard_control.sh
-```
-
-停止 systemd 服务以及其他终端手工启动的机载组件：
-
-```bash
-bash scripts/onboard/stop_onboard_control.sh
-```
-
-停止入口会清理 MAVROS、Odin、extnav、onboard_control 和相关 RViz，并在发现残留时返回失败。
-
-启动器只在发现唯一串口时继续，优先采用 `/dev/serial/by-id` 稳定名称；否则检查
-`ttyTHS`、`ttyACM` 和 `ttyUSB`。Odin/extnav 通过 ament package index 反查其 overlay，
-不依赖用户名或工作区目录名称。
-
-启动器按 `config/aircraft.local.env` 的 `AIRCRAFT_ID` 读取
-`config/aircraft/<AIRCRAFT_ID>/onboard.env`。对已确认但存在多个串口候选的飞机，把
-`MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备>` 写入该文件，这样 systemd
-和交互终端直接运行 `./scripts/onboard/start_onboard_control.sh` 使用同一机载配置。
-
-## 4. 无法唯一判断时
-
-多块串口设备或多个旧 overlay 本身具有安全歧义，程序不会静默选择。确认实际硬件后，
-可将固定选择写入 `config/aircraft/<AIRCRAFT_ID>/onboard.env`。临时调试也可只对当前命令
-提供覆盖值，不需要修改仓库文件：
-
-```bash
-MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> bash scripts/onboard/start_onboard_control.sh --check
-ODIN_OVERLAY_SETUP=<已确认的setup.bash> \
-EXTNAV_OVERLAY_SETUP=<已确认的setup.bash> \
-  bash scripts/onboard/start_onboard_control.sh --check
-```
-
-这些覆盖只用于消除真实歧义。不得根据名称猜测设备，更不得把自动发现扩展为自动解锁或起飞。
-
-## 5. 实机无桨验收
-
-一键启动报告 `READY` 前，聚合状态必须满足：接口 `3.0`、FCU 已连接且未解锁、消息频率
-配置完成、推力语义确认、本地位置有效。随后只使用 GUI 的 Wi-Fi 图标进行被动通信检查；
-正式“连接实机服务”会申请租约并写入人工确认的 GPS/EKF 原点，不属于只读检查。
-
-任何 `armed=true`、位置跳变、`thrust_mode_verified=false`、
-`setpoint_conflict=true` 或重复进程都必须立即停止调试。
-
-## 本机依赖环境
-
-地面站的 `scripts/ground/setup_ground_station.sh` 与 `start_ground_all.sh` 首先读取项目
-`config/host.local.env`，该文件不提交 Git；本机 Python、ROS 发行版和依赖 overlay 路径均在这里维护。
-可设置 `GROUND_STATION_ROS_DISTRO`、`GROUND_STATION_PYTHON`，需要的 overlay 可在文件中显式 `source`。
-不再依赖 `~/.config/ros2-ground-station/environment.bash` 或 shell 初始化文件中的项目专用设置。
-地面启动不加载飞机 `onboard.env`，避免仿真档案的 ROS 发现范围覆盖实机连接设置。
+开机自启、独立服务与日志见[启动与日志](startup-and-logs.md)。

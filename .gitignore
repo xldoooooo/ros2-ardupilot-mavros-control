@@ -144,3 +144,9 @@ Thumbs.db
 /backups/
 /config/aircraft/*/log/
 /config/aircraft/*/odin/calibration/cam_in_ex.txt
+
+# Obsolete architecture-specific demo package; keep any existing local copy.
+/dev/demo/RTSPDemo/rtsp-simple-server_v0.21.6_linux_amd64.tar.gz
+
+# Odin exports this runtime calibration snapshot; authoritative calibration is under config/.
+/image/cam_in_ex.txt

@@ -16,7 +16,7 @@ SLAM 点云、设备内部算法、WIWC 外参载荷及 `odom←map` 不作安�
 `pitch_cam` 定义 `R_FI=Ry(pitch_cam)`（rad，上仰25°为 `-0.4363323129985824`），
 `odin_x/y/z` 是飞控到 IMU 的向量（水平 FLU、m）。只补固定 pitch，roll/yaw 为零，自动学习禁用。
 驱动直接读取该文件，包括直接启动二进制的场景；修改后重启驱动和 extnav。
-refresh 本次值为 `(.100,-.029,.060)m`，因此右乘的平移是 `-R_IF*odin_xyz`，不能直接取反后忽略安装角。
+refresh 当前标定值为 `(.100,-.029,.060)m`，因此右乘的平移是 `-R_IF*odin_xyz`，不能直接取反后忽略安装角。
 
 旧 SDK 的线速度在 odom、角速度在 IMU；发布时包含旋转杆臂速度并转为 FCU body twist。
 6×6 协方差按一阶雅可比传播全部交叉块，采用 odom 平移/世界小角 pose 误差与旧混合 twist 约定，
@@ -44,7 +44,8 @@ Jetson 的厂商 OpenCV 必须配套相同 ABI 的 cv_bridge，可用 `ODIN_CV_B
 ./scripts/onboard/components/start_odin.sh -c /absolute/custom.yaml
 ```
 
-完整机载入口 `./scripts/onboard/start_onboard_control.sh` 使用相同的 `-c` 选项，默认也为 odom。
+完整机载入口 `./scripts/onboard/start_onboard_control.sh` 使用相同的 `-c` 选项。
+不传 `-c` 时，两个脚本均读取逐机 `navigation.env` 的 `NAVIGATION_MODE=odom|map`；缺失时为 odom，map 选择 reloc。
 `--check` 只检查配置路径及安装入口，不连接设备。切换配置前先停止现有 Odin 进程。
 
 | 配置文件（项目根 `config/aircraft/<编号>/odin/`） | 用途 |
@@ -58,8 +59,6 @@ Jetson 的厂商 OpenCV 必须配套相同 ABI 的 cv_bridge，可用 `ODIN_CV_B
 项目 `odom`/`reloc` 配置关闭无人使用的原始 DTOF、诊断 CSV 和传感器展示 TF；
 高频定位、下采样点云与独立的 `odom→map` 重定位 TF 保持。`slam` 关闭原始 DTOF/CSV，
 保留传感器 TF 方便建图查看；开发机需要完整传感器调试时显式选择 `original` 或自定义配置。
-裁剪前配置分别保存在各设备的 `src/odin_ros_driver/config/backup/20261019-flight-trim/`，
-恢复时保留本机地图路径和标定，勿跨机覆盖。
 `original.yaml` 只代表原始配置，不会恢复被项目 SDK 关闭的原始 cloud_slam 发布；其缺少
 `cloud_downsample` 配置时也不会输出项目 down 云。正式避障使用项目配置。
 

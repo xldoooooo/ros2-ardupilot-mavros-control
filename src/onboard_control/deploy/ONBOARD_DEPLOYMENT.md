@@ -1,583 +1,164 @@
-<!-- Native onboard deployment, configuration and verification entry points. -->
-# 机载服务最小部署与验证
+<!-- Native onboard deployment, independent services and operational maintenance. -->
+# 机载部署与维护
 
-本文档用于把飞行包、独立 `video_service` 和独立 AprilTag-Odin 修正服务部署到伴随计算机。
+当前目标为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64。全新系统先按
+[新机清单](JETSON_NEW_MACHINE_CHECKLIST.md)及[依赖说明](ONBOARD_DEPENDENCIES.md)准备。
+实机解锁、起飞只能由用户手动执行；编译和隔离测试不代表硬件或飞行验收。
 
-全新 Ubuntu 24.04 Jetson 请先按 [新机操作清单](JETSON_NEW_MACHINE_CHECKLIST.md)
-配置系统，并用 [前置依赖安装器](ONBOARD_DEPENDENCIES.md) 补齐 ROS、MAVROS、项目 Odin 和视频依赖。
-硬件尚未接齐时，`install_onboard_service.sh --install-only` 仍完成构建、测试和隔离 smoke，
-但只安装配置与 unit，不启用或启动飞控服务；硬件路径和独立 extnav 需随后验收。
-当前实机目标为 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64；旧
-Ubuntu 22.04/Humble 飞机只作为兼容历史，不代表当前运行基线。
+## 检出、配置与构建
 
-## 安全边界
-
-MAVROS 时间同步启动检查：完整机载入口及 `scripts/onboard/components/start_mavros.sh`
-会检查 `/mavros/time` 的实际参数。MAVROS 2.15.1 可能未加载插件 YAML，导致配置中的
-10 Hz 在运行时变为 `timesync_rate=0.0`；入口在 MAVLINK 模式下将禁用的频率恢复为10 Hz，
-保留已有正频率。随后读回参数并等待最多15秒的有效 `/mavros/timesync_status`；失败会明确
-报错并清理本次启动的组件，不将“参数设置成功”当成时钟已可用。此检查不发送重启、解锁或
-起飞命令。`--check` 仍仅检查静态环境，不启动MAVROS，也不修改其参数。
-
-项目 MAVROS profile 沿用所选安装包 `node.launch` 的命名空间默认值：2.14 使用 `mavros`，
-2.16 使用根命名空间。不要统一强制为空，否则 2.14 的话题和参数服务会偏离 `/mavros`。
-
-- 严禁在本流程中解锁或起飞实机。
-- 初次部署只允许编译、单元测试和隔离烟雾测试；完成单独安全核验前，不启动真实 MAVROS、
-  Odin、外部定位桥或地面站控制客户端。
-- 保留目标机既有仓库、脚本、工作空间和配置；不得用 reset/clean 或整仓覆盖破坏现场修改。
-- 完成独立台架通信验证前不得启用 systemd 自启动。当前 `192.168.112.169` 已完成未武装台架
-  验证，飞控 unit 与独立视频 unit 均可保持 enabled，但两者不得建立共同故障域。
-- `smoke` 使用非零独立 ROS domain、localhost-only 发现和专用 MAVROS 前缀，不会发现真实 MAVROS；它只检查待机状态，并断言没有姿态 setpoint 消息。
-
-## MAVROS 2.15.1 / 2.16.0 参数加载与重试修复
-
-这两个版本在参数整表补拉超时后，每收到一个非当前等待参数的回包，又发送一次缺失参数请求，
-并重置超时计时器。重复回包会放大请求并产生 `got an unsolicited param value` 刷屏。
-项目补丁只在当前等待参数到达时立即请求下一个，其他回包仍更新缓存，但不能延后超时；
-同时修正忙碌时的定时拉取没有返回、重新启动整表同步的问题。重试失败警告继续保留。
-
-安装器在 2.15.1 上同时回移上游 [PR #2309](https://github.com/mavlink/mavros/pull/2309)
-（`d9b38f6`）的插件参数加载修复。2.15.1 为避免容器全局 `__node/__ns` 重命名插件而
-关闭全局参数继承，也误丢了 `--params-file`/`-p`，可能令 `thrust_scaling=NaN` 并丢弃姿态目标。
-修复仍禁止全局重命名，只按插件完整名称提取参数；调用者显式参数继续优先，不撤销原来的节点隔离。
-2.16.0 原生包含该修复，但尚未包含上述参数重试修复。
-
-在已安装 MAVROS 2.15.1 或 2.16.0 的 Jazzy 飞机维护窗口执行：
+在部署用户自己的目录检出源码，目标机必须原生构建，不能复制开发机 `build/`、`install/`
+或跨架构二进制。已有现场仓库先保留本地修改，不使用 reset/clean 或整仓覆盖。
 
 ```bash
-sudo apt-get install ros-jazzy-angles
-./src/onboard_control/deploy/install_mavros_param_fix.sh
-```
-
-安装器按系统版本选择固定源码并校验 SHA-256：2.15.1 使用 `~/mavros_param_fix_ws`，
-2.16.0 使用 `~/mavros_param_fix_2.16.0_ws`，独立构建 overlay，不覆盖
-`/opt/ros/jazzy`，也不自动重启服务。离线源码可通过 `MAVROS_SOURCE_ARCHIVE` 指定。
-在 `config/aircraft/<AIRCRAFT_ID>/onboard.env` 设置实际路径：
-
-```bash
-MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup.bash
-```
-
-完整机载入口及独立 MAVROS 入口均读取该配置；完整入口最后加载该 overlay，防止被其他
-工作区遮盖。重启机载服务后，检查进程 `/proc/<mavros_pid>/maps` 中的 `libmavros_plugins.so`
-确实来自该工作区。回退时移除该配置项并重启机载服务，系统安装仍保留。此步骤不会重启飞控。
-系统升级 MAVROS 时应重新评估补丁和 ABI，不应沿用为 2.15.1 编译的 overlay。
-重启后还应读取 `/mavros/setpoint_raw` 的 `thrust_scaling`，本项目归一化推力配置应为 `1.0`；
-配置文件存在或机载端报告“进入悬停”均不能替代实际插件参数检查。官方随附回归测试
-`mavros-plugin-params-test` 同时验证 YAML 生效和插件未被全局重命名，可在隔离 ROS domain 运行。
-启用上游 `BUILD_TESTING=ON` 前需额外安装 `ros-jazzy-ament-cmake-google-benchmark`；
-正常部署构建仍关闭该选项，不增加运行依赖。
-
-### MAVROS 遥测停顿诊断
-
-同一安装器还在原MAVROS接收、router→UAS分发、插件处理及odom/pose/velocity发布处加入
-定长诊断，不改变消息、QoS或调度策略。修改直接应用于上述版本的原生源码，诊断实现保存在
-`deploy/mavros_diagnostics/`，入口插桩在`patches/mavros-telemetry-diagnostics.patch`。
-安装器默认使用全部CPU，重新构建后需在地面重启MAVROS加载；不替换系统libmavconn。
-
-独立日志为`$ROS_LOG_DIR/mavros-telemetry-<pid>-<time>.log`，未设目录时使用
-`~/.ros/log/`。与同一时间的`onboard-control-diagnostics-*.log`一起保留即可继续定位。
-
-- `MAVROS_EVENT`记录≥100ms的调用耗时或相邻入口间隔；每阶段每秒优先保留最慢调用，
-  没有慢调用才保留最大入口间隔，并累计合并次数，避免后续间隔覆盖阻塞调用的CPU证据。
-- `MAVROS_INFLIGHT`记录尚未返回的调用；发生异常时附各阶段`LATEST`快照，最多每秒一批。
-- `stage`区分`link_receive`、`position_receive`、`router_publish`、`uas_dispatch`、
-  `uas_position`、`position_handler`以及四种输出发布；`msg/seq/source/boot_ms`关联MAVLink样本，
-  `bridge_stamp_ns`是router转交ROS消息的时间，可与UAS入口比较。
-- `duration_ms/cpu_ms`、线程ID、主动/被动切换及缺页计数用于区分持续执行与等待/未获调度。
-  `gap_ms`是相邻入口间隔，包含上一调用耗时；不能直接视作串口断流。
-- `link_receive`在libmavconn完成帧解析之后，仍不能区分其之前的FCU、串口字节到达、解析或IO线程停顿。
-  `position_receive`只统计有效LOCAL_POSITION_NED；其他报文的UAS慢处理也能记录，便于发现队头阻塞。
-- 高频路径不格式化、不写盘，诊断锁只try-lock，竞争时跳过采样并累计`skipped`；
-  `overlap`表示同阶段并发重叠，`duration_ms=-1`表示完成快照缺失，不能当作0耗时。
-  writer复制定长快照后释放锁再写独立文件，没有无限队列，不占ROS日志锁。
-
-当前控制默认及三个飞机档案的`pose_timeout_seconds=0.40`，同时用于FCU位置/速度和既有校准
-raw/extnav相关检查；诊断的100ms事件选择阈值独立保持，不会因400ms尚未触发保护而漏记350ms停顿。
-原生UDP隔离验证入口为`tests/support/mavros_telemetry_fixture.py`，必须使用独立ROS域及
-LOCALHOST发现；它只发送未武装的模拟心跳、姿态和本地位置，不连接真实串口。
-
-## 1. 首次最小拉取
-
-在部署用户自己的目录执行；启动器会从自身位置解析工作区，不要求固定用户名或绝对路径：
-
-```bash
-git clone \
-  --filter=blob:none \
-  --no-checkout \
-  https://github.com/xldoooooo/ros2-ardupilot-mavros-control.git \
-  ros2-ardupilot-mavros-control
-
+git clone --filter=blob:none --no-checkout \
+  https://github.com/xldoooooo/ros2-ardupilot-mavros-control.git
 cd ros2-ardupilot-mavros-control
 git sparse-checkout init --no-cone
-git sparse-checkout set \
-  '/.gitignore' \
-  '/src/guided_interfaces/' \
-  '/src/correction_interfaces/' \
-  '/src/onboard_control/' \
-  '/drivers/' \
-  '/config/' \
-  '/system/' \
-  '/correction_service/' \
-  '/scripts/onboard/start_onboard_correction.sh' \
-  '/scripts/onboard/stop_onboard_correction.sh' \
-  '/video_service/' \
-  '/scripts/onboard/start_onboard_video.sh' \
-  '/scripts/onboard/stop_onboard_video.sh' \
-  '/scripts/onboard/components/' \
-  '/scripts/lib/' \
-  '/scripts/onboard/start_onboard_control.sh' \
-  '/scripts/onboard/stop_onboard_control.sh' \
-  '/scripts/onboard/switch_navigation_mode.sh' \
-  '/scripts/onboard/reboot_fcu.sh'
+git sparse-checkout set '/.gitignore' '/project_configuration.py' \
+  '/src/guided_interfaces/' '/src/correction_interfaces/' '/src/onboard_control/' \
+  '/src/avoidance_bridge/' '/drivers/' '/config/' '/system/' \
+  '/correction_service/' '/video_service/' '/scripts/onboard/' '/scripts/lib/'
 git checkout main
 ```
 
-检出后，除 Git 元数据外只应出现：
-
-```text
-.gitignore
-src/guided_interfaces/
-src/correction_interfaces/
-src/onboard_control/
-drivers/
-correction_service/
-scripts/onboard/start_onboard_correction.sh
-scripts/onboard/stop_onboard_correction.sh
-video_service/
-scripts/onboard/start_onboard_video.sh
-scripts/onboard/stop_onboard_video.sh
-scripts/onboard/components/
-scripts/lib/
-scripts/onboard/start_onboard_control.sh
-scripts/onboard/stop_onboard_control.sh
-src/onboard_control/deploy/build_onboard_control.sh
-scripts/onboard/reboot_fcu.sh
-src/onboard_control/scripts/reboot_fcu_client.py
-```
-
-不要复制开发机的 `build/` 或 `install/`。目标机必须针对自身 ROS 发行版和 aarch64 原生编译。
-
-### 从旧 Shell 目录布局迁移
-
-地面入口现位于 `scripts/ground/`，机载入口位于 `scripts/onboard/`，分组件入口位于
-`scripts/onboard/components/`，共享函数位于 `scripts/lib/`。原根目录入口不再保留。
-已有 sparse checkout 须在拉取前纳入新目录，否则旧更新脚本的清单不会检出这些文件：
-
-```bash
-git sparse-checkout add '/scripts/onboard/' '/scripts/lib/' '/drivers/' '/config/' '/system/'
-git pull --ff-only origin main
-```
-
-在允许停止服务的维护窗口完成迁移；同步后，按各组件部署步骤更新飞控、视频和修正三个
-systemd unit，使 `ExecStart` 使用新入口，再执行 `sudo systemctl daemon-reload`。
-仅拉取源码不会更新已安装的 unit；旧 unit 在后续启动时会找不到原路径。
-本轮目录整理未部署飞机，两个机体下次同步均须完成上述步骤，并包含此前构建入口的迁移。
-
-### GitHub 直连超时时
-
-当前无人机能解析 `github.com`，但实测 HTTPS 443 直连可能超时。不要写入永久系统代理，也不要复制包含地面站历史的完整 Git bundle。可从能够访问 GitHub 的地面机建立仅绑定无人机 localhost、只在当前 SSH 会话存活的反向动态 SOCKS 隧道：
-
-```bash
-ssh -R 127.0.0.1:19080 nvidia@192.168.112.169
-```
-
-然后在这个 SSH 会话内临时设置：
-
-```bash
-export HTTPS_PROXY=socks5h://127.0.0.1:19080
-export HTTP_PROXY=socks5h://127.0.0.1:19080
-```
-
-再执行本节的 `git clone`，或执行后文的 `onboard_workspace.sh update`。退出 SSH 后隧道自动消失；
-不要把代理写入目标用户的 Git 配置、shell 启动文件或 systemd 环境。
-
-## 2. 无系统修改的依赖检查
+`config/aircraft.local.env` 选择 `AIRCRAFT_ID`；现场参数集中在
+`config/aircraft/<AIRCRAFT_ID>/`，本机依赖路径可写入不提交的 `config/host.local.env`。
+确认 `onboard.env` 的 FCU 串口、波特率、ROS domain、`EXTNAV_OVERLAY_SETUP`，
+Jetson 另设匹配 OpenCV ABI 的 `ODIN_CV_BRIDGE_SETUP`，见
+[OpenCV overlay](JETSON_OPENCV_OVERLAY.md)。逐机地图、设备标定和机械外参不得跨机覆盖。
 
 ```bash
 ./src/onboard_control/deploy/onboard_workspace.sh show-config
 ./src/onboard_control/deploy/onboard_workspace.sh deps-check
-```
-
-`deps-check` 只读取工具链、Eigen/JSON 头文件和 ROS 包索引，不依赖已初始化的 rosdep 数据库，也不会调用 `apt` 或 `sudo`。
-正常机载构建、`--verify`、地面站安装和避障构建则在编译前自动补齐缺少的 Eigen/JSON 开发包，
-需要 sudo 与可用的 apt 网络，已有包不升级；完整 ROS、Odin 和媒体依赖仍按[新机依赖指导](ONBOARD_DEPENDENCIES.md)部署。
-
-## 3. 编译、单元测试与安全烟雾测试
-
-地面开发机和飞机都可以直接从仓库根目录执行同一个快捷入口：
-
-```bash
-./src/onboard_control/deploy/build_onboard_control.sh
-```
-
-默认以 Release 模式增量构建项目 Odin、飞行包和独立修正接口/节点；首次构建会编译 Odin。
-驱动位于 `drivers/odin/src/odin_ros_driver`，构建与安装均留在 `drivers/odin/`，不写入旧
-`catkin_ws`。可用 `./drivers/odin/build.sh` 单独重建。构建不启动设备。若需同时执行依赖检查、
-单元测试和隔离 smoke：
-
-```bash
 ./src/onboard_control/deploy/build_onboard_control.sh --verify
 ```
 
-脚本按主机自动选择 Jazzy/Humble，不启动、停止或重启机载服务，也不发送飞行命令。若构建时服务
-正在运行，当前进程不会被替换；需要让新产物生效时，应另行选择安全窗口重启服务。
+`deps-check` 只读；正常构建会补装缺少的 Eigen/JSON 开发包，再增量构建项目 Odin、
+飞行/修正接口、控制节点、修正服务和避障桥。完整依赖仍由前置安装器准备。
+构建使用所选独立 CPU 规划器 overlay（`AVOIDANCE_WORKSPACE`，默认相邻
+`dyn_small_obs_avoidance-ros2`），该工作区须先按[避障指南](../../avoidance_bridge/README.md)准备。
+不加 `--verify` 时只构建；底层 `onboard_workspace.sh` 可单独执行 `build/test/smoke/verify`。
 
-底层分阶段入口仍可直接使用：
+隔离 smoke 使用 localhost、非零独立 ROS domain 和专用 MAVROS 前缀，不连接硬件。
+当前成功摘要必须为 `interface=3.6, fcu_connected=false, armed=false, setpoint_messages=0`。
+构建不重启任何已运行服务；需在维护窗口重启对应进程使新产物生效。
+
+## 四组件飞控服务
 
 ```bash
-./src/onboard_control/deploy/onboard_workspace.sh build
-./src/onboard_control/deploy/onboard_workspace.sh test
-./src/onboard_control/deploy/onboard_workspace.sh smoke
+./scripts/onboard/start_onboard_control.sh --check
+./src/onboard_control/deploy/install_onboard_service.sh --install-only
 ```
 
-也可一次执行：
+`--check` 只发现配置、串口和安装入口，不连接设备。安装器 `--install-only` 仍执行构建、
+测试和隔离 smoke，安装 unit 与 Odin USB 规则，但不启用或启动服务，适合硬件未接齐的新机。
+硬件及 extnav 核验完成后，在未解锁维护窗口运行不带选项的安装器，将执行 `enable --now`。
+安装器拒绝更新 active 飞控 unit，须先确认飞机状态再停止服务。
+
+前台使用：
 
 ```bash
-./src/onboard_control/deploy/onboard_workspace.sh verify
+./scripts/onboard/start_onboard_control.sh
+./scripts/onboard/stop_onboard_control.sh
 ```
 
-成功烟雾测试必须同时报告：
+四组件为 MAVROS、项目 Odin、extnav 和 onboard_control；systemd unit 为
+`ros2-ardupilot-onboard.service`。重复实例会拒绝启动，任一组件退出会清理本组。
+Ctrl+C 或停止脚本结束组件；日志在 `/tmp/ros2_ardupilot_onboard/<时间戳>/`。
+`READY` 要求同一条状态中的 FCU 连接、未解锁、遥测配置、推力语义及本地位姿均有效。
+等待超时会保留受监督组件，原因见 `readiness.log`，不能把进程存在当成已就绪。
 
-```text
-interface=3.2
-fcu_connected=false
-armed=false
-setpoint_messages=0
-```
+完整入口检查实际 MAVROS TIMESYNC 参数，恢复被禁用的 MAVLINK 同步频率并等待有效
+`/mavros/timesync_status`。onboard 自动维护必要消息频率、读取 `GUID_OPTIONS` 和
+`MOT_THST_HOVER`，不自动解锁/起飞。`priority_parameter_reads` 可关闭额外按名只读请求；
+自定义路由/目标或签名链需同步配置，见 `control.yaml`。
 
-这只证明目标 ROS 发行版上的二进制能够启动并发布安全待机状态，不证明 Odin/MAVROS、
-外部定位、飞控参数或真实控制链已经可用。
+分组件入口在 `scripts/onboard/components/`：`start_link.sh`、`start_mavros.sh`、
+`start_odin.sh`、`start_extnav.sh`；Odin 固定使用项目 `drivers/odin/install`，
+旧 `ODIN_OVERLAY_SETUP` 不再选择驱动。
 
-## 4. 后续更新
+## 独立服务与导航
+
+| 功能 | 部署入口 | unit / 说明 |
+| --- | --- | --- |
+| 视频 | `video_service/deploy/install_onboard_video_service.sh` | `video-service.service`；[媒体与相机配置](../../../video_service/README.md)。 |
+| AprilTag 修正 | `correction_service/deploy/install_correction_service.sh` | `odin-correction.service`；启动 idle、不自动开相机；[接口与配置](../../../correction_service/README.md)。 |
+| extnav | `correction_service/deploy/install_extnav_correction.sh` | 独立工作区原生构建，安装前停止飞控链；[实现](../../../correction_service/extnav_patch/README.md)。 |
+| CPU 避障 | `build_avoidance.sh` 后运行 `install_avoidance_service.sh` | `ros2-ardupilot-avoidance.service`；[配置与验证](../../avoidance_bridge/README.md)。 |
+
+视频、修正和避障分别启停，不能对飞控 unit 加 `Requires/PartOf/BindsTo` 形成共同故障域。
+视频/修正也支持各自安装器的 `--install-only`。MediaMTX 由依赖安装器按架构安装，仓库不携带其二进制。
+机载缓存及地面集中媒体目录以当前媒体配置为准，不使用历史 `/home/share` 路径。
+
+Odin 显式选模式：`start_odin.sh -c odom|slam|reloc|original`，也可传绝对 YAML 路径。
+不传 `-c` 时机载脚本读取 `navigation.env` 的 `NAVIGATION_MODE=odom|map`，map 对应 reloc。
+地图必须先在 `odin/reloc.yaml` 配置存在、可读、非空的绝对路径。
+
+运行中模式切换使用地面站导航开关或 `scripts/onboard/switch_navigation_mode.sh map|odom`。
+切换需新鲜状态证明 FCU 已连接、未解锁、已落地、无飞行/航点/Tag 任务；停止并恢复原运行的
+飞控及避障，视频和修正不参与重启。机载用户需相关命令的无交互 sudo 权限。
+失败不自动回滚，检查 `/tmp/ros2_ardupilot_onboard/navigation-switch/` 和 journal。
+模式事实来自 `/odin1/navigation_status`，不是配置文件；详见
+[odom/map](../../../docs/odom-map.md)及[Tag 航点工作流](../../../docs/tag-waypoint-workflow.md)。
+map 与 active Tag 修正组合尚未支持。
+
+## ROS 网络与台架核验
+
+正式 Jazzy 链默认 `ROS_DOMAIN_ID=0`、`ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`。
+飞机、地面站及诊断终端必须在进程启动前使用一致 domain；231 保留本地仿真。
+地面站 domain 由 `host.local.env` 的 `GROUND_STATION_HARDWARE_DOMAIN_ID` 指定。
+Humble 使用 `ROS_LOCALHOST_ONLY=0`，跨发行版 DDS 不保证兼容，不能沿用 Jazzy/Jazzy 结论。
+
+各服务最多等 30 秒局域网 IPv4，超时告警后离线继续；不等待外网或 NTP。
+网络稍后恢复时，在未解锁状态重启受影响服务恢复发现。离线后重新联网并发生校时，应在人工
+解锁前等待系统时钟与 MAVROS TIMESYNC 稳定并复核定位。
+
+台架保持拆桨、未解锁：先读 `/onboard_control/status` 和 `/mavros/state`，再核对外部定位、
+参数、位置/速度实测速率。GUI 独立 Wi-Fi 图标只做被动通信检查；“连接实机服务”会申请租约、
+维护遥测并写入确认的 GPS 原点，不等于只读检查。请求 ACK 不能替代实际频率或定位精度。
+
+## 更新与 MAVROS 维护
+
+干净的 sparse checkout 可执行：
 
 ```bash
 ./src/onboard_control/deploy/onboard_workspace.sh update
-./src/onboard_control/deploy/onboard_workspace.sh verify
+./src/onboard_control/deploy/build_onboard_control.sh --verify
 ```
 
-`update` 只允许 sparse checkout，并要求 Git 工作树干净；它会同时维护飞行 ROS 包、
-`correction_interfaces`、项目 `drivers/`、独立 `correction_service/` 与 `video_service/`、
-机载修正服务启停入口、
-机载视频启停入口、`scripts/onboard/components/` 分步入口、`scripts/onboard/start_onboard_control.sh` 一键入口、
-`scripts/onboard/stop_onboard_control.sh` 飞控彻底停止入口和部署目录 `src/onboard_control/deploy/build_onboard_control.sh`。更新使用
-`git pull --ff-only`，
-不会 reset 或覆盖本地修改，也不会把仅供地面使用的
-`scripts/ground/start_ground_all.sh` 检出到无人机。
+更新使用 `git pull --ff-only`，不覆盖本地修改；完整 checkout 直接使用 Git 同步。
+接口变更必须同时更新地面站、接口与消费端并原生重建，当前飞行接口为 3.6、独立视频为3.2、
+correction 为2.0。旧进程须重启。仅拉取源码不会更新已安装 unit；入口路径改变时重跑相应安装器。
 
-`update` 只更新源码，不会替代目标机原生构建。源码与 `install/` 中
-`guided_interfaces` 或 `onboard_control` 的包版本不一致时，`scripts/onboard/start_onboard_control.sh` 会在启动
-任何飞行栈进程前安全失败，并提示先执行 `onboard_workspace.sh verify`；禁止绕过该检查继续
-运行旧飞行协议二进制。`correction_interfaces` 不加入该飞行启动硬门：正常构建仍会安装它，
-但缺失时 extnav 必须退化为 identity，而不能切断原 Odin→MAVROS 链。
-
-## 5. ROS 网络变量
-
-`ROS_DOMAIN_ID` 只负责把 DDS 参与者划入彼此隔离的逻辑网络，不是地址或链路质量参数。
-未设置时默认值为 `0`。使用 `42` 可以隔离同一局域网中的其他 ROS 系统，但必须在进程
-启动前同时应用给机载控制、MAVROS、Odin、extnav、地面站和诊断 CLI；只改其中一个终端，
-或在节点启动后才修改环境，会让 `ros2 topic list` 看起来为空。
-
-当前飞机与地面站均为 Jazzy，正式实机链使用 domain 0 + 同网段发现：
+Jazzy MAVROS 2.15.1/2.16.0 的参数重试及插件参数加载修复由以下入口安装独立 overlay：
 
 ```bash
-export ROS_DOMAIN_ID=0
-export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+./src/onboard_control/deploy/install_mavros_param_fix.sh
 ```
 
-`ROS_DOMAIN_ID` 必须在节点启动前对同一链路全部进程保持一致。隔离 smoke 固定使用非零 domain
-与 localhost-only；不要把 smoke 的 domain 带入真实 MAVROS。domain 值不会改善地址、链路质量
-或 DDS 序列化兼容性。
+安装器使用固定版本及 SHA-256 校验，不覆盖 `/opt/ros/jazzy`，不自动重启服务。
+在所选 `onboard.env` 设置 `MAVROS_OVERLAY_SETUP`，重启后核对实际加载的
+`libmavros_plugins.so` 路径和 `/mavros/setpoint_raw` 的 `thrust_scaling=1.0`。
+移除此配置并重启可回退系统版；MAVROS 升级后重新评估 ABI，不复用旧版本 overlay。
+项目保留 node.launch 的版本默认命名空间，避免 2.14/2.16 差异导致话题路径错误。
 
-地面站通过本机 `config/host.local.env` 的 `GROUND_STATION_HARDWARE_DOMAIN_ID` 选择实机 domain，
-默认 0；应与飞机所选 `config/aircraft/<AIRCRAFT_ID>/onboard.env` 中的 `ROS_DOMAIN_ID` 一致。
-修改两端配置后分别重启对应进程；231 保留给本机仿真，不能用于实机连接。
+补丁含遥测诊断，日志为 `$ROS_LOG_DIR/mavros-telemetry-*.log`（默认 `~/.ros/log/`），
+与 `onboard-control-diagnostics-*.log` 配对分析。`MAVROS_EVENT` 是慢调用或入口间隔，
+`MAVROS_INFLIGHT` 是未返回调用；`gap_ms` 含上一调用耗时，不能直接当作串口断流。
+源码入口为 `mavros_diagnostics/` 和 `patches/mavros-telemetry-diagnostics.patch`。
 
-旧 Ubuntu 22.04/Humble 飞机使用 `ROS_LOCALHOST_ONLY=0` 进行同网段发现；Humble 不应直接照搬
-Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE`/`ROS_STATIC_PEERS`。历史 Humble/Jazzy 混合链曾出现
-`sequence size exceeds remaining buffer`，ROS 官方也不保证跨发行版通信；若恢复旧机，必须按
-双方实际 RMW 版本重新验证，不能沿用当前 Jazzy/Jazzy 结论。
+GitHub 直连受限可从可联网开发机建立临时反向 SOCKS 隧道，例如
+`ssh -R 127.0.0.1:19080 drone-refresh`，在飞机当前命令设置
+`HTTPS_PROXY=socks5h://127.0.0.1:19080`；不写入全局代理。
 
-## 6. 下一步通信测试顺序
+## 飞控热重启
 
-所有测试均保持螺旋桨拆除、飞控不解锁，并由低风险到高风险逐级进行：
+GUI“重启机载飞控”和机载 `scripts/onboard/reboot_fcu.sh` 共用 FlightCommand，仅允许新鲜
+未解锁、已落地、空闲无任务状态。脚本使用项目 `.venv` 和短租约，地面站已持权时需先断开。
+重启只作用于飞控，不重启计算机，不恢复旧任务。
 
-1. **DDS 协议测试**：不启动 MAVROS，只启动新机载节点；地面站先只读取 `/onboard_control/status`，确认接口 `3.2`、`armed=false`。GUI 中齿轮右侧的独立 Wi-Fi 图标只订阅状态与远端 `/rosout`，测量状态频率和最大接收间隔；它不会申请租约、配置消息频率、写 GPS 原点或建立控制会话。
-2. **MAVROS 只读测试**：只单独启动 MAVROS 并读取 `/mavros/state`，确认 `armed=false`。Odin/extnav 应留到单独评审后的外部定位测试，不调用任何模式、解锁、起飞或原点服务。
-3. **同机链路测试**：启动新机载节点；它会自动、异步配置控制链必需的
-   `LOCAL_POSITION_NED(32)`、`ATTITUDE_QUATERNION(31)`、`HIGHRES_IMU(105)` 为 100 Hz，
-   `SYS_STATUS(1)` 为 1 Hz，并额外请求 `EXTENDED_SYS_STATE(245)` 为 2 Hz，以取得真实
-   起飞/落地状态；飞控重连后会重试。只观察聚合状态是否正确反映飞控连接、位姿、
-   `GUID_OPTIONS` 与 setpoint 发布者冲突；使用独立 Wi-Fi 图标，不点击“连接实机服务”，不发送
-   `FlightCommand`/`MotionIntent`/航点。自动消息频率维护不包含模式、解锁、起飞或参数写入。
-   请求ACK不代表实际频率；检查位置、速度消息的时间戳间隔。开发机SITL统一入口显式传入
-   `--mavproxy-args=--streamrate=-1`，关闭MAVProxy默认每15秒的ALL流请求，避免经其UDP转发时
-   覆盖机载端的100Hz配置；修改后重启地面站加载，机载串口入口不使用MAVProxy，无需为此重建。
-4. **完整连接与维护测试**：原“连接实机服务”按钮保留正式功能，会在明确风险确认后申请控制租约、发送心跳、确认消息频率并写 GPS 原点，连接成功后按权威状态开放控制按钮。只有前三步均通过并单独完成安全评审后才可测试；该按钮本身不会发送解锁或起飞请求，但不属于零命令通讯检测。
-5. **飞行控制测试**：本任务明确禁止，不能进行解锁、起飞或实机姿态/推力控制。
-
-## 7. 实机四组件一键启动
-
-### systemd 一键部署
-
-确认 ROS 2 Jazzy、MAVROS 和独立 extnav 已安装，源码完成 sparse checkout 后，以普通机载用户
-执行：
-
-```bash
-./src/onboard_control/deploy/install_onboard_service.sh
-```
-
-安装器会运行原生构建、单测和隔离 smoke，读取已选择的 `config/aircraft/<AIRCRAFT_ID>/onboard.env`，根据当前
-用户名与仓库路径安装 `/etc/systemd/system/ros2-ardupilot-onboard.service`，完成只读 `--check`
-后执行 `enable --now`。项目内逐机参数不会被安装器覆盖。安装器还将 `system/udev/99-odin-usb.rules`
-安装到系统规则目录并重新加载规则；已连接设备需要重新插拔后获取新权限。若飞控服务已经 active，安装器会拒绝更新，
-必须由人工确认飞机未解锁并进入维护窗口后先停止服务；安装器绝不自行停止运行中的飞控链。
-
-首次自动发现存在多个串口、多个 extnav overlay 或缺少硬件包时，`--check` 会明确失败。此时
-应人工核对并编辑 `config/aircraft/<AIRCRAFT_ID>/onboard.env`，不能为了“一键”而猜测飞控设备。
-
-机载工作区`scripts/onboard/start_onboard_control.sh` 自动发现并统一启动四个组件：
-
-- MAVROS（优先唯一的 `/dev/serial/by-id`，波特率默认 460800）；
-- Odin 驱动；
-- Odin 到 MAVROS 的外部定位桥；
-- `onboard_control_node`。
-
-在真机桌面终端中执行一行命令：
-
-```bash
-bash scripts/onboard/start_onboard_control.sh --check
-bash scripts/onboard/start_onboard_control.sh
-```
-
-脚本默认让四个组件都使用 ROS domain 0，并等待以下只读安全条件成立后打印
-`READY`：飞控已连接且未解锁、必需的 MAVLink 控制遥测、电池与扩展飞行状态频率已配置、推力参数已确认、
-本地位姿有效。它不会请求模式切换、解锁、起飞、控制租约或发送飞行指令。
-就绪探针绕过可能陈旧的 ROS CLI daemon，并以显式 best-effort/volatile QoS 订阅接口版本明确的
-`guided_interfaces/msg/ControlStatus`；这只改善同机只读探针的确定性，不解决跨 ROS 发行版
-DDS 兼容性。
-
-四组件并行拉起，不再插入固定的串行等待。飞控连接后 onboard 异步请求一次非强制参数同步，
-跳过 MAVROS 默认的自动拉表延迟；约 2 秒后开始只读核验必要参数，未通过时每秒重试，
-通过后维持每 5 秒复核。拉表响应不能代替 `GUID_OPTIONS` 与 `MOT_THST_HOVER` 的实际值校验。
-机载端同时以 volatile QoS 接收 MAVROS `/param/event`：本连接的两个必要参数一旦齐全，立即
-复用同一套类型/数值检查，不再等待整表服务退出；整表仍后台同步，缓存服务仍作为回退和定期复核。
-断线清除已收参数，新事件会使较早发起的缓存读取结果失效，避免旧结果覆盖新参数。
-机载端默认同时经现有 MAVROS 路由按名称读取这两个参数，不另开串口。仅在已连接、状态新鲜、
-未武装且控制器未启用时发送（仅持有地面站租约不阻止只读同步）；每次连接前 10 秒内最多四轮，轮间至少 1 秒，收到对应值即停止请求。
-断线重置重试状态；无回复不影响整表同步和缓存回退，READY 的实际参数类型/数值校验不变。
-`priority_parameter_reads:=false` 可关闭优先读取；`parameter_request_topic` 默认
-`/uas1/mavlink_sink`，`parameter_target_system` / `parameter_target_component` 默认 `1` / `1`，
-自定义 MAVROS 路由或目标时必须同步配置。只读请求源为 `255/190`，应避免其他发送者复用该标识。
-此路径发送无签名请求；要求签名且拒绝无签名参数读取的链路应关闭它，继续使用 MAVROS 原生同步。
-编译新增显式 `libmavconn` 依赖（MAVROS 已依赖安装），用其标准 MAVLink 编码/转换接口；
-升级源码后需重建 onboard_control，无需重建 MAVROS。
-READY 使用单个持续订阅和 GNU `timeout` 的 120 秒相对定时器，不使用受校时影响的 Bash
-`SECONDS`；同一条新状态必须满足全部条件。匹配状态或探针错误保存在该次日志目录的
-`readiness.log`。取消启动时也会清理此订阅进程；超时后四组件继续受监督运行。
-
-脚本启动时从 `config/aircraft.local.env` 读取 `AIRCRAFT_ID`，再读取
-`config/aircraft/<AIRCRAFT_ID>/onboard.env`。已人工确认串口或 overlay 后，应在该机专用
-环境文件中配置，使 systemd 与交互终端直接执行脚本时共享同一选择。
-
-在运行脚本的同一终端按 `Ctrl+C` 会停止本次启动的全部进程。每次运行的合并日志位于
-`/tmp/ros2_ardupilot_onboard/<时间戳>/`；若检测到四个组件中的任一既有实例，脚本会拒绝
-重复启动，须先确认旧实例的来源和状态，不要直接强杀。
-
-仅当自动发现报告多个真实候选时，人工确认后才可写入机载环境文件；
-临时调试也可对当前命令覆盖配置，例如：
-
-```bash
-MAVROS_FCU_DEVICE=/dev/serial/by-id/<已确认设备> \
-  bash scripts/onboard/start_onboard_control.sh --check
-```
-
-Odin 始终使用 `drivers/odin/install` 的项目驱动，旧 `ODIN_OVERLAY_SETUP` 不再选择驱动。
-Jetson 厂商 OpenCV 4.8 须通过 `ODIN_CV_BRIDGE_SETUP` 指定匹配的 cv_bridge；构建和启动均读取
-该配置，详见 [OpenCV overlay 说明](JETSON_OPENCV_OVERLAY.md)。Odin 首次默认配置为 `odom`，
-可在独立入口指定预设或 YAML 路径：
-
-```bash
-bash scripts/onboard/components/start_odin.sh -c odom
-bash scripts/onboard/components/start_odin.sh -c slam
-bash scripts/onboard/components/start_odin.sh -c reloc
-bash scripts/onboard/components/start_odin.sh -c original
-bash scripts/onboard/components/start_odin.sh -c /absolute/path/custom.yaml
-```
-
-省略 `-c` 读取 `config/aircraft/<AIRCRAFT_ID>/navigation.env` 的 `NAVIGATION_MODE=odom|map`，
-文件缺失时使用 `odom`，`map` 选择 `reloc.yaml`。独立入口、完整机载入口和 systemd 使用同一规则。
-显式 `-c` 优先；自定义配置使用绝对路径。预设保存在 `config/aircraft/<AIRCRAFT_ID>/odin/` 中，
-`original` 保留引入时的厂家配置，按机体修改配置前先保留现场标定。
-
-### 地面 odom/map 切换
-
-先在 `config/aircraft/<AIRCRAFT_ID>/odin/reloc.yaml` 设置已录制地图的绝对 `.bin` 路径。
-reloc 启动前验证文件存在、可读且非空；地图不入 Git。切换脚本使用项目 `.venv/bin/python`
-和现有 PyYAML/rclpy；若逐机虚拟环境位置不同，在 `onboard.env` 设置 `ONBOARD_PYTHON`。
-
-```bash
-bash scripts/onboard/switch_navigation_mode.sh map
-bash scripts/onboard/switch_navigation_mode.sh odom
-```
-
-切换前必须收到机载状态证明 FCU 已连接、未解锁、已落地、无控制/航点任务，且无活动 Tag 任务。
-脚本记录飞控、避障原运行方式，完全停止后重启原运行组件；原本未运行的避障不会启动。
-飞控原为 systemd 时恢复原 unit，手动启动时使用后台独立 session；视频和修正 unit 不参与重启。
-默认避障 unit 名为 `ros2-ardupilot-avoidance.service`，若已自行部署其他名字，在 `onboard.env`
-设置 `AVOIDANCE_SYSTEMD_SERVICE`。手动避障也支持恢复。
-
-机载用户需要对现有启停/安装命令及 `systemd-run` 具备无交互 `sudo -n` 权限；权限不足明确失败。
-从飞控 unit 调用时，脚本先把重启事务迁入独立临时 unit，避免停止飞控时连带终止重启事务。
-`navigation.env` 只替换 `NAVIGATION_MODE`，保留其他逐机配置；异常不自动回滚，需查看
-`/tmp/ros2_ardupilot_onboard/navigation-switch/` 日志和对应 journal 后处理。
-停止旧服务之前的失败会写入 `/tmp/ros2_ardupilot_navigation_switch.result`，原机载节点读取后
-清除“正在切换”状态并显示原因；`NAVIGATION_SWITCH_RESULT_FILE` 可覆盖此路径，须给节点和脚本一致的环境。
-
-`/odin1/navigation_status` 是可靠、transient-local 的实际驱动模式状态（约 2 Hz），包含
-`mode`、`map_path`、`session_id`、`connected`、`localized`、`tf_age_seconds`。
-模式由设备确认成功的 `map_mode` 命令确定；命令未获 ACK 时报告 `unsupported` 并警告。
-SLAM 建图模式标为 `unsupported`，不可当成重定位飞行。`localized` 只表示本次连接收到过
-设备原生 odom→map TF；控制器还须检查 TF 年龄和定位质量，保存的配置不能代替运行事实。
-`navigation_switch_script` launch 参数仅接收切换脚本绝对路径，完整启动器自动传入；单独
-`control.launch.py` 默认关闭脚本执行入口。切换完成后地面站等待重连，航点数值保持不变。
-
-分步入口现集中在 `scripts/onboard/components/`，包含 `start_link.sh`、`start_mavros.sh`、
-`start_odin.sh` 和 `start_extnav.sh`。两个硬件脚本会自动读取
-`config/aircraft/<AIRCRAFT_ID>/onboard.env`，因此可在两个终端中分别直接一键启动 Odin 和 extnav；
-两者都不启动 MAVROS、onboard_control、修正或视频服务。
-部署前备份与本次实机测试结论
-记录在对应日期的任务报告中。
-
-## 8. systemd 示例
-
-`system/systemd/ros2-ardupilot-onboard.service` 是四组件生产模板，由
-`install_onboard_service.sh` 自动替换用户、HOME 与工作区。当前 Jetson 已部署的
-`ros2-ardupilot-onboard.service` 负责同一套四组件集成启动。
-
-任务 22.5 的视频节点必须另外使用
-`system/systemd/video-service.service`。不要把它加入
-`scripts/onboard/start_onboard_control.sh` 的受监督子进程，也不要在 systemd 中对飞控服务声明
-依赖。
-
-任务 27 的修正节点同样使用独立的
-`system/systemd/odin-correction.service`。在确认未解锁并人工停止飞控
-主服务后，依次执行：
-
-```bash
-./correction_service/deploy/install_extnav_correction.sh
-./correction_service/deploy/install_correction_service.sh
-./scripts/onboard/start_onboard_correction.sh
-./scripts/onboard/stop_onboard_correction.sh
-```
-
-extnav 现为单线程 C++ `ament_cmake` 包，启动命令和 correction 2.0 接口不变；数学及会话逻辑的维护入口见
-`correction_service/extnav_patch/README.md`。安装器保留旧 source/build/install、原生构建 Release，
-迁移失败恢复旧包，不混用旧 Python 构建缓存，只构建、不重启飞控；修正服务启动后
-保持 idle、相机关闭。后两个机载操作脚本分别用于前台启动和彻底停止该独立 unit；
-停止修正节点不会清除 extnav 已应用的 active correction。完整接口、Tag 坐标约定和 clear 方法见
-`correction_service/README.md`。`odin-correction.service` 不得对飞控 unit 设置
-`Requires=`、`PartOf=` 或 `BindsTo=`。
-视频 unit 也不得设置 `Requires=`/`PartOf=`：摄像头、FFmpeg、MediaMTX 或磁盘失败只能重启视频 unit，
-不能清理飞行栈。飞机 aarch64 还必须把 MediaMTX v1.20.0 ARM64 安装到系统
-`/usr/local/bin/mediamtx`；Git 仓库不再携带任何架构的 MediaMTX 可执行文件。
-镜头配置直接维护于 `config/aircraft/<AIRCRAFT_ID>/video/lens.conf`，媒体目录 `/home/share/jpg` 需由
-视频服务用户可写。模板中的 `ONBOARD_USER`、`ONBOARD_HOME_PATH`、
-`ONBOARD_WORKSPACE_PATH` 必须全部替换。默认采集模式现为 H.264 1920×1080@60；完整依赖安装、
-配置复制、ARM64 摘要校验、systemd 命令、QoS 和隔离验收步骤见 `video_service/README.md`。
-
-服务只排在 `network-online.target` 之后，不依赖 `systemd-time-wait-sync.service` 或
-`time-sync.target`。四个机载入口创建 DDS participant 前共用 `runtime_wait_for_lan_ipv4`，
-最多等待 30 秒让局域网 IPv4 就绪，避免冷启动时只枚举到回环网卡；不等待外网或 NTP。
-无默认网关时也接受已启用的物理网卡 IPv4；超时只告警并离线继续。
-若网络在超时后才恢复，应在未解锁时重启受影响服务以恢复跨机发现；不会自动重启飞控栈。
-控制租约以地面站首个请求和后续有序心跳建立相对时间基准，机载安全超时使用
-单调时钟，因此自带路由器没有外网时也必须能启动和作业；不得重新加入外网 NTP 完成门槛，也不要
-用固定秒数 `sleep` 伪装就绪。若离线开机后再接入互联网，应在人工解锁前等待系统校时与 MAVROS
-TIMESYNC 重新稳定，并重新核对 FCU、本地位置和推力语义。
-
-## 飞控热重启（Task33，飞行接口 3.3）
-
-地面站右上角“重启机载飞控”只在实机会话、机载在线、未解锁、新鲜落地状态、
-待机且无任务时启用；确认框默认取消。机载端再次检查同样条件，最终通过 MAVROS
-发送 `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN`（246，param1=1，其余参数为0）。
-不会解锁、起飞、恢复飞行任务或重启机载计算机。
-
-无地面站时，在飞机工作区执行 `./scripts/onboard/reboot_fcu.sh`。脚本要求本机存在机载环境文件且正在运行
-该工作区的 onboard_control，然后用项目 Python 客户端申请短租约、调用同一个 `FlightCommand`
-并等待终态。如果地面站持有租约，脚本会拒绝，请先断开地面站。地面开发机直接执行会被拒绝。
-机载 Python 环境须预先创建（已有环境不必重建）：
-
-```bash
-python3 -m venv --system-site-packages .venv
-./scripts/onboard/reboot_fcu.sh
-```
-
-变更了 `ControlStatus` 的落地和重启状态字段，必须同步构建 `guided_interfaces` 和
-`onboard_control`（当前版本 3.6.0），并更新地面站；独立视频接口仍为 3.2。新加入的 C++ 实现
-位于 `src/onboard_control/src/fcu_reboot.cpp`，Python 脚本客户端位于 `src/onboard_control/scripts/reboot_fcu_client.py`。
-构建不会使正在运行的旧进程自动升级；部署后在确认未解锁、落地且无任务时重启机载服务。
-
-成功证据分两阶段输出到主 GUI 日志和脚本终端：
-
-- **飞控重启成功**：ArduPilot `timesync_status.remote_timestamp_ns` 回退超过1秒且回到启动后
-  30秒内。ACK 不是成功证据；ACK 丢失也不自动重发重启。
-- **控制链路成功恢复**：未解锁、新鲜落地/状态、重启后的连续位置和速度、原点回读、
-  新鲜 GUID_OPTIONS/MOT_THST_HOVER 参数事件、消息频率配置以及无输出发布冲突，持续满足2秒。
-  消息配置 ACK 不表示实测速率达标，定位有数据不等于已完成实飞精度验收。
-
-整个事务最多等待90秒。发送重启前先只读请求 GPS_GLOBAL_ORIGIN（最多等待3秒），
-重启后也主动请求回读，不依赖飞控自发广播。只恢复此前由飞控回读的原点，不凭空填入默认坐标；无原点、无定位、
-参数或遥测缺失时会明确报告恢复失败。机载节点持续运行期间，独立 FCU 重启也由相同启动时钟
-证据触发恢复。该机制针对 ArduPilot 的启动相对时钟，不处理 USB 消失后重新枚举，不恢复旧任务。
-
-## 航点避障部署（Task38）
-
-飞行接口 3.4 增加起飞前的策略锁定、避障状态与带时间多项式协议。必须同时更新地面站、
-`guided_interfaces`、`onboard_control` 和 `guided_sim`；旧 3.3 客户端不能混用。视频接口仍为 3.2。
-先按原部署步骤构建飞行服务，再安装独立规划组件：
-
-```bash
-git clone https://github.com/LostPatrol/dyn_small_obs_avoidance-ros2.git ../dyn_small_obs_avoidance-ros2
-bash src/onboard_control/deploy/build_avoidance.sh
-bash scripts/onboard/start_avoidance.sh --check
-bash scripts/onboard/start_avoidance.sh
-```
-
-已有独立仓库时先同步其 main，不重复 clone。默认寻找主工程同级目录，可用
-`AVOIDANCE_WORKSPACE` 指定位置；构建脚本使用 Release 普通安装，不能把开发机 symlink 安装复制到飞机。
-规划器和桥接器单独运行，原飞行服务启动/停止脚本不管理它们；用
-`bash scripts/onboard/stop_avoidance.sh` 停止。尚未自动安装规划 systemd 服务。
-直线策略无需这两个进程；另外两种策略仅在规划组件及输入就绪时允许起飞和下发航点。
-
-默认点云为 `/odin1/cloud_slam_down`，实际 FCU 状态为 `/mavros/local_position/odom`；桥只将状态/目标转换到 Odin 世界坐标并转发原生结果。Tag 修正保持未应用，沿用 extnav 权威杆臂，不修改 Odin 仰角或 Tag 外参。
-
-地图采用原生 dual_tree，目标、时间、位移和碰撞触发均由规划节点管理；未观测区域可通过检查。无可用轨迹或输入故障时等待，15 s 超时请求并持续确认 LAND。SetGoal 支持目标身份、幂等与取消，任务完成后停止该目标的规划但保留地图。
-
-RViz 轨迹默认显示；点云默认关闭。`preview:=true` 仅限量转发原生 filtered_cloud，最多 10000 XYZ 点/2 Hz，实际订阅时才生成。
-
-直线及遇障悬停通畅阶段在control.yaml独立配置straight_max_velocity_xy/z=1.0/0.2、straight_max_acceleration_xy/z=0.35/0.15。自主避障和遇障悬停制动使用独立库search.max_vel_xy/z、search.max_acc_xy/z；原生结果发布实际解析后的四限额。正常段满足限额；实际初速超限时仅首段允许有界减速回到包线，仍检查净空和位置边界。PD+DOB输出4/4保留。实际状态重规划不再强制零加速度滑行，窄垂直速度轴补充精确停速候选。
-
-`max_yaw_rate`统一限制键盘、四种航点参考及两种避障策略的偏航角速率，默认1.0 rad/s；不限制角加速度。偏航按最短角差独立推进，原地转向和map航向修正同样受限。参考平移和转向均完成后才开始原有位置/线速度/保持时间到点判定，不额外检查实际偏航误差。修改源码须原生重建；参数改动重启控制服务生效。
-
-执行器仅在时延可解释前缀内匹配实际p/v，基础接入容差追加加速度时延余量，保留原始系数和时间尺度。自主避障首条可接入结果即恢复；遇障悬停继续停稳/连续通畅窗口。构建脚本也重建 onboard 消费端，两仓源码修改后均需重建；原生 YAML 修改后需重建/重启，保留逐机搜索边界和标定。
-
-各策略准备及启动航点时，切换跟踪增益会保留已学习的 DOB 扰动补偿和上一控制输入，并按当前速度重表达观测器状态，避免观测器重新收敛期间上冲。键盘、起飞接管和显式悬停仍复位观测器；输出历史按原接续规则保留。
-
-`control.yaml` 的 `max_jerk_xy/z=10.0/8.0` 配置 PD+DOB 合成输出的加速度变化率（m/s³）。`jerk_limit_modes` 分别选择 `hover`、`motion`、`straight`、`avoidance`、`obstacle_hover`、`failsafe_hold`，默认仅 `avoidance: true`；全部设为 true 可恢复全模式整形。航点任务按策略选择，包含启动速度等待和规划/制动等待；任务完成后的末点保持归 `hover`。`hover` 也包含起飞接管后的悬停；FCU 自身起飞及 LAND 不经过此输出。各轴限值设0可关闭对应轴；水平按向量模长、垂直按绝对值限制，硬倾角/推力约束优先。
-
-模式开关不清空 DOB 或上一输出，旁路时继续记录倾角限制后的命令输入；LAND接管、解除武装或外部切换飞控模式时清理历史。关闭整形会直接放行当前纠偏请求，切换边界不保证 jerk 连续。参数启动时读取，修改后重启；实机修改源码配置后须原生重建。输出限 jerk 仍会增加自主避障跟踪及制动响应时间，不保证实际净空；它与 `s_curve_max_jerk_xy/z` 参考参数独立。
-
-实机检查始终保持未解锁，起飞和解锁只由用户手动完成。
-完整说明见 `src/avoidance_bridge/README.md`；两工作区均需重建，不能只更新地面站UI。
-
-## 航点自动 Tag 校准（飞行接口 3.6）
-
-新增巡检/校准标志及自动校准状态；必须同时原生重建 `correction_interfaces`、
-`guided_interfaces`、`onboard_control`、`correction_service` 及消费新接口的 `avoidance_bridge`；
-若安装了 `guided_sim` 也一起更新；地面站更新后重启相关进程。
-旧进程不能继续加载新消息库，勿混用新旧安装产物。现有构建/测试入口已包含原生桥，
-并按主机配置的 `AVOIDANCE_WORKSPACE`（默认相邻 `dyn_small_obs_avoidance-ros2`）加载已构建的规划器 overlay。
-本次只支持 odom 绝对坐标的直线及遇障悬停；配置、窗口规则和开发入口见
-[航点校准工作流](../../../docs/tag-waypoint-workflow.md)。未同步的设备不得仅复制新 Python 文件后直接运行。
+成功分为飞控启动时钟回退的重启证据，以及定位/原点/参数/遥测恢复并稳定的链路证据；ACK
+本身不代表成功，也不触发自动重发。最多等待90秒，只恢复此前从飞控回读的 GPS 原点。
+USB 消失后重新枚举不在此恢复范围。维护入口为 `src/onboard_control/src/fcu_reboot.cpp`
+和 `src/onboard_control/scripts/reboot_fcu_client.py`（均相对项目根目录）。

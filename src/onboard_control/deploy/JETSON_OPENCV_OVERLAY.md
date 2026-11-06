@@ -14,7 +14,7 @@ git clone --depth 1 --branch 4.1.0 \
   drivers/odin/cv_bridge_ws/src/vision_opencv
 source /opt/ros/jazzy/setup.bash
 (cd drivers/odin/cv_bridge_ws && \
-  CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --packages-select cv_bridge \
+  CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" colcon build --packages-select cv_bridge \
     --cmake-args -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=OFF)
 ```
 

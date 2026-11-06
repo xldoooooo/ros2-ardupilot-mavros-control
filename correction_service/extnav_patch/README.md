@@ -36,7 +36,7 @@ source /opt/ros/jazzy/setup.bash
 source install/local_setup.bash
 cmake -S correction_service/extnav_patch -B agent/codex/extnav-candidate/build \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/agent/codex/extnav-candidate/install"
-cmake --build agent/codex/extnav-candidate/build -j2
+cmake --build agent/codex/extnav-candidate/build --parallel "$(nproc)"
 cmake --install agent/codex/extnav-candidate/build
 ```
 

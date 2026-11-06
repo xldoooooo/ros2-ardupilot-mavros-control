@@ -1,3 +1,4 @@
+<!-- Windows OBS capture, camera tuning and MediaMTX RTSP relay setup. -->
 # Windows USB 摄像头调参与 RTSP 推流
 
 ## 第一步：安装软件
@@ -5,7 +6,7 @@
 在连接摄像头的 Windows 电脑上安装：
 
 1. [OBS Studio](https://obsproject.com/download)：用于打开摄像头、调整参数和推流；
-2. [MediaMTX](https://github.com/bluenviron/mediamtx/releases/latest)：下载文件名包含 `windows_amd64` 的压缩包；(https://github.com/bluenviron/mediamtx/releases/latest）
+2. [MediaMTX](https://github.com/bluenviron/mediamtx/releases/latest)：下载文件名包含 `windows_amd64` 的压缩包；
 3. [VLC](https://www.videolan.org/vlc/download-windows.html)：用于测试拉流。
 
 将 MediaMTX 解压, 应能看到：
@@ -19,7 +20,7 @@ mediamtx.yml
 
 1. 将摄像头用USB数据线连接到电脑；
 2. 打开 OBS Studio；在左下角“来源”区域点击 `+`；选择“视频采集设备”；选择“新建”；
-6. 在“设备”中选择 `Wasintek camera`（或`USB Camera` 或 `USB Video Device`）；
+3. 在“设备”中选择 `Wasintek camera`（或`USB Camera` 或 `USB Video Device`）；
 
 ## 第三步：配置摄像头画质与镜头参数
 
@@ -48,17 +49,13 @@ mediamtx.yml
 
 设置界面示意图：
 
-![image-20260826205229260](/home/nvidia/scq/projects/ros2-ardupilot-sitl-hardware/docs/assets/image-20260826205229260.png)
+![image-20260826205229260](assets/image-20260826205229260.png)
 
-![image-20260826205252297](/home/nvidia/scq/projects/ros2-ardupilot-sitl-hardware/docs/assets/image-20260826205252297.png)
+![image-20260826205252297](assets/image-20260826205252297.png)
 
+## 第四步：配置 OBS 输出
 
-
-
-
-## 第五步：配置 OBS 输出
-
-### 5.1 配置分辨率和帧率
+### 4.1 配置分辨率和帧率
 
 打开“OBS → 设置 → 视频”，填写：
 
@@ -68,7 +65,7 @@ mediamtx.yml
 | 输出（缩放）分辨率 | `1920x1080` |
 | 常用 FPS 值 | `60` |
 
-### 5.2 配置编码格式
+### 4.2 配置编码格式
 
 打开“OBS → 设置 → 输出”，填写：
 
@@ -78,7 +75,7 @@ mediamtx.yml
 | 视频编码器 | 选择名称中包含 `H.264` 的编码器 |
 | 视频码率 | 自行设置即可 |
 
-## 第六步：配置MediaMTX
+## 第五步：配置MediaMTX
 
 1. 打开`mediamtx.yml`
 
@@ -96,7 +93,7 @@ mediamtx.yml
 
 4. 保存，然后运行`mediamtx.exe`并保持 MediaMTX 一直打开。
 
-## 第七步：推流
+## 第六步：推流
 
 1. 打开“OBS → 设置 → 推流”；
 2. 填写：
@@ -116,7 +113,7 @@ mediamtx.yml
 rtsp://192.168.112.101:8556/camera
 ```
 
-## 第九步：在另一台设备上拉流
+## 第七步：在另一台设备上拉流
 
 使用 VLC 测试：
 

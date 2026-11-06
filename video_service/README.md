@@ -241,149 +241,46 @@ ROS 航点抓拍不使用这条事件路径，而是逐条排队、逐条发布�
 
 ### 新飞机快速部署（Ubuntu 24.04 / Jazzy / ARM64）
 
-以下步骤是当前 Jetson Orin NX 真机验证过的可重复基线。全程保持飞控未解锁；视频 unit 必须
-独立于飞控 unit，不得加入 `scripts/onboard/start_onboard_control.sh`。
+先按[机载部署](../src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)准备原生工作区和
+[依赖](../src/onboard_control/deploy/ONBOARD_DEPENDENCIES.md)。前置依赖安装器包含FFmpeg、
+V4L2工具及固定版本/架构的MediaMTX；机载视频另需rsync/SSH及项目 `.venv`。
+不复制开发机 `build/install` 或架构不明的媒体二进制。
 
-先按下文第 2～3 步安装一次系统媒体依赖；完成机载源码同步后，视频服务本身只需一条命令：
-
-```bash
-cd /home/<机载用户>/ros2-ardupilot-mavros-control
-./video_service/deploy/install_onboard_video_service.sh
-```
-
-安装器验证 FFmpeg、v4l2-ctl 和系统 `/usr/local/bin/mediamtx`，在首次需要时构建 ROS 接口，然后
-创建媒体目录与独立 systemd unit，并执行 `enable --now`。项目内逐机配置不会被覆盖。它不会操作
-`ros2-ardupilot-onboard.service`，开机启动的也只是等待 ROS 命令的视频节点，摄像头仍保持关闭。
-
-下面第 2～3 步是新系统必须手工完成的一次性系统依赖；第 4～5 步是安装器内部操作的展开说明，
-只用于定制路径和故障排查。
-
-1. **准备原生工作区。** 按
-   [机载部署指导](../src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md) 完成 sparse checkout，
-   确认其中包含 `video_service/`，然后在飞机上原生构建和验证：
+1. 选择 `config/aircraft.local.env` 的 `AIRCRAFT_ID`，核对对应 `video/camera.conf` 的稳定
+   设备路径、采集格式、主动推流及地面上传参数。用 `v4l2-ctl --list-devices` 和
+   `--list-formats-ext -d <实际设备>` 确认设备声明的组合。
+2. 先配置到地面媒体主机的免密SSH和上传目录，再执行原生构建与安装：
 
    ```bash
-   cd /home/<机载用户>/ros2-ardupilot-mavros-control
    ./src/onboard_control/deploy/build_onboard_control.sh --verify
+   ./video_service/deploy/install_onboard_video_service.sh
    ```
 
-   不要从 x86 地面机复制 `build/`、`install/` 或 MediaMTX 二进制。
-
-2. **手工安装视频系统依赖。** Ubuntu 默认 apt 源不提供 MediaMTX 本体，但 FFmpeg、摄像头工具
-   和下载校验工具可直接安装：
-
-   ```bash
-   sudo apt update
-   sudo apt install -y ffmpeg v4l-utils ca-certificates curl
-   ```
-
-   视频 unit 通过 `SupplementaryGroups=video` 取得摄像头权限，不需要为此重新登录。连接摄像头后
-   先确认稳定设备路径和真实模式：
+   安装器核验工具、MediaMTX v1.20.0和配置，创建媒体目录及独立 `video-service.service`，
+   执行 `enable --now`；保留逐机参数。硬件未齐时加 `--install-only`，不启用或启动。
+3. 保持未解锁，检查服务及状态：
 
    ```bash
-   v4l2-ctl --list-devices
-   v4l2-ctl --list-formats-ext \
-     -d /dev/v4l/by-id/<camera>-video-index0
-   ```
-
-   当前 Wasintek 支持 H.264/MJPEG 1280×720@120；更换摄像头后必须以新设备输出为准。
-
-3. **手工安装匹配架构的 MediaMTX。** Git 仓库不再携带 MediaMTX 二进制；Ubuntu 24.04 默认
-   apt 源也没有 `mediamtx` 包。ARM64 飞机使用已验证的官方 v1.20.0 ARM64 归档：
-
-   ```bash
-   mediamtx_stage="$(mktemp -d)"
-   curl -fL \
-     https://github.com/bluenviron/mediamtx/releases/download/v1.20.0/mediamtx_v1.20.0_linux_arm64.tar.gz \
-     -o "${mediamtx_stage}/mediamtx_v1.20.0_linux_arm64.tar.gz"
-   echo '6aa3c03da7b6477f1e110c8e18e819cf9ef121e8981b52b8f8219982dae35f2f  mediamtx_v1.20.0_linux_arm64.tar.gz' \
-     | (cd "${mediamtx_stage}" && sha256sum -c -)
-   tar -xzf "${mediamtx_stage}/mediamtx_v1.20.0_linux_arm64.tar.gz" \
-     -C "${mediamtx_stage}"
-   sudo install -m 0755 "${mediamtx_stage}/mediamtx" /usr/local/bin/mediamtx
-   file /usr/local/bin/mediamtx
-   /usr/local/bin/mediamtx --version
-   ```
-
-   若飞机不能直连 GitHub，应在地面机下载并校验同一归档后用 `scp` 传入；不要关闭摘要校验，
-   不要跳过摘要校验，也不要从其他机器复制架构不明的可执行文件。
-
-4. **选择逐机配置并准备媒体目录。** 在 `config/aircraft.local.env` 设置 `AIRCRAFT_ID=uav001`
-   （1 号新飞机）或 `AIRCRAFT_ID=uav002`（2 号翻新飞机），核对对应 `video/camera.conf`
-   的设备路径、发布 IP 和媒体目录。安装器只创建媒体目录，不复制或覆盖参数。
-   镜头与采集参数在下一次摄像头“关闭→开启”时读取，无需重新构建。
-
-5. **安装独立 systemd unit（安装器自动完成）。** 若需人工排障，可从模板生成实际 unit；三个
-   占位符都必须替换：
-
-   ```bash
-   cd /home/<机载用户>/ros2-ardupilot-mavros-control
-   video_workspace="$(pwd -P)"
-   video_user="$(id -un)"
-   video_home="$(getent passwd "${video_user}" | cut -d: -f6)"
-   video_unit_stage="$(mktemp)"
-   sed \
-     -e "s|ONBOARD_USER|${video_user}|g" \
-     -e "s|ONBOARD_WORKSPACE_PATH|${video_workspace}|g" \
-     -e "s|ONBOARD_HOME_PATH|${video_home}|g" \
-     system/systemd/video-service.service > "${video_unit_stage}"
-   sudo install -m 0644 "${video_unit_stage}" \
-     /etc/systemd/system/video-service.service
-   sudo systemd-analyze verify /etc/systemd/system/video-service.service
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now video-service.service
-   ```
-
-   禁止给该 unit 添加飞控服务的 `Requires=`、`PartOf=` 或 `BindsTo=`。摄像头故障只允许
-   `video-service.service` 自己失败或重启。
-
-6. **未武装验收。** 视频节点启动后摄像头默认保持关闭，不会占用设备：
-
-   ```bash
-   systemctl is-enabled video-service.service
-   systemctl is-active video-service.service
+   systemctl status video-service.service
    journalctl -u video-service.service -b --no-pager -n 100
-   source /opt/ros/jazzy/setup.bash
-   source /home/<机载用户>/ros2-ardupilot-mavros-control/install/setup.bash
-   ROS_DOMAIN_ID=0 ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET \
-     ros2 topic echo --once /video_service/status
+   ros2 topic echo --once /video_service/status
    ```
 
-   应看到接口 3.2、`service_available=true`、`running=false`、`state=stopped` 和正确 RTSP
-   地址。随后可由地面摄像头面板测试开启、跨机拉流、抓拍、停止；停止后确认没有
-   FFmpeg/MediaMTX、8554 监听或摄像头占用。整个过程不得申请飞行租约、解锁或起飞。
+   ROS终端先加载Jazzy和项目overlay，使用飞机相同domain。应看到接口3.2、服务可用且
+   摄像头尚未运行；再从地面面板检查开启、RTSP、抓拍及停止后释放设备/端口。
 
-7. **更新与回退。** 更新源码后先运行 `./src/onboard_control/deploy/build_onboard_control.sh --verify`。配置更新直接修改对应逐机目录，使用 Git 提交同步；只需重启视频
-   unit 时执行 `sudo systemctl restart video-service.service`，不要重启或停止飞控 unit。
-
-独立启动命令：
+前台及清理入口：
 
 ```bash
 ./scripts/onboard/start_onboard_video.sh
-```
-
-手工执行与 systemd unit 读取同一份逐机配置，不回退系统目录或安装副本。
-直接运行脚本时仍是前台普通进程，生命周期由当前终端管理。
-
-彻底清理独立 unit、残留机载视频节点、配置的 RTSP 端口和真实摄像头占用者：
-
-```bash
 ./scripts/onboard/stop_onboard_video.sh
-```
-
-清理后立即重新启动独立 systemd unit：
-
-```bash
 ./scripts/onboard/stop_onboard_video.sh --restart
 ```
 
-停止脚本不会停止或重启 `ros2-ardupilot-onboard.service`。它会结束所有占用已配置真机摄像头
-设备的进程；执行前应确认没有需要保留的人工 qv4l2/FFmpeg 调试会话。
-
-不要把它添加成 `scripts/onboard/start_onboard_control.sh` 的第五个受监督子进程；该飞控脚本会在任一
-子进程退出时清理整套飞行栈，违反视频故障隔离要求。参考
-`system/systemd/video-service.service` 建立单独 unit，且不要声明对飞控 unit 的
-`Requires` 或 `PartOf`。当前 Jetson 已按这一边界部署并启用 `video-service.service`。
+手工和systemd共用逐机配置；镜头/采集配置在摄像头下次关闭→开启时读取。
+停止脚本清理独立unit及占用配置相机的进程，执行前确认无需保留人工qv4l2/FFmpeg会话。
+更新源码后重建，只重启视频unit；不能把视频加入飞控受监督子进程，不能对飞控unit声明
+`Requires/PartOf/BindsTo`。视频异常不能停止或重启飞控链。
 
 接口 QoS 与语义：
 
@@ -466,28 +363,11 @@ v4l2-ctl --list-formats-ext -d /dev/v4l/by-id/<camera>-video-index0
 file /usr/local/bin/mediamtx
 ```
 
-## 当前验证边界
+## 验证边界与诊断
 
-当前 Jetson Orin NX（Ubuntu 24.04/Jazzy/aarch64）已完成真实 Wasintek 摄像头、
-ARM64 MediaMTX、NVIDIA FFmpeg 8.0.1、私有缓存权限、主动 RTSP、录像、三类
-JPG、镜头参数、地面 Qt 播放、ROS 直连、状态陈旧和视频故障隔离验证；全过程真实
-FCU 保持 `armed=false`。隔离 domain 中的假 `ExtendedState` 已验证
-`ON_GROUND -> IN_AIR -> ON_GROUND` 会产生关闭、开启、关闭期望。
+硬件验收应核对真实摄像头声明格式、录像可完整解码、抓拍尺寸、曝光读回、RTSP 可达性，
+以及停止后设备/端口释放和服务故障隔离。可使用 `qv4l2` 查看设备控制项。
+历史静态台架结果不能代替受控运动画面的 H.264/MJPEG 对比，也不能证明媒体逐帧完整。
 
-默认值改为 H.264 1920×1080@60 后，当前飞机又完成一次真实复验：FFprobe 报告
-1920×1080、60/1，录像为 32.17 秒、15,471,611 bytes，人工抓拍为 1920×1080 JPG；开启
-一秒后读回手动曝光 25、增益 200。停止后 FFmpeg、MediaMTX、8554 和摄像头均释放，
-`video-service.service` 仍独立运行且没有重启。该测试证明当前 H.264 默认链可用，但没有使用
-受控运动标靶同时录制 MJPEG，因此不把静态场景结果包装成两种编码的清晰度定量排名。
-
-尚未执行且不能由自动代理执行的只剩真实飞行态验证：用户人工起飞后的自动开启、真实落地后的
-自动关闭，以及实际飞抵航点后的自动抓拍与上位机 08/09 联动。它们必须在未来经独立飞行安全
-评审并由用户人工解锁、起飞时补验；隔离边沿测试不能替代真实飞行结论。
-
-
-
-# 调试参数
-
-```bash
-qv4l2
-```
+用户人工起飞后的自动开启、真实落地后的关闭、飞抵航点抓拍和上位机08/09联动，
+须结合实际飞行及媒体结果验收；隔离假状态测试只验证事件链。实机解锁与起飞只能由用户手动执行。
