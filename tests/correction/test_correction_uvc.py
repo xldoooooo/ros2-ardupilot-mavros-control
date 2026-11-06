@@ -1,6 +1,7 @@
 """自有采集 ABI、真实采集时间和设备资源释放的回归；不连接飞控。"""
 
 import ctypes as ct
+import shutil
 import subprocess
 
 import pytest
@@ -8,6 +9,14 @@ import pytest
 from correction_service import uvc_capture as uvc
 from correction_service.config import load_config
 from test_correction_service import CONFIG_DIR
+
+
+def _copy_configuration(root):
+    """Copy the correction profile together with its shared Odin geometry."""
+    config = root / "correction"
+    shutil.copytree(CONFIG_DIR, config)
+    shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", root / "odin_extrinsics.yaml")
+    return config
 
 
 def test_v4l2_abi_matches_system_headers(tmp_path):
@@ -97,12 +106,11 @@ def test_streamoff_failure_still_releases_resources(monkeypatch):
 
 def test_old_external_driver_is_rejected(tmp_path):
     """现场遗留配置不能重新引入独立联合标定工作区。"""
-    import shutil
-    shutil.copytree(CONFIG_DIR, tmp_path, dirs_exist_ok=True)
-    path = tmp_path / "camera.conf"
+    config_dir = _copy_configuration(tmp_path)
+    path = config_dir / "camera.conf"
     path.write_text(path.read_text().replace("package = correction_service", "package = wasintek_gst_camera"))
     with pytest.raises(ValueError, match="本包"):
-        load_config(tmp_path)
+        load_config(config_dir)
 
 
 def test_launch_and_install_have_no_external_camera_overlay():
@@ -142,26 +150,24 @@ def test_rate_limiter_skips_stalls_and_zero_disables_limit():
 @pytest.mark.parametrize("value", [-1.0, float("nan"), float("inf")])
 def test_rate_limiter_and_camera_config_reject_invalid_rates(tmp_path, value):
     """入口与文件配置均拒绝负数及非有限限频值，避免启动后失效。"""
-    import shutil
     with pytest.raises(ValueError, match="publish_fps"):
         uvc.CaptureRateLimiter(value)
-    shutil.copytree(CONFIG_DIR, tmp_path, dirs_exist_ok=True)
-    path = tmp_path / "camera.conf"
+    config_dir = _copy_configuration(tmp_path)
+    path = config_dir / "camera.conf"
     path.write_text(path.read_text().replace("publish_fps = 30.0", f"publish_fps = {value}"))
     with pytest.raises(ValueError, match="publish_fps"):
-        load_config(tmp_path)
+        load_config(config_dir)
 
 
 def test_camera_rate_default_and_unlimited_preserve_native_mode(tmp_path):
     """缺省使用 30；0 关闭软件限频，但不改变相机原生请求 120。"""
-    import shutil
-    shutil.copytree(CONFIG_DIR, tmp_path, dirs_exist_ok=True)
-    path = tmp_path / "camera.conf"
+    config_dir = _copy_configuration(tmp_path)
+    path = config_dir / "camera.conf"
     original = path.read_text()
     path.write_text(original.replace("publish_fps = 30.0\n", ""))
-    assert load_config(tmp_path).camera.publish_fps == 30.0
+    assert load_config(config_dir).camera.publish_fps == 30.0
     path.write_text(original.replace("publish_fps = 30.0", "publish_fps = 0"))
-    camera = load_config(tmp_path).camera
+    camera = load_config(config_dir).camera
     assert camera.publish_fps == 0.0
     assert camera.fps == 120
 
