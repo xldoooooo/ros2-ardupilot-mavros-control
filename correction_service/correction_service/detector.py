@@ -29,6 +29,11 @@ class DetectionBatch:
     marker_ids: tuple[int, ...]
     detections: tuple[PoseDetection, ...]
     processing_time_ms: float
+    search_rect: tuple[int, int, int, int] = (0, 0, 0, 0)
+    roi_used: bool = False
+    roi_fallback: bool = False
+    search_pixels: int = 0
+    decode_time_ms: float = 0.0
 
 
 class AprilTagDetector:
@@ -42,6 +47,8 @@ class AprilTagDetector:
             raise ValueError("只支持 tag36h11")
         if native.opencv_version != cv2.__version__:
             raise RuntimeError("correction_native 与 Python OpenCV 版本不一致，请原生重建")
+        self._width, self._height = intrinsics.width, intrinsics.height
+        self._max_reprojection = settings.max_reprojection_error_px
         self._scale = settings.image_scale
         self._camera_matrix = intrinsics.camera_matrix.copy()
         self._camera_matrix[0, :] *= self._scale
@@ -49,7 +56,7 @@ class AprilTagDetector:
         self._distortion = intrinsics.distortion.copy()
         # 相机已按相同INTER_AREA缩图时，仅缩放内参，不再二次缩像素。
         self._detector = native.Detector(
-            1.0 if prescaled else self._scale, settings.corner_refinement
+            1.0 if prescaled else self._scale, settings.corner_refinement, settings.roi_enabled
         )
 
     @property
@@ -64,6 +71,21 @@ class AprilTagDetector:
         if image.ndim != 2 or image.dtype != np.uint8:
             raise ValueError("AprilTag 输入必须是 mono8 图像")
         ids, corners = self._detector.detect(np.ascontiguousarray(image), set(tags))
+        return self._batch(ids, corners, tags, started)
+
+    def detect_compressed(self, data, tags: dict[int, TagPose]) -> DetectionBatch:
+        """原生解码选中的完整JPEG，在原坐标系ROI搜索并在同帧全图恢复。"""
+        started = time.perf_counter()
+        pixels = np.frombuffer(data, dtype=np.uint8)
+        ids, corners = self._detector.detect_jpeg(pixels, self._width, self._height, set(tags))
+        return self._batch(ids, corners, tags, started)
+
+    def reset(self) -> None:
+        """新采样段清除旧相机区间的ROI，不复用旧目标位置。"""
+        self._detector.reset()
+
+    def _batch(self, ids, corners, tags, started) -> DetectionBatch:
+        """保留原PnP和质量字段，并记录真实搜索区域供性能验收。"""
         marker_ids = tuple(ids)
         detections: list[PoseDetection] = []
         for marker_id, marker_corners in zip(marker_ids, corners):
@@ -73,10 +95,15 @@ class AprilTagDetector:
             detection = self._estimate_pose(marker_id, marker_corners, tag.size_m)
             if detection is not None:
                 detections.append(detection)
+        statistics = self._detector.statistics
+        if not any(item.reprojection_error_px <= self._max_reprojection for item in detections):
+            self._detector.reset()
         return DetectionBatch(
             marker_ids=marker_ids,
             detections=tuple(detections),
             processing_time_ms=(time.perf_counter() - started) * 1000.0,
+            search_rect=tuple(statistics[:4]), roi_used=statistics[4],
+            roi_fallback=statistics[5], search_pixels=statistics[6], decode_time_ms=statistics[7],
         )
 
     def _estimate_pose(

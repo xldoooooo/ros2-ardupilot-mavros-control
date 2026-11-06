@@ -17,7 +17,9 @@ topics:
 detection:
   tag_family: tag36h11
   processing_rate_hz: 10.0
-  image_scale: 0.5
+  image_scale: 1.0
+  roi_enabled: true
+  opencv_threads: 1
   corner_refinement: true
   max_reprojection_error_px: 2.0
   # 2026-09-09 地面原理验证：实测约 7.9~8.0deg，放宽到 10deg 避免边界抖动锁死采样；

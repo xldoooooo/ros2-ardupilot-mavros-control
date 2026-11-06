@@ -73,6 +73,9 @@ class DetectionSettings:
     max_correction_tilt_deg: float
     # 仅保留旧配置兼容；采样始终只选预期 ID，不再按同帧 Tag 数量拒绝。
     reject_multiple_tags: bool
+    # ROI接收选中的原始JPEG；缺省字段保留原mono8链路和OpenCV线程设置。
+    roi_enabled: bool = False
+    opencv_threads: int = 0
 
 
 @dataclass(frozen=True)
@@ -589,6 +592,10 @@ def load_config(config_dir: str | Path) -> ServiceConfig:
                 detection.get("max_correction_tilt_deg"), "max_correction_tilt_deg"
             ),
             reject_multiple_tags=bool(detection.get("reject_multiple_tags", True)),
+            roi_enabled=bool(detection.get("roi_enabled", False)),
+            opencv_threads=int(_positive(
+                detection.get("opencv_threads", 0), "opencv_threads", allow_zero=True
+            )),
         ),
         synchronization=SynchronizationSettings(
             odometry_history_seconds=_positive(

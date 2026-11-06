@@ -20,6 +20,22 @@ static cv::Mat gray_view(const py::array_t<std::uint8_t, py::array::c_style> &pi
           const_cast<std::uint8_t *>(pixels.data())};
 }
 
+// Return corner arrays only after native processing has released all borrowed
+// pixel views.
+static py::tuple corner_arrays(const Corners &result) {
+  py::list corners;
+  for (const auto &marker : result.points) {
+    py::array_t<float> points({1, 4, 2});
+    auto out = points.mutable_unchecked<3>();
+    for (int index = 0; index < 4; ++index) {
+      out(0, index, 0) = marker[index].x;
+      out(0, index, 1) = marker[index].y;
+    }
+    corners.append(std::move(points));
+  }
+  return py::make_tuple(result.ids, corners);
+}
+
 // Expose independent data-plane operations; Python continues to own every transaction.
 PYBIND11_MODULE(_correction_native, module) {
   module.attr("opencv_version") = CV_VERSION;
@@ -83,9 +99,21 @@ PYBIND11_MODULE(_correction_native, module) {
                               result.time_source);
       });
   py::class_<Detector>(module, "Detector")
-      .def(py::init<double, bool>())
+      .def(py::init<double, bool, bool>(), py::arg("scale"), py::arg("refine"),
+           py::arg("track_roi") = false)
+      .def("reset", &Detector::reset)
+      .def_property_readonly("statistics",
+                             [](const Detector &detector) {
+                               const auto stats = detector.statistics();
+                               return py::make_tuple(
+                                   stats.region.x, stats.region.y,
+                                   stats.region.width, stats.region.height,
+                                   stats.used_roi, stats.fallback, stats.pixels,
+                                   stats.decode_ms);
+                             })
       .def("detect",
-           [](const Detector &detector, py::array_t<std::uint8_t, py::array::c_style> pixels,
+           [](Detector &detector,
+              py::array_t<std::uint8_t, py::array::c_style> pixels,
               const std::set<int> &selected) {
              const auto image = gray_view(pixels);
              Corners result;
@@ -93,17 +121,20 @@ PYBIND11_MODULE(_correction_native, module) {
                py::gil_scoped_release release;
                result = detector.detect(image, selected);
              }
-             py::list corners;
-             for (const auto &marker : result.points) {
-               py::array_t<float> points({1, 4, 2});
-               auto out = points.mutable_unchecked<3>();
-               for (int j = 0; j < 4; ++j) {
-                 out(0, j, 0) = marker[j].x;
-                 out(0, j, 1) = marker[j].y;
-               }
-               corners.append(std::move(points));
+             return corner_arrays(result);
+           })
+      .def("detect_jpeg",
+           [](Detector &detector,
+              py::array_t<std::uint8_t, py::array::c_style> bytes, int width,
+              int height, const std::set<int> &selected) {
+             const cv::Mat jpeg(1, bytes.size(), CV_8UC1,
+                                const_cast<std::uint8_t *>(bytes.data()));
+             Corners result;
+             {
+               py::gil_scoped_release release;
+               result = detector.detect_jpeg(jpeg, width, height, selected);
              }
-             return py::make_tuple(result.ids, corners);
+             return corner_arrays(result);
            });
   module.def(
       "estimate_pose",

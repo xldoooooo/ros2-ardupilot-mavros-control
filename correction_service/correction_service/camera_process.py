@@ -43,10 +43,12 @@ class CameraProcess:
         logger: logging.Logger,
         *,
         image_scale: float = 1.0,
+        compressed: bool = False,
     ) -> None:
-        """采集保持原生尺寸；可在发布前应用校准检测所需的唯一缩图。"""
+        """选中JPEG由检测器解码；mono8模式可在发布前应用唯一缩图。"""
         self._settings = settings
         self._image_scale = float(image_scale)
+        self._compressed = bool(compressed)
         self._lens_controls = dict(lens_controls)
         self._log_path = log_path
         self._logger = logger
@@ -104,6 +106,8 @@ class CameraProcess:
             f"max_capture_age_ms:={self._settings.max_capture_age_ms}",
             "-p",
             f"image_scale:={self._image_scale}",
+            "-p",
+            f"compressed:={str(self._compressed).lower()}",
         ]
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_stream = self._log_path.open("a", encoding="utf-8")
@@ -119,7 +123,7 @@ class CameraProcess:
             "下视相机节点已启动 pid=%s device=%s topic=%s",
             self._process.pid,
             self._settings.device,
-            self._settings.image_topic,
+            self._settings.image_topic + ("/compressed" if self._compressed else ""),
         )
 
     def ensure_running(self) -> None:

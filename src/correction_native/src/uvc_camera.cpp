@@ -1,4 +1,5 @@
-// Continuous latest-JPEG UVC acquisition; decode and publish only scheduler-selected frames.
+// Continuous latest-JPEG UVC acquisition; decode and publish only
+// scheduler-selected frames.
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
@@ -16,6 +17,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <thread>
 
@@ -221,64 +223,101 @@ class Capture {
 };
 }  // namespace correction_native
 
-// Preserve capture parameters and source stamps while publishing the configured detection pixels.
+// Preserve capture parameters and source stamps while publishing the configured
+// detection pixels.
 int main(int argc, char **argv) {
   using namespace correction_native;
-  rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
+  rclcpp::init(argc, argv, rclcpp::InitOptions(),
+               rclcpp::SignalHandlerOptions::None);
   std::signal(SIGINT, stop_signal);
   std::signal(SIGTERM, stop_signal);
   auto node = std::make_shared<rclcpp::Node>("correction_uvc_camera");
   int result = 0;
   try {
-    const auto device = node->declare_parameter("video_device", std::string("/dev/video0"));
+    const auto device =
+        node->declare_parameter("video_device", std::string("/dev/video0"));
     const int width = node->declare_parameter("image_width", 1920);
     const int height = node->declare_parameter("image_height", 1080);
     const int fps = node->declare_parameter("framerate", 30);
     const double publish_fps = node->declare_parameter("publish_fps", 30.);
     const double image_scale = node->declare_parameter("image_scale", 1.);
-    const auto frame_id =
-        node->declare_parameter("frame_id", std::string("correction_camera_optical_frame"));
-    const auto topic =
-        node->declare_parameter("image_topic", std::string("/correction_service/image_raw"));
-    const double max_age = node->declare_parameter("max_capture_age_ms", 200.) * 1e6;
+    const bool compressed = node->declare_parameter("compressed", false);
+    const auto frame_id = node->declare_parameter(
+        "frame_id", std::string("correction_camera_optical_frame"));
+    const auto topic = node->declare_parameter(
+        "image_topic", std::string("/correction_service/image_raw"));
+    const double max_age =
+        node->declare_parameter("max_capture_age_ms", 200.) * 1e6;
     if (width <= 0 || height <= 0 || fps <= 0 || max_age <= 0 ||
         !std::isfinite(image_scale) || image_scale <= 0. || image_scale > 1.)
-      throw std::invalid_argument("invalid UVC dimensions, fps, capture-age limit or image_scale");
+      throw std::invalid_argument(
+          "invalid UVC dimensions, fps, capture-age limit or image_scale");
     if (node->get_parameter("use_sim_time").as_bool())
-      throw std::invalid_argument("UVC hardware capture requires the system ROS clock");
+      throw std::invalid_argument(
+          "UVC hardware capture requires the system ROS clock");
     CaptureRateLimiter limiter(publish_fps);
-    auto publisher =
-        node->create_publisher<sensor_msgs::msg::Image>(topic, rclcpp::QoS(1).best_effort());
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher;
+    rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr
+        jpeg_publisher;
+    if (compressed)
+      jpeg_publisher =
+          node->create_publisher<sensor_msgs::msg::CompressedImage>(
+              topic + "/compressed", rclcpp::QoS(1).best_effort());
+    else
+      publisher = node->create_publisher<sensor_msgs::msg::Image>(
+          topic, rclcpp::QoS(1).best_effort());
     Capture capture(device, width, height, fps);
     RCLCPP_INFO(node->get_logger(),
-                "UVC mmap started: %s %dx%d MJPEG requested_fps=%d negotiated_fps=(%u,%u) "
-                "publish_fps=%.3f timestamp=V4L2_CLOCK_MONOTONIC decoder=OpenCV native=true "
-                "image_scale=%.4f output_size=%dx%d",
-                device.c_str(), width, height, fps, capture.negotiated_num, capture.negotiated_den,
-                publish_fps, image_scale, cvRound(width * image_scale), cvRound(height * image_scale));
-    std::uint64_t count = 0, stale = 0, nonmonotonic = 0, rate_limited = 0, last_count = 0;
-    std::int64_t last_stamp = 0, report_time = monotonic_ns(), last_frame = report_time;
+                "UVC mmap started: %s %dx%d MJPEG requested_fps=%d "
+                "negotiated_fps=(%u,%u) "
+                "publish_fps=%.3f timestamp=V4L2_CLOCK_MONOTONIC "
+                "decoder=%s native=true "
+                "image_scale=%.4f output_size=%dx%d transport=%s",
+                device.c_str(), width, height, fps, capture.negotiated_num,
+                capture.negotiated_den, publish_fps, compressed ? "detector" : "OpenCV",
+                image_scale,
+                compressed ? width : cvRound(width * image_scale),
+                compressed ? height : cvRound(height * image_scale),
+                compressed ? "jpeg" : "mono8");
+    std::uint64_t count = 0, stale = 0, nonmonotonic = 0, rate_limited = 0,
+                  last_count = 0;
+    std::int64_t last_stamp = 0, report_time = monotonic_ns(),
+                 last_frame = report_time;
     double age_sum = 0, age_max = 0;
     while (!stopping && rclcpp::ok()) {
       auto sample = capture.latest();
       const auto mono = monotonic_ns();
       if (!sample) {
         if (mono - last_frame > 3'000'000'000LL)
-          throw std::runtime_error("UVC stream produced no complete frame for 3 seconds");
+          throw std::runtime_error(
+              "UVC stream produced no complete frame for 3 seconds");
         continue;
       }
       last_frame = mono;
-      auto [stamp, age] = capture_stamp(sample->buffer, mono, node->now().nanoseconds());
+      auto [stamp, age] =
+          capture_stamp(sample->buffer, mono, node->now().nanoseconds());
       if (age > max_age)
         ++stale;
       else if (stamp <= last_stamp)
         ++nonmonotonic;
       else if (!limiter.accept(mono - age))
         ++rate_limited;
-      else {
+      else if (compressed) {
+        auto image = std::make_unique<sensor_msgs::msg::CompressedImage>();
+        image->header.stamp = rclcpp::Time(stamp);
+        image->header.frame_id = frame_id;
+        image->format = "jpeg";
+        image->data = std::move(sample->jpeg);
+        jpeg_publisher->publish(std::move(image));
+        last_stamp = stamp;
+        ++count;
+        age_sum += age / 1e6;
+        age_max = std::max(age_max, age / 1e6);
+      } else {
         const auto frame = cv::imdecode(sample->jpeg, cv::IMREAD_GRAYSCALE);
         if (frame.empty() || frame.rows != height || frame.cols != width)
-          throw std::runtime_error("UVC MJPEG decoder returned an invalid image/size");
+          throw std::runtime_error(
+              "UVC MJPEG decoder returned an invalid image/size");
         const auto output = resize_gray(frame, image_scale);
         age += monotonic_ns() - mono;
         if (age > max_age)
@@ -303,11 +342,12 @@ int main(int argc, char **argv) {
       if (now - report_time >= 5'000'000'000LL) {
         const double elapsed = (now - report_time) / 1e9;
         const auto captured = capture.received();
-        RCLCPP_INFO(node->get_logger(),
-                    "capture_rate=%.3f output_rate=%.3f stale=%lu nonmonotonic=%lu "
-                    "rate_limited=%lu age_mean_ms=%.3f age_max_ms=%.3f",
-                    (captured - last_count) / elapsed, count / elapsed, stale, nonmonotonic,
-                    rate_limited, count ? age_sum / count : 0., age_max);
+        RCLCPP_INFO(
+            node->get_logger(),
+            "capture_rate=%.3f output_rate=%.3f stale=%lu nonmonotonic=%lu "
+            "rate_limited=%lu age_mean_ms=%.3f age_max_ms=%.3f",
+            (captured - last_count) / elapsed, count / elapsed, stale,
+            nonmonotonic, rate_limited, count ? age_sum / count : 0., age_max);
         report_time = now;
         last_count = captured;
         count = stale = nonmonotonic = rate_limited = 0;

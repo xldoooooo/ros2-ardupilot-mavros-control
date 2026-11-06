@@ -195,8 +195,9 @@ uav002 的 `correction/UQ212/` 保存换镜头前的完整六文件配置，`cor
 不受另一线程的解码和发布阻塞。
 
 正式校准唯一节拍是 `general_settings.yaml` 的 `detection.processing_rate_hz`（当前 10 Hz）：
-相机调度器按采集单调时间选帧，只解码、发布选中的完整 mono8 图像；检测端直接处理这些新帧，
-不再进行第二次限频。相机内外参、像素、检测缩放和质量门均不随调度变化。
+相机调度器按采集单调时间选帧，仅传递选中的帧；检测端不再进行第二次限频。
+refresh 使用原始 JPEG 传递，在检测进程内解码并做原分辨率 ROI 搜索；旧 mono8 模式仍支持前置缩图。
+原始时间戳、相机内外参和质量门不随调度变化。
 `camera.publish_fps` 仅保留旧配置/独立相机工具兼容，正式校准会用上述检测频率覆盖它；
 调整校准频率只改 `processing_rate_hz`，重启独立修正服务后生效。
 
@@ -310,13 +311,24 @@ Python 仅在处理观测或检查应用跳变时读取状态；异常通过 gua
 自适应亚像素精修及 IPPE square PnP 在同库 C++ 中执行，检测默认 `image_scale` 保持配置值。
 
 采集入口 `correction_service/uvc_camera_node` 用 `exec` 加载原生节点，直接打开 `camera.conf` 指定的系统
-UVC 设备，以 V4L2 mmap 持续读取 MJPEG。仅对调度选中的帧解码，并在发布前按
-`detection.image_scale` 用原有 `INTER_AREA` 缩图；检测直接消费该尺寸，内参只缩放一次。
-例如1920×1200、scale=0.5时只传960×600的 `mono8`，像素载荷减少75%；scale=1保留原分辨率。
-原生采集模式与标定内参尺寸仍为原始分辨率，不裁剪、不旋转、不去畸变。独立相机入口的
-`image_scale` 参数默认1，由校准任务传入既有检测配置值，无需维护第二个缩放配置。
+UVC 设备，以 V4L2 mmap 持续读取 MJPEG。`detection.roi_enabled=true` 时，相机只把调度选中的原始
+JPEG 发布到 `camera_image` 话题加 `/compressed`，不重编码；检测进程在 C++ 中解码一次，完整像素
+不经过 Python 或原始图像 ROS 传输。refresh 的 `image_scale=1.0`，内参、角点和 PnP 均使用原分辨率。
+
+首次全图定位目标，之后在上帧目标周围搜索；每侧至少留96像素或半个目标尺寸，并根据角点运动
+预测中心、扩展余量。ROI 没有目标或目标靠近人工裁剪边缘时，同一帧立即回退全图；丢失后不复用旧
+位姿。轮廓周长门按全图尺寸归一化，角点恢复全图坐标后在完整像素上亚像素精修，PnP与质量门不变。
+晃动超出ROI时仍尝试同帧全图找回；回退帧需承担ROI与全图两次搜索，CPU会升高。新采样任务清除跟踪区域。
+
+`roi_enabled=false` 保留原 mono8 链路：只解码选中帧，发布前按 `image_scale` 用 `INTER_AREA` 缩图，
+检测不再二次缩图，内参只缩放一次。例如scale=0.5只传960×600。独立相机入口的 `compressed`
+参数默认false、`image_scale`默认1，校准任务统一传入配置。采集模式始终与原始标定分辨率一致。
+`detection.opencv_threads` 大于0时设置检测进程的OpenCV线程数；0或缺省保持库默认。refresh设为1，
+降低并行调度CPU开销；修改分辨率、场景或平台后应同时测量单帧时间与总CPU，保持处理周期内完成。
+
 采集时间直接来自内核 `CLOCK_MONOTONIC` 缓冲区时间戳，按帧龄映射至 ROS 系统时钟；
-不按声明 fps 推算时间，不以到达时间掩盖无效时间戳。超过原有 `max_capture_age_ms` 的帧仍丢弃。
+不按声明 fps 推算时间，不以到达时间掩盖无效时间戳。超过原有 `max_capture_age_ms` 的帧仍丢弃；
+JPEG模式在检测侧解码和搜索后再次核对帧龄。任务结束后释放相机和图像订阅。
 构建增加 `pybind11-dev` 和 ROS `pybind11_vendor`；安装入口自动补齐。原生模块选择 Python `cv2`
 实际加载的 OpenCV 动态库。若 JetPack 开发头与 Python 版本不同，构建入口仅下载并解包匹配的
 Ubuntu 头文件到 `build/correction_native/opencv/`，不替换系统 OpenCV。首次构建需要可访问 apt

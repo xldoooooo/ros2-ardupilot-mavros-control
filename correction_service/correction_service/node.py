@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -22,7 +23,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 
 from correction_interfaces.msg import (
     CalibrationKeyframe as CalibrationKeyframeMessage,
@@ -209,8 +210,11 @@ class CorrectionServiceNode(Node):
             )
 
         self._service_logger = configure_service_logger(self.config.logging)
+        if self.config.detection.opencv_threads > 0:
+            cv2.setNumThreads(self.config.detection.opencv_threads)
         self._detector = AprilTagDetector(
-            self.config.intrinsics, self.config.detection, prescaled=True
+            self.config.intrinsics, self.config.detection,
+            prescaled=not self.config.detection.roi_enabled,
         )
         self._odometry_fault_guard = self.create_guard_condition(self._on_odometry_fault)
         self._synchronizer = NativeOdometrySynchronizer(
@@ -223,7 +227,7 @@ class CorrectionServiceNode(Node):
         self._owner_releasing = False
         # 退休来源保留到服务重启，阻止释放后迟到事务重新取得手动写权限。
         self._retired_owners: set[str] = set()
-        self._image_queue: queue.Queue[Image] = queue.Queue(maxsize=1)
+        self._image_queue: queue.Queue[Image | CompressedImage] = queue.Queue(maxsize=1)
         self._last_sequences: dict[str, int] = {}
         self._extnav = _ExtnavSnapshot()
         self._raw_received_monotonic = 0.0
@@ -272,7 +276,9 @@ class CorrectionServiceNode(Node):
             self.resolve_topic_name(self._raw_odometry_topic), self.get_namespace(),
             self.context.get_domain_id(), self.get_parameter("use_sim_time").value,
         )
-        self._camera_image_topic = topics["camera_image"]
+        self._camera_image_topic = topics["camera_image"] + (
+            "/compressed" if self.config.detection.roi_enabled else ""
+        )
         self.create_subscription(
             ExtnavCorrectionStatus,
             topics["extnav_status"],
@@ -396,7 +402,7 @@ class CorrectionServiceNode(Node):
             raise RuntimeError("相机图像订阅尚未释放")
         self._drain_image_queue()
         self._image_subscription = self.create_subscription(
-            Image,
+            CompressedImage if self.config.detection.roi_enabled else Image,
             self._camera_image_topic,
             self._on_image,
             qos_profile_sensor_data,
@@ -439,7 +445,7 @@ class CorrectionServiceNode(Node):
             time.sleep(0.02)
         raise RuntimeError("任务订阅后 2.0s 内没有收到新鲜 Odin odometry")
 
-    def _on_image(self, message: Image) -> None:
+    def _on_image(self, message: Image | CompressedImage) -> None:
         """回调只替换单槽最新帧，检测始终在任务线程中运行。"""
         with self._lock:
             job = self._job
@@ -1089,11 +1095,13 @@ class CorrectionServiceNode(Node):
             camera_log,
             self._service_logger,
             image_scale=self.config.detection.image_scale,
+            compressed=self.config.detection.roi_enabled,
         )
         job.camera = camera
         failure = ""
         try:
             self._await_fresh_odometry(job)
+            self._detector.reset()
             camera.start()
             deadline = time.monotonic() + self.config.timeouts.camera_start_seconds
             while not job.first_image_event.wait(timeout=0.1):
@@ -1253,14 +1261,24 @@ class CorrectionServiceNode(Node):
             raise ValueError(f"图像字节数 {pixels.size} != {expected}")
         return pixels.reshape(int(image.height), int(image.width))
 
-    def _process_image(self, job: _Job, image: Image, image_stamp_ns: int) -> None:
+    def _process_image(self, job: _Job, image: Image | CompressedImage, image_stamp_ns: int) -> None:
         """仅采样指定 Tag，按图像时间匹配 raw 并形成粗修正和原始 Q。"""
         assert job.estimator is not None
         tag = self.config.tags[job.expected_tag_id]
         # 其他 ID 只保留解码统计，不精修、不求解 PnP，也不阻塞目标采样。
-        batch = self._detector.detect(
-            self._image_to_gray(image), {job.expected_tag_id: tag}
-        )
+        if self.config.detection.roi_enabled:
+            if image.format.lower() != "jpeg":
+                raise ValueError(f"相机压缩图像必须为jpeg，实际 {image.format}")
+            batch = self._detector.detect_compressed(image.data, {job.expected_tag_id: tag})
+            # 解码移到检测进程，原帧龄限制仍覆盖JPEG解码后的可用时刻。
+            if (self.get_clock().now().nanoseconds - image_stamp_ns >
+                    self.config.camera.max_capture_age_ms * 1_000_000):
+                self._reject_sample(job, "选中JPEG解码后超过原有帧龄限制")
+                return
+        else:
+            batch = self._detector.detect(
+                self._image_to_gray(image), {job.expected_tag_id: tag}
+            )
         job.estimator.record_processing(image_stamp_ns, batch.processing_time_ms)
         with self._lock:
             job.frames_processed += 1
@@ -1363,6 +1381,9 @@ class CorrectionServiceNode(Node):
             odom_match_error_ms=match.delta_ms,
             odom_time_source=match.time_source,
             odin_speed_mps=speed,
+            search_rect=batch.search_rect, roi_used=batch.roi_used,
+            roi_fallback=batch.roi_fallback, search_pixels=batch.search_pixels,
+            decode_time_ms=batch.decode_time_ms,
         )
         now = time.monotonic()
         if (
