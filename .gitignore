@@ -87,7 +87,8 @@ deepcopilot/
 
 # Local agent tasks, reports, instructions, and scratch files.
 /agent/
-MEMORY.md
+# Root project memory stays local.
+/MEMORY.md
 
 # IDE and editor files
 .vscode/

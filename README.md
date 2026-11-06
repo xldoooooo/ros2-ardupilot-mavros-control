@@ -46,3 +46,5 @@ bash scripts/ground/start_ground_all.sh
 - [测试说明](tests/README.md)：项目环境、测试选择与隔离验证。
 
 地面媒体服务独立于 GUI 运行，默认提供 HTTP 8090、只读 FTP 2121 和 RTSP 8554；实际地址由本机媒体配置指定。下载路径相对于媒体 `root/public`，不再使用飞机旧 `/home/share`。
+
+清理前的手工部署与现场笔记完整保留在[旧 README](docs/README-before-trim-2026-11-07.md)，其中的历史路径和命令使用前需核对当前环境。

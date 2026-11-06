@@ -1,0 +1,397 @@
+<!-- 地面站、机载独立服务与可选避障的当前构建和操作入口。 -->
+# 地面站
+
+顶栏可开启“开机自启”（Ubuntu 桌面登录后启动）和“自动连接飞机”；自动连接使用原点设置中的坐标，失败后会重试。上位机通讯面板已有 WebSocket URL 配置、启动连接和断线重连。
+无人值守部署、独立避障自启及日志位置见[启动与日志](docs/startup-and-logs.md)。
+
+## odin driver
+
+已经禁止了cloudslam话题发布，hostsdk直接发布降采样+剔除的结果
+但驱动配置里sendcloudslam要开启，因为hostsdk里面要用它才能降采样
+在 [host_sdk_sample.h](/home/nvidia/scq/projects/odin_ros_driver-modified/host_sdk_sample.h) 搜索 xyzrgbacloud_pub_，取消发布块（含 #ifdef/#else/#endif）、两处初始化和两处成员声明的注释，再重新构建、重启 Odin 即可启用原始云。
+
+## 航点校准与巡检
+
+航点支持独立的巡检、Tag 校准标志和扩展 CSV；新点默认为普通航点。
+odom 绝对坐标任务可在到点后自动校准、确认飞控融合再继续，详见[航点校准工作流](docs/tag-waypoint-workflow.md)。
+
+## 航点避障
+
+避障失效会制动等待同一航点，恢复窗口0.4s，连续等待15s超时后任务失败
+
+```bash
+bash scripts/onboard/start_avoidance.sh
+bash scripts/onboard/stop_avoidance.sh
+```
+
+如需演示移障后恢复，可在本地仿真已运行时执行一次
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ROS_DOMAIN_ID=231 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+  ros2 topic pub --once /simulation/obstacle_enabled std_msgs/msg/Bool '{data: false}'
+```
+
+## 新机部署完整地面站
+
+1. 安装 ROS、MAVROS、项目源码，并按
+   [地面站视频依赖](video_service/README.md#地面站视频依赖ubuntu-2404--amd64)
+   安装 FFmpeg、v4l-utils 与 amd64 MediaMTX；
+2. 
+   ```bash
+   ./scripts/ground/setup_ground_station.sh
+   ```
+
+
+## 关闭防火墙
+
+firewalld防火墙：
+
+``` bash
+sudo systemctl stop firewalld
+```
+
+禁止开机自启动
+
+```bash
+sudo systemctl disable firewalld
+```
+
+iptables防火墙
+
+```bash
+sudo service iptables stop
+```
+
+禁止开机自启动
+```bash
+sudo chkconfig iptables off
+```
+
+如果不想关闭防火墙，则对飞机地址添加信任
+```bash
+sudo firewall-cmd --permanent --zone=public \
+  --add-rich-rule='rule family="ipv4" source address="192.168.112.169" accept'
+sudo firewall-cmd --reload
+```
+
+
+```bash
+ROS_DOMAIN_ID=0
+ROS_LOCALHOST_ONLY=0
+```
+
+# Odin
+
+有些已经自动配置 或 参考
+
+https://asset.manifoldtech.cn/media/static/download/odin1/Odin1%20%E5%BF%AB%E9%80%9F%E5%90%AF%E5%8A%A8%20v1.5.0.pdf
+
+在 `config/aircraft/<编号>/odin/` 的所选模式 YAML 中配置 Odin 输出。
+
+# AP飞控
+
+飞控板与伴随计算机接好后，还需配置飞控：
+
+
+# 机载服务
+
+配置统一位于 [`config/`](config/README.md)。本机 `config/aircraft.local.env` 选择固定编号：`uav001` 为1号机、`uav002` 为2号机、`simulation` 为仿真。编辑所选档案后重启对应服务即可生效，无需为调参重新构建；系统集成源文件位于 `system/`。
+
+## 新机载计算机部署索引
+
+当前已验证目标是 Jetson Orin NX、Ubuntu 24.04、ROS 2 Jazzy、aarch64。更换飞机时不要复制
+开发机的 `build/`、`install/` 或 x86 MediaMTX，应在新机按以下顺序原生部署：
+
+1. 安装 ROS 2 Jazzy、MAVROS 和机载硬件驱动，原生构建 Odin 与 extnav overlay；
+2. 按[机载服务最小部署指导](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)建立 sparse checkout、
+   配置串口/overlay 并执行安全 smoke；
+3. 人工核对 `/dev/serial/by-id` 或板载串口，不得猜测飞控设备；
+4. 执行 `./src/onboard_control/deploy/install_onboard_service.sh`，一键构建并部署只负责 MAVROS、
+   Odin、extnav、onboard_control 四组件的飞控 systemd unit；
+5. 按[独立视频服务新飞机部署步骤](video_service/README.md#新飞机快速部署ubuntu-2404--jazzy--arm64)
+   手工安装 FFmpeg 与系统 ARM64 MediaMTX，再执行
+   `./video_service/deploy/install_onboard_video_service.sh` 部署独立 `video-service.service`；
+6. 若该飞机已完成下视相机内外参标定，按
+   [AprilTag-Odin 修正服务](correction_service/README.md)先部署带备份的 extnav patch，再安装
+   独立 `odin-correction.service`；Tag 世界位姿未精确测量时只允许 `apply=false`；
+7. 保持 `armed=false`，依次完成构建测试、隔离 smoke、MAVROS 只读状态、视频 RTSP/录像/抓拍和
+   摄像头故障隔离验收，不能用进程启动成功代替硬件验证。
+
+飞控、视频与 Odin 修正必须是三个独立 unit。两个相机服务都不能加入
+`scripts/onboard/start_onboard_control.sh`，也不能通过 `Requires=`、`PartOf=` 或 `BindsTo=` 绑定飞控服务。
+
+
+## 重新构建机载控制
+
+地面开发机和飞机都在仓库根目录执行同一个命令：
+
+```bash
+./src/onboard_control/deploy/build_onboard_control.sh
+```
+
+如需同时检查依赖、运行单元测试和隔离 smoke：
+
+```bash
+./src/onboard_control/deploy/build_onboard_control.sh --verify
+```
+
+脚本按目标机系统选择其原生 ROS 发行版。它不会启动、停止或重启机载服务，也不会发送飞行
+命令；当前同时构建共享飞行接口/控制器和独立 `correction_interfaces/correction_service`。
+构建完成后如需让运行中的飞机加载新产物，应另行选择安全窗口重启对应服务。
+
+## 开机自启与自动重启
+
+飞控 unit 配置：
+
+```text
+/etc/systemd/system/ros2-ardupilot-onboard.service
+```
+新机必须按实际用户、工作区、ROS 与两个硬件 overlay 修改绝对路径，人工核对后再启用：
+
+```bash
+sudo systemd-analyze verify /etc/systemd/system/ros2-ardupilot-onboard.service
+sudo systemctl daemon-reload
+sudo systemctl enable ros2-ardupilot-onboard.service
+```
+
+
+机载计算机开机后：
+
+```text
+/home/<机载用户>/ros2-ardupilot-mavros-control/scripts/onboard/start_onboard_control.sh
+```
+
+地面站首次取得控制租约时建立本机发送时间基准，之后由 5 Hz 有序心跳持续刷新；命令 TTL 比较
+两端自该基准起的相对流逝时间，不比较两台机器的绝对日期。因此飞机和地面站只连接到自带路由器、
+完全没有互联网时，也能建立租约并执行正常作业。
+
+若离线开机后又接入互联网，Linux/MAVROS 可能记录系统校时或 TIMESYNC 滤波器重置；应在人工解锁
+前等待状态重新稳定并核对 FCU、本地位置和推力语义。外网时间始终不是建立控制权或起飞的前置条件。
+
+该服务会自动重启：`scripts/onboard/start_onboard_control.sh` 启动的四个组件中，任一主要进程异常退出后，脚本会清理
+其余组件并以失败状态退出，systemd 在 10 秒后重启整组服务。
+
+通过 `systemctl stop` 主动停止服务不会触发自动重启。
+
+飞控四组件的一键 systemd 安装入口为：
+
+```bash
+./src/onboard_control/deploy/install_onboard_service.sh
+```
+
+它会构建和验证机载包、首次生成现场环境文件、安装四组件 unit 并开启自启动；服务已 active 时
+会拒绝自动更新，避免在未知飞行状态下重启。完整边界见
+[机载部署指导](src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md)。
+
+视频 unit 为 `/etc/systemd/system/video-service.service`，其可替换占位符模板和完整安装命令位于
+[video_service/README.md](video_service/README.md#新飞机快速部署ubuntu-2404--jazzy--arm64)。
+
+视频服务安装器位于自己的部署目录，启停入口仍位于项目根目录：
+
+```bash
+./video_service/deploy/install_onboard_video_service.sh
+./scripts/onboard/start_onboard_video.sh
+./scripts/onboard/stop_onboard_video.sh
+./scripts/onboard/stop_onboard_video.sh --restart
+```
+
+新飞机先按视频 README 手工安装 FFmpeg、v4l-utils 与系统 MediaMTX，再执行第一条部署配置、
+媒体目录和独立 systemd unit；已有现场配置不会被覆盖。其余三条用于手动启动、彻底停止和清理
+后重启。
+
+最后一条会先彻底清理独立视频 unit、残留节点、RTSP 端口和真实摄像头占用者，再只重启
+`video-service.service`；不会停止或重启飞控四组件。
+
+
+## 配置
+
+`scripts/onboard/start_onboard_control.sh` 会自动读取以下配置文件：
+
+```text
+config/aircraft/<编号>/onboard.env
+```
+
+```bash
+ROS_DOMAIN_ID=0
+ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+MAVROS_FCU_DEVICE=/dev/serial/by-id/<已核对的飞控设备>
+MAVROS_FCU_BAUD=460800
+EXTNAV_OVERLAY_SETUP=/home/<机载用户>/<extnav工作区>/install/setup.bash
+```
+
+板载 `/dev/ttyTHS1:460800` 只能在逐机核对接线后使用；存在稳定 `/dev/serial/by-id` 时优先使用
+后者。当前 Jetson 使用 Jazzy 的 `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`；旧 Humble 目标才使用
+`ROS_LOCALHOST_ONLY=0`。
+
+云台相机镜头参数
+
+```text
+config/aircraft/<编号>/video/
+```
+
+
+使能端口：
+
+永久提权：
+```bash
+sudo usermod -aG dialout $USER
+```
+重新登录后用 `id` 确认 `dialout` 已生效；不要用 `chmod 777` 把串口永久开放给所有用户。
+
+## 一键启动
+
+```bash
+cd /home/<机载用户>/ros2-ardupilot-mavros-control
+./scripts/onboard/start_onboard_control.sh
+```
+
+## 结束机载服务
+
+```bash
+cd /home/<机载用户>/ros2-ardupilot-mavros-control
+./scripts/onboard/stop_onboard_control.sh
+```
+
+该入口先停止 systemd 服务，再清理从其他终端手工启动的 MAVROS、Odin、extnav、
+onboard_control 和相关 RViz；只有服务 inactive 且目标进程全部退出时才返回成功。
+
+或者在启动机载服务的脚本的终端按一次 Ctrl+C, 出现
+
+```bash
+[startup] stopping all four components...
+```
+后等待，直到出现成功提示。连续Ctrl+C会导致残留
+
+## FTP服务
+
+媒体由地面`ground-media.service`集中提供，默认匿名只读FTP端口为2121，虚拟根为媒体配置的`root/public`。
+串行巡检的08最多发送一次，其中`videoPath`是已生成任务MP4在FTP根下的路径；`JPGPath`为同会话照片目录。
+生产环境按已配置的地面FTP主机/端口下载该路径，不使用飞机旧`/home/share`或HTTP下载URL。
+
+```bash
+curl "ftp://<ground-ip>:2121/uav002/<session>/<video-id>.mp4" -O
+```
+
+安装、文件管理与自动原片处理见[视频服务说明](video_service/README.md#地面集中媒体服务)。
+
+# 远程桌面
+
+Ubuntu2404 remmina远程桌面
+
+## 桌面共享
+
+1. 终端输入`seahorse`，左上角加号添加“密码密钥环”，名称为“Login”，用户名 密码 均留空，直接点continue；
+2. 右键Login密钥环，设为默认
+3. 设置-系统-远程桌面：打开桌面共享，关闭远程登录；
+4. 设置-系统-用户 开启自动登录
+
+远程过去可以直接进桌面，不需要密码，可以同时远程+连接显示器操作
+需要显卡欺骗器
+
+## 远程登陆
+
+1. 设置-系统-远程桌面：打开桌面共享，关闭远程登录；
+2. 设置-系统-用户 关闭自动登录
+
+远程后会顶掉旧会话，开启新会话；每次登陆需要密码
+不需要显卡欺骗器。不能同时远程+连接显示器操作
+
+
+
+# 路由器组合
+
+## 组合方式1 LAN-LAN / AP模式
+
+主从路由器均使用主路由器ip，所有设备同一子网
+
+使用此方法桥接，连接主路由器或从路由器的所有设备都将使用主路由器分发的ip。
+因此，从路由器接入不同主路由器时，连接从路由器的设备ip会发生变化。
+
+1. 用牙签长按从路由器 RESET 按钮5秒后松开，等待路由器恢复出厂设置并重启
+2. 网线连接电脑与从路由器的LAN口，浏览器输入`tplogin.cn`或`192.168.1.1`进入管理界面。主从路由器不需要连接
+3. 应当出现设置用户名与密码。否则是恢复出厂设置失败
+4. 设置：
+   + 无关选项点击“暂不设置”
+   + 至少一个LAN口
+   + 设置此LAN的ip为与主路由器在同一网段的不同ip。例如`192.168.1.2`
+   + 保存并重启
+5. 从新设置的ip进入从路由器管理界面
+6. 关闭从路由器的所有DHCP服务
+7. 将主从路由器LAN口用网线相连
+8. 电脑wifi连接从路由器，验证能通过主路由器连接互联网。并验证ip地址与连接主路由器时一致。
+
+## 组合方式2：二级路由，WAN动态IP
+
+配置从路由器分发静态ip，从路由独立子网
+
+使用此方法桥接，即使从路由器接入的主路由器发生变化，连接从路由器的设备的ip将总是保持不变。
+在连接不同主路由器之后，从路由器不需要修改任何设置，只需要查看从路由器ip并在主路由器配置静态路由
+从路由器再次接入同一个主路由器时，自身ip可能会变化
+
+1. 从路由器LAN模式设置为“手动”，设置ip例如`192.168.112.1`
+2. 打开从路由器DHCP服务, 自行配置开始与结束地址并确保无冲突
+2. 将主路由器LAN口与从路由器WAN口用网线连接
+3. 设置从路由器WAN口为“动态IP”，刷新并记录其ip地址，例如`192.168.1.100`
+4. 配置主路由器 高级设置-静态路由，添加规则：
+   + 目的地址：`192.168.112.0`
+   + 子网掩码：`255.255.255.0`
+   + 出接口：LAN
+   + 下一跳：`192.168.1.100`
+5. 测试主路由器能否ping通从路由器；能ping通即为成功
+
+## 组合方式3：二级路由，WAN静态IP
+
+配置从路由器自身静态ip，从路由独立子网，WAN地址固定
+
+使用此方法桥接，除了从路由器分发给设备的ip不变以外，从路由器再次接入同一个主路由器时，自身ip也不会变
+
+1. 从路由器LAN模式设置为“手动”，设置ip例如`192.168.112.1`
+2. 打开从路由器DHCP服务, 自行配置开始与结束地址并确保无冲突
+2. 将主路由器LAN口与从路由器WAN口用网线连接
+3. 设置从路由器WAN口为“静态IP”，例如`192.168.1.100`
+4. 配置主路由器 高级设置-静态路由，添加规则：
+   + 目的地址：`192.168.112.0`
+   + 子网掩码：`255.255.255.0`
+   + 出接口：LAN
+   + 下一跳：`192.168.1.100`
+5. 测试主路由器能否ping通从路由器；能ping通即为成功
+
+
+
+## 设置ip后无法登陆管理界面
+
+解决方法：
+
+手动设置电脑ip，使之与从路由器处于同一个网段. 例如从路由器ip为`192.168.1.2`, 则设置电脑ipv4：
+
++ ip：`192.168.1.X`（X不等于2）
++ 子网掩码：`255.255.255.0`
++ 网关：`192.168.1.2`
++ DNS等：不用填
+
+然后浏览器登陆`192.168.1.2`即可 （登陆`tplink.cn`可能不行）
+
+
+# Jetson固件
+
+## 完全重装
+
+Nvidia SDK Manager
+
+1. 向jetson刷某个版本的ubuntu, 需要安装有对应版本ubuntu的上位机
+2. 勾选Jetson Orin NX 16GB, 取消勾选Host Computer
+3. Direct flash
+4. 全选
+
+## 有硬盘
+
+1. 确认原硬盘所在Jetson的Jetpack版本
+2. 新Jetson刷写同版本Jetpack, 只勾选第一个 Jetson OS （bootloader and xxx drivers）
+3. 替换硬盘
+
+不同Jetpack的Jetson直接换硬盘是无法进系统
+
+### 上位机仿真巡检
+
+支持 V2.2 的 `id`、毫秒时间戳与实机/仿真 `type` 区分。手动启动 SITL 后，上位机可反复执行直线巡检，并通过与实机相同的 RTSP/FTP 入口测试样例媒体；参见[仿真巡检说明](docs/simulation-workflow.md)。
