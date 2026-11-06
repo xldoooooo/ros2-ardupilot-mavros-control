@@ -1,4 +1,3 @@
-# 主工程 map 可视化：航点、机载规划轨迹，以及按需启用的降采样点云。
 Panels:
   - Class: rviz_common/Displays
     Help Height: 138
@@ -9,7 +8,7 @@ Panels:
         - /TF1
         - /TF1/Frames1
       Splitter Ratio: 0.7541613578796387
-    Tree Height: 490
+    Tree Height: 343
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -103,6 +102,8 @@ Visualization Manager:
           Value: true
         base_link_frd:
           Value: true
+        camera_0:
+          Value: true
         ground_station_preview/a1:
           Value: false
         ground_station_preview/a2:
@@ -115,6 +116,10 @@ Visualization Manager:
           Value: true
         ground_station_preview/fd:
           Value: false
+        imu:
+          Value: true
+        lidar:
+          Value: true
         map:
           Value: true
         map_ned:
@@ -191,13 +196,25 @@ Visualization Manager:
       Class: rviz_default_plugins/Path
       Color: 255; 128; 0
       Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.05
+      Line Width: 0.05000000074505806
       Name: Avoidance Trajectory
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
       Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
       Topic:
         Depth: 1
         Durability Policy: Volatile
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /ground_station/avoidance_path
@@ -205,6 +222,8 @@ Visualization Manager:
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: Simulation Obstacles
+      Namespaces:
+        {}
       Topic:
         Depth: 1
         Durability Policy: Volatile
@@ -212,14 +231,29 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /simulation/obstacles
       Value: true
-    - Alpha: 0.6
+    - Alpha: 0.6000000238418579
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Enabled: false
-      Name: Obstacle Preview
-      Color Transformer: FlatColor
       Color: 80; 80; 160
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Obstacle Preview
       Position Transformer: XYZ
-      Size (m): 0.04
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.03999999910593033
       Style: Points
       Topic:
         Depth: 1
@@ -227,6 +261,8 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /onboard_control/obstacle_preview
+      Use Fixed Frame: true
+      Use rainbow: true
       Value: false
   Enabled: true
   Global Options:
@@ -251,28 +287,28 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.47866836190223694
-        Y: -0.5708019137382507
-        Z: 0.1756029725074768
+        X: 2.080955743789673
+        Y: 0.10721845179796219
+        Z: 0.7954678535461426
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.2897977828979492
+      Pitch: 0.6147981286048889
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.573209762573242
+      Yaw: 2.0782060623168945
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1505
+  Height: 1243
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000001000000000000033100000541fc0200000002fb000000100044006900730070006c0061007900730100000070000002e60000018600fffffffb0000000a0056006900650077007301000003620000024f0000013800ffffff000006a40000054100000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000001f40000043bfc0200000002fb000000100044006900730070006c0061007900730100000070000002530000018600fffffffb0000000a0056006900650077007301000002cf000001dc0000013800ffffff000006ee0000043b00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 2529
-  X: 2059
-  Y: 870
+  Width: 2286
+  X: 740
+  Y: 1426
