@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from math import sin, pi
+from time import monotonic
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import (
+    QAbstractAnimation, QEvent, QPoint, QRectF, Qt, QTimer, QVariantAnimation,
+)
 from PySide6.QtGui import (
-    QColor, QLinearGradient, QMouseEvent, QPainter, QPainterPath,
+    QColor, QHideEvent, QLinearGradient, QMouseEvent, QPainter, QPainterPath,
     QPaintEvent, QResizeEvent, QShowEvent, QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..event_log import LogLevel
+from .cached_shadow import CachedShadowEffect
 
 
 def repolish(widget: QWidget) -> None:
@@ -113,10 +116,9 @@ class ShadowMessageBox(QMessageBox):
         self._surface.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
         )
-        shadow = QGraphicsDropShadowEffect(self._surface)
-        shadow.setBlurRadius(28.0)
-        shadow.setOffset(0.0, 3.0)
-        shadow.setColor(QColor(17, 31, 46, 112))
+        shadow = CachedShadowEffect(
+            self._surface, blur=28.0, color=QColor(17, 31, 46, 112)
+        )
         self._surface.setGraphicsEffect(shadow)
         self._surface.lower()
         self._title_bar: QFrame | None = None
@@ -202,7 +204,7 @@ class ShadowMessageBox(QMessageBox):
         )
         self._lock_dialog_size()
         # QMessageBox 会在 showEvent 返回后再次收缩，稍后固定一次最终尺寸。
-        QTimer.singleShot(25, self._lock_dialog_size)
+        QTimer.singleShot(25, self, self._lock_dialog_size)
 
     def _lock_dialog_size(self) -> None:
         """在 QMessageBox 延迟调整尺寸后恢复阴影和最小可读面积。"""
@@ -388,16 +390,37 @@ class ActivityBanner(QFrame):
         layout.addWidget(self.message_label, 1)
         self._phase = 0.0
         self._state = "idle"
-        self._glow = QGraphicsDropShadowEffect(self)
-        self._glow.setOffset(0, 0)
-        self._glow.setBlurRadius(18)
-        self._glow.setColor(QColor(0, 0, 0, 0))
+        self._glow = CachedShadowEffect(
+            self, blur=18.0, offset=(0.0, 0.0), color=QColor(0, 0, 0, 0), corner=4.0
+        )
         self.setGraphicsEffect(self._glow)
         # 一个动画驱动扫光与光晕；成功只播放一次，其余活动状态循环。
         self._animation = QVariantAnimation(self)
         self._animation.setStartValue(0.0)
         self._animation.setEndValue(1.0)
         self._animation.valueChanged.connect(self._animate)
+        self._hidden_at: float | None = None
+
+    def _pause_animation(self) -> None:
+        """不可见时停止动画时钟，恢复时仍按实际经过时间同步。"""
+        if self._animation.state() == QAbstractAnimation.State.Running:
+            self._hidden_at = monotonic()
+            self._animation.pause()
+
+    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802
+        """隐藏或最小化时停止不可见动画的持续更新。"""
+        self._pause_animation()
+        super().hideEvent(event)
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        """重新显示时跳过隐藏期间的动画帧，不延长成功提示。"""
+        super().showEvent(event)
+        if self._hidden_at is not None:
+            elapsed = round((monotonic() - self._hidden_at) * 1000)
+            current = self._animation.currentTime() + elapsed
+            self._hidden_at = None
+            self._animation.resume()
+            self._animation.setCurrentTime(current)
 
     def _animate(self, value: float) -> None:
         """每帧只更新绘制参数，不重建样式或布局。"""
@@ -406,7 +429,8 @@ class ActivityBanner(QFrame):
         strength = sin(pi * self._phase) ** 2
         color.setAlphaF(0.85 * strength if self._state in {"success", "error"} else 0)
         self._glow.setColor(color)
-        self.update()
+        if self.isVisible() and not self.window().isMinimized():
+            self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
         """在文字下方绘制向右移动的蓝色光带或脉冲边框。"""
@@ -461,9 +485,12 @@ class ActivityBanner(QFrame):
         # 连续进度消息不重置扫光，独立成功事件则重新播放一次。
         if state != self._state or state == "success":
             self._animation.stop()
+            self._hidden_at = None
             self._state = state
             self._animate(0.0)
             if state != "idle":
                 self._animation.setDuration(1400 if state == "busy" else 1200)
                 self._animation.setLoopCount(1 if state == "success" else -1)
                 self._animation.start()
+                if not self.isVisible() or self.window().isMinimized():
+                    self._pause_animation()

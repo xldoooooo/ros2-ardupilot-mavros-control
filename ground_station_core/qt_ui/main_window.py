@@ -13,7 +13,6 @@ from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
-    QColor,
     QIcon,
     QKeySequence,
     QMouseEvent,
@@ -28,7 +27,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -84,6 +82,7 @@ from ..waypoint_io import (
     waypoint_export_dialog_filter,
     waypoint_file_dialog_filter,
 )
+from .cached_shadow import CachedShadowEffect
 from .log_panel import LogPanel
 from .operations_panel import OperationsPanel
 from .state import derive_availability, takeoff_voltage_reason
@@ -287,10 +286,7 @@ class GroundStationWindow(QMainWindow):
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
         )
         self.outer_window_frame.setProperty("windowMaximized", False)
-        self._window_shadow = QGraphicsDropShadowEffect(self.outer_window_frame)
-        self._window_shadow.setBlurRadius(30.0)
-        self._window_shadow.setOffset(0.0, 3.0)
-        self._window_shadow.setColor(QColor(16, 30, 44, 118))
+        self._window_shadow = CachedShadowEffect(self.outer_window_frame)
         self.outer_window_frame.setGraphicsEffect(self._window_shadow)
         self.outer_window_frame.lower()
 
@@ -375,7 +371,7 @@ class GroundStationWindow(QMainWindow):
         """最大化状态变化后在下一事件周期刷新阴影留边。"""
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
-            QTimer.singleShot(0, self._sync_window_chrome)
+            QTimer.singleShot(0, self, self._sync_window_chrome)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         """在透明外沿显示正确的缩放光标。"""

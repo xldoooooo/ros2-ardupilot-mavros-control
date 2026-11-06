@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QColor, QMouseEvent, QResizeEvent
+from PySide6.QtGui import QMouseEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
 )
+
+from .cached_shadow import CachedShadowEffect
 
 
 class _DraggableTitleBar(QFrame):
@@ -54,10 +55,7 @@ class ShadowWindowChromeMixin:
         self.outer_window_frame.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
         )
-        self._window_shadow = QGraphicsDropShadowEffect(self.outer_window_frame)
-        self._window_shadow.setBlurRadius(30.0)
-        self._window_shadow.setOffset(0.0, 3.0)
-        self._window_shadow.setColor(QColor(16, 30, 44, 118))
+        self._window_shadow = CachedShadowEffect(self.outer_window_frame)
         self.outer_window_frame.setGraphicsEffect(self._window_shadow)
         self.outer_window_frame.lower()
 
@@ -177,7 +175,7 @@ class ShadowWindowChromeMixin:
         """窗口状态改变后刷新最大化边距和按钮。"""
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
-            QTimer.singleShot(0, self._sync_window_chrome)
+            QTimer.singleShot(0, self, self._sync_window_chrome)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         """在透明阴影留边显示对应的缩放指针。"""

@@ -205,6 +205,8 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
 
         for width, height in ((1180, 700), (1800, 1000)):
             window.resize(width, height)
+            from tests.support.qt import _wait_for
+            _wait_for(lambda: window.width() == width and window.height() == height)
             _application().processEvents()
             assert window.size().width() == width
             assert window.size().height() == height
@@ -305,6 +307,8 @@ def test_waypoint_preview_button_publishes_snapshot_and_tracks_later_edits() -> 
 
 def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
     """真实键入中间航点四项，验证即时预览、精度保留与任务编辑锁。"""
+    from tests.support.qt import _wait_for
+
     environment = _FakeEnvironment()
     window, ros = _window(_operational_snapshot(armed=False), environment=environment)
     original = (
@@ -336,9 +340,12 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
 
         for column, text in ((1, "-12.34"), (2, "23.45"), (3, "-0.75"), (4, "-45.6")):
             item = panel.table.item(1, column)
+            window.activateWindow()
+            panel.table.setFocus()
             panel.table.setCurrentItem(item)
             panel.table.editItem(item)
             _application().processEvents()
+            _wait_for(lambda: any(control.isVisible() for control in panel.table.viewport().findChildren(NoWheelDoubleSpinBox)))
             editor = next(
                 control for control in panel.table.viewport().findChildren(NoWheelDoubleSpinBox)
                 if control.isVisible()
@@ -346,6 +353,10 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
             source = (panel.x_input, panel.y_input, panel.z_input, panel.yaw_input)[column - 1]
             assert (editor.minimum(), editor.maximum()) == (source.minimum(), source.maximum())
             assert editor.geometry() == panel.table.visualItemRect(item)
+            # 真实桌面先确认编辑器取得焦点，再验证刷新不会夺走焦点。
+            window.activateWindow()
+            editor.setFocus()
+            _wait_for(editor.hasFocus)
             editor.lineEdit().selectAll()
             QTest.keyClicks(editor.lineEdit(), text)
             value = math.radians(float(text)) if column == 4 else float(text)
@@ -358,6 +369,7 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
             window._refresh()
             assert editor.hasFocus()
             QTest.keyClick(editor, Qt.Key.Key_Escape)
+            _wait_for(lambda: not any(control.isVisible() for control in panel.table.viewport().findChildren(NoWheelDoubleSpinBox)))
             _application().processEvents()
             assert item.text() == (f"{float(text):+.1f}" if column == 4 else f"{float(text):+.2f}")
 

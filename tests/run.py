@@ -55,6 +55,8 @@ RULES = {
     "ground_station_core/qt_ui/waypoint_panel.py": ("waypoints",),
     "ground_station_core/qt_ui/upstream_panel.py": ("upstream",),
     "ground_station_core/qt_ui/log_panel.py": ("ui",),
+    "ground_station_core/qt_ui/log_history.py": ("ui",),
+    "ground_station_core/qt_ui/cached_shadow.py": GROUPS,
     "ground_station_core/qt_ui/theme.py": GROUND,
     "ground_station_core/qt_ui/widgets.py": GROUND,
     "ground_station_core/qt_ui/window_chrome.py": GROUPS,

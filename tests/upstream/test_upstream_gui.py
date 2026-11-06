@@ -456,6 +456,8 @@ def test_upstream_panel_exposes_configuration_mapping_raw_frames_and_json() -> N
 
 def test_upstream_panel_is_independent_and_minimizable() -> None:
     """通讯面板保持独立层级，并自行绘制可缩放、可最小化的窗口阴影。"""
+    from tests.support.qt import _wait_for
+
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         QTest.mouseClick(window.upstream_panel_button, Qt.MouseButton.LeftButton)
@@ -488,23 +490,47 @@ def test_upstream_panel_is_independent_and_minimizable() -> None:
         assert 0 < shadow_pixel.alpha() < 255
 
         panel.showMaximized()
-        _application().processEvents()
+        _wait_for(lambda: panel.isMaximized() and panel.contentsMargins().left() == 1)
         assert panel.isMaximized()
         assert panel.contentsMargins().left() == 1
         assert not panel._window_shadow.isEnabled()
         assert panel.maximize_button.toolTip() == "还原"
         panel.showNormal()
-        _application().processEvents()
+        _wait_for(lambda: not panel.isMaximized() and panel.contentsMargins().left() == panel._SHADOW_MARGIN + 1)
         assert panel.contentsMargins().left() == panel._SHADOW_MARGIN + 1
         assert panel._window_shadow.isEnabled()
 
         panel.showMinimized()
-        _application().processEvents()
+        _wait_for(panel.isMinimized)
         assert panel.isMinimized()
 
         QTest.mouseClick(window.upstream_panel_button, Qt.MouseButton.LeftButton)
         _application().processEvents()
+        _wait_for(lambda: panel.isVisible() and not panel.isMinimized())
         assert panel.isVisible()
         assert not panel.isMinimized()
+    finally:
+        _close_window(window)
+
+
+def test_hidden_upstream_panel_pauses_ui_and_catches_up_without_disconnect() -> None:
+    """隐藏只暂停显示，恢复时补齐报文且不改变后台连接。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    upstream = window._upstream
+    upstream.connected = True
+    try:
+        window._open_upstream_panel()
+        panel = window._upstream_panel
+        assert panel is not None and panel._timer.isActive()
+        panel.hide()
+        assert not panel._timer.isActive()
+        upstream.journal.append("RX", "received while hidden")
+        assert "received while hidden" not in panel.raw_log.toPlainText()
+        panel.show()
+        _application().processEvents()
+        assert panel._timer.isActive()
+        assert panel.raw_log.toPlainText().count("received while hidden") == 1
+        assert upstream.connected
+        assert not any(call[0] in {"disconnect", "stop"} for call in upstream.calls)
     finally:
         _close_window(window)

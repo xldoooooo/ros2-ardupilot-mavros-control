@@ -374,11 +374,17 @@ def test_panel_apply_saved_confirmation_and_unknown_gate(monkeypatch) -> None:
 
 def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> None:
     """窄窗口应重排全部顶部操作，并保持内容无需横向滚动即可使用。"""
+    from tests.support.qt import _wait_for
+    from correction_service.correction_panel import PANEL_STYLE_SHEET
+
     application = _application()
     window = CorrectionPanelWindow(client=_FakeCorrectionClient())
+    # 与独立入口相同的主题；不依赖其他测试是否先应用全局样式。
+    window.setStyleSheet(PANEL_STYLE_SHEET)
     try:
         window.show()
         window.resize(560, 520)
+        _wait_for(lambda: window.width() == 560 and window.height() == 520)
         application.processEvents()
 
         scroll = window.findChild(QScrollArea)
@@ -391,6 +397,7 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
         assert window._main_layout.getItemPosition(
             window._main_layout.indexOf(window._tag_group)
         )[:2] == (1, 0)
+        _wait_for(lambda: scroll.horizontalScrollBar().maximum() == 0)
         assert scroll.horizontalScrollBar().maximum() == 0
         viewport = scroll.viewport().rect()
         for button in (
@@ -439,6 +446,7 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
         assert extnav_position[:2] == (1, 0)
 
         window.resize(1180, 860)
+        _wait_for(lambda: window.width() == 1180 and window.height() == 860)
         application.processEvents()
         assert window._compact_layout is True
         assert window._side_by_side is True
@@ -446,6 +454,7 @@ def test_panel_reflows_commands_without_horizontal_scroll_at_compact_width() -> 
         assert window._main_layout.getItemPosition(
             window._main_layout.indexOf(window._tag_group)
         )[:2] == (0, 1)
+        _wait_for(lambda: scroll.horizontalScrollBar().maximum() == 0)
         assert scroll.horizontalScrollBar().maximum() == 0
         assert window._command_layout.getItemPosition(
             window._command_layout.indexOf(window.stop_button)
@@ -484,6 +493,7 @@ def test_spin_boxes_ignore_wheel_events() -> None:
 def test_tag_editor_roundtrip_sort_validation_and_draft_preservation() -> None:
     """配置表格按数字排序、阻止重复 ID，并保持刷新期间的草稿。"""
     from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
     application = _application()
     client = _FakeCorrectionClient()
     window = CorrectionPanelWindow(client=client)
@@ -494,6 +504,10 @@ def test_tag_editor_roundtrip_sort_validation_and_draft_preservation() -> None:
         assert [editor.table.item(row, 0).text() for row in range(2)] == ["2", "10"]
         from PySide6.QtWidgets import QLineEdit
         window.show()
+        # Wayland 的窗口 expose/焦点确认均异步，编辑测试须先等待真实焦点。
+        assert QTest.qWaitForWindowExposed(window)
+        window.activateWindow()
+        assert QTest.qWaitForWindowActive(window)
         application.processEvents()
         editor.table.editItem(editor.table.item(0, 1))
         application.processEvents()

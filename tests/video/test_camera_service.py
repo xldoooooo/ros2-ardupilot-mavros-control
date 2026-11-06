@@ -154,6 +154,8 @@ def test_panel_desktop_name_is_ascii() -> None:
 
 def test_panel_draws_own_window_shadow_and_preserves_window_controls() -> None:
     """摄像头面板不依赖 Wayland 装饰器，也能显示投影并正常最大化还原。"""
+    from tests.support.qt import _wait_for
+
     application = _application()
     window = CameraPanelWindow(auto_bootstrap=False)
     window.setStyleSheet(PANEL_STYLE_SHEET)
@@ -182,13 +184,13 @@ def test_panel_draws_own_window_shadow_and_preserves_window_controls() -> None:
     assert 0 < shadow_pixel.alpha() < 255
 
     window.showMaximized()
-    application.processEvents()
+    _wait_for(lambda: window.isMaximized() and window.contentsMargins().left() == 1)
     assert window.isMaximized()
     assert window.contentsMargins().left() == 1
     assert not window._window_shadow.isEnabled()
     assert window.maximize_button.toolTip() == "还原"
     window.showNormal()
-    application.processEvents()
+    _wait_for(lambda: not window.isMaximized() and window.contentsMargins().left() == window._SHADOW_MARGIN + 1)
     assert window.contentsMargins().left() == window._SHADOW_MARGIN + 1
     assert window._window_shadow.isEnabled()
 

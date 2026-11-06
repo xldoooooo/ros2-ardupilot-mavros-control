@@ -27,6 +27,8 @@ from tests import run
             {"flight", "waypoints", "video"},
         ),
         ("ground_station_core/qt_ui/window_chrome.py", set(run.GROUPS)),
+        ("ground_station_core/qt_ui/cached_shadow.py", set(run.GROUPS)),
+        ("ground_station_core/qt_ui/log_history.py", {"ui"}),
         ("tests/video/test_camera_service.py", {"video"}),
         ("tests/test_camera_service.py", {"video"}),
         ("tests/test_ros_controller.py", {"flight", "waypoints"}),

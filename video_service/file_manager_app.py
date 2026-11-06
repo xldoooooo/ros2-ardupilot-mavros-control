@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode, urljoin
@@ -29,6 +33,9 @@ _REFRESH_INTERVAL_MS = 4000
 _HTTP_TIMEOUT_SECONDS = 10
 # 初始列宽允许手动调整，避免每个单元格变化都触发全表内容测量。
 _TABLE_COLUMN_WIDTHS = (90, 240, 65, 75, 65, 110, 110, 260, 165, 100, 320)
+# 大库存首次填充让出事件循环；普通更新仍在当前事件中完成。
+_TABLE_SYNC_ROWS = 512
+_TABLE_BATCH_SECONDS = 0.008
 # 按钮动作提示独立于后台轮询，避免操作中和失败信息被定时刷新覆盖。
 _ACTION_LABELS = {
     "refresh": "刷新列表", "preview": "读取图片", "directory": "检查并打开本机目录",
@@ -125,6 +132,44 @@ def record_basis(record: dict[str, Any]) -> str:
     return "；".join(dict.fromkeys(details))
 
 
+@dataclass(frozen=True)
+class _MediaRow:
+    """缓存纯数据格式，后台准备时不访问 Qt 对象。"""
+
+    key: tuple[str, int]
+    record: dict[str, Any]
+    values: tuple[str, ...]
+    aircraft: str
+    mission: str
+
+
+def _prepare_rows(records: list[dict[str, Any]], previous: list[_MediaRow]) -> list[_MediaRow]:
+    """按记录标识复用未变化的数据，避免在 GUI 反复格式化整份库存。"""
+    cached = {row.key: row for row in previous}
+    occurrences: dict[str, int] = {}
+    rows = []
+    for record in records:
+        identity = str(record.get("id", ""))
+        occurrence = occurrences.get(identity, 0)
+        occurrences[identity] = occurrence + 1
+        key = (identity, occurrence)
+        old = cached.get(key)
+        if old is not None and old.record == record:
+            rows.append(old)
+            continue
+        variant = {"original": "原始缓存", "experiment": "实时处理版", "rebuilt": "原片重建版"}.get(record.get("variant"), "未知")
+        values = (
+            record.get("aircraft_id", "未知"), f"{record.get('mission_sequence', '未知')} / {record.get('session_id', '未知')}",
+            record.get("waypoint_index", "未知"), record.get("photo_no", "未知"), record.get("kind", "未知"), variant,
+            state_label(record.get("state")), record_basis(record), format_created_at(record.get("created_at")),
+            human_size(record.get("size") if record.get("variant") == "original"
+                       else record.get("processed_size", record.get("size"))), record.get("path", ""),
+        )
+        rows.append(_MediaRow(key, dict(record), tuple(str(value) for value in values),
+                              str(record.get("aircraft_id") or "未知"), str(record.get("session_id") or "未知")))
+    return rows
+
+
 class MediaClient:
     """访问地面后台；不连接飞机或推断本地媒体目录。"""
 
@@ -182,6 +227,13 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         super().__init__()
         self._records: list[dict[str, Any]] = []
         self._visible: list[dict[str, Any]] = []
+        self._rows: list[_MediaRow] = []
+        self._visible_rows: list[_MediaRow] = []
+        self._rendered: dict[tuple[str, int], tuple[str, ...]] = {}
+        self._pending_rows: deque[tuple[int, _MediaRow]] = deque()
+        self._table_timer = QTimer(self)
+        self._table_timer.setSingleShot(True)
+        self._table_timer.timeout.connect(self._populate_rows)
         self._busy: set[str] = set()
         self._closed = False
         self._preview_id = ""
@@ -308,7 +360,15 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
 
     def refresh(self) -> None:
         """异步刷新列表，失败时保留最近一次可见数据。"""
-        self._run("refresh", lambda: self._client.request("/api/media"))
+        previous = self._rows
+
+        def read_inventory() -> dict[str, Any]:
+            """网络线程顺带准备显示数据，下一次轮询复用本次缓存。"""
+            result = self._client.request("/api/media")
+            result["_prepared_rows"] = _prepare_rows(result.get("records", []), previous)
+            return result
+
+        self._run("refresh", read_inventory)
 
     def _completed(self, name: str, result: Any, error: str) -> None:
         """在 Qt 线程更新列表、图片或操作结果。"""
@@ -320,7 +380,9 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
             suffix = "；列表保留上次读取结果" if name == "refresh" else ""
             label.setText(f"{_ACTION_LABELS.get(name, name)}失败：{error}{suffix}")
         elif name == "refresh":
-            self._records = result.get("records", [])
+            prepared = result.get("_prepared_rows")
+            self._rows = prepared if prepared is not None else _prepare_rows(result.get("records", []), self._rows)
+            self._records = [row.record for row in self._rows]
             storage = result.get("storage", {})
             maximum = storage.get("max_bytes", 0)
             limit = human_size(maximum) if maximum else "未设上限"
@@ -357,7 +419,7 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         """更新飞机及任务选项并保留用户选择。"""
         for combo, key in ((self.aircraft, "aircraft_id"), (self.mission, "session_id")):
             previous = combo.currentData() or self._initial_filters.pop(key, "") or None
-            values = sorted({str(record.get(key) or "未知") for record in self._records})
+            values = sorted({row.aircraft if key == "aircraft_id" else row.mission for row in self._rows})
             if previous and previous not in values:
                 values.append(previous)
             if [combo.itemData(index) for index in range(combo.count())] == [None, *values]:
@@ -373,46 +435,79 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         self._filter_records()
 
     def _filter_records(self) -> None:
-        """按飞机、任务和日期过滤，刷新时保留选择。"""
-        selected_id = (self.selected_record() or {}).get("id")
-        visible = [record for record in self._records if
-            (self.aircraft.currentData() is None or str(record.get("aircraft_id") or "未知") == self.aircraft.currentData())
-            and (self.mission.currentData() is None or str(record.get("session_id") or "未知") == self.mission.currentData())
-            and self.date.text().strip() in format_created_at(record.get("created_at"))]
-        if visible == self._visible:
-            # 后台轮询无变化时保留表格、滚动位置及用户调整的列宽。
-            self._visible = visible
+        """按缓存筛选并按稳定标识增量更新，保留选择、列宽及滚动位置。"""
+        selected_row = self.table.currentRow()
+        selected_key = self._visible_rows[selected_row].key if 0 <= selected_row < len(self._visible_rows) else None
+        aircraft, mission, date = self.aircraft.currentData(), self.mission.currentData(), self.date.text().strip()
+        visible = [row for row in self._rows if
+                   (aircraft is None or row.aircraft == aircraft)
+                   and (mission is None or row.mission == mission) and date in row.values[8]]
+        if len(visible) == len(self._visible_rows) and all(new is old for new, old in zip(visible, self._visible_rows)):
             return
-        self._visible = visible
+        # 新筛选会替换待填充队列，旧库存的分批结果不能写入新视图。
+        self._table_timer.stop()
+        self._pending_rows.clear()
+        old_keys = [row.key for row in self._visible_rows]
+        keys = [row.key for row in visible]
+        scroll = self.table.verticalScrollBar().value()
         self.table.setUpdatesEnabled(False)
         self.table.blockSignals(True)
+        if not old_keys:
+            self.table.setRowCount(len(keys))
+        elif keys != old_keys:
+            for operation, old_start, old_end, new_start, new_end in reversed(SequenceMatcher(None, old_keys, keys, autojunk=False).get_opcodes()):
+                if operation == "equal":
+                    continue
+                for row in range(old_end - 1, old_start - 1, -1):
+                    self.table.removeRow(row)
+                for offset, key in enumerate(keys[new_start:new_end]):
+                    self.table.insertRow(old_start + offset)
+                    self._rendered.pop(key, None)
+            present = set(keys)
+            self._rendered = {key: values for key, values in self._rendered.items() if key in present}
+        self._visible_rows = visible
+        self._visible = [row.record for row in visible]
+        self._pending_rows.extend((index, row) for index, row in enumerate(visible) if self._rendered.get(row.key) != row.values)
+        self.table.clearSelection()
         self.table.setCurrentCell(-1, -1)
-        self.table.setRowCount(len(self._visible))
-        selected_row = -1
-        for row, record in enumerate(self._visible):
-            variant = {"original": "原始缓存", "experiment": "实时处理版", "rebuilt": "原片重建版"}.get(record.get("variant"), "未知")
-            values = [record.get("aircraft_id", "未知"), f"{record.get('mission_sequence', '未知')} / {record.get('session_id', '未知')}",
-                record.get("waypoint_index", "未知"), record.get("photo_no", "未知"), record.get("kind", "未知"), variant,
-                state_label(record.get("state")), record_basis(record), format_created_at(record.get("created_at")),
-                human_size(record.get("size") if record.get("variant") == "original"
-                           else record.get("processed_size", record.get("size"))), record.get("path", "")]
-            for column, value in enumerate(values):
-                text = str(value)
-                item = self.table.item(row, column)
-                if item is None:
-                    item = QTableWidgetItem(text)
-                    item.setToolTip(text)
-                    self.table.setItem(row, column, item)
-                elif item.text() != text:
-                    item.setText(text)
-                    item.setToolTip(text)
-            if record.get("id") == selected_id:
-                selected_row = row
-        if selected_row >= 0:
-            self.table.selectRow(selected_row)
+        if selected_key in keys:
+            self.table.selectRow(keys.index(selected_key))
+        self.table.verticalScrollBar().setValue(scroll)
         self.table.blockSignals(False)
         self.table.setUpdatesEnabled(True)
+        self._populate_rows()
         self._selection_changed()
+
+    def _populate_rows(self) -> None:
+        """仅填充变化行；大批量导入分片，让拖动和用户操作继续响应。"""
+        if self._closed:
+            return
+        deadline = time.perf_counter() + _TABLE_BATCH_SECONDS if len(self._visible_rows) > _TABLE_SYNC_ROWS else float("inf")
+        self.table.setUpdatesEnabled(False)
+        self.table.blockSignals(True)
+        try:
+            while self._pending_rows:
+                row, prepared = self._pending_rows.popleft()
+                previous = self._rendered.get(prepared.key)
+                for column, text in enumerate(prepared.values):
+                    if previous is not None and previous[column] == text:
+                        continue
+                    item = self.table.item(row, column)
+                    if item is None:
+                        item = QTableWidgetItem(text)
+                        item.setToolTip(text)
+                        self.table.setItem(row, column, item)
+                    else:
+                        item.setText(text)
+                        item.setToolTip(text)
+                self._rendered[prepared.key] = prepared.values
+                if time.perf_counter() >= deadline:
+                    break
+        finally:
+            self.table.blockSignals(False)
+            self.table.setUpdatesEnabled(True)
+        if self._pending_rows:
+            self._table_timer.start(0)
 
     def selected_record(self) -> dict[str, Any] | None:
         """返回当前单选行对应的完整后台记录。"""
@@ -520,4 +615,6 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         """只停止本窗口轮询，不向媒体后台发送停止命令。"""
         self._closed = True
         self._timer.stop()
+        self._table_timer.stop()
+        self._pending_rows.clear()
         super().closeEvent(event)

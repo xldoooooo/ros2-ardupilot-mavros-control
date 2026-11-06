@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QTextCursor
+from PySide6.QtGui import QCloseEvent, QHideEvent, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
@@ -71,7 +71,6 @@ class UpstreamCommunicationPanel(ShadowWindowChromeMixin, QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(200)
         self._timer.timeout.connect(self._poll)
-        self._timer.start()
         self._poll()
         self._sync_window_chrome()
 
@@ -315,6 +314,17 @@ class UpstreamCommunicationPanel(ShadowWindowChromeMixin, QWidget):
                 ("", title, json.dumps(payload, ensure_ascii=False, indent=2))
             )
         self.json_text.setPlainText("\n".join(sections))
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        """恢复可见时补齐最新报文，后台连接始终由原服务维护。"""
+        super().showEvent(event)
+        self._poll()
+        self._timer.start()
+
+    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802
+        """隐藏或最小化仅停止不可见的控件刷新，不停止通讯。"""
+        self._timer.stop()
+        super().hideEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         """关闭面板时保存最后有效输入，不断开现有会话。"""

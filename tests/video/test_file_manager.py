@@ -231,6 +231,72 @@ def test_file_window_refresh_reuses_cells_and_preserves_selection(monkeypatch):
         app.processEvents()
 
 
+def test_file_window_inventory_insert_delete_reorder_preserves_identity(monkeypatch):
+    """库存结构变化按 ID 保留可复用行，选中记录及预览不会错配。"""
+    monkeypatch.setattr(FileManagerWindow, "refresh", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url="http://127.0.0.1:1")
+    records = [{"id": identity, "aircraft_id": "uav001", "kind": "image",
+                "variant": "experiment", "state": "ready", "path": f"/{identity}.jpg"}
+               for identity in ("a", "b", "c", "d")]
+    try:
+        window._completed("refresh", {"records": records}, "")
+        window.table.selectRow(2)
+        window._preview_id = "c"
+        window.preview.setText("已加载预览")
+        preserved = window.table.item(2, 10)
+        inserted = dict(records[0], id="x", path="/x.jpg")
+        window._completed("refresh", {"records": [inserted, records[1], records[2]]}, "")
+        assert [record["id"] for record in window._visible] == ["x", "b", "c"]
+        assert window.table.item(2, 10) is preserved
+        assert window.selected_record()["id"] == "c"
+        assert window.preview.text() == "已加载预览"
+        window._completed("refresh", {"records": [records[2], inserted, records[1]]}, "")
+        assert window.selected_record()["id"] == "c"
+        for row, identity in enumerate(("c", "x", "b")):
+            assert window.table.item(row, 10).text() == f"/{identity}.jpg"
+        records[2]["state"] = "failed"
+        window._completed("refresh", {"records": [records[2], inserted, records[1]]}, "")
+        assert window.table.item(0, 6).text() == "失败"
+        assert not window.save_button.isEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_file_window_filter_cancels_old_chunked_inventory(monkeypatch):
+    """大库存填表过程中切换筛选，旧分片不能覆盖新筛选或操作目标。"""
+    import video_service.file_manager_app as file_manager
+
+    monkeypatch.setattr(FileManagerWindow, "refresh", lambda _self: None)
+    monkeypatch.setattr(file_manager, "_TABLE_SYNC_ROWS", 3)
+    monkeypatch.setattr(file_manager, "_TABLE_BATCH_SECONDS", 0)
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url="http://127.0.0.1:1")
+    records = [{"id": str(index), "aircraft_id": "uav002" if index == 19 else "uav001",
+                "kind": "image", "variant": "experiment", "state": "ready",
+                "path": f"/{index}.jpg"} for index in range(20)]
+    try:
+        window._completed("refresh", {"records": records}, "")
+        assert window._pending_rows
+        window.aircraft.setCurrentIndex(window.aircraft.findData("uav002"))
+        app.processEvents()
+        assert not window._pending_rows
+        assert window.table.rowCount() == 1
+        assert window.table.item(0, 10).text() == "/19.jpg"
+        window.table.selectRow(0)
+        assert window.selected_record()["id"] == "19"
+        assert window.save_button.isEnabled()
+        window.aircraft.setCurrentIndex(0)
+        assert window._pending_rows
+        window.close()
+        app.processEvents()
+        assert not window._table_timer.isActive()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_file_window_directory_probe_runs_only_on_click_in_worker(monkeypatch, tmp_path):
     """选中行不探测文件系统，慢挂载点目录检查不阻塞Qt事件循环。"""
     from PySide6.QtGui import QDesktopServices

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 # 必须在首次导入 Qt 前选择无显示服务平台，保证测试可在 CI/headless 运行。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import (  # noqa: E402
     QEvent,
 )
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
 )
@@ -291,6 +293,8 @@ class _FakeUpstreamService:
 def _application() -> QApplication:
     """复用单一 QApplication，避免 Qt 全局实例冲突。"""
     application = QApplication.instance() or QApplication([])
+    # 用例复用应用实例；关闭前一用例最后一个窗口不能终止下一窗口的事件处理。
+    application.setQuitOnLastWindowClosed(False)
     apply_theme(application)
     return application
 
@@ -331,6 +335,11 @@ def _window(
     )
     window.show()
     application.processEvents()
+    if application.platformName() not in {"offscreen", "minimal"}:
+        # 真实桌面 expose 与焦点均由窗口管理器异步确认，快捷键测试须先就绪。
+        assert QTest.qWaitForWindowExposed(window)
+        window.activateWindow()
+        assert QTest.qWaitForWindowActive(window)
     return window, ros
 
 
@@ -343,3 +352,11 @@ def _close_window(window: GroundStationWindow) -> None:
     application = _application()
     application.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     application.processEvents()
+
+
+def _wait_for(predicate) -> None:
+    """等待窗口管理器异步确认，不把一次 processEvents 当作状态已完成。"""
+    deadline = time.monotonic() + 5.0
+    while not predicate() and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert predicate()

@@ -196,10 +196,12 @@ def test_all_message_boxes_use_frameless_shadow_surface() -> None:
 
 def test_maximized_window_removes_shadow_margin_and_restores_it() -> None:
     """最大化时不保留透明缝隙，还原后恢复完整外缘阴影。"""
+    from tests.support.qt import _wait_for
+
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         window._toggle_maximized()
-        QTest.qWait(40)
+        _wait_for(lambda: window.isMaximized() and window.contentsMargins().left() == 1)
         assert window.isMaximized()
         assert window.contentsMargins().left() == 1
         assert not window._window_shadow.isEnabled()
@@ -207,7 +209,7 @@ def test_maximized_window_removes_shadow_margin_and_restores_it() -> None:
         assert window.maximize_button.text() == "❐"
 
         window._toggle_maximized()
-        QTest.qWait(40)
+        _wait_for(lambda: not window.isMaximized() and window.contentsMargins().left() == 15)
         assert not window.isMaximized()
         assert window.contentsMargins().left() == 15
         assert window._window_shadow.isEnabled()

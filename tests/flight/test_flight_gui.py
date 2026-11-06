@@ -382,6 +382,8 @@ def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
         battery_percentage=SIMULATION_BATTERY_GOOD_PERCENTAGE,
         status_rate_hz=STATUS_RATE_TARGET_HZ,
     )
+    from tests.support.qt import _wait_for
+
     window, ros = _window(snapshot)
     try:
         panel = window.operations
@@ -434,7 +436,12 @@ def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
             assert "age" not in panel.communication_rate_chip.text()
 
         # 常见的 9.xx/10.xx 位数变化不得改变组件或后续状态块的位置。
+        ros.current_snapshot = replace(snapshot, status_rate_hz=10.0)
+        window._refresh()
         window.resize(1600, 920)
+        _wait_for(lambda: window.width() == 1600 and window.height() == 920)
+        # 原生桌面还会投递布局请求；稳定后再测数值位数变化是否引发移动。
+        QTest.qWait(30)
         stable_widths = []
         following_chip_positions = []
         for rate in (10.00, 9.99, 10.00, 9.98):
@@ -494,6 +501,8 @@ def test_manual_status_chip_thresholds_and_battery_mode_format() -> None:
 
 def test_input_focus_blocks_keyboard_flight_shortcut() -> None:
     """数值输入聚焦时 W 等字符不能穿透成飞行命令。"""
+    from tests.support.qt import _wait_for
+
     window, ros = _window(_operational_snapshot(armed=True))
     try:
         window._environment_active = True
@@ -501,14 +510,18 @@ def test_input_focus_blocks_keyboard_flight_shortcut() -> None:
         window._refresh()
         assert window.operations.motion_buttons["up"].isEnabled()
 
+        window.activateWindow()
         window.waypoints.x_input.setFocus()
+        _wait_for(window.waypoints.x_input.hasFocus)
         _application().processEvents()
         QTest.keyClick(window, Qt.Key.Key_W)
         _application().processEvents()
         assert not ros.calls
 
         window.waypoints.x_input.clearFocus()
+        window.activateWindow()
         window.setFocus()
+        _wait_for(window.hasFocus)
         _application().processEvents()
         QTest.keyClick(window, Qt.Key.Key_W)
         _application().processEvents()
