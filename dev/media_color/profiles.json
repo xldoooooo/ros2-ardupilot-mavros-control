@@ -7,5 +7,28 @@
   "enhanced": {
     "curve": "0/0 0.12/0.065 0.3/0.225 0.5/0.435 0.75/0.715 1/1",
     "saturation": 1.24
+  },
+  "severe": {
+    "curve": "0/0 0.12/0.065 0.3/0.225 0.5/0.435 0.65/0.52 0.75/0.60 0.85/0.73 0.95/0.90 1/1",
+    "saturation": 1.24
+  },
+  "selective": {
+    "_description": "Only two visually inspected severe recordings and sixteen bright photos receive extra highlight compression; all other media keep the previous enhanced grade.",
+    "default": "enhanced",
+    "rules": [
+      {
+        "patterns": [
+          "recording-20260825-112440-207120.mp4",
+          "recording-20260825-115055-229667.mp4",
+          "recording-20260825-112440-207120-frame-0[4-9].jpg",
+          "recording-20260825-115055-229667-frame-0[4-9].jpg",
+          "snapshot-20260825-112503-206403-gcs-2.jpg",
+          "snapshot-20260825-112507-246604-gcs-3.jpg",
+          "snapshot-20260825-115117-753335-gcs-2.jpg",
+          "snapshot-20260825-115124-283922-gcs-3.jpg"
+        ],
+        "profile": "severe"
+      }
+    ]
   }
 }

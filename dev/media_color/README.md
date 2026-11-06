@@ -16,10 +16,15 @@
   --input ~/Media/ardupilot/public/examples \
   --output ~/Media/ardupilot/color-preview/enhanced --profile enhanced
 
+# 按逐文件确认的轻重程度预览：严重的加强，其他保留 enhanced 参数。
+.venv/bin/python dev/media_color/correct_media.py preview \
+  --input ~/Media/ardupilot/public/examples \
+  --output ~/Media/ardupilot/color-preview/selective --profile selective
+
 # 效果确认后，在 mini 本机处理完整素材；输出仍在 FTP public 根目录之外。
 .venv/bin/python dev/media_color/correct_media.py batch \
   --input ~/Media/ardupilot/public/examples \
-  --output ~/Media/ardupilot/color-staging/natural --profile natural
+  --output ~/Media/ardupilot/color-staging/selective --profile selective
 ```
 
 输出目录必须全新或为空，且不能与输入目录相互包含。默认使用全部逻辑 CPU；
@@ -28,6 +33,12 @@
 中断后的目录保留已完成文件及记录，重试需另选空目录。
 
 `profiles.json` 定义固定曲线和饱和度：`natural` 较轻，`enhanced` 更明显。
+`selective` 默认沿用原版 `enhanced`，只把规则中明确列出的 2026-08-25
+11:24、11:50 两段视频及 16 张较亮图片改用 `severe` 中高光压缩曲线；
+其他 8 段视频、144 张图片保持原版参数，较暗的同组照片也不跟随视频加强。
+选择来自逐文件画面审阅，不根据日期自动推断相机是否调过参数。
+新增规则只需维护 `selective.rules` 的文件名匹配及档位；每个结果在清单中记录实际档位和参数。
+所有档位均从原片单次处理，不在已校色文件上叠加校色。
 固定参数不逐帧自适应，不额外引入亮度闪烁；原片已有的曝光变化会保留。
 曲线保留黑白端点，不推断或生成已经丢失的高光细节。
 视频按输入标记正确转换到 BT.709 有限范围，再统一编码为 H.264 High、CRF18；

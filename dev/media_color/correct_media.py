@@ -6,6 +6,7 @@ Neither mode changes input files, configuration, services, or active playlists.
 """
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -48,6 +49,17 @@ def sha256(path):
     """Identify the exact source and result without loading a video into memory."""
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def select_profile(profiles, name, source):
+    """Resolve explicit filename rules without guessing camera settings from dates."""
+    settings = profiles[name]
+    for rule in settings.get("rules", []):
+        if any(fnmatch.fnmatchcase(source.name, pattern) for pattern in rule["patterns"]):
+            selected = rule["profile"]
+            return selected, profiles[selected]
+    selected = settings.get("default", name)
+    return selected, profiles[selected]
 
 
 def grade_filter(stream, profile, *, picture=False):
@@ -124,7 +136,7 @@ def main():
     parser.add_argument("mode", choices=("preview", "batch"))
     parser.add_argument("--input", type=Path, required=True, help="Existing examples directory")
     parser.add_argument("--output", type=Path, required=True, help="New directory outside the input tree")
-    parser.add_argument("--profile", choices=("natural", "enhanced"), default="natural")
+    parser.add_argument("--profile", choices=("natural", "enhanced", "selective"), default="natural")
     parser.add_argument("--profiles", type=Path, default=Path(__file__).with_name("profiles.json"))
     parser.add_argument("--seconds", type=float, default=6.0, help="Preview clip length")
     parser.add_argument("--position", type=float, default=0.5, help="Preview position as a fraction of duration")
@@ -158,7 +170,10 @@ def main():
             destination = destination.with_suffix(".mp4")
         print(f"[{len(manifest['files']) + len(manifest['errors']) + 1}/{len(videos) + len(pictures)}] {source.name}", flush=True)
         try:
-            manifest["files"].append(convert(source, destination, profile, args))
+            selected, settings = select_profile(profiles, args.profile, source)
+            result = convert(source, destination, settings, args)
+            result.update(profile=selected, parameters=settings)
+            manifest["files"].append(result)
         except (OSError, RuntimeError, ValueError, KeyError) as exc:
             manifest["errors"].append({"source": str(source), "error": str(exc)})
             print(str(exc), file=sys.stderr, flush=True)
