@@ -1,20 +1,12 @@
-这是这次我们用的websocket协议Java服务器端（只是消息通道，没有业务逻辑），我测试通过了的，你试试。@孙长卿 
+# 上位机联调资料索引；协议原件与测试服务器保留供对照。
 
+无人机与上位机通信协议V2.2.pdf：当前协议原件。
+无人机与上位机通信协议V2.1(1).pdf、V2.0.docx：历史原件，仅作差异核对。
 
+websocket-server-1.0.0.jar：生产环境提供的主题路由服务器，无飞行业务逻辑。
+在仓库根目录执行 java -jar dev/integration/websocket-server-1.0.0.jar，
+本地测试 URL 为 ws://127.0.0.1:8581/ws；现场服务地址由上位机提供。
 
-部署简单，安装如下版本的jdk(不低于此版本吧)后，在linux端执行java -jar websocket-server-1.0.0.jar & 就行。
-java version "1.8.0_121"
-Java(TM) SE Runtime Environment (build 1.8.0_121-b13)
-Java HotSpot(TM) 64-Bit Server VM (build 25.121-b13, mixed mode)
-
-
-
-服务器URL是：ws://192.168.xx.xx:8581/ws
-
-
-
-注意，生产环境的URL不是这样。
-
-
-
-![991c824229cadf9e3ab283c459e62ba5](/home/nvidia/scq/projects/ros2-ardupilot-sitl-hardware/integration/assets/991c824229cadf9e3ab283c459e62ba5.png)
+地面站与测试客户端均连接服务器，不能直接互连。
+当前消息格式及接入步骤见 docs/websocket/上位机-WebSocket 对接.md。
+web_demo、web_demo_2 和 websocket_test_demo 为历史联调示例。
