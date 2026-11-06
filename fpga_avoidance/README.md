@@ -3,6 +3,8 @@
 
 此目录封装 CPU A* + FPGA Ising/QUBO 后端，复用现有 `path_planning` 协议、坐标桥和机载执行器。默认避障仍启动 CPU；未选择 FPGA 时不加载本目录的配置、overlay 或 Python 依赖，也不探测板卡。`COLCON_IGNORE` 将整个目录排除在主工程默认构建之外。
 
+适配、轨迹生成及系统集成等工作由项目作者完成；优化器来源与源码基线见[成果归属说明](PROVENANCE.md)。
+
 ## 安装与配置
 
 先按原方式构建主工程及独立 CPU 规划器，再单独运行：
