@@ -69,6 +69,35 @@ MAVROS_OVERLAY_SETUP=/home/nvidia/mavros_param_fix_2.16.0_ws/install/local_setup
 启用上游 `BUILD_TESTING=ON` 前需额外安装 `ros-jazzy-ament-cmake-google-benchmark`；
 正常部署构建仍关闭该选项，不增加运行依赖。
 
+### MAVROS 遥测停顿诊断
+
+同一安装器还在原MAVROS接收、router→UAS分发、插件处理及odom/pose/velocity发布处加入
+定长诊断，不改变消息、QoS或调度策略。修改直接应用于上述版本的原生源码，诊断实现保存在
+`deploy/mavros_diagnostics/`，入口插桩在`patches/mavros-telemetry-diagnostics.patch`。
+安装器默认使用全部CPU，重新构建后需在地面重启MAVROS加载；不替换系统libmavconn。
+
+独立日志为`$ROS_LOG_DIR/mavros-telemetry-<pid>-<time>.log`，未设目录时使用
+`~/.ros/log/`。与同一时间的`onboard-control-diagnostics-*.log`一起保留即可继续定位。
+
+- `MAVROS_EVENT`记录≥100ms的调用耗时或相邻入口间隔；每阶段每秒优先保留最慢调用，
+  没有慢调用才保留最大入口间隔，并累计合并次数，避免后续间隔覆盖阻塞调用的CPU证据。
+- `MAVROS_INFLIGHT`记录尚未返回的调用；发生异常时附各阶段`LATEST`快照，最多每秒一批。
+- `stage`区分`link_receive`、`position_receive`、`router_publish`、`uas_dispatch`、
+  `uas_position`、`position_handler`以及四种输出发布；`msg/seq/source/boot_ms`关联MAVLink样本，
+  `bridge_stamp_ns`是router转交ROS消息的时间，可与UAS入口比较。
+- `duration_ms/cpu_ms`、线程ID、主动/被动切换及缺页计数用于区分持续执行与等待/未获调度。
+  `gap_ms`是相邻入口间隔，包含上一调用耗时；不能直接视作串口断流。
+- `link_receive`在libmavconn完成帧解析之后，仍不能区分其之前的FCU、串口字节到达、解析或IO线程停顿。
+  `position_receive`只统计有效LOCAL_POSITION_NED；其他报文的UAS慢处理也能记录，便于发现队头阻塞。
+- 高频路径不格式化、不写盘，诊断锁只try-lock，竞争时跳过采样并累计`skipped`；
+  `overlap`表示同阶段并发重叠，`duration_ms=-1`表示完成快照缺失，不能当作0耗时。
+  writer复制定长快照后释放锁再写独立文件，没有无限队列，不占ROS日志锁。
+
+当前控制默认及三个飞机档案的`pose_timeout_seconds=0.40`，同时用于FCU位置/速度和既有校准
+raw/extnav相关检查；诊断的100ms事件选择阈值独立保持，不会因400ms尚未触发保护而漏记350ms停顿。
+原生UDP隔离验证入口为`tests/support/mavros_telemetry_fixture.py`，必须使用独立ROS域及
+LOCALHOST发现；它只发送未武装的模拟心跳、姿态和本地位置，不连接真实串口。
+
 ## 1. 首次最小拉取
 
 在部署用户自己的目录执行；启动器会从自身位置解析工作区，不要求固定用户名或绝对路径：

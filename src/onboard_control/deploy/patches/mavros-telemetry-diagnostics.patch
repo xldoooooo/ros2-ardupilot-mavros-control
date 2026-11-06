@@ -1,0 +1,118 @@
+--- a/mavros/src/lib/mavros_router.cpp
++++ b/mavros/src/lib/mavros_router.cpp
+@@ -21,4 +21,5 @@
+ #include "mavros/inline_vector.hpp"
+ #include "mavros/mavros_router.hpp"
++#include "mavros/telemetry_diagnostics.hpp"
+ #include "rcpputils/asserts.hpp"
+ 
+@@ -495,4 +496,5 @@
+ std::pair<bool, std::string> MAVConnEndpoint::open()
+ {
++  mavros::telemetry_diagnostics::initialize();
+   auto nh = this->parent;
+   if (!nh) {
+@@ -506,4 +508,10 @@
+       [weak_self](const mavlink_message_t * msg, const Framing framing) {
+         if (auto self = weak_self.lock()) {
++          namespace td = mavros::telemetry_diagnostics;
++          const auto identity = td::identify(msg, static_cast<int>(framing));
++          const bool fcu = self->link_type == Endpoint::Type::fcu;
++          td::Scope receive(td::Stage::link_receive, identity, fcu);
++          td::Scope position(td::Stage::position_receive, identity,
++            fcu && msg->msgid == 32 && framing == Framing::ok);
+           self->recv_message(msg, framing);
+         }
+@@ -635,4 +643,8 @@
+   rcpputils::assert_true(msg, "msg not null");
+ 
++  namespace td = mavros::telemetry_diagnostics;
++  td::Scope publish(td::Stage::router_publish, td::identify(msg, static_cast<int>(framing)),
++    msg->msgid == 32 && framing == Framing::ok);
++
+   // NOTE(vooon): unique_ptr publish so intra-process subscribers (the UAS)
+   // get the buffer without a copy.
+--- a/mavros/src/lib/mavros_uas.cpp
++++ b/mavros/src/lib/mavros_uas.cpp
+@@ -20,4 +20,5 @@
+ #include "rcpputils/asserts.hpp"
+ #include "mavros/mavros_uas.hpp"
++#include "mavros/telemetry_diagnostics.hpp"
+ #include "mavros/utils.hpp"
+ 
+@@ -414,4 +415,10 @@
+ 
+   if (ok) {
++    namespace td = mavros::telemetry_diagnostics;
++    const auto identity = td::identify(&msg, rmsg->framing_status,
++      int64_t(rmsg->header.stamp.sec) * 1000000000LL + rmsg->header.stamp.nanosec);
++    td::Scope dispatch(td::Stage::uas_dispatch, identity);
++    td::Scope position(td::Stage::uas_position, identity,
++      msg.msgid == 32 && rmsg->framing_status == static_cast<int>(mavconn::Framing::ok));
+     plugin_route(&msg, static_cast<mavconn::Framing>(rmsg->framing_status));
+   }
+--- a/mavros/src/plugins/local_position.cpp
++++ b/mavros/src/plugins/local_position.cpp
+@@ -23,4 +23,5 @@
+ #include "mavros/mavros_uas.hpp"
+ #include "mavros/plugin.hpp"
++#include "mavros/telemetry_diagnostics.hpp"
+ #include "mavros/plugin_filter.hpp"
+ 
+@@ -152,4 +153,7 @@
+     plugin::filter::SystemAndOk filter [[maybe_unused]])
+   {
++    namespace td = mavros::telemetry_diagnostics;
++    const auto identity = td::identify(msg);
++    td::Scope handler(td::Stage::position_handler, identity);
+     has_local_position_ned = true;
+ 
+@@ -181,5 +185,8 @@
+     // publish odom if we don't have LOCAL_POSITION_NED_COV
+     if (!has_local_position_ned_cov) {
+-      local_odom->publish(odom);
++      {
++        td::Scope publish(td::Stage::odom_publish, identity);
++        local_odom->publish(odom);
++      }
+     }
+ 
+@@ -188,5 +195,8 @@
+     pose.header = odom.header;
+     pose.pose = odom.pose.pose;
+-    local_position->publish(pose);
++    {
++      td::Scope publish(td::Stage::pose_publish, identity);
++      local_position->publish(pose);
++    }
+ 
+     // publish velocity always
+@@ -197,5 +207,8 @@
+     twist_body.twist.linear = odom.twist.twist.linear;
+     twist_body.twist.angular = baselink_angular_msg;
+-    local_velocity_body->publish(twist_body);
++    {
++      td::Scope publish(td::Stage::body_velocity_publish, identity);
++      local_velocity_body->publish(twist_body);
++    }
+ 
+     // velocity in the local frame
+@@ -208,5 +221,8 @@
+       twist_local.twist.angular);
+ 
+-    local_velocity_local->publish(twist_local);
++    {
++      td::Scope publish(td::Stage::velocity_publish, identity);
++      local_velocity_local->publish(twist_local);
++    }
+ 
+     // publish tf
+--- a/mavros/CMakeLists.txt
++++ b/mavros/CMakeLists.txt
+@@ -127,4 +127,6 @@
+   # [[[end]]] (sum: MjnRb8h5gp)
+ )
++# The diagnostic source lives outside the generated src/lib file list.
++target_sources(mavros PRIVATE src/diagnostics/telemetry_diagnostics.cpp)
+ target_link_libraries(mavros PUBLIC
+   ${mavros_msgs_TARGETS}

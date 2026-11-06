@@ -35,7 +35,7 @@ def output_node(publish_delay_library, tmp_path, monkeypatch, request):
     monkeypatch.setenv("ROS_LOG_DIR", str(tmp_path / "ros"))
     monkeypatch.setenv("ONBOARD_TEST_TRIGGER", str(tmp_path / "trigger"))
     monkeypatch.setenv("ONBOARD_TEST_TOPIC", "/avoidance_executor_double_mavros/setpoint_raw/attitude")
-    monkeypatch.setenv("ONBOARD_TEST_DELAY_MS", "350")
+    monkeypatch.setenv("ONBOARD_TEST_DELAY_MS", "450")
     # getfixturevalue ensures the child inherits the hook before its launch.
     return request.getfixturevalue("calibration_node")
 
@@ -67,7 +67,7 @@ def test_attitude_delay_keeps_inputs_fresh(publish_delay_library, tmp_path, monk
     text = log.read_text()
     assert not h.land_calls and "[TELEMETRY_FAULT]" not in text
     assert h.status[-1].local_position_valid
-    assert stage_times(text, "wall_ms")[2] >= 340.
+    assert stage_times(text, "wall_ms")[2] >= 440.
     cpu = stage_times(text, "cpu_ms")[2]
     if delay_mode == "sleep":
         assert cpu < 80.

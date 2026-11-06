@@ -1,4 +1,4 @@
-"""Verify deferred telemetry evidence against the unchanged native LAND protection."""
+"""Verify deferred telemetry evidence and the native 400 ms LAND protection."""
 from types import SimpleNamespace
 
 import pytest
@@ -39,16 +39,45 @@ def test_telemetry_fault_is_frozen_and_logged_once(calibration_node, tmp_path, f
     fields = dict(token.split("=", 1) for token in lines[0].split() if "=" in token)
     assert fields["event"] == "telemetry_fault"
     assert fields["velocity_valid"] == "1"
-    assert float(fields["pose_timeout_ms"]) == 300.
+    assert float(fields["pose_timeout_ms"]) == 400.
     if failure == "velocity_timeout":
         assert fields["pose_valid"] == "1"
-        assert float(fields["velocity_age_ms"]) > 300.
+        assert float(fields["velocity_age_ms"]) > 400.
     else:
         assert fields["pose_valid"] == "0"
     assert "control_period_ms=" in lines[0] and "control_lock_wait_ms=" in lines[0]
     assert "[TELEMETRY_RX]" in text and "phase=before stream=pose" in text
     assert "dds_receive_ns=" in text and "callback_wall_ns=" in text
     assert h.land_calls == ["LAND"]
+    assert h.status[-1].failsafe_reason == "本地位置或速度遥测无效/超时"
+
+
+def test_350ms_telemetry_gap_recovers_before_400ms_protection(calibration_node, tmp_path):
+    """The default tolerates a 350 ms FCU gap but still lands after a longer outage."""
+    h = calibration_node
+    assert execute(h, [point()]).accepted
+    h.until(lambda: bool(h.starts))
+    names = ("local_position/pose", "local_position/velocity_local")
+    publishers = {name: h.pubs[name] for name in names}
+    for name in names:
+        h.pubs[name] = SimpleNamespace(publish=lambda _: None)
+    h.spin(.35)
+    assert not h.land_calls
+    h.pubs.update(publishers)
+    h.tick()
+    h.spin(.15)
+    assert not h.land_calls and h.status[-1].local_position_valid
+    # Keep raw odometry and heartbeats alive so only FCU telemetry causes protection.
+    for name in names:
+        h.pubs[name] = SimpleNamespace(publish=lambda _: None)
+    h.until(lambda: h.land_calls == ["LAND"])
+    log, = (tmp_path / "ros").glob("onboard-control-diagnostics-*.log")
+    h.until(lambda: "[TELEMETRY_FAULT]" in log.read_text(), 3.)
+    line, = [line for line in log.read_text().splitlines() if line.startswith("[TELEMETRY_FAULT]")]
+    fields = dict(token.split("=", 1) for token in line.split() if "=" in token)
+    assert fields["event"] == "telemetry_fault"
+    assert float(fields["pose_timeout_ms"]) == 400.
+    assert max(float(fields["pose_age_ms"]), float(fields["velocity_age_ms"])) > 400.
     assert h.status[-1].failsafe_reason == "本地位置或速度遥测无效/超时"
 
 
@@ -113,11 +142,11 @@ def test_sampling_raw_fault_keeps_payload_and_late_recovery(calibration_node, tm
     raw_line, = [line for line in text.splitlines() if line.startswith("[RAW_ODOMETRY]")
                  and f"event_ns={fields['event_ns']} " in line]
     assert f"job={job} " in raw_line and "revision=0 follow_fusion=0" in raw_line
-    assert "present=1" in raw_line and "timeout_ms=300.000" in raw_line
+    assert "present=1" in raw_line and "timeout_ms=400.000" in raw_line
     assert "phase=before stream=raw_odin" in text and "dds_source_ns=" in text
     if failure == "stale":
         raw_fields = dict(token.split("=", 1) for token in raw_line.split() if "=" in token)
-        assert float(raw_fields["age_ms"]) > 300.
+        assert float(raw_fields["age_ms"]) > 400.
         assert "phase=first_after stream=raw_odin" not in text
     elif failure == "frame":
         assert "child=wrong_body" in raw_line

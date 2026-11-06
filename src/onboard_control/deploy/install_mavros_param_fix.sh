@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the pinned MAVROS retry and upstream plugin-parameter fixes in one overlay.
+# Build MAVROS fixes and bounded telemetry diagnostics in one native overlay.
 set -Eeuo pipefail
 readonly deploy_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Match the installed ABI; a newer source must not share the old build cache.
@@ -21,6 +21,7 @@ case "${source_version}" in
     exit 1
     ;;
 esac
+fix_patches+=("${deploy_dir}/patches/mavros-telemetry-diagnostics.patch")
 readonly source_sha default_workspace fix_patches
 readonly workspace="${MAVROS_FIX_WORKSPACE:-${default_workspace}}"
 readonly archive="${MAVROS_SOURCE_ARCHIVE:-${workspace}/mavros-${source_version}.tar.gz}"
@@ -42,12 +43,17 @@ for fix_patch in "${fix_patches[@]}"; do
     patch --dry-run --reverse -p1 < "${fix_patch}" >/dev/null
   fi
 done
+mkdir -p mavros/src/diagnostics
+cmp -s "${deploy_dir}/mavros_diagnostics/telemetry_diagnostics.hpp" mavros/include/mavros/telemetry_diagnostics.hpp ||
+  cp "${deploy_dir}/mavros_diagnostics/telemetry_diagnostics.hpp" mavros/include/mavros/
+cmp -s "${deploy_dir}/mavros_diagnostics/telemetry_diagnostics.cpp" mavros/src/diagnostics/telemetry_diagnostics.cpp ||
+  cp "${deploy_dir}/mavros_diagnostics/telemetry_diagnostics.cpp" mavros/src/diagnostics/
 set +u
 source /opt/ros/jazzy/setup.bash
 set -u
 cd "${workspace}"
-MAKEFLAGS="-j${MAVROS_BUILD_JOBS:-2}" \
-  CMAKE_BUILD_PARALLEL_LEVEL="${MAVROS_BUILD_JOBS:-2}" colcon build \
+MAKEFLAGS="-j${MAVROS_BUILD_JOBS:-$(nproc)}" \
+  CMAKE_BUILD_PARALLEL_LEVEL="${MAVROS_BUILD_JOBS:-$(nproc)}" colcon build \
   --packages-select mavros --allow-overriding mavros \
   --packages-ignore libmavconn mavros_msgs \
   --cmake-args -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
