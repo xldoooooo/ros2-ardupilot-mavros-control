@@ -1,0 +1,4 @@
+interface:
+  display_name: "ROS2–ArduPilot 项目维护"
+  short_description: "维护本 ROS2–ArduPilot 项目的文档、报告、派生产物与 Git 边界"
+  default_prompt: "使用 $project-maintenance 维护清理本 ROS2–ArduPilot 项目，保留手工笔记和原始证据，优先清理可重建派生产物，并将 report 根目录控制在50份以内。"
