@@ -1,5 +1,5 @@
 {
-  "_description": "Fixed curves preserve black/white endpoints; grading never changes from frame to frame.",
+  "_description": "Fixed per-file curves never change from frame to frame; strong_exposure deliberately lowers the output white point.",
   "natural": {
     "curve": "0/0 0.12/0.09 0.3/0.26 0.5/0.47 0.75/0.74 1/1",
     "saturation": 1.14
@@ -12,13 +12,21 @@
     "curve": "0/0 0.12/0.065 0.3/0.225 0.5/0.435 0.65/0.52 0.75/0.60 0.85/0.73 0.95/0.90 1/1",
     "saturation": 1.24
   },
+  "strong_exposure": {
+    "_description": "For recording-20260825-112440-207120.mp4 only: lower white to 0.82 and strongly reduce midtones; clipped detail cannot be recovered.",
+    "curve": "0/0 0.1/0.06 0.25/0.17 0.5/0.32 0.75/0.50 0.9/0.65 1/0.82",
+    "saturation": 1.14
+  },
   "selective": {
-    "_description": "Only two visually inspected severe recordings and sixteen bright photos receive extra highlight compression; all other media keep the previous enhanced grade.",
+    "_description": "112440 uses strong_exposure; 115055 and sixteen reviewed photos retain severe; all other media keep the previous enhanced grade.",
     "default": "enhanced",
     "rules": [
       {
+        "patterns": ["recording-20260825-112440-207120.mp4"],
+        "profile": "strong_exposure"
+      },
+      {
         "patterns": [
-          "recording-20260825-112440-207120.mp4",
           "recording-20260825-115055-229667.mp4",
           "recording-20260825-112440-207120-frame-0[4-9].jpg",
           "recording-20260825-115055-229667-frame-0[4-9].jpg",
