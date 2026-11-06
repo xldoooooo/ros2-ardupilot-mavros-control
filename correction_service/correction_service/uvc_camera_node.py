@@ -1,4 +1,4 @@
-"""按需启动的自有 UVC ROS 节点：系统设备 → MJPEG → 原始 mono8 图像。"""
+"""持续采集最新 MJPEG，唯一调度器选帧后才解码并传递原始 mono8 图像。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from rclpy.signals import SignalHandlerOptions
 from rclpy.time import Time
 from sensor_msgs.msg import Image
 
-from .uvc_capture import CaptureRateLimiter, UvcCapture, capture_stamp_ns
+from .uvc_capture import CaptureRateLimiter, LatestFrameCapture, UvcCapture, capture_stamp_ns
 
 
 def main(args: list[str] | None = None) -> None:
@@ -46,7 +46,9 @@ def main(args: list[str] | None = None) -> None:
             Image, values["image_topic"],
             QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
         )
-        capture = UvcCapture(values["video_device"], width, height, values["framerate"])
+        capture = LatestFrameCapture(
+            UvcCapture(values["video_device"], width, height, values["framerate"])
+        )
         node.get_logger().info(
             f"UVC mmap started: {values['video_device']} {width}x{height} MJPEG "
             f"requested_fps={values['framerate']} negotiated_fps={capture.negotiated_fps} "
@@ -57,6 +59,7 @@ def main(args: list[str] | None = None) -> None:
         age_sum = age_max = 0.0
         last_stamp = 0
         report_time = last_frame = time.monotonic()
+        last_capture_count = 0
         while rclpy.ok():
             sample = capture.read_latest()
             current = time.monotonic()
@@ -73,7 +76,7 @@ def main(args: list[str] | None = None) -> None:
             elif stamp <= last_stamp:
                 nonmonotonic += 1
             elif not limiter.accept(mono_now - age):
-                # MJPEG 已从设备取走并归还缓冲区；多余帧在昂贵的解码/ROS 复制前丢弃。
+                # 唯一采样节拍在解码前选帧；检测端直接消费，不再二次限频。
                 rate_limited += 1
             else:
                 frame = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -96,13 +99,16 @@ def main(args: list[str] | None = None) -> None:
                     age_sum += age / 1_000_000
                     age_max = max(age_max, age / 1_000_000)
             if current - report_time >= 5.0:
+                capture_count = capture.frames_received
                 node.get_logger().info(
                     f"CAMERA_HEALTH rate={count / (current - report_time):.2f}Hz "
+                    f"capture_rate={(capture_count - last_capture_count) / (current - report_time):.2f}Hz "
                     f"capture_age_mean={age_sum / max(count, 1):.2f}ms "
                     f"capture_age_max={age_max:.2f}ms stale_dropped={stale} "
                     f"nonmonotonic_dropped={nonmonotonic} rate_limited={rate_limited}"
                 )
                 count, age_sum, age_max, report_time = 0, 0.0, 0.0, current
+                last_capture_count = capture_count
     except KeyboardInterrupt:
         pass
     except Exception as exc:

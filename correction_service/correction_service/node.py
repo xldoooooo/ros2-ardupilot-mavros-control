@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from nav_msgs.msg import Odometry
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -1128,7 +1128,8 @@ class CorrectionServiceNode(Node):
         """拥有相机采样，冻结候选后先释放资源，再保存或调用 extnav。"""
         camera_log = job.journal.path.with_suffix(".camera.log")
         camera = CameraProcess(
-            self.config.camera,
+            # 校准只有一个采样节拍，由相机在解码前选帧；不叠加旧发布限频。
+            replace(self.config.camera, publish_fps=self.config.detection.processing_rate_hz),
             self.config.lens_controls,
             camera_log,
             self._service_logger,
@@ -1201,9 +1202,7 @@ class CorrectionServiceNode(Node):
             self._save_dry_run_and_finalize(job)
 
     def _sample_until_candidate(self, job: _Job, camera: CameraProcess) -> None:
-        """检测直到一次收敛，随后立即冻结并自动结束采集。"""
-        next_detection_stamp_ns = 0
-        period_ns = int(1e9 / self.config.detection.processing_rate_hz)
+        """直接检测相机调度器选中的每张新帧，收敛后冻结并结束采集。"""
         while not self._closing.is_set():
             self._raise_if_stopping(job)
             camera.ensure_running()
@@ -1224,10 +1223,9 @@ class CorrectionServiceNode(Node):
                 and image_stamp_ns < job.last_image_stamp_ns - 250_000_000
             ):
                 raise RuntimeError("相机采集时钟回退，丢弃本次停留段")
-            job.last_image_stamp_ns = image_stamp_ns
-            if image_stamp_ns < next_detection_stamp_ns:
+            if image_stamp_ns <= job.last_image_stamp_ns:
                 continue
-            next_detection_stamp_ns = image_stamp_ns + period_ns
+            job.last_image_stamp_ns = image_stamp_ns
             self._process_image(job, image, image_stamp_ns)
             self._check_first_tag_timeout(job)
             snapshot = job.snapshot
@@ -2605,10 +2603,10 @@ def _registration_degrees(
 
 
 def main(args=None) -> None:
-    """多线程 executor 允许图像/Odin/status 在操作线程等待 ACK 时继续推进。"""
+    """互斥 ROS 回调由单线程执行；检测和 ACK 等待仍由独立任务线程推进。"""
     rclpy.init(args=args)
     node = CorrectionServiceNode()
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
         executor.spin()

@@ -8,6 +8,7 @@ import math
 import mmap
 import os
 import select
+import threading
 
 # Linux videodev2.h 单平面采集 ABI；使用原生对齐，兼容 amd64/aarch64。
 CAPTURE = 1
@@ -94,6 +95,7 @@ class CaptureRateLimiter:
     """按采集单调时钟筛帧；持续排空设备，不休眠、不积压、不改图像时间戳。"""
 
     def __init__(self, fps: float) -> None:
+        """建立采集时间节拍；零值保留独立相机工具的不限频用法。"""
         if not math.isfinite(fps) or fps < 0:
             raise ValueError("publish_fps must be finite and nonnegative (0 = unlimited)")
         self.period_ns = max(1, round(1_000_000_000 / fps)) if fps else 0
@@ -113,10 +115,70 @@ class CaptureRateLimiter:
         return True
 
 
+class LatestFrameCapture:
+    """持续排空 UVC，只保留最新压缩帧；选帧、解码期间采集仍独立推进。"""
+
+    def __init__(self, capture: UvcCapture) -> None:
+        """接管设备及读取线程，单槽保存原始 JPEG 和 V4L2 时间戳。"""
+        self._capture = capture
+        self.negotiated_fps = capture.negotiated_fps
+        self.frames_received = 0
+        self._latest: tuple[bytes, Buffer] | None = None
+        self._error: Exception | None = None
+        self._condition = threading.Condition()
+        self._closing = threading.Event()
+        self._thread = threading.Thread(
+            target=self._read, name="uvc-latest-frame", daemon=True
+        )
+        try:
+            self._thread.start()
+        except BaseException:
+            capture.close()
+            raise
+
+    def _read(self) -> None:
+        """只复制压缩帧及原始元数据，不在采集线程解码或等待下游。"""
+        try:
+            while not self._closing.is_set():
+                sample = self._capture.read_latest()
+                if sample is not None:
+                    with self._condition:
+                        self._latest = sample
+                        self.frames_received += 1
+                        self._condition.notify()
+        except Exception as exc:
+            with self._condition:
+                self._error = exc
+                self._condition.notify()
+
+    def read_latest(self, timeout: float = 0.2) -> tuple[bytes, Buffer] | None:
+        """取走当前最新帧；忙碌期间覆盖的旧帧不排队，也不重复返回。"""
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self._latest is not None or self._error is not None
+                or self._closing.is_set(),
+                timeout,
+            )
+            if self._error is not None:
+                raise RuntimeError(f"UVC capture failed: {self._error}") from self._error
+            sample = self._latest
+            self._latest = None
+            return sample
+
+    def close(self) -> None:
+        """等有限超时读取退出后再关闭设备，避免 mmap 与读取线程竞争。"""
+        self._closing.set()
+        with self._condition:
+            self._condition.notify_all()
+        self._thread.join()
+        self._capture.close()
+
+
 class UvcCapture:
     """拥有单个设备 fd/mmap；初始化失败和正常退出均释放全部采集资源。"""
 
     def __init__(self, device: str, width: int, height: int, fps: int) -> None:
+        """请求原生 MJPEG 模式并分配、启动 mmap 缓冲区。"""
         self.fd = -1
         self.buffers: list[mmap.mmap] = []
         self.streaming = False

@@ -234,6 +234,8 @@ def test_node_limits_before_decode_and_preserves_capture_stamps(monkeypatch):
         return np.zeros((2, 2), dtype=np.uint8)
     monkeypatch.setattr(camera, "Node", Node)
     monkeypatch.setattr(camera, "UvcCapture", Capture)
+    # 此用例同步推进虚拟采集时钟；单槽采集线程另有真实并发验证。
+    monkeypatch.setattr(camera, "LatestFrameCapture", lambda capture: capture)
     monkeypatch.setattr(camera.cv2, "imdecode", decode)
     monkeypatch.setattr(camera.rclpy, "init", lambda **kwargs: None)
     monkeypatch.setattr(camera.rclpy, "ok", lambda: True)
