@@ -250,6 +250,7 @@ runtime_package_prefix() {
   fi
 }
 runtime_ensure_mavros_timesync() { :; }
+runtime_wait_for_lan_ipv4() { :; }
 ''')
     launcher = workspace / "scripts/onboard/start_onboard_control.sh"
     shutil.copy2(ROOT / "scripts/onboard" / launcher.name, launcher)

@@ -24,6 +24,7 @@ from ground_station_core.models import WaypointFlightStrategy as Strategy
 from ground_station_core.models import WaypointReferenceGenerator as Generator
 from ground_station_core.models import WaypointTrackingController as Tracking
 from ground_station_core.ros_controller import GroundStationRosController
+from ground_station_core.waypoint_io import Waypoint
 
 
 class ScanScene:
@@ -222,7 +223,7 @@ def main():
             # 插入障碍后等当前新扫描/地图就绪，避免用起飞前的旧ready下发新任务。
             wait(lambda: controller.snapshot().avoidance_ready, 10, "current scan readiness")
         start = np.array([snap.x,snap.y,snap.z])
-        target = (start[0]+3.0, start[1], 1.5, 0.0)
+        target = Waypoint(start[0]+3.0, start[1], 1.5, 0.0, is_inspection=True)
         capture_start = len(scene.captures)
         ticket = controller.request_waypoints((target,), strategy,
             reference_generator=Generator.TRAPEZOIDAL_PROFILE, tracking_controller=Tracking.TRAJECTORY_PD_DOB)

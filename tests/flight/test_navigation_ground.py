@@ -11,6 +11,7 @@ from ground_station_core.models import VehicleSnapshot
 from ground_station_core.ros_controller import GroundStationRosController, task_waypoint_to_local
 from ground_station_core.upstream.mapping import UpstreamProtocolError, parse_command
 from ground_station_core.upstream.status_projector import UpstreamStatusProjector
+from ground_station_core.waypoint_io import Waypoint
 from tests.support.qt import _close_window, _operational_snapshot, _window
 
 
@@ -33,7 +34,8 @@ def test_map_websocket_accepts_negative_z_and_reports_task_position() -> None:
             "forwardAngle": 90, "cameraAngle": 0, "photoNo": "one",
         }],
     }
-    assert parse_command(payload, "test", "map").waypoints[0] == pytest.approx((3, 4, -2, math.pi/2))
+    point = parse_command(payload, "test", "map").waypoints[0]
+    assert tuple(point) == pytest.approx(tuple(Waypoint(3, 4, -2, math.pi/2, is_inspection=True)))
     with pytest.raises(UpstreamProtocolError, match="z"):
         parse_command(payload, "test", "odom")
     sent = []
@@ -54,7 +56,7 @@ def test_navigation_switch_preserves_waypoints_and_follows_real_status() -> None
     try:
         window._environment_active = True
         window._connection_mode = "hardware"
-        points = ((1.0, 0.0, 1.0, 0.0),)
+        points = (Waypoint(1.0, 0.0, 1.0, 0.0),)
         window.waypoints.replace_waypoints(points, "test")
         window._refresh()
         assert window.navigation_switch.isEnabled()
@@ -90,13 +92,13 @@ def test_map_pose_capture_and_return_keep_their_respective_frames() -> None:
         window._connection_mode = "simulation"
         window._refresh()
         window.waypoints._add_current_waypoint()
-        assert window.waypoints.waypoints == ((10.0, -4.0, -2.0, 1.2),)
+        assert window.waypoints.waypoints == (Waypoint(10.0, -4.0, -2.0, 1.2),)
         calls = []
         ros.request_waypoints = lambda *args, **kwargs: calls.append((args, kwargs)) or 77
         assert window._start_return_sequence("return", snapshot)
         assert calls[-1][0][0][0][:3] == (0.0, 0.0, window.operations.takeoff_altitude())
         assert calls[-1][1] == {"local_coordinates": True}
-        assert window.waypoints.waypoints == ((10.0, -4.0, -2.0, 1.2),)
+        assert window.waypoints.waypoints == (Waypoint(10.0, -4.0, -2.0, 1.2),)
     finally:
         _close_window(window)
 

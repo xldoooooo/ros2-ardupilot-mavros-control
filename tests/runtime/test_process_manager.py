@@ -107,7 +107,8 @@ def test_process_matcher_uses_argv_tokens_not_shell_text() -> None:
 def test_historical_unmanaged_ros_process_is_swept() -> None:
     """即使进程不是当前 GUI 启动，也应按真实 argv 被残留扫描清理。"""
     process = subprocess.Popen(
-        ["/bin/bash", "-c", "exec -a onboard_control_node sleep 60"],
+        ["onboard_control_node", "60"],
+        executable="/bin/sleep",  # 直接 exec，避免扫描发生在 bash 改写 argv 之前。
         start_new_session=True,
     )
     try:
