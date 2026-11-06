@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("parameter_source", ("cache", "events"))
+@pytest.mark.integration
 def test_startup_pull_and_readiness_require_actual_valid_parameters(tmp_path, parameter_source):
     """拉表 ACK 不代表就绪；错误/缺失参数继续拒绝，重连重新请求，退出清理。"""
     rclpy = pytest.importorskip("rclpy")

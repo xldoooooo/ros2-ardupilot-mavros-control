@@ -6,6 +6,11 @@ cd "$TEST_ROOT"
 if [[ -f /opt/ros/jazzy/setup.bash ]]; then
     source /opt/ros/jazzy/setup.bash
 fi
+# 原生规划器保持独立工作区；其他组不要求它已安装。
+planner_root="${AVOIDANCE_WORKSPACE:-${TEST_ROOT%/*}/dyn_small_obs_avoidance-ros2}"
+if [[ -f "${planner_root}/install/local_setup.bash" ]]; then
+    source "${planner_root}/install/local_setup.bash"
+fi
 if [[ -f install/local_setup.bash ]]; then
     source install/local_setup.bash
 fi

@@ -4,6 +4,8 @@ import os
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from ground_station_core.config import INTERFACE_VERSION
 from ground_station_core.event_log import EventLog, LogLevel
 from ground_station_core.models import (
@@ -18,6 +20,7 @@ from ground_station_core.ros_controller import (
 )
 
 
+@pytest.mark.integration
 def test_controller_rejects_takeoff_without_onboard_and_stops() -> None:
     """机载服务不存在时必须明确失败，不能退回地面站本地控制。"""
     controller = GroundStationRosController(source_id="pytest-no-onboard")
@@ -384,6 +387,7 @@ def test_remote_rosout_is_verbatim_and_only_enabled_for_explicit_real_link() -> 
     assert received.message == message.msg
 
 
+@pytest.mark.integration
 def test_controller_rebuilds_context_when_switching_domains() -> None:
     """同一 GUI 进程须能销毁仿真 context，再创建 domain 0 实机 context。"""
     controller = GroundStationRosController(source_id="gcs-domain-switch")

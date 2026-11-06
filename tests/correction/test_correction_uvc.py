@@ -1,14 +1,17 @@
 """自有采集 ABI、真实采集时间和设备资源释放的回归；不连接飞控。"""
 
 import ctypes as ct
+import configparser
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from correction_service import uvc_capture as uvc
 from correction_service.config import load_config
-from test_correction_service import CONFIG_DIR
+# Read the source profile directly; test modules are independently collectable.
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "config/aircraft/simulation/correction"
 
 
 def _copy_configuration(root):
@@ -154,22 +157,34 @@ def test_rate_limiter_and_camera_config_reject_invalid_rates(tmp_path, value):
         uvc.CaptureRateLimiter(value)
     config_dir = _copy_configuration(tmp_path)
     path = config_dir / "camera.conf"
-    path.write_text(path.read_text().replace("publish_fps = 30.0", f"publish_fps = {value}"))
+    parser = configparser.ConfigParser()
+    parser.read(path)
+    parser["camera"]["publish_fps"] = str(value)
+    with path.open("w") as stream:
+        parser.write(stream)
     with pytest.raises(ValueError, match="publish_fps"):
         load_config(config_dir)
 
 
 def test_camera_rate_default_and_unlimited_preserve_native_mode(tmp_path):
-    """缺省使用 30；0 关闭软件限频，但不改变相机原生请求 120。"""
+    """缺省使用 30；0 关闭软件限频，二者均保留显式原生采集帧率。"""
     config_dir = _copy_configuration(tmp_path)
     path = config_dir / "camera.conf"
-    original = path.read_text()
-    path.write_text(original.replace("publish_fps = 30.0\n", ""))
-    assert load_config(config_dir).camera.publish_fps == 30.0
-    path.write_text(original.replace("publish_fps = 30.0", "publish_fps = 0"))
+    parser = configparser.ConfigParser()
+    parser.read(path)
+    parser["camera"].pop("publish_fps", None)
+    parser["camera"]["fps"] = "55"
+    with path.open("w") as stream:
+        parser.write(stream)
+    default = load_config(config_dir).camera
+    assert default.publish_fps == 30.0
+    assert default.fps == 55
+    parser["camera"]["publish_fps"] = "0"
+    with path.open("w") as stream:
+        parser.write(stream)
     camera = load_config(config_dir).camera
     assert camera.publish_fps == 0.0
-    assert camera.fps == 120
+    assert camera.fps == 55
 
 
 def test_node_limits_before_decode_and_preserves_capture_stamps(monkeypatch):

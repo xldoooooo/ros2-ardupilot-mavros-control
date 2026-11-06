@@ -198,6 +198,7 @@ check_dependencies() {
   local -a ros_packages=(
     ament_cmake
     ament_cmake_gtest
+    ament_cmake_pytest
     ament_index_cpp
     ament_index_python
     builtin_interfaces

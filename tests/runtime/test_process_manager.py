@@ -4,9 +4,12 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from ground_station_core.process_manager import ProcessSupervisor
 
 
+@pytest.mark.integration
 def test_named_termination_stops_only_selected_process_and_descendants() -> None:
     """重开 RViz 时只回收对应启动器及其子进程，另一会话继续运行。"""
     supervisor = ProcessSupervisor()
@@ -40,6 +43,7 @@ def test_named_termination_stops_only_selected_process_and_descendants() -> None
         supervisor.terminate("pytest_retained_probe")
 
 
+@pytest.mark.integration
 def test_managed_process_is_reaped_and_verified() -> None:
     """受管进程必须在 terminate_all 返回前被 wait 回收。"""
     supervisor = ProcessSupervisor()
@@ -104,6 +108,7 @@ def test_process_matcher_uses_argv_tokens_not_shell_text() -> None:
     )
 
 
+@pytest.mark.integration
 def test_historical_unmanaged_ros_process_is_swept() -> None:
     """即使进程不是当前 GUI 启动，也应按真实 argv 被残留扫描清理。"""
     process = subprocess.Popen(
@@ -124,6 +129,7 @@ def test_historical_unmanaged_ros_process_is_swept() -> None:
     assert report.success
 
 
+@pytest.mark.integration
 def test_parent_exit_cannot_leave_pipe_holding_detached_child_or_deadlock() -> None:
     """组长先退、后代另建 session 且持有 stdout 时，清理仍须有界完成。"""
     child_code = (

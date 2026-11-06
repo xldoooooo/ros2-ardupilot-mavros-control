@@ -21,6 +21,7 @@ from ground_station_core.upstream.status_projector import UpstreamStatusProjecto
 from tests.video.support import LocalQueue, calibration_file
 
 
+@pytest.mark.integration
 def test_photo_priority_ack_correction_and_cache_retention(tmp_path, monkeypatch):
     """Transfer with real rsync and confirm cleanup follows the ground hash receipt."""
     ground = tmp_path / 'ground with spaces'
@@ -104,6 +105,7 @@ def test_bad_hash_and_path_traversal_never_ack(tmp_path):
     store.close()
 
 
+@pytest.mark.integration
 def test_retry_restart_and_duplicate_ingestion(tmp_path, monkeypatch):
     """Recover interrupted upload state and ingest the same ID only once."""
     ground, cache = tmp_path / 'ground', tmp_path / 'cache'
@@ -161,6 +163,7 @@ def test_capacity_keeps_active_and_aircraft_ownership(tmp_path):
     store.close()
 
 
+@pytest.mark.integration
 def test_photo_processing_failure_retains_acknowledged_original(tmp_path):
     """A photo decoding fault leaves an explicit state and never revokes original ACK."""
     ground = tmp_path / 'ground'
@@ -181,6 +184,7 @@ def test_photo_processing_failure_retains_acknowledged_original(tmp_path):
     store.close()
 
 
+@pytest.mark.integration
 def test_ack_loss_republishes_manifest(tmp_path):
     """A missing receipt retries its existing ID rather than waiting forever."""
     ground = tmp_path / 'ground'
@@ -200,6 +204,7 @@ def test_ack_loss_republishes_manifest(tmp_path):
     queue.close()
 
 
+@pytest.mark.integration
 def test_retry_repairs_same_size_corrupt_payload(tmp_path):
     """Rsync must repair content corruption even when destination length already matches."""
     ground = tmp_path / 'ground'
@@ -222,6 +227,7 @@ def test_retry_repairs_same_size_corrupt_payload(tmp_path):
     store.close()
 
 
+@pytest.mark.integration
 def test_eviction_before_ack_restores_original_without_stale_receipt(tmp_path):
     """Eviction must not leave a retry unindexed or allow an obsolete cached ACK."""
     ground = tmp_path / 'ground'
@@ -272,6 +278,7 @@ def test_session_calibration_is_frozen_across_restart(tmp_path):
     store.close()
 
 
+@pytest.mark.integration
 def test_upload_summary_has_pending_and_cleanup_states_without_paths(tmp_path):
     """Ground notices can distinguish pending uploads without exposing aircraft paths."""
     queue = LocalQueue(tmp_path / 'cache', 'refresh', 'local', str(tmp_path / 'ground'), 0, 0)
@@ -287,6 +294,7 @@ def test_upload_summary_has_pending_and_cleanup_states_without_paths(tmp_path):
     queue.close()
 
 
+@pytest.mark.integration
 def test_capacity_grace_preserves_receipt_then_evicts_original(tmp_path, monkeypatch):
     """An over-capacity arrival gets a short ACK window and a visible storage warning."""
     ground = tmp_path / 'ground'
@@ -323,6 +331,7 @@ def test_failed_recording_staging_is_managed_but_active_is_preserved(tmp_path):
     store.close()
 
 
+@pytest.mark.integration
 def test_serial_inspections_upload_finalize_and_download_their_single_08_video(tmp_path):
     """Deliver both rounds' photos and video over real rsync/FTP despite reused capture counters."""
     ground = GroundMedia({

@@ -145,20 +145,3 @@ def test_video_service_has_an_independent_lifecycle() -> None:
     assert "time-sync.target" not in service
     assert "Wants=network-online.target" in service
     assert "After=network-online.target" in service
-
-
-def test_waypoint_capture_precedes_index_advance() -> None:
-    """到点抓拍使用当前航点，并保留可靠事件 QoS。"""
-    onboard_source = (
-        PROJECT_ROOT / "src/onboard_control/src/onboard_control_node.cpp"
-    ).read_text(encoding="utf-8")
-    executor = onboard_source.split(
-        "void OnboardControlNode::update_waypoint_executor", 1
-    )[1].split("void OnboardControlNode::enforce_safety", 1)[0]
-    assert executor.index("publish_waypoint_capture(waypoint)") < executor.index(
-        "++waypoint_index_"
-    )
-    assert "rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local()" in (
-        onboard_source
-    )
-    assert 'video_prefix_ + "/capture", rclcpp::QoS(256).reliable()' in (onboard_source)

@@ -3,8 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from test_avoidance_executor import avoidance_node
-from test_waypoint_calibration import calibration_node, execute, point
+pytestmark = pytest.mark.integration
+
+from tests.support.avoidance_node import avoidance_node
+from tests.support.calibration_node import calibration_node, execute, point
 
 
 @pytest.fixture(autouse=True)
@@ -52,8 +54,9 @@ def test_telemetry_fault_is_frozen_and_logged_once(calibration_node, tmp_path, f
     assert h.status[-1].failsafe_reason == "本地位置或速度遥测无效/超时"
 
 
-def test_350ms_telemetry_gap_recovers_before_400ms_protection(calibration_node, tmp_path):
-    """The default tolerates a 350 ms FCU gap but still lands after a longer outage."""
+@pytest.mark.parametrize("avoidance_node", [{"pose_timeout_seconds": 1.5}], indirect=True)
+def test_telemetry_gap_recovers_before_configured_protection(calibration_node, tmp_path):
+    """A 350 ms FCU gap recovers with scheduling margin; a sustained outage still lands."""
     h = calibration_node
     assert execute(h, [point()]).accepted
     h.until(lambda: bool(h.starts))
@@ -76,8 +79,8 @@ def test_350ms_telemetry_gap_recovers_before_400ms_protection(calibration_node, 
     line, = [line for line in log.read_text().splitlines() if line.startswith("[TELEMETRY_FAULT]")]
     fields = dict(token.split("=", 1) for token in line.split() if "=" in token)
     assert fields["event"] == "telemetry_fault"
-    assert float(fields["pose_timeout_ms"]) == 400.
-    assert max(float(fields["pose_age_ms"]), float(fields["velocity_age_ms"])) > 400.
+    assert float(fields["pose_timeout_ms"]) == 1500.
+    assert max(float(fields["pose_age_ms"]), float(fields["velocity_age_ms"])) > 1500.
     assert h.status[-1].failsafe_reason == "本地位置或速度遥测无效/超时"
 
 

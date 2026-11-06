@@ -66,6 +66,7 @@ def wait_for(app, predicate):
     assert predicate()
 
 
+@pytest.mark.integration
 def test_file_api_download_and_original_boundary(media_api, tmp_path: Path):
     """原片不可下载；处理版通过API保存，重建保留原片ID。"""
     url, records, actions = media_api
@@ -82,6 +83,7 @@ def test_file_api_download_and_original_boundary(media_api, tmp_path: Path):
     assert "缺失" not in record_basis(records[0])
 
 
+@pytest.mark.integration
 def test_file_window_async_filter_and_close(media_api):
     """飞机离线无关；筛选保持真实状态，关窗不发送停止请求。"""
     url, _records, actions = media_api
@@ -135,6 +137,8 @@ def test_file_manager_launcher_is_independent():
         _close_window(window)
 
 
+@pytest.mark.integration
+@pytest.mark.real_media_http
 def test_camera_media_status_async_context_and_parent_close(media_api):
     """状态组件复用inventory并传递任务筛选，关父面板仅停轮询。"""
     import sys
@@ -182,6 +186,7 @@ def test_camera_media_status_async_context_and_parent_close(media_api):
     assert actions == []
 
 
+@pytest.mark.integration
 def test_file_window_initial_mission_filter(media_api):
     """摄像头快捷入口在第一次inventory读取时应用任务筛选。"""
     url, _records, _actions = media_api
@@ -341,6 +346,7 @@ def test_file_window_directory_probe_runs_only_on_click_in_worker(monkeypatch, t
 
 
 @pytest.mark.parametrize("action", ["directory", "open"])
+@pytest.mark.integration
 def test_file_window_reports_desktop_failure_across_refresh(media_api, monkeypatch, tmp_path, action):
     """真实按钮完成目录检查/下载后，桌面拒绝打开应可见且不被轮询覆盖。"""
     from PySide6.QtGui import QDesktopServices
@@ -428,6 +434,7 @@ def test_file_window_video_cache_error_is_reported(monkeypatch, tmp_path):
         app.processEvents()
 
 
+@pytest.mark.integration
 def test_inventory_unix_date_processed_size_and_cache_cleanup(media_api, monkeypatch):
     """真实合同使用UTC Unix时间及处理版大小，机载缓存删除按策略清理。"""
     from datetime import datetime, timezone

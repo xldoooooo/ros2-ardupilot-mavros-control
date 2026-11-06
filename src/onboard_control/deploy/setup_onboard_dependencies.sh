@@ -128,6 +128,7 @@ run_root apt-get install -y \
   ffmpeg geographiclib-tools v4l-utils \
   "ros-${ROS_DISTRO}-ros-base" \
   "ros-${ROS_DISTRO}-ament-cmake-gtest" \
+  "ros-${ROS_DISTRO}-ament-cmake-pytest" \
   "ros-${ROS_DISTRO}-eigen3-cmake-module" \
   "ros-${ROS_DISTRO}-geographic-msgs" \
   "ros-${ROS_DISTRO}-mavros" \

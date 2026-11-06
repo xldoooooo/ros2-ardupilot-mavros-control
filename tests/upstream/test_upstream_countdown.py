@@ -19,6 +19,10 @@ from ground_station_core.upstream.mapping import parse_command
 from tests.support.qt import _close_window, _operational_snapshot, _window
 
 
+# Real modal countdowns exercise the complete Qt timing workflow.
+pytestmark = pytest.mark.integration
+
+
 def _hardware_window(*, armed: bool):
     """仅切换替身窗口的门控模式，绝不创建真实 ROS 或硬件连接。"""
     window, ros = _window(_operational_snapshot(armed=armed))
@@ -46,16 +50,21 @@ def test_hardware_inspection_completes_all_countdowns_without_confirmation(monke
         started = time.monotonic()
         call_count = len(ros.calls)
         observed_text = []
+        dialog_observations = []
+        observations.append(dialog_observations)
 
         def observe() -> None:
             """在真正的模态事件循环中读取倒计时视图。"""
-            text = dialog.informativeText()
+            label = dialog.findChild(QLabel, "qt_msgbox_informativelabel")
+            if label is None or not dialog.isVisible():
+                return
+            text = label.text()
             if observed_text and observed_text[-1] == text:
                 return
             observed_text.append(text)
             title = dialog.findChild(QFrame, "dialogTitleBar")
             body = dialog.findChild(QLabel, "qt_msgbox_label")
-            observations.append((
+            dialog_observations.append((
                 dialog.standardButtons(), text,
                 len(ros.calls), call_count,
                 title.mapTo(dialog, QPoint()).y() + title.height()
@@ -67,6 +76,7 @@ def test_hardware_inspection_completes_all_countdowns_without_confirmation(monke
         observer.timeout.connect(observe)
         dialog.finished.connect(observer.stop)
         observer.start(50)
+        QTimer.singleShot(0, observe)
         dialog.finished.connect(lambda _result: elapsed.append(time.monotonic() - started))
         return dialog
 
@@ -107,12 +117,18 @@ def test_hardware_inspection_completes_all_countdowns_without_confirmation(monke
         assert window._upstream_sequence is None
         assert window._upstream_countdown is None
         assert len(elapsed) == 3 and all(duration >= 3.0 for duration in elapsed)
-        assert len(observations) == 9
-        for index, (buttons, text, count, before, layout_ok) in enumerate(observations):
-            assert buttons == QMessageBox.StandardButton.Cancel
-            assert f"{3 - index % 3} 秒后自动执行" in text
-            assert count == before
-            assert layout_ok
+        assert len(observations) == 3
+        for samples in observations:
+            assert samples
+            remaining = []
+            for buttons, text, count, before, layout_ok in samples:
+                assert buttons == QMessageBox.StandardButton.Cancel
+                seconds = next(value for value in (3, 2, 1) if f"{value} 秒后自动执行" in text)
+                remaining.append(seconds)
+                assert count == before
+                assert layout_ok
+            # 忙碌的事件循环可以跳过显示采样，但已观测秒数不得倒退。
+            assert remaining == sorted(set(remaining), reverse=True)
     finally:
         _close_window(window)
 

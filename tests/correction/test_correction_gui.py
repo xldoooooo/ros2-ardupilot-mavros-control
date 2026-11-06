@@ -13,8 +13,8 @@ from unittest.mock import patch
 from ground_station_core.config import PROJECT_ROOT
 
 
-def test_correction_panel_launcher_is_detached_from_ground_station_cleanup() -> None:
-    """修正面板紧邻摄像头入口，独立启动且不进入地面站清理链。"""
+def test_correction_panel_uses_detached_launcher_without_startup_cleanup() -> None:
+    """修正面板使用独立启动入口，启动时不调用地面站清理。"""
     environment = _FakeEnvironment()
     window, _ros = _window(_operational_snapshot(armed=False), environment=environment)
     try:

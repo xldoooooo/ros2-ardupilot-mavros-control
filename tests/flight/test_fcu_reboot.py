@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 def test_reboot_requires_ground_and_boot_evidence_then_recovers(tmp_path):
     """Reject unsafe/stale states; ACK alone is insufficient; external reboot also recovers."""

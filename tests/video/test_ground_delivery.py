@@ -68,6 +68,7 @@ def close(media):
     media.store.close()
 
 
+@pytest.mark.integration
 def test_incomplete_live_video_finishes_without_original_upload(tmp_path):
     """A playable local file with missing time is immediately selected and survives restart."""
     media = ground(tmp_path)
@@ -88,6 +89,7 @@ def test_incomplete_live_video_finishes_without_original_upload(tmp_path):
         close(media)
 
 
+@pytest.mark.integration
 def test_multiple_live_fragments_are_joined_without_original(tmp_path):
     """Keep every playable fragment in one public file without hiding the interruption."""
     media = ground(tmp_path)
@@ -108,6 +110,7 @@ def test_multiple_live_fragments_are_joined_without_original(tmp_path):
         close(media)
 
 
+@pytest.mark.integration
 def test_corrupt_live_requests_original_and_builds_real_playable_fallback(tmp_path):
     """Only a failed local decode opens the held original upload, then correct it once."""
     media = ground(tmp_path)
@@ -136,6 +139,7 @@ def test_corrupt_live_requests_original_and_builds_real_playable_fallback(tmp_pa
 
 
 @pytest.mark.parametrize('cause', ['manual', 'timeout'])
+@pytest.mark.integration
 def test_failure_stops_retry_and_processing_across_restart(tmp_path, cause):
     """Manual intervention or elapsed landing deadline freezes this round, not the next."""
     media = ground(tmp_path, timeout=1)
@@ -197,6 +201,7 @@ def test_failed_latest_notice_still_updates_other_session_availability(tmp_path)
         close(media)
 
 
+@pytest.mark.integration
 def test_failed_delivery_terminates_running_processing_job(tmp_path):
     """A final decision interrupts an actual worker process rather than merely hiding its result."""
     media = ground(tmp_path)

@@ -1,12 +1,16 @@
-"""任务 27 的 sparse、extnav 备份和独立 systemd 部署边界回归测试。"""
+"""独立部署边界的辅助静态契约与隔离生产启动器执行测试。"""
 
 from __future__ import annotations
 
 import os
 import subprocess
+import shutil
+
+import pytest
 from pathlib import Path
 from xml.etree import ElementTree
 
+# Repository deployment and source boundaries under test.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORRECTION_ROOT = PROJECT_ROOT / "correction_service"
 CORRECTION_START = PROJECT_ROOT / "scripts/onboard/start_onboard_correction.sh"
@@ -37,7 +41,7 @@ def test_correction_20_source_manifests_and_generators_are_synchronized() -> Non
 
 
 def test_extnav_installer_refuses_running_chain_and_backs_up_before_install() -> None:
-    """生产 extnav 覆盖前必须先停服务/进程并生成可校验定点备份。"""
+    """辅助静态清单：构建和定点备份要求；拒绝运行链由隔离执行验证。"""
     script = _text(CORRECTION_ROOT / "deploy" / "install_extnav_correction.sh")
 
     assert 'systemctl is-active --quiet "${FLIGHT_SERVICE}"' in script
@@ -55,10 +59,43 @@ def test_extnav_installer_refuses_running_chain_and_backs_up_before_install() ->
     assert "/mavros/cmd/arming" not in script
 
 
-def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node() -> (
-    None
-):
-    """修正服务必须是独立故障域，并只启动默认 idle 的 correction_node。"""
+@pytest.mark.parametrize("running", ["service", "process"])
+def test_extnav_installer_refuses_running_chain_before_build_or_write(tmp_path, running):
+    """真实安装脚本遇到活动链时退出，不能构建或修改已有桥源码。"""
+    target = tmp_path / "external/src/extnav_bridge"
+    target.mkdir(parents=True)
+    manifest = target / "package.xml"
+    manifest.write_text("existing bridge\n")
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    calls = tmp_path / "calls"
+    scripts = {
+        "id": "printf '1000\\n'\n",
+        "systemctl": 'printf "systemctl\\n" >> "$TEST_CALLS"\n[[ "$TEST_RUNNING" == service ]]\n',
+        "pgrep": 'printf "pgrep\\n" >> "$TEST_CALLS"\n[[ "$TEST_RUNNING" == process ]]\n',
+        "colcon": 'printf "colcon\\n" >> "$TEST_CALLS"\nexit 99\n',
+    }
+    for name, content in scripts.items():
+        executable = tools / name
+        executable.write_text("#!/usr/bin/env bash\n" + content)
+        executable.chmod(0o755)
+    environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
+                       EXTNAV_WORKSPACE=str(tmp_path / "external"),
+                       EXTNAV_BACKUP_ROOT=str(tmp_path / "backups"),
+                       TEST_CALLS=str(calls), TEST_RUNNING=running)
+    result = subprocess.run(
+        ["bash", str(CORRECTION_ROOT / "deploy/install_extnav_correction.sh")],
+        env=environment, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert ("is active" if running == "service" else "still running") in result.stderr
+    assert calls.read_text().splitlines() == (["systemctl"] if running == "service" else ["systemctl", "pgrep"])
+    assert manifest.read_text() == "existing bridge\n"
+    assert not (tmp_path / "backups").exists()
+
+
+def test_correction_unit_has_no_flight_service_dependency() -> None:
+    """辅助静态契约：修正服务须独立部署；idle 行为由节点测试验证。"""
     unit = _text(PROJECT_ROOT / "system/systemd/odin-correction.service")
     installer_path = CORRECTION_ROOT / "deploy" / "install_correction_service.sh"
     installer = _text(installer_path)
@@ -94,14 +131,6 @@ def test_correction_unit_has_no_flight_service_dependency_and_starts_idle_node()
     assert "correction_interfaces/srv/ClearWindow" in installer
     assert 'systemctl enable --now "${SERVICE_NAME}"' in installer
     assert "/mavros/cmd/arming" not in installer
-    node = _text(CORRECTION_ROOT / "correction_service" / "node.py")
-    constructor = node[node.index("def __init__") : node.index("def _on_odometry")]
-    assert "create_subscription(\n            Odometry" not in constructor
-    assert "create_subscription(\n            Image" not in constructor
-    assert "def _start_odometry_capture" in node
-    assert "def _start_image_capture" in node
-    assert "self._stop_image_capture()" in node
-    assert "self.destroy_subscription(subscription)" in node
 
 
 def test_correction_root_launchers_are_independent_and_executable() -> None:
@@ -165,13 +194,10 @@ def test_onboard_sparse_checkout_and_build_include_correction_packages() -> None
     assert (
         "for onboard_package in guided_interfaces correction_interfaces" not in launcher
     )
-    extnav = _text(CORRECTION_ROOT / "extnav_patch" / "extnav_to_vision_pose.py")
-    assert "except ImportError:" in extnav
-    assert "保持 identity passthrough" in extnav
 
 
 def test_correction_sources_contain_no_arm_takeoff_or_mode_command_endpoint() -> None:
-    """新模块只能校准坐标，不得暗含任何飞行控制写入口。"""
+    """辅助静态检查：覆盖 Python、C++ 与 shell 的直接飞控命令引用。"""
     forbidden = (
         "/mavros/cmd/arming",
         "/mavros/cmd/takeoff",
@@ -179,9 +205,43 @@ def test_correction_sources_contain_no_arm_takeoff_or_mode_command_endpoint() ->
         "FlightCommand",
         "MotionIntent",
     )
-    source_files = tuple(CORRECTION_ROOT.rglob("*.py")) + tuple(
-        CORRECTION_ROOT.rglob("*.sh")
-    )
+    source_files = [
+        path for path in CORRECTION_ROOT.rglob("*")
+        if path.is_file() and (path.suffix in {".py", ".sh", ".cpp", ".hpp", ".h"}
+                               or path == CORRECTION_ROOT / "extnav_patch/scripts/extnav_to_vision_pose")
+        and "test" not in path.relative_to(CORRECTION_ROOT).parts
+    ]
     combined = "\n".join(_text(path) for path in source_files)
     for token in forbidden:
         assert token not in combined
+
+
+@pytest.mark.parametrize("native_state", ["available", "missing_library", "absent"])
+def test_extnav_production_launcher_selects_native_or_identity(tmp_path, native_state):
+    """真实启动器在隔离目录检查库并透传参数，不依赖旧 Python fallback。"""
+    launcher = tmp_path / "extnav_to_vision_pose"
+    shutil.copy2(CORRECTION_ROOT / "extnav_patch/scripts/extnav_to_vision_pose", launcher)
+    output = tmp_path / "selected.txt"
+    arguments = ["--ros-args", "-r", "__node:=isolated test", "-p", "value:=a b"]
+    for name in ("native", "identity"):
+        executable = tmp_path / f"extnav_to_vision_pose_{name}"
+        executable.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\n' '{name}' \"$@\" > \"${{LAUNCHER_OUTPUT}}\"\n"
+        )
+        executable.chmod(0o755)
+    if native_state == "absent":
+        (tmp_path / "extnav_to_vision_pose_native").unlink()
+    ldd = tmp_path / "ldd"
+    ldd.write_text(
+        "#!/usr/bin/env bash\n"
+        + ("echo 'libcorrection_interfaces.so => not found'\nexit 1\n"
+           if native_state == "missing_library" else "echo 'all test dependencies resolved'\n")
+    )
+    ldd.chmod(0o755)
+    environment = dict(os.environ, PATH=f"{tmp_path}:{os.defpath}", LAUNCHER_OUTPUT=str(output))
+    result = subprocess.run([str(launcher), *arguments], env=environment,
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    expected = "native" if native_state == "available" else "identity"
+    assert output.read_text().splitlines() == [expected, *arguments]

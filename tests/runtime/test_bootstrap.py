@@ -7,6 +7,9 @@ import signal
 import subprocess
 import sys
 
+import pytest
+
+import ground_station
 from ground_station import _install_termination_signal_handlers, _TERMINATION_SIGNALS
 import ground_station_core.config as project_config
 from ground_station_core.config import PROJECT_ROOT
@@ -32,12 +35,15 @@ def test_terminal_signals_are_forwarded_and_handlers_are_restored() -> None:
     assert all(signal.getsignal(signum) == value for signum, value in original.items())
 
 
+@pytest.mark.integration
 def test_direct_launcher_bootstraps_workspace_from_clean_environment() -> None:
     """用户直接运行 ground_station.py 时应自动找到生成的接口包。"""
     clean_environment = {
         "HOME": os.environ["HOME"],
         "PATH": os.environ["PATH"],
         "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "ROS_DOMAIN_ID": "231",
+        "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
     }
     completed = subprocess.run(
         [
@@ -59,24 +65,29 @@ def test_direct_launcher_bootstraps_workspace_from_clean_environment() -> None:
     assert "No module named 'guided_interfaces'" not in completed.stdout
 
 
-def test_local_cleanup_entry_runs_without_creating_the_gui() -> None:
+def test_local_cleanup_entry_runs_without_creating_the_gui(monkeypatch) -> None:
     """父级启动壳必须能在 GUI 退出后独立执行幂等本地残留扫描。"""
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(PROJECT_ROOT / "ground_station.py"),
-            "--cleanup-local-processes",
-        ],
-        cwd=PROJECT_ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=20.0,
-        check=False,
-    )
+    from ground_station_core.process_manager import ProcessSupervisor
 
-    assert completed.returncode == 0, completed.stdout
-    assert "PySide6" not in completed.stdout
+    monkeypatch.setattr(sys, "argv", ["ground_station.py", "--cleanup-local-processes"])
+    # 自举由上一用例覆盖；在 pytest 内执行才能继承受限的真实进程扫描。
+    monkeypatch.setattr(ground_station, "ensure_workspace_environment", lambda _path: None)
+    calls = []
+    original = ProcessSupervisor.terminate_all
+
+    def cleanup(supervisor):
+        """执行真实清理入口，记录它确实经过受限扫描。"""
+        calls.append(True)
+        return original(supervisor)
+
+    def forbidden_gui():
+        """清理入口必须在任何 GUI 初始化之前返回。"""
+        raise AssertionError("cleanup created the GUI")
+
+    monkeypatch.setattr(ProcessSupervisor, "terminate_all", cleanup)
+    monkeypatch.setattr(ground_station, "_configure_wayland_window_decorations", forbidden_gui)
+    ground_station.main()
+    assert calls == [True]
 
 
 def test_python_runtime_selects_an_installed_humble_underlay(monkeypatch, tmp_path) -> None:

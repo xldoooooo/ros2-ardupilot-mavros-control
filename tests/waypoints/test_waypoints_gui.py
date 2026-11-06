@@ -115,8 +115,8 @@ def test_environment_session_gates_start_buttons_and_waypoint_widgets() -> None:
         _close_window(window)
 
 
-def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
-    """飞行前锁定三项选择，仿真有效组合免确认、实机保留确认。"""
+def test_waypoint_configuration_defaults_and_airborne_lock() -> None:
+    """飞行前三项选择可编辑，解锁后锁定当前组合。"""
     from ground_station_core.models import (
         WaypointFlightStrategy,
         WaypointReferenceGenerator,
@@ -163,6 +163,26 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         assert not window.waypoints.reference_combo.isEnabled()
         assert not window.waypoints.tracking_combo.isEnabled()
 
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_simulation_and_hardware_confirmation() -> None:
+    """仿真有效组合免确认；实机任务只有用户确认后才发送。"""
+    from ground_station_core.models import (
+        WaypointFlightStrategy, WaypointReferenceGenerator, WaypointTrackingController,
+    )
+
+    window, ros = _window(_operational_snapshot(armed=False))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
+        window.waypoints.add_button.click()
+        window.waypoints.x_input.setValue(2.)
+        window.waypoints.add_button.click()
+        ros.current_snapshot = _operational_snapshot(armed=True)
+        window._refresh()
         window._confirm_action = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("仿真航点发送不得弹出二次确认")
         )
@@ -203,6 +223,17 @@ def test_waypoint_confirmation_and_responsive_two_column_splitters() -> None:
         assert controller_arg is WaypointTrackingController.TRAJECTORY_PD_DOB
         assert photo_nos_arg == ()
 
+    finally:
+        _close_window(window)
+
+
+def test_waypoint_responsive_two_column_splitters() -> None:
+    """两种窗口尺寸均保留操作、航点和日志区域的可见空间。"""
+    window, _ros = _window(_operational_snapshot(armed=False))
+    try:
+        window._environment_active = True
+        window._connection_mode = "simulation"
+        window._refresh()
         for width, height in ((1180, 700), (1800, 1000)):
             window.resize(width, height)
             from tests.support.qt import _wait_for

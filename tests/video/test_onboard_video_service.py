@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+# 独立ROS视频测试统一归入集成层。
+pytestmark = pytest.mark.integration
+# 仓库位置仅用于启动当前实现。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -72,10 +75,21 @@ class _FakeCameraController:
         self.running = False
 
 
-def test_video_node_process_exits_cleanly_on_sigint() -> None:
+def test_video_node_process_exits_cleanly_on_sigint(tmp_path) -> None:
     """Jazzy signal handler 已关闭 context 时，主函数不得重复 shutdown 后报错。"""
     pytest.importorskip("rclpy")
+    config = tmp_path / "camera.conf"
+    config.write_text(
+        "[camera]\ndevice=/dev/video-test\ncodec=h264\nwidth=1280\nheight=720\nfps=30\n"
+        "[rtsp]\nadvertise_ip=127.0.0.1\n"
+        f"[storage]\nvideo_directory={tmp_path / 'videos'}\nimage_directory={tmp_path / 'images'}\n",
+        encoding="utf-8",
+    )
     environment = os.environ.copy()
+    environment["VIDEO_SERVICE_ONBOARD_CONFIG"] = str(config)
+    environment["VIDEO_SERVICE_CONFIG"] = str(tmp_path / "camera.json")
+    environment["XDG_RUNTIME_DIR"] = str(tmp_path / "run")
+    environment["XDG_STATE_HOME"] = str(tmp_path / "state")
     environment["ROS_DOMAIN_ID"] = "226"
     environment["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
     environment["PYTHONUNBUFFERED"] = "1"
@@ -87,13 +101,25 @@ def test_video_node_process_exits_cleanly_on_sigint() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    lines = []
+    ready = threading.Event()
+
+    def consume_output():
+        """持续排空日志并等待真实就绪，避免固定睡眠遮蔽慢启动。"""
+        for line in process.stdout:
+            lines.append(line)
+            if "独立机载视频服务已启动" in line:
+                ready.set()
+
+    reader = threading.Thread(target=consume_output, daemon=True)
+    reader.start()
     try:
-        time.sleep(1.0)
+        assert ready.wait(10.0), "".join(lines)
         assert process.poll() is None
         process.send_signal(signal.SIGINT)
-        output, _ = process.communicate(timeout=8.0)
-        assert process.returncode == 0, output
-        assert "独立机载视频服务已启动" in output
+        process.wait(timeout=8.0)
+        reader.join(timeout=2.0)
+        assert process.returncode == 0, "".join(lines)
     finally:
         if process.poll() is None:
             process.terminate()

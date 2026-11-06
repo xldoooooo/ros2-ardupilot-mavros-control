@@ -7,8 +7,10 @@ import time
 
 import pytest
 
-from test_avoidance_executor import avoidance_node
-from test_waypoint_calibration import calibration_node, execute, point
+pytestmark = pytest.mark.integration
+
+from tests.support.avoidance_node import avoidance_node
+from tests.support.calibration_node import calibration_node, execute, point
 
 
 @pytest.fixture(scope="session")

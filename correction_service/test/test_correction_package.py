@@ -24,35 +24,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "correction"
 
 
-def test_aircraft_configuration_loads_for_expected_tag() -> None:
-    """真机临时配置须可解析，并保留上一颗相机的安装方向假设。"""
+def test_source_profile_loads_compatible_correction_contract() -> None:
+    """包级检查源码档案可解析且保留 FCU 坐标契约，允许现场重新标定。"""
     config = load_config(CONFIG_DIR)
 
+    assert config.interface_version == "2.0"
     assert config.detection.tag_family == "tag36h11"
-    assert config.camera.width == 1920
-    assert config.camera.height == 1080
-    assert config.camera.fps == 120
-    # assert config.tags[0].size_m == 0.170  # don't use fixed size_m for test
-    assert config.detection.max_correction_tilt_deg == 10.0
-    assert math.degrees(config.window.max_apply_yaw_jump_rad) == 45.0
-    assert list(config.lens_controls)[:3] == [
-        "auto_exposure",
-        "white_balance_automatic",
-        "focus_automatic_continuous",
-    ]
-    assert config.lens_controls["auto_exposure"] == 3
-    assert config.lens_controls["brightness"] == 0
-    assert math.isclose(config.intrinsics.calibration_rms_px, 0.8863085437393902)
-    assert np.allclose(config.intrinsics.distortion,
-                       [0.03626268524324754, -0.056048601794863075,
-                        0.0010844756398792788, -0.0010052529149732062, 0.00958122664915688])
+    assert (config.camera.width, config.camera.height) == (config.intrinsics.width, config.intrinsics.height)
+    assert config.camera.fps > 0
+    assert config.camera.driver_package == "correction_service"
+    assert config.tags
+    assert all(tag.size_m > 0 for tag in config.tags.values())
+    assert np.allclose(config.t_fcu_camera[3], (0., 0., 0., 1.))
     rotation = config.t_fcu_camera[:3, :3]
-    # Task32撤销把Tag约定错误归因于相机的180°补偿；原始画面上方接近
-    # FCU +X，光轴接近 FCU -Z。Tag官方图案与OpenCV角点差异由geometry处理。
-    image_up_in_fcu = rotation @ np.array((0.0, -1.0, 0.0))
-    optical_axis_in_fcu = rotation @ np.array((0.0, 0.0, 1.0))
-    assert image_up_in_fcu[0] > math.cos(math.radians(10.0))
-    assert optical_axis_in_fcu[2] < -math.cos(math.radians(10.0))
+    assert np.allclose(rotation.T @ rotation, np.eye(3))
+    assert math.isclose(np.linalg.det(rotation), 1.)
 
 
 def test_planar_correction_rotates_translation_and_preserves_z() -> None:

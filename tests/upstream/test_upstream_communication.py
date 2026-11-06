@@ -619,6 +619,7 @@ def test_handshake_timeout_backoff_is_bounded_and_resets_after_success(
     assert observed[:6] == [15.0, 20.0, 25.0, 30.0, 30.0, 15.0]
 
 
+@pytest.mark.integration
 def test_websocket_service_uses_topic_envelopes_and_separate_raw_journal(
     tmp_path,
 ) -> None:
@@ -831,6 +832,7 @@ def test_media_send_failure_retains_inflight_and_queued_events(tmp_path, interru
     asyncio.run(scenario())
 
 
+@pytest.mark.integration
 def test_local_websocket_replays_events_after_reconnect_and_refreshes_standby(tmp_path) -> None:
     """本机服务断开后补发07/08/09，并重新判断01，不重放旧遥测。"""
     import websockets
@@ -880,8 +882,6 @@ def test_local_websocket_replays_events_after_reconnect_and_refreshes_standby(tm
             event_log=EventLog(), on_command=lambda command: None, url=url,
             client_no='UAV01001', auto_connect=True, config_path=tmp_path / 'upstream.json')
         service._RECONNECT_SECONDS = .05
-        service._media_reader.start = lambda: None
-        service._media_reader.stop = lambda **kwargs: True
         ready = VehicleSnapshot(local_position_valid=True)
         service.start()
         try:

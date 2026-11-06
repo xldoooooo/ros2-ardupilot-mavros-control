@@ -1,6 +1,7 @@
 """RViz 航点图层、只读位姿桥、时间域与运行依赖回归。"""
 
 import yaml
+import pytest
 
 from ground_station_core.config import PROJECT_ROOT
 from ground_station_core.ros_controller import (
@@ -12,27 +13,31 @@ from ground_station_core.ros_controller import (
 
 def test_rviz_config_uses_matching_retained_marker_and_path_topics() -> None:
     """MarkerArray/Path 类型与话题必须匹配，且模型使用隔离 description/TF。"""
-    config = (
+    config = yaml.safe_load((
         PROJECT_ROOT / "src" / "guided_sim" / "rviz" / "quadcopter.rviz"
-    ).read_text(encoding="utf-8")
-
-    assert "Class: rviz_default_plugins/MarkerArray" in config
-    assert f"Value: {WAYPOINT_MARKERS_TOPIC}" in config
-    assert "Class: rviz_default_plugins/Path" in config
-    assert f"Value: {WAYPOINT_PATH_TOPIC}" in config
-    assert config.count("Durability Policy: Transient Local") >= 3
-    assert "Value: /ground_station_preview/robot_description" in config
+    ).read_text(encoding="utf-8"))["Visualization Manager"]
+    displays = {display["Name"]: display for display in config["Displays"]}
+    for name, display_class, topic in (
+        ("Waypoints", "MarkerArray", WAYPOINT_MARKERS_TOPIC),
+        ("Waypoint Path", "Path", WAYPOINT_PATH_TOPIC),
+    ):
+        display = displays[name]
+        assert display["Class"] == f"rviz_default_plugins/{display_class}"
+        assert display["Enabled"]
+        assert display["Topic"]["Value"] == topic
+        assert display["Topic"]["Durability Policy"] == "Transient Local"
+        assert display["Topic"]["Reliability Policy"] == "Reliable"
+        assert display["Topic"]["Depth"] == 1
+    model = displays["RobotModel"]
+    assert model["Description Topic"]["Value"] == "/ground_station_preview/robot_description"
+    assert model["Description Topic"]["Durability Policy"] == "Transient Local"
     # RViz 自行插入斜杠；尾部再带 '/' 会错误查找 preview//base_link。
-    assert "TF Prefix: ground_station_preview" in config
-    assert "TF Prefix: ground_station_preview/" not in config
-    assert "/mavros/local_position/pose" not in config
-    assert "Update Interval: 0.10000000149011612" in config
-    assert "Frame Rate: 15" in config
-    tf_display = config.split("Class: rviz_default_plugins/TF", 1)[1].split(
-        "Class: rviz_default_plugins/MarkerArray", 1
-    )[0]
-    assert "Enabled: false" in tf_display
-    assert "Value: false" in tf_display
+    assert model["TF Prefix"] == "ground_station_preview"
+    assert model["Update Interval"] == .10000000149011612
+    assert config["Global Options"]["Frame Rate"] == 15
+    assert displays["TF"]["Frames"]["All Enabled"] is False
+    assert all(display.get("Topic", {}).get("Value") != "/mavros/local_position/pose"
+               for display in displays.values())
 
 
 def test_pose_bridge_selects_local_sim_or_aggregated_hardware_pose() -> None:
@@ -121,6 +126,7 @@ def test_pose_bridge_converts_fcu_pose_to_map_without_changing_source() -> None:
             assert transform.transform.rotation == pose.pose.orientation
 
 
+@pytest.mark.integration
 def test_pose_bridge_mode_switches_keep_queryable_model_chain_through_real_dds() -> None:
     """设备秒地图与墙钟位姿经真实 DDS 连续切换两轮，模型整链始终可查询。"""
     import importlib.util

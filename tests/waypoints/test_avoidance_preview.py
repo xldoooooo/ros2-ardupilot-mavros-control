@@ -5,6 +5,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.integration
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from guided_interfaces.msg import AvoidanceResult, ControlStatus

@@ -4,8 +4,10 @@ import math
 
 import pytest
 
-from test_navigation_executor import navigation_node, navigation_process_settings
-from test_avoidance_executor import avoidance_node
+pytestmark = pytest.mark.integration
+
+from tests.support.navigation_node import navigation_node, navigation_process_settings
+from tests.support.avoidance_node import avoidance_node
 
 
 @pytest.fixture

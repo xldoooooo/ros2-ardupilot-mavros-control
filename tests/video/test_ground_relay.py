@@ -52,6 +52,7 @@ def test_calibration_matches_opencv_and_rejects_nan(tmp_path):
 
 
 @pytest.mark.parametrize('recording', (False, True))
+@pytest.mark.integration
 def test_cpu_keeps_source_gaps_and_full_range(tmp_path, recording):
     """An input gap must survive encoding rather than becoming fabricated continuous video."""
     source, output = tmp_path / 'source.mp4', tmp_path / 'corrected.mp4'

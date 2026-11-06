@@ -11,6 +11,9 @@ from nav_msgs.msg import Odometry
 from rclpy.context import Context
 from rclpy.parameter import Parameter
 
+# These cases create real ROS contexts and subscriptions.
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.parametrize("mount_pitch", (0.0, -math.radians(30.0)))
 def test_fcu_input_preserves_pose_and_rotates_body_twist(mount_pitch, monkeypatch):

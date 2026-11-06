@@ -16,6 +16,7 @@ namespace onboard_control
 namespace
 {
 
+/** 以实际 100 Hz 周期运行一段参考，直到生成器报告完成。 */
 std::vector<GeneratedReference> run_segment(
   ReferenceGenerator & generator,
   const Eigen::Vector3d & target,
@@ -194,6 +195,51 @@ TEST(ReferenceGenerator, JerkLimitedSCurveShortSegmentLowersPeakVelocity)
   }
   EXPECT_LT(maximum_velocity, parameters.s_curve.max_velocity_xy);
   EXPECT_TRUE(samples.back().control.position.isApprox(Eigen::Vector3d(0.05, 0.0, 0.0)));
+}
+
+TEST(ReferenceGenerator, MixedXyzSegmentsRespectIndependentHorizontalAndVerticalLimits)
+{
+  ReferenceGeneratorParameters parameters;
+  // 与 run_segment 的 100 Hz 更新保持一致，用于计算相邻样本的 jerk。
+  constexpr double sample_seconds = 0.01;
+  for (int method = 1; method < 4; ++method) {
+    for (double height : {-1.5, 1.5}) {
+      SCOPED_TRACE(::testing::Message() << "method=" << method << ", height=" << height);
+      const Eigen::Vector3d target(1.2, -1.6, height);
+      auto generator = make_reference_generator(
+        static_cast<ReferenceGeneratorType>(method), parameters);
+      const auto samples = run_segment(*generator, target);
+      ASSERT_FALSE(samples.empty());
+      ASSERT_TRUE(samples.back().finished);
+      EXPECT_TRUE(samples.back().control.position.isApprox(target));
+      const double velocity_xy = method == 1 ? parameters.second_order.max_velocity_xy :
+        method == 2 ? parameters.trapezoidal.max_velocity_xy : parameters.s_curve.max_velocity_xy;
+      const double velocity_z = method == 1 ? parameters.second_order.max_velocity_z :
+        method == 2 ? parameters.trapezoidal.max_velocity_z : parameters.s_curve.max_velocity_z;
+      const double acceleration_xy = method == 1 ? parameters.second_order.max_acceleration_xy :
+        method == 2 ? std::max(parameters.trapezoidal.max_acceleration_xy,
+          parameters.trapezoidal.max_deceleration_xy) :
+        std::max(parameters.s_curve.max_acceleration_xy, parameters.s_curve.max_deceleration_xy);
+      const double acceleration_z = method == 1 ? parameters.second_order.max_acceleration_z :
+        method == 2 ? std::max(parameters.trapezoidal.max_acceleration_z,
+          parameters.trapezoidal.max_deceleration_z) :
+        std::max(parameters.s_curve.max_acceleration_z, parameters.s_curve.max_deceleration_z);
+      for (std::size_t index = 0; index < samples.size(); ++index) {
+        const auto & control = samples[index].control;
+        EXPECT_LE(control.velocity.head<2>().norm(), velocity_xy + 1.0e-8);
+        EXPECT_LE(std::abs(control.velocity.z()), velocity_z + 1.0e-8);
+        EXPECT_LE(control.acceleration.head<2>().norm(), acceleration_xy + 1.0e-8);
+        EXPECT_LE(std::abs(control.acceleration.z()), acceleration_z + 1.0e-8);
+        EXPECT_NEAR(control.position.cross(target).norm(), 0.0, 1.0e-8);
+        if (method == 3 && index > 0 && !samples[index].finished) {
+          const auto jerk = (control.acceleration - samples[index - 1].control.acceleration) /
+            sample_seconds;
+          EXPECT_LE(jerk.head<2>().norm(), parameters.s_curve.max_jerk_xy + 1.0e-6);
+          EXPECT_LE(std::abs(jerk.z()), parameters.s_curve.max_jerk_z + 1.0e-6);
+        }
+      }
+    }
+  }
 }
 
 TEST(ReferenceGenerator, SecondOrderFilterConvergesWithinIndependentLimits)

@@ -13,9 +13,9 @@ from tests import run
     [
         ("video_service/camera_app/controller.py", {"video"}),
         ("correction_service/correction_service/window.py", {"correction"}),
-        ("src/correction_interfaces/msg/CorrectionStatus.msg", {"correction"}),
+        ("src/correction_interfaces/msg/CorrectionStatus.msg", {"correction", "flight", "waypoints"}),
         ("ground_station_core/upstream/protocol.py", {"upstream"}),
-        ("ground_station_core/waypoint_io.py", {"waypoints"}),
+        ("ground_station_core/waypoint_io.py", {"waypoints", "upstream"}),
         ("ground_station_core/qt_ui/waypoint_panel.py", {"waypoints"}),
         ("src/avoidance_bridge/src/avoidance_bridge.cpp", {"runtime", "flight", "waypoints"}),
         ("fpga_avoidance/workspace/src/fpga_uav_planner_ros2/setup.py", set()),
@@ -29,6 +29,15 @@ from tests import run
         ("ground_station_core/qt_ui/window_chrome.py", set(run.GROUPS)),
         ("ground_station_core/qt_ui/cached_shadow.py", set(run.GROUPS)),
         ("ground_station_core/qt_ui/log_history.py", {"ui"}),
+        ("ground_station_core/startup.py", {"runtime"}),
+        ("ground_station_core/ground_media_reader.py", {"upstream"}),
+        ("ground_station_core/upstream/status_projector.py", {"upstream", "video"}),
+        ("ground_station_core/upstream/mapping.py", {"upstream", "flight"}),
+        ("drivers/odin/src/odin_ros_driver/include/fcu_odometry.h", {"runtime", "flight", "correction"}),
+        ("scripts/onboard/switch_navigation_mode.sh", {"runtime", "flight", "waypoints"}),
+        ("src/onboard_control/src/waypoint_calibration.cpp", {"flight", "waypoints"}),
+        ("src/onboard_control/src/control_diagnostics.cpp", {"flight"}),
+        ("src/onboard_control/src/navigation_frame.cpp", {"flight", "waypoints"}),
         ("tests/video/test_camera_service.py", {"video"}),
         ("tests/test_camera_service.py", {"video"}),
         ("tests/test_ros_controller.py", {"flight", "waypoints"}),
@@ -58,6 +67,30 @@ def test_selection_unions_groups_and_reports_unmapped_code() -> None:
     ) == ({"video", "correction"}, ["new_module.py"])
 
 
+def test_tracked_product_sources_have_an_impact_rule() -> None:
+    """用实际产品源码清单发现新增漏项，而非只复述已知规则。"""
+    paths = subprocess.check_output(["git", "ls-files", "-z"], cwd=run.ROOT).decode().split("\0")
+    product = [path for path in paths
+               if Path(path).suffix in {".py", ".sh", ".bash", ".cpp", ".hpp", ".h", ".msg", ".srv"}
+               and not path.startswith(("agent/", "dev/", ".agents/"))]
+    assert run.select_groups(product)[1] == []
+
+
+def test_partial_cpp_registration_cannot_pass_as_complete(monkeypatch) -> None:
+    """旧构建只注册部分所选套件时，禁止直接执行并报告成功。"""
+    calls = []
+
+    def inventory(command, **kwargs):
+        """模拟仅有 DOB 的旧 CTest 构建清单。"""
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"tests":[{"name":"test_dob_controller"}]}', "")
+
+    monkeypatch.setattr(run.subprocess, "run", inventory)
+    assert run.execute(["ctest", "--test-dir", "build/onboard_control", "-R",
+                        "^(test_dob_controller|test_navigation_frame)$"]) == 1
+    assert len(calls) == 1
+
+
 def test_plan_collects_only_selected_directories_and_cpp_suites() -> None:
     """选择发生在 pytest 收集前；包级/C++ 回归也跟随所属功能。"""
     video = run.commands({"video"}, ["-x"])
@@ -66,6 +99,17 @@ def test_plan_collects_only_selected_directories_and_cpp_suites() -> None:
     correction = run.commands({"correction"}, [])
     assert correction[0][4:] == ["tests/correction", "correction_service/test"]
     waypoint = run.commands({"waypoints"}, [])
+    assert "test_navigation_frame" in waypoint[1][-1]
+    assert len(waypoint) == 5
+    assert "src/avoidance_bridge/test/test_backend_selection_ros.py" in waypoint[-1]
+    assert "AVOIDANCE_COORD_MODE=identity" in waypoint[2]
+    assert "AVOIDANCE_COORD_MODE=extnav" in waypoint[3]
+    unit = run.commands({"waypoints"}, [], "unit")
+    assert len(unit) == 2
+    assert unit[0][-2:] == ["-m", "not integration"]
+    integration = run.commands({"flight"}, [], "integration")
+    assert len(integration) == 1
+    assert integration[0][-2:] == ["-m", "integration"]
     assert "test_reference_generator" in waypoint[1][-1]
     assert "test_waypoint_arrival_tracker" in waypoint[1][-1]
     assert "test_avoidance_trajectory" in waypoint[1][-1]

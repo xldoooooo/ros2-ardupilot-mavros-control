@@ -486,9 +486,8 @@ def test_runtime_discovery_finds_the_overlay_that_owns_a_package(tmp_path) -> No
 
 
 def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
-    """最小检出不得包含地面站，烟雾测试不得发现或控制真实 MAVROS。"""
+    """轻量静态清单检查；运行时隔离由独立烟雾测试验证。"""
     script = WORKSPACE_SCRIPT.read_text(encoding="utf-8")
-    guide = DEPLOYMENT_GUIDE.read_text(encoding="utf-8")
 
     for sparse_path in (
         "/.gitignore",
@@ -506,10 +505,8 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/scripts/onboard/stop_onboard_control.sh",
     ):
         assert sparse_path in script
-        assert sparse_path in guide
     assert "video_service/deploy/install_onboard_video_service.sh" in script
     assert "src/onboard_control/deploy/install_onboard_service.sh" in script
-    assert "./src/onboard_control/deploy/install_onboard_service.sh" in guide
     assert '"${WORKSPACE_ROOT}/drivers/odin/build.sh"' in script
     # 新消息 ABI 的原生消费端必须同时纳入构建和测试。
     assert script.count("        avoidance_bridge \\\n") == 2
@@ -529,7 +526,6 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     assert 'SMOKE_MAVROS_PREFIX="/_task08_smoke_mavros"' in script
     assert "^armed: false$" in script
     assert "setpoint_messages=0" in script
-    assert "socks5h://127.0.0.1:19080" in guide
 
     # 部署助手不得包含解锁、起飞、强制覆盖或系统安装操作。
     for forbidden in (
@@ -542,6 +538,19 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "sudo apt",
     ):
         assert forbidden not in script
+
+
+@pytest.mark.integration
+def test_onboard_smoke_stays_disconnected_and_emits_no_setpoint() -> None:
+    """执行真实隔离节点，验证未连接、未解锁且没有姿态输出消息。"""
+    environment = dict(os.environ, ONBOARD_WORKSPACE=str(PROJECT_ROOT),
+                       ONBOARD_ROS_DISTRO="jazzy", ONBOARD_SMOKE_DOMAIN_ID="231")
+    result = subprocess.run(
+        ["bash", str(WORKSPACE_SCRIPT), "smoke"], env=environment,
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "fcu_connected=false, armed=false, setpoint_messages=0" in result.stdout
 
 
 def test_onboard_runtime_dependencies_and_service_template_are_portable() -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import csv
+import configparser
 import importlib.util
 import json
 import logging
@@ -37,6 +37,7 @@ from correction_service.synchronizer import (
 
 from correction_service.config import load_config
 
+# Source configuration baseline copied into temporary test profiles.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = PROJECT_ROOT / "config" / "aircraft" / "simulation" / "correction"
 
@@ -62,10 +63,12 @@ def test_shared_odin_geometry_changes_reference_and_fingerprint(tmp_path: Path) 
     shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", odin_path)
     before = load_config(root)
     odin = yaml.safe_load(odin_path.read_text())
-    odin["/**"]["ros__parameters"]["odin_x"] = 0.12
+    odin["/**"]["ros__parameters"]["odin_x"] = float(before.fcu_reference.lever_arm_m[0]) + 0.12
     odin_path.write_text(yaml.safe_dump(odin))
     after = load_config(root)
-    assert np.allclose(after.fcu_reference.lever_arm_m, (0.12, -0.04, 0.05))
+    expected_lever = before.fcu_reference.lever_arm_m.copy()
+    expected_lever[0] += 0.12
+    assert np.allclose(after.fcu_reference.lever_arm_m, expected_lever)
     assert after.config_fingerprint != before.config_fingerprint
     odin_path.unlink()
     with pytest.raises(ValueError, match="odin_extrinsics.yaml"):
@@ -154,54 +157,52 @@ def _odom(header_ns: int, name: str = "sample") -> SimpleNamespace:
     )
 
 
-def test_aircraft_calibration_config_is_loaded_exactly() -> None:
-    """飞机内参、外参、Tag 尺寸和按需相机配置不得被默认值替代。"""
-    config = load_config(CONFIG_DIR)
+def test_calibration_config_loads_explicit_values_without_profile_defaults(tmp_path) -> None:
+    """临时配置的内外参、Tag、采集和镜头值应精确加载，不锁定现场历史参数。"""
+    root = tmp_path / "correction"
+    shutil.copytree(CONFIG_DIR, root)
+    shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", tmp_path / "odin_extrinsics.yaml")
+    camera = configparser.ConfigParser()
+    camera.read(root / "camera.conf")
+    camera["camera"].update(width="1280", height="720", fps="60", publish_fps="20",
+                            device="/dev/test-camera", image_topic="/test/correction_image")
+    with (root / "camera.conf").open("w") as stream:
+        camera.write(stream)
+    intrinsics_path = root / "intrinsics.yaml"
+    intrinsics = yaml.safe_load(intrinsics_path.read_text())
+    matrix = np.array(((750., 0., 640.), (0., 755., 360.), (0., 0., 1.)))
+    distortion = [0.01, -0.02, 0.003, -0.004, 0.005]
+    intrinsics.update(image_width=1280, image_height=720, rms_reprojection_error=0.42)
+    intrinsics["camera_matrix"]["data"] = matrix.reshape(-1).tolist()
+    intrinsics["distortion_coefficients"]["data"] = distortion
+    intrinsics_path.write_text(yaml.safe_dump(intrinsics))
+    extrinsics_path = root / "extrinsics.yaml"
+    extrinsics = yaml.safe_load(extrinsics_path.read_text())
+    expected_extrinsics = homogeneous(rotation_z(0.23), np.array((0.12, -0.03, 0.07)))
+    extrinsics["matrix"]["data"] = expected_extrinsics.reshape(-1).tolist()
+    extrinsics_path.write_text(yaml.safe_dump(extrinsics))
+    (root / "lens.conf").write_text("[controls]\nauto_exposure = 1\nbrightness = 17\ngain = 23\n")
+    (root / "tag_pose.csv").write_text("tag_id,x,y,z,yaw_deg,size_m\n7,1.25,-2.5,0.3,35,0.14\n")
+
+    config = load_config(root)
 
     assert config.interface_version == "2.0"
-    assert config.window.default_size == 5
-    assert config.window.maximum_size == 20
     assert len(config.config_fingerprint) == 64
-    assert (config.intrinsics.width, config.intrinsics.height) == (1920, 1080)
-    assert math.isclose(config.intrinsics.camera_matrix[0, 0], 942.1240709375937)
-    assert math.isclose(config.intrinsics.calibration_rms_px, 0.8863085437393902)
-    assert np.allclose(config.intrinsics.distortion,
-                       [0.03626268524324754, -0.056048601794863075,
-                        0.0010844756398792788, -0.0010052529149732062, 0.00958122664915688])
-    # simulation 保留原物理相机位置，改写到 FCU 后需加原 FCU→IMU 位移。
-    assert np.allclose(config.t_fcu_camera[:3, 3],
-                       np.array((41 + 5.57, 50 - 21.03, -46 - 12 - 9.26)) / 1000
-                       + config.fcu_reference.lever_arm_m)
-    assert np.array_equal(config.t_fcu_camera[:3, 2], (0, 0, -1))
-    assert np.array_equal(config.t_fcu_camera[:3, :3] @ (0, -1, 0), (1, 0, 0))
-    # Tag 布设由现场 CSV 决定；换纸后仍须逐项精确加载，不能锁死历史17cm。
-    with (CONFIG_DIR / "tag_pose.csv").open() as stream:
-        rows = list(csv.DictReader(stream))
-    assert set(config.tags) == {int(row["tag_id"]) for row in rows}
-    for row in rows:
-        tag = config.tags[int(row["tag_id"])]
-        assert (tag.x, tag.y, tag.z, tag.size_m) == tuple(
-            float(row[key]) for key in ("x", "y", "z", "size_m")
-        )
-        assert tag.yaw_rad == math.radians(float(row["yaw_deg"]))
-    assert config.camera.image_topic == "/correction_service/image_raw"
-    assert config.camera.device.endswith("UQ212_UQ212-video-index0")
-    assert config.camera.fps == 120
+    assert (config.intrinsics.width, config.intrinsics.height) == (1280, 720)
+    assert np.array_equal(config.intrinsics.camera_matrix, matrix)
+    assert np.array_equal(config.intrinsics.distortion, distortion)
+    assert config.intrinsics.calibration_rms_px == 0.42
+    assert np.allclose(config.t_fcu_camera, expected_extrinsics)
+    assert set(config.tags) == {7}
+    tag = config.tags[7]
+    assert (tag.x, tag.y, tag.z, tag.size_m) == (1.25, -2.5, 0.3, 0.14)
+    assert tag.yaw_rad == math.radians(35)
+    assert (config.camera.width, config.camera.height, config.camera.fps,
+            config.camera.publish_fps) == (1280, 720, 60, 20)
+    assert config.camera.device == "/dev/test-camera"
+    assert config.camera.image_topic == "/test/correction_image"
     assert config.camera.driver_package == "correction_service"
-    assert config.lens_controls == {
-        "auto_exposure": 3,
-        "white_balance_automatic": 1,
-        "focus_automatic_continuous": 0,
-        "brightness": 0,
-        "contrast": 34,
-        "saturation": 60,
-        "hue": 0,
-        "gamma": 120,
-        "sharpness": 2,
-        "backlight_compensation": 1,
-        "power_line_frequency": 1,
-        "zoom_absolute": 0,
-    }
+    assert list(config.lens_controls.items()) == [("auto_exposure", 1), ("brightness", 17), ("gain", 23)]
 
 
 def test_full_se3_chain_recovers_known_planar_world_from_odin() -> None:

@@ -1,22 +1,21 @@
 """Verify that legacy automatic-pitch settings cannot repeat driver compensation."""
 
 import math
-import os
-from pathlib import Path
 
 import pytest
+from tests.support.extnav import ProcessPair, native_executable
 
-from test_extnav_cpp_equivalence import _ProcessPair
+
+# Both candidates run as isolated ROS child processes.
+pytestmark = pytest.mark.integration
 
 
 def test_legacy_auto_installation_stays_disabled(monkeypatch):
     """Both implementations keep configured metadata and do not subscribe to FCU IMU."""
-    binary = os.environ.get("EXTNAV_CPP_EXECUTABLE")
-    if not binary:
-        pytest.skip("set EXTNAV_CPP_EXECUTABLE to the isolated C++ candidate binary")
+    executable = native_executable()
     from nav_msgs.msg import Odometry
 
-    pair = _ProcessPair(Path(binary).resolve(), (0., -math.pi / 6, 0.), monkeypatch,
+    pair = ProcessPair(executable, (0., -math.pi / 6, 0.), monkeypatch,
                         extra_parameters={"auto_installation": True})
     try:
         pair.ready()

@@ -12,12 +12,16 @@ from typing import Any
 import pytest
 import numpy as np
 
-# Canonical deployment source lives in this project, outside the aircraft overlay.
+# The retained Python bridge is an independent reference; production uses C++.
+# These contracts exercise DDS discovery and delivery between real ROS nodes.
+pytestmark = pytest.mark.integration
+
+# Source root, outside the aircraft overlay.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_extnav_module() -> Any:
-    """加载待部署的 canonical extnav 源码。"""
+    """加载保留用于独立对照的 Python extnav 实现。"""
     path = (
         PROJECT_ROOT
         / "correction_service"

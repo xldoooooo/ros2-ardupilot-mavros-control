@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import yaml
 from correction_service.estimator import QualitySnapshot
 from correction_service.journal import JobJournal
 from correction_service.window import (
@@ -18,6 +20,9 @@ from correction_service.window import (
     RegistrationResult,
     WindowCandidate,
 )
+
+# These cases create real ROS contexts and subscriptions.
+pytestmark = pytest.mark.integration
 
 # 当前源码根目录和本机仿真档案；测试不使用飞机配置。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -99,7 +104,7 @@ def _candidate(node: Any, *, saved: bool = False) -> WindowCandidate:
 
 
 @pytest.fixture
-def correction_node(monkeypatch):
+def correction_node(monkeypatch, tmp_path):
     """在 localhost-only 独立 domain 创建不启动相机的真实节点实例。"""
     rclpy = pytest.importorskip("rclpy")
     from correction_service.node import CorrectionServiceNode, _ExtnavSnapshot
@@ -109,9 +114,16 @@ def correction_node(monkeypatch):
     monkeypatch.setenv("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
     context = Context()
     rclpy.init(args=[], context=context, domain_id=226)
+    config_dir = tmp_path / "node-profile" / "correction"
+    shutil.copytree(CONFIG_DIR, config_dir)
+    shutil.copy2(CONFIG_DIR.parent / "odin_extrinsics.yaml", config_dir.parent / "odin_extrinsics.yaml")
+    settings_path = config_dir / "general_settings.yaml"
+    settings = yaml.safe_load(settings_path.read_text())
+    settings["logging"]["directory"] = str(tmp_path / "logs")
+    settings_path.write_text(yaml.safe_dump(settings))
     node = CorrectionServiceNode(
         context=context,
-        parameter_overrides=[Parameter("config_dir", value=str(CONFIG_DIR))],
+        parameter_overrides=[Parameter("config_dir", value=str(config_dir))],
     )
     node._extnav = _ExtnavSnapshot(
         received_monotonic=time.monotonic(),
@@ -128,6 +140,19 @@ def correction_node(monkeypatch):
     node.close()
     node.destroy_node()
     context.shutdown()
+
+
+def test_idle_capture_subscriptions_are_created_and_released_on_demand(correction_node):
+    """默认 idle 不订相机或 raw；任务订阅在采集结束后实际销毁。"""
+    node = correction_node
+    capture_topics = {node.config.topics["raw_odometry"], node.config.topics["camera_image"]}
+    assert capture_topics.isdisjoint(subscription.topic_name for subscription in node.subscriptions)
+    node._start_odometry_capture()
+    node._start_image_capture()
+    assert capture_topics <= {subscription.topic_name for subscription in node.subscriptions}
+    assert node._stop_image_capture()
+    assert node._stop_odometry_capture()
+    assert capture_topics.isdisjoint(subscription.topic_name for subscription in node.subscriptions)
 
 
 def _job(node: Any, tmp_path: Path, candidate: WindowCandidate):

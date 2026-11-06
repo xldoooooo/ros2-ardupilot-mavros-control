@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from unittest.mock import Mock
+from pathlib import Path
 
 import pytest
 
@@ -145,6 +146,7 @@ def test_absent_original_is_harmless_until_fallback(tmp_path):
 
 
 @pytest.mark.parametrize('decision, expected', [('failed', 'needs_attention'), ('ready', 'retained')])
+@pytest.mark.integration
 def test_terminal_decision_interrupts_only_its_session(tmp_path, decision, expected):
     """Cancel a real child process without a late retry overwriting the terminal state."""
     queue = _queue(tmp_path)
@@ -153,25 +155,44 @@ def test_terminal_decision_interrupts_only_its_session(tmp_path, decision, expec
     queue.enqueue(_source(tmp_path, 'other.mp4'), 'video', 'other', held=True)
     queue.set_delivery('active', 'fallback')
     queue._ssh = Mock()
+    child_file = tmp_path / "child.pid"
 
     def blocking_copy(*_args):
         """Keep parent and SSH-like child alive until cancellation stops their group."""
         queue._run([sys.executable, '-c',
-                    'import subprocess,sys,time; '
-                    'subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
+                    'import pathlib,subprocess,sys,time; '
+                    'child=subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
+                    f'pathlib.Path({str(child_file)!r}).write_text(str(child.pid)); '
                     'time.sleep(30)'])
 
     queue._rsync = blocking_copy
     worker = threading.Thread(target=queue.tick)
     worker.start()
     deadline = time.monotonic() + 3
-    while queue.current_process is None and time.monotonic() < deadline:
+    while (not child_file.exists() or not child_file.read_text()) and time.monotonic() < deadline:
         time.sleep(0.01)
     try:
-        assert queue.current_process is not None
+        assert queue.current_process is not None and child_file.exists()
+        parent = queue.current_process
+        child_pid = int(child_file.read_text())
+        child_stat = (Path("/proc") / str(child_pid) / "stat").read_text().rsplit(")", 1)[1].split()
+        assert int(child_stat[1]) == parent.pid
         queue.set_delivery('active', decision, 'delivery timeout')
         worker.join(timeout=3)
         assert not worker.is_alive()
+        assert parent.poll() is not None
+        def child_running():
+            """已退出但尚未被宿主回收的孤儿僵尸不再执行任务。"""
+            try:
+                fields = (Path("/proc") / str(child_pid) / "stat").read_text().rsplit(")", 1)[1].split()
+                return fields[0] != "Z"
+            except FileNotFoundError:
+                return False
+
+        deadline = time.monotonic() + 3
+        while child_running() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not child_running()
         states = {row['session_id']: row['state'] for row in queue.records()}
         assert states == {'active': expected, 'other': 'held'}
         assert source.exists() and not list((queue.root / 'manifests').iterdir())

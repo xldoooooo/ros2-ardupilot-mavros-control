@@ -85,9 +85,10 @@ def _camera_config(root: Path, **changes: object) -> CameraConfig:
 def test_wasintek_current_and_old_calibrations_are_preserved() -> None:
     """Keep current and previous lens calibration without active INI duplicates."""
     profile = PROJECT_ROOT / "config" / "video" / "Wasintek"
-    assert {path.name for path in profile.iterdir()} == {
-        "intrinsics.yaml", "intrinsics.yaml.old"
+    assert {"intrinsics.yaml", "intrinsics.yaml.old"} <= {
+        path.name for path in profile.iterdir() if path.is_file()
     }
+    assert not list(profile.glob("*.ini"))
 
 
 def test_ground_camera_settings_default_to_project(monkeypatch) -> None:
@@ -423,6 +424,7 @@ def test_generated_mediamtx_config_is_rtsp_tcp_only(tmp_path: Path) -> None:
         assert f"{protocol}: false" in text
 
 
+@pytest.mark.integration
 def test_unix_socket_service_configures_without_ground_station() -> None:
     """独立 Socket 后台可由 CLI/面板控制，不依赖地面站对象。"""
     # Linux AF_UNIX 路径上限约 108 字节，显式使用短根目录验证真实协议。
@@ -813,48 +815,41 @@ def test_preview_frame_watchdog_blacks_out_disconnect_but_preserves_pause(
     application.processEvents()
 
 
-def test_snapshot_command_and_setts_are_ffmpeg_44_compatible(tmp_path: Path) -> None:
-    """机载 Jammy 命令不得使用 FFmpeg 4.4 尚不存在的选项。"""
+def test_snapshot_is_single_frame_and_stream_timestamps_follow_capture_rate(tmp_path: Path) -> None:
+    """抓拍只输出一帧，复制码流按指定帧率生成连续PTS/DTS。"""
     controller = CameraController(paths=_runtime_paths(tmp_path))
-    config = _camera_config(tmp_path)
+    config = _camera_config(tmp_path, fps=25.0)
     try:
         snapshot = controller.build_snapshot_command(config, tmp_path / "image.jpg")
         stream = controller.build_ffmpeg_command(config, tmp_path / "video.mp4")
     finally:
         controller.close()
 
-    assert "-fps_mode" not in snapshot
-    assert snapshot[snapshot.index("-vsync") + 1] == "passthrough"
-    timestamp = stream[stream.index("-bsf:v") + 1]
-    assert timestamp == "setts=pts=N/(30*TB):dts=N/(30*TB)"
-    assert "duration=" not in timestamp
-    assert "time_base=" not in timestamp
+    assert snapshot[snapshot.index("-frames:v") + 1] == "1"
+    assert snapshot[-1] == str(tmp_path / "image.jpg")
+    assert stream[stream.index("-bsf:v") + 1] == "setts=pts=N/(25*TB):dts=N/(25*TB)"
 
 
-def test_onboard_configs_preserve_exact_camera_and_lens_values() -> None:
-    """机载配置使用协议目录/JPG，并原值保存同型号镜头要求。"""
-    settings = load_onboard_settings()
-    controls = dict(load_lens_controls(settings.lens_config))
-
-    assert settings.camera.video_directory == "~/.local/share/ardupilot-media/cache/videos"
-    assert settings.camera.image_directory == "~/.local/share/ardupilot-media/cache/images"
-    assert settings.camera.container == "mp4"
-    assert (settings.camera.width, settings.camera.height, settings.camera.fps) == (
-        1920,
-        1080,
-        60.0,
+def test_onboard_configs_preserve_explicit_camera_and_lens_values(tmp_path: Path) -> None:
+    """合成配置保留尺寸、帧率和镜头原值，不绑定当前飞机调参。"""
+    config = tmp_path / "camera.conf"
+    config.write_text(
+        "[camera]\ndevice=/dev/video-test\ncodec=h264\nwidth=1280\nheight=720\nfps=25\n"
+        "[rtsp]\nadvertise_ip=127.0.0.1\n"
+        "[storage]\nvideo_directory=~/test-cache/videos\nimage_directory=~/test-cache/images\n"
+        "video_format=mp4\nimage_format=jpg\n",
+        encoding="utf-8",
     )
-    assert controls == {
-        "auto_exposure": "1",
-        "exposure_time_absolute": "25",
-        "gain": "200",
-        "brightness": "6",
-        "contrast": "6",
-        "saturation": "6",
-        "hue": "0",
-        "sharpness": "6",
-        "power_line_frequency": "1",
-        "zoom_absolute": "10",
+    lens = tmp_path / "lens.conf"
+    lens.write_text("[controls]\nexposure_time_absolute=25\ngain=200\nzoom_absolute=10\n", encoding="utf-8")
+    settings = load_onboard_settings(config)
+    assert settings.camera.device == "/dev/video-test"
+    assert settings.camera.video_directory == "~/test-cache/videos"
+    assert settings.camera.image_directory == "~/test-cache/images"
+    assert settings.camera.container == "mp4"
+    assert (settings.camera.width, settings.camera.height, settings.camera.fps) == (1280, 720, 25.0)
+    assert dict(load_lens_controls(lens)) == {
+        "exposure_time_absolute": "25", "gain": "200", "zoom_absolute": "10",
     }
 
 
@@ -862,7 +857,12 @@ def test_lens_controls_apply_after_stream_settle_sequentially_and_verify(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """流稳定一秒后须分步写控制、等待关键项并逐项读回。"""
-    controls = load_lens_controls()
+    lens = tmp_path / "lens.conf"
+    lens.write_text(
+        "[controls]\nauto_exposure=1\nexposure_time_absolute=25\ngain=200\nzoom_absolute=10\n",
+        encoding="utf-8",
+    )
+    controls = load_lens_controls(lens)
     calls: list[list[str]] = []
     sleeps: list[float] = []
 
@@ -880,7 +880,8 @@ def test_lens_controls_apply_after_stream_settle_sequentially_and_verify(
     monkeypatch.setattr(controller_module.subprocess, "run", run)
     monkeypatch.setattr(controller_module.time, "sleep", sleeps.append)
     controller = CameraController(
-        paths=_runtime_paths(tmp_path), initial_config=_camera_config(tmp_path)
+        paths=_runtime_paths(tmp_path), initial_config=_camera_config(tmp_path),
+        lens_config_path=lens,
     )
     try:
         monkeypatch.setattr(controller, "_ffmpeg_running", lambda: True)

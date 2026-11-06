@@ -112,6 +112,7 @@ def test_playlist_order_and_restart_from_first(tmp_path, monkeypatch):
     assert played[0] == played[1]
 
 
+@pytest.mark.integration
 def test_stop_during_spawn_restart_and_process_ownership(tmp_path, monkeypatch):
     """stop 不等待 Popen 或 join；快速重启串行接续且不杀无关进程。"""
     media = _make_media(tmp_path, monkeypatch)
@@ -203,6 +204,7 @@ def test_publish_failure_is_logged_and_retry_is_cancellable(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("source_codec", ["libx264", "mpeg4"])
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="需要 FFmpeg")
+@pytest.mark.integration
 def test_real_rtsp_decodes_on_isolated_port(tmp_path, monkeypatch, source_codec):
     """同一个RTSP接收连接跨片段和两轮循环，逐帧核对颜色顺序，无黑帧。"""
     with socket.socket() as sock:
