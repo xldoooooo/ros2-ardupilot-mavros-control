@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <utility>
 #include <random>
+#include <unistd.h>
 
 #include <mavros_msgs/mavlink_convert.hpp>
 
@@ -306,6 +307,10 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
   video_capture_publisher_ = create_publisher<guided_interfaces::msg::VideoCapture>(
     video_prefix_ + "/capture", rclcpp::QoS(256).reliable());
 
+  // Input callbacks must run even when a command waits for an in-flight output.
+  telemetry_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  telemetry_subscription_options_.callback_group = telemetry_callback_group_;
+
   state_subscription_ = create_subscription<mavros_msgs::msg::State>(
     mavros_prefix_ + "/state", rclcpp::QoS(10).reliable(),
     std::bind(&OnboardControlNode::on_fcu_state, this, std::placeholders::_1));
@@ -314,7 +319,8 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     std::bind(&OnboardControlNode::on_extended_state, this, std::placeholders::_1));
   pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(
     mavros_prefix_ + "/local_position/pose", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_pose, this, std::placeholders::_1, std::placeholders::_2));
+    std::bind(&OnboardControlNode::on_pose, this, std::placeholders::_1, std::placeholders::_2),
+    telemetry_subscription_options_);
   relative_altitude_subscription_ = create_subscription<std_msgs::msg::Float64>(
     mavros_prefix_ + "/global_position/rel_alt", rclcpp::SensorDataQoS().keep_last(1),
     [this](std_msgs::msg::Float64::ConstSharedPtr message) {
@@ -323,13 +329,14 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
         relative_home_altitude_ = message->data;
         last_relative_altitude_time_ = SteadyClock::now();
       }
-    });
+    }, telemetry_subscription_options_);
   velocity_subscription_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     mavros_prefix_ + "/local_position/velocity_local", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1, std::placeholders::_2));
+    std::bind(&OnboardControlNode::on_velocity, this, std::placeholders::_1, std::placeholders::_2),
+    telemetry_subscription_options_);
   battery_subscription_ = create_subscription<sensor_msgs::msg::BatteryState>(
     mavros_prefix_ + "/battery", rclcpp::SensorDataQoS().keep_last(1),
-    std::bind(&OnboardControlNode::on_battery, this, std::placeholders::_1));
+    std::bind(&OnboardControlNode::on_battery, this, std::placeholders::_1), telemetry_subscription_options_);
   global_origin_subscription_ =
     create_subscription<geographic_msgs::msg::GeoPointStamped>(
     mavros_prefix_ + "/global_position/gp_origin",
@@ -337,7 +344,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     std::bind(&OnboardControlNode::on_global_origin, this, std::placeholders::_1));
   heartbeat_subscription_ = create_subscription<guided_interfaces::msg::ControlHeartbeat>(
     interface_prefix_ + "/heartbeat", rclcpp::QoS(10).reliable(),
-    std::bind(&OnboardControlNode::on_heartbeat, this, std::placeholders::_1));
+    std::bind(&OnboardControlNode::on_heartbeat, this, std::placeholders::_1), telemetry_subscription_options_);
   motion_subscription_ = create_subscription<guided_interfaces::msg::MotionIntent>(
     interface_prefix_ + "/motion_intent", rclcpp::QoS(20).reliable(),
     std::bind(&OnboardControlNode::on_motion_intent, this, std::placeholders::_1));
@@ -418,6 +425,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr message)
 {
   // 只记录实际状态变化，避免按遥测频率写日志。
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const bool was_connected = fcu_connected_;
   const bool was_armed = armed_;
@@ -516,6 +524,7 @@ void OnboardControlNode::on_fcu_state(const mavros_msgs::msg::State::SharedPtr m
 void OnboardControlNode::on_extended_state(
   const mavros_msgs::msg::ExtendedState::SharedPtr message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   last_extended_state_time_ = SteadyClock::now();
   on_ground_ = message->landed_state == mavros_msgs::msg::ExtendedState::LANDED_STATE_ON_GROUND;
@@ -597,6 +606,7 @@ void OnboardControlNode::on_battery(
 void OnboardControlNode::on_global_origin(
   const geographic_msgs::msg::GeoPointStamped::SharedPtr message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   last_global_origin_ = message->position;
   if ((!reboot_active_ || (!reboot_sent_ && !reboot_observed_)) &&
@@ -739,6 +749,7 @@ void OnboardControlNode::on_acquire_control(
   const std::shared_ptr<AcquireControl::Request> request,
   std::shared_ptr<AcquireControl::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::string reason;
   if (request->lease_duration_ms < kMinimumLeaseMs ||
@@ -842,6 +853,7 @@ bool OnboardControlNode::authorize_flight_sequence(
 void OnboardControlNode::on_motion_intent(
   const guided_interfaces::msg::MotionIntent::SharedPtr message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   CommandIdentity command{message->source_id, message->sequence, "motion"};
   if (avoidance_land_latched_) {
@@ -926,6 +938,7 @@ void OnboardControlNode::on_flight_command(
   const std::shared_ptr<FlightCommand::Request> request,
   std::shared_ptr<FlightCommand::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::string reason;
   if (!validate_envelope(request->stamp, request->ttl_ms, request->source_id, reason) ||
@@ -1102,6 +1115,7 @@ void OnboardControlNode::on_execute_waypoints(
   const std::shared_ptr<ExecuteWaypoints::Request> request,
   std::shared_ptr<ExecuteWaypoints::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::string reason;
   if (avoidance_land_latched_) {
@@ -1207,6 +1221,7 @@ void OnboardControlNode::on_set_gps_origin(
   const std::shared_ptr<SetGpsOrigin::Request> request,
   std::shared_ptr<SetGpsOrigin::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::string reason;
   if (!validate_envelope(request->stamp, request->ttl_ms, request->source_id, reason) ||
@@ -1681,6 +1696,7 @@ void OnboardControlNode::ensure_guided_and_armed(
   set_mode_client_->async_send_request(
     request,
     [this, command, on_ready](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture future) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       if (!active_task_matches(command)) {
         return;
@@ -1725,6 +1741,7 @@ void OnboardControlNode::ensure_armed(
   arming_client_->async_send_request(
     request,
     [this, command, on_ready](rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedFuture future) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       if (!active_task_matches(command)) {
         return;
@@ -1773,6 +1790,7 @@ void OnboardControlNode::send_takeoff_request(const CommandIdentity & command)
   takeoff_client_->async_send_request(
     request,
     [this, command](rclcpp::Client<mavros_msgs::srv::CommandTOL>::SharedFuture future) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       if (!active_task_matches(command)) {
         return;
@@ -1813,6 +1831,7 @@ void OnboardControlNode::send_land_mode_request(
   const auto handle = set_mode_client_->async_send_request(
     request,
     [this, command, failsafe, generation](rclcpp::Client<mavros_msgs::srv::SetMode>::SharedFuture future) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       if (generation != avoidance_land_request_generation_) {return;}
       avoidance_land_service_request_.reset();
@@ -1893,6 +1912,7 @@ void OnboardControlNode::send_next_message_rate()
   message_interval_client_->async_send_request(
     request,
     [this, message_id, generation = session_generation_](rclcpp::Client<mavros_msgs::srv::MessageInterval>::SharedFuture future) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       if (!message_rate_configuration_active_ || generation != session_generation_) {
         return;
@@ -1976,6 +1996,7 @@ void OnboardControlNode::apply_thrust_mode_parameters(
 
 void OnboardControlNode::on_fcu_parameter(const mavros_msgs::msg::ParamEvent & message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (!fcu_connected_ ||
     (message.param_id != "GUID_OPTIONS" && message.param_id != "MOT_THST_HOVER"))
@@ -2063,6 +2084,7 @@ void OnboardControlNode::check_thrust_mode_parameter()
     {"GUID_OPTIONS", "MOT_THST_HOVER"},
     [this, revision = fcu_parameter_revision_](
       std::shared_future<std::vector<rclcpp::Parameter>> future) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       thrust_mode_check_inflight_ = false;
       try {
@@ -2085,7 +2107,9 @@ void OnboardControlNode::check_thrust_mode_parameter()
 void OnboardControlNode::control_tick()
 {
   const auto entered = SteadyClock::now();
-  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
+  const auto execution_acquired = SteadyClock::now();
+  std::unique_lock<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   const double expected_period = 1.0 / control_frequency_hz_;
   double dt_seconds = expected_period;
@@ -2104,7 +2128,10 @@ void OnboardControlNode::control_tick()
   }
   last_control_tick_ = now;
   diagnostic_period_ms_ = dt_seconds * 1000.0;
-  diagnostic_lock_wait_ms_ = std::chrono::duration<double, std::milli>(now - entered).count();
+  diagnostic_execution_wait_ms_ =
+    std::chrono::duration<double, std::milli>(execution_acquired - entered).count();
+  diagnostic_lock_wait_ms_ =
+    std::chrono::duration<double, std::milli>(now - execution_acquired).count();
   // This threshold only selects diagnostic events; it does not gate the controller.
   if (diagnostic_period_ms_ >= kDiagnosticSlowMs) {record_control_diagnostic("control_gap", false, now);}
 
@@ -2173,7 +2200,7 @@ void OnboardControlNode::control_tick()
     control_mode_ == guided_interfaces::msg::ControlStatus::MODE_WAYPOINT ||
     control_mode_ == guided_interfaces::msg::ControlStatus::MODE_FAILSAFE_HOLD)
   {
-    publish_attitude_setpoint(dt_seconds);
+    publish_attitude_setpoint(dt_seconds, lock);
   }
   const auto finished = SteadyClock::now();
   record_slow_operation("control_publish", reference_finished, finished);
@@ -2422,9 +2449,11 @@ void OnboardControlNode::trigger_failsafe_land(const std::string & reason)
 }
 
 /** Publish the shared controller output, with physical XY velocity during Tag fusion. */
-void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
+void OnboardControlNode::publish_attitude_setpoint(
+  const double dt_seconds, std::unique_lock<std::recursive_mutex> & state_lock)
 {
-  const SteadyTime now = SteadyClock::now();
+  const auto compute_started = sample_thread_timing();
+  const SteadyTime now = compute_started.wall;
   if (!armed_ || autopilot_mode_ != "GUIDED" || !pose_valid_ || !velocity_valid_ ||
     last_pose_time_ == SteadyTime{} || last_velocity_time_ == SteadyTime{} ||
     std::chrono::duration<double>(now - last_pose_time_).count() > pose_timeout_seconds_ ||
@@ -2456,6 +2485,7 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
     trigger_failsafe_land("PD+DOB 产生非有限控制输出");
     return;
   }
+  const auto compute_finished = sample_thread_timing();
   mavros_msgs::msg::AttitudeTarget message;
   message.header.stamp = get_clock()->now();
   message.orientation.x = output.attitude.x();
@@ -2467,7 +2497,31 @@ void OnboardControlNode::publish_attitude_setpoint(const double dt_seconds)
     mavros_msgs::msg::AttitudeTarget::IGNORE_ROLL_RATE |
     mavros_msgs::msg::AttitudeTarget::IGNORE_PITCH_RATE |
     mavros_msgs::msg::AttitudeTarget::IGNORE_YAW_RATE;
-  attitude_publisher_->publish(message);
+  const auto message_finished = sample_thread_timing();
+  attitude_inflight_ = OutputInFlight{message_finished.wall,
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count(),
+    active_command_.sequence, static_cast<int>(::gettid())};
+  const auto identity = *attitude_inflight_;
+  // execution_mutex_ keeps LAND/cancel behind this already-started output; inputs need only mutex_.
+  state_lock.unlock();
+  std::exception_ptr failure;
+  try {
+    attitude_publisher_->publish(message);
+  } catch (...) {
+    failure = std::current_exception();
+  }
+  const auto publish_finished = sample_thread_timing();
+  state_lock.lock();
+  const auto relock_finished = sample_thread_timing();
+  attitude_inflight_.reset();
+  output_diagnostic_ = make_output_diagnostic(identity,
+    {compute_started, compute_finished, message_finished, publish_finished, relock_finished});
+  record_slow_operation("attitude_compute", compute_started.wall, compute_finished.wall);
+  record_slow_operation("attitude_message", compute_finished.wall, message_finished.wall);
+  record_slow_operation("attitude_publish", message_finished.wall, publish_finished.wall);
+  record_slow_operation("attitude_relock", publish_finished.wall, relock_finished.wall);
+  if (failure) {std::rethrow_exception(failure);}
 }
 
 void OnboardControlNode::status_tick()
@@ -2488,7 +2542,8 @@ void OnboardControlNode::status_tick()
     throw;
   }
   const auto graph_finished = SteadyClock::now();
-  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  std::unique_lock<std::recursive_mutex> execution_lock(execution_mutex_);
+  std::unique_lock<std::recursive_mutex> lock(mutex_);
   const SteadyTime now = SteadyClock::now();
   record_slow_operation("status_graph", graph_started, graph_finished);
   reboot_tick(now);
@@ -2622,8 +2677,17 @@ void OnboardControlNode::status_tick()
   message.max_jitter_ms = max_jitter_ms_;
   message.deadline_miss_count = deadline_miss_count_;
   const auto publish_started = SteadyClock::now();
+  status_inflight_ = OutputInFlight{publish_started,
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count(),
+    active_command_.sequence, static_cast<int>(::gettid())};
+  // The immutable status snapshot needs neither flight lock during DDS publication.
+  lock.unlock();
+  execution_lock.unlock();
   status_publisher_->publish(message);
   const auto finished = SteadyClock::now();
+  lock.lock();
+  status_inflight_.reset();
   const auto milliseconds = [](SteadyTime start, SteadyTime end) {
       return std::chrono::duration<double, std::milli>(end - start).count();
     };
@@ -2632,7 +2696,8 @@ void OnboardControlNode::status_tick()
     milliseconds(graph_finished, now), milliseconds(now, maintenance_finished),
     milliseconds(maintenance_finished, navigation_finished),
     milliseconds(navigation_finished, publish_started), milliseconds(publish_started, finished)};
-  record_slow_operation("status_locked", now, finished);
+  record_slow_operation("status_locked", now, publish_started);
+  record_slow_operation("status_publish", publish_started, finished);
 }
 
 void OnboardControlNode::publish_result(

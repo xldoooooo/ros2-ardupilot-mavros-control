@@ -149,6 +149,7 @@ void OnboardControlNode::begin_avoidance_wait(
 /** Deliver or retry goals; native timers and collisions own autonomous replanning. */
 void OnboardControlNode::avoidance_tick()
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   // 地面preview按接收超时撤销显示；重复发布也让飞行期间新打开的RViz看到当前轨迹。
   publish_avoidance_path();
@@ -248,6 +249,7 @@ void OnboardControlNode::on_avoidance_result(const Result::SharedPtr message)
       message->status == Result::REACH_END, trajectory_error);
   }
 
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const auto now = SteadyClock::now();
   if (message->request_id == 0) {

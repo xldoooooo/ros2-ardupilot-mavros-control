@@ -12,9 +12,41 @@
 #include <filesystem>
 #include <unistd.h>
 #include <type_traits>
+#include <sys/resource.h>
 
 namespace onboard_control
 {
+
+/** Read per-thread CPU/context/fault counters without formatting or heap allocation. */
+OnboardControlNode::ThreadTiming OnboardControlNode::sample_thread_timing()
+{
+  ThreadTiming sample;
+  rusage usage{};
+  if (::getrusage(RUSAGE_THREAD, &usage) == 0) {
+    sample.cpu_ms = (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1000.0 +
+      (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1000.0;
+    sample.counters = {usage.ru_nvcsw, usage.ru_nivcsw, usage.ru_minflt, usage.ru_majflt};
+  }
+  sample.wall = SteadyClock::now();
+  return sample;
+}
+
+/** Retain fixed-size stage durations; unavailable CPU samples stay explicitly negative. */
+OnboardControlNode::OutputDiagnostic OnboardControlNode::make_output_diagnostic(
+  const OutputInFlight & identity, const std::array<ThreadTiming, 5> & samples)
+{
+  OutputDiagnostic result;
+  result.identity = identity;
+  for (std::size_t i = 0; i < result.wall_ms.size(); ++i) {
+    result.wall_ms[i] = std::chrono::duration<double, std::milli>(
+      samples[i + 1].wall - samples[i].wall).count();
+    result.cpu_ms[i] = samples[i].cpu_ms < 0.0 || samples[i + 1].cpu_ms < 0.0 ? -1.0 :
+      samples[i + 1].cpu_ms - samples[i].cpu_ms;
+    result.counters[i] = samples.front().cpu_ms < 0.0 || samples.back().cpu_ms < 0.0 ? -1 :
+      samples.back().counters[i] - samples.front().counters[i];
+  }
+  return result;
+}
 
 /** Create a separate file so a stalled diagnostic sink cannot take the global ROS logging lock. */
 void OnboardControlNode::initialize_control_diagnostics()
@@ -100,6 +132,8 @@ void OnboardControlNode::record_control_diagnostic(
   sample.velocity = velocity_diagnostic_;
   sample.slow = slow_operation_;
   sample.status_ms = status_diagnostic_ms_;
+  sample.execution_wait_ms = diagnostic_execution_wait_ms_;
+  sample.output = output_diagnostic_;
   sample.raw.receive = raw_diagnostic_;
   sample.raw.age_ms = age_ms(calibration_odometry_time_);
   sample.raw.follow_fusion = calibration_follow_fusion_;
@@ -129,7 +163,8 @@ void OnboardControlNode::record_control_diagnostic(
   } else {
     ++pending_timing_count_;
     const auto severity = [](const ControlDiagnostic & s) {
-        return std::max(s.period_ms, s.slow.finished == s.captured_at ? s.slow.duration_ms : 0.0);
+        return std::max(s.period_ms,
+          std::strcmp(s.event, "slow_operation") == 0 ? s.slow.duration_ms : 0.0);
       };
     if (!pending_timing_diagnostic_ || severity(sample) > severity(*pending_timing_diagnostic_)) {
       pending_timing_diagnostic_ = sample;
@@ -144,7 +179,8 @@ void OnboardControlNode::record_slow_operation(
   const double elapsed = std::chrono::duration<double, std::milli>(finished - started).count();
   if (elapsed < kDiagnosticSlowMs) {return;}
   slow_operation_ = SlowOperation{name, elapsed, finished};
-  record_control_diagnostic("slow_operation", false, finished);
+  // Inputs may have advanced while publishing; snapshot their ages at capture time.
+  record_control_diagnostic("slow_operation", false, SteadyClock::now());
 }
 
 /** Try-copy bounded slots, release the flight lock, then emit at most one batch per second. */
@@ -163,6 +199,9 @@ void OnboardControlNode::flush_control_diagnostics()
     bool pose_valid, velocity_valid;
   };
   std::optional<FusionLog> fusion;
+  std::array<std::optional<OutputInFlight>, 2> inflight;
+  std::array<double, 2> inflight_age_ms{};
+  std::array<double, 3> input_age_ms{};  // Ages when the active-publication snapshot was captured.
   std::optional<ControlDiagnostic> fault, timing;
   std::optional<ReceiveDiagnostic> after_pose, after_velocity, after_raw;
   std::int64_t raw_event_ns = 0;
@@ -171,6 +210,19 @@ void OnboardControlNode::flush_control_diagnostics()
     // Logging must neither wait for nor retain the flight-state lock during any I/O.
     std::unique_lock<std::recursive_mutex> lock(mutex_, std::try_to_lock);
     if (!lock.owns_lock()) {return;}
+    const auto captured = SteadyClock::now();
+    const auto age = [&captured](SteadyTime received) {
+        return received == SteadyTime{} ? -1.0 :
+          std::chrono::duration<double, std::milli>(captured - received).count();
+      };
+    input_age_ms = {age(last_pose_time_), age(last_velocity_time_), age(calibration_odometry_time_)};
+    inflight = {attitude_inflight_, status_inflight_};
+    for (std::size_t i = 0; i < inflight.size(); ++i) {
+      if (!inflight[i]) {continue;}
+      inflight_age_ms[i] = std::chrono::duration<double, std::milli>(
+        captured - inflight[i]->started).count();
+      if (inflight_age_ms[i] < kDiagnosticSlowMs) {inflight[i].reset();}
+    }
     fault.swap(pending_fault_diagnostic_);
     timing.swap(pending_timing_diagnostic_);
     after_pose.swap(post_fault_pose_);
@@ -215,17 +267,29 @@ void OnboardControlNode::flush_control_diagnostics()
         " waypoint=%u calibration_stage=%u"
         " pose_valid=%d velocity_valid=%d pose_age_ms=%.3f velocity_age_ms=%.3f state_age_ms=%.3f"
         " pose_timeout_ms=%.3f state_timeout_ms=%.3f control_period_ms=%.3f control_lock_wait_ms=%.3f previous_work_ms=%.3f"
-        " slow_operation=%s slow_ms=%.3f slow_age_at_event_ms=%.3f"
+        " execution_lock_wait_ms=%.3f slow_operation=%s slow_ms=%.3f slow_age_at_event_ms=%.3f"
         " status_ms=(%.3f,%.3f,%.3f,%.3f,%.3f,%.3f)"
         " position=(%.6f,%.6f,%.6f) velocity=(%.6f,%.6f,%.6f) rpy=(%.6f,%.6f,%.6f)\n",
         label, s.event_ns, s.event, count, s.mode, s.armed, s.connected, s.sequence, s.fcu_session,
         s.waypoint, s.calibration_stage, s.pose_valid, s.velocity_valid,
         s.pose_age_ms, s.velocity_age_ms, s.state_age_ms, s.timeout_ms, s.state_timeout_ms,
         s.period_ms, s.lock_wait_ms, s.previous_work_ms,
-        s.slow.name, s.slow.duration_ms, slow_age_ms,
+        s.execution_wait_ms, s.slow.name, s.slow.duration_ms, slow_age_ms,
         s.status_ms[0], s.status_ms[1], s.status_ms[2], s.status_ms[3], s.status_ms[4], s.status_ms[5],
         s.values[0], s.values[1], s.values[2], s.values[3], s.values[4], s.values[5],
         s.values[6], s.values[7], s.values[8]);
+      const auto & o = s.output;
+      if (o.identity.wall_ns != 0) {
+        std::fprintf(diagnostic_log_.get(),
+          "[CONTROL_OUTPUT] event_ns=%" PRId64 " publish_begin_ns=%" PRId64
+          " command_seq=%" PRIu64 " tid=%d phase_order=compute,message,publish,relock"
+          " wall_ms=(%.3f,%.3f,%.3f,%.3f) cpu_ms=(%.3f,%.3f,%.3f,%.3f)"
+          " voluntary_switches=%ld involuntary_switches=%ld minor_faults=%ld major_faults=%ld\n",
+          s.event_ns, o.identity.wall_ns, o.identity.sequence, o.identity.tid,
+          o.wall_ms[0], o.wall_ms[1], o.wall_ms[2], o.wall_ms[3],
+          o.cpu_ms[0], o.cpu_ms[1], o.cpu_ms[2], o.cpu_ms[3],
+          o.counters[0], o.counters[1], o.counters[2], o.counters[3]);
+      }
     };
   const auto log_receive = [this](std::int64_t event_ns, const char * phase, const char * stream,
       const ReceiveDiagnostic & s) {
@@ -285,6 +349,17 @@ void OnboardControlNode::flush_control_diagnostics()
       f.position.x(), f.position.y(), f.position.z(), f.reference.x(), f.reference.y(), f.reference.z(),
       f.yaw, f.reference_yaw, f.frame_yaw, f.control_velocity.x(), f.control_velocity.y());
   }
-  if (fault || timing || fusion || after_raw) {std::fflush(diagnostic_log_.get());}
+  for (std::size_t i = 0; i < inflight.size(); ++i) {
+    if (!inflight[i]) {continue;}
+    const auto & active = *inflight[i];
+    std::fprintf(diagnostic_log_.get(),
+      "[PUBLISH_INFLIGHT] publish_begin_ns=%" PRId64 " operation=%s command_seq=%" PRIu64
+      " tid=%d elapsed_ms=%.3f scope=publish_or_relock input_age_ms=(%.3f,%.3f,%.3f)\n",
+      active.wall_ns, i == 0 ? "attitude_publish" : "status_publish",
+      active.sequence, active.tid, inflight_age_ms[i], input_age_ms[0], input_age_ms[1], input_age_ms[2]);
+  }
+  if (fault || timing || fusion || after_raw || inflight[0] || inflight[1]) {
+    std::fflush(diagnostic_log_.get());
+  }
 }
 }  // namespace onboard_control

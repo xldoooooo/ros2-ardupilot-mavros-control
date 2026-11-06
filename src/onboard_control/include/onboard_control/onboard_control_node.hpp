@@ -237,7 +237,8 @@ private:
   void enforce_safety(const SteadyTime & now);
   void trigger_link_loss_hold(const SteadyTime & now);
   void trigger_failsafe_land(const std::string & reason);
-  void publish_attitude_setpoint(double dt_seconds);
+  /** Compute under the state lock; publish outside it while preserving command ordering. */
+  void publish_attitude_setpoint(double dt_seconds, std::unique_lock<std::recursive_mutex> & state_lock);
   void initialize_waypoint_segment();
   /** Observe the existing calibration service and create nonblocking service clients. */
   void initialize_calibration();
@@ -296,7 +297,12 @@ private:
     const geographic_msgs::msg::GeoPoint & expected,
     const geographic_msgs::msg::GeoPoint & observed);
 
+  // State transitions acquire execution first, then state; pure input/diagnostic callbacks use state only.
+  std::recursive_mutex execution_mutex_;
   mutable std::recursive_mutex mutex_;
+  // Keep input updates independent of commands waiting for a synchronous output to return.
+  rclcpp::CallbackGroup::SharedPtr telemetry_callback_group_;
+  rclcpp::SubscriptionOptions telemetry_subscription_options_;
 
   // Odin map affects task goals, never the continuous FCU/point-cloud execution world.
   std::string navigation_frame_{"odom"}, navigation_map_, navigation_session_, navigation_fault_;
@@ -600,6 +606,31 @@ private:
     std::size_t frame_length{0}, child_length{0}, job_length{0};
     std::uint64_t revision{0};
   };
+  // Fixed-size timing samples: CPU time and Linux per-thread scheduling/page-fault evidence.
+  struct ThreadTiming
+  {
+    SteadyTime wall{};
+    double cpu_ms{-1.0};
+    std::array<long, 4> counters{};  // Voluntary/involuntary switches, minor/major faults.
+  };
+  struct OutputInFlight
+  {
+    SteadyTime started{};
+    std::int64_t wall_ns{0};
+    std::uint64_t sequence{0};
+    int tid{0};
+  };
+  struct OutputDiagnostic
+  {
+    OutputInFlight identity;
+    std::array<double, 4> wall_ms{}, cpu_ms{};  // Compute, message, publish, state-lock reacquisition.
+    std::array<long, 4> counters{};
+  };
+  /** Sample only fixed-size thread counters; no allocation or logging in the flight loop. */
+  static ThreadTiming sample_thread_timing();
+  /** Summarize one completed output without modifying controller state. */
+  static OutputDiagnostic make_output_diagnostic(
+    const OutputInFlight & identity, const std::array<ThreadTiming, 5> & samples);
   struct ControlDiagnostic
   {
     const char * event{"none"};
@@ -617,6 +648,8 @@ private:
     // Last completed status callback: graph, lock wait, maintenance, navigation, fields, publish.
     std::array<double, 6> status_ms{};
     SlowOperation slow;
+    double execution_wait_ms{0.0};
+    OutputDiagnostic output;
   };
   /** Open a dedicated per-run sink, isolated from ROS logging and flight locks. */
   void initialize_control_diagnostics();
@@ -636,6 +669,10 @@ private:
   std::int64_t raw_fault_event_ns_{0};
   std::optional<ReceiveDiagnostic> post_fault_raw_;
   SlowOperation slow_operation_;
+  OutputDiagnostic output_diagnostic_;  // Last completed output; copied with slow/fault snapshots.
+  std::optional<OutputInFlight> status_inflight_;  // Status DDS can stall independently of flight output.
+  std::optional<OutputInFlight> attitude_inflight_;  // Allows deferred logging even before DDS returns.
+  double diagnostic_execution_wait_ms_{0.0};
   std::optional<ControlDiagnostic> pending_fault_diagnostic_, pending_timing_diagnostic_;
   std::optional<ReceiveDiagnostic> post_fault_pose_, post_fault_velocity_;
   std::uint64_t pending_timing_count_{0};

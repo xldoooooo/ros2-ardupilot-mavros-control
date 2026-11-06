@@ -88,6 +88,7 @@ void OnboardControlNode::send_fcu_reboot()
   try {
     reboot_client_->async_send_request(request,
       [this, generation](rclcpp::Client<mavros_msgs::srv::CommandLong>::SharedFuture future) {
+        std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         if (!reboot_active_ || generation != reboot_generation_ || reboot_observed_) {return;}
         try {
@@ -111,6 +112,7 @@ void OnboardControlNode::send_fcu_reboot()
 
 void OnboardControlNode::observe_fcu_clock(const mavros_msgs::msg::TimesyncStatus & message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   const auto value = message.remote_timestamp_ns;
   if (value == 0) {return;}

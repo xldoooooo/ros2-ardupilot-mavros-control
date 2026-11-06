@@ -78,6 +78,7 @@ void OnboardControlNode::initialize_navigation()
   navigation_extnav_subscription_ = create_subscription<correction_interfaces::msg::ExtnavCorrectionStatus>(
     "/extnav/correction_status", rclcpp::QoS(10),
     [this](correction_interfaces::msg::ExtnavCorrectionStatus::SharedPtr message) {
+      std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       navigation_extnav_ = *message;
       navigation_extnav_time_ = SteadyClock::now();
@@ -108,6 +109,7 @@ void OnboardControlNode::initialize_navigation()
 /** Track the actual driver mode and connection identity. */
 void OnboardControlNode::on_navigation_status(const std_msgs::msg::String::SharedPtr message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   try {
     const auto status = nlohmann::json::parse(message->data);
@@ -152,6 +154,7 @@ void OnboardControlNode::on_navigation_status(const std_msgs::msg::String::Share
 /** Accept finite native map transforms and detect discontinuities. */
 void OnboardControlNode::on_navigation_tf(const tf2_msgs::msg::TFMessage::SharedPtr message)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   for (const auto & tf : message->transforms) {
     if (tf.header.frame_id != "odom" || tf.child_frame_id != "map") {continue;}
@@ -363,6 +366,7 @@ void OnboardControlNode::fill_navigation_status(guided_interfaces::msg::ControlS
 void OnboardControlNode::on_set_navigation_mode(const std::shared_ptr<SetNavigationMode::Request> request,
   std::shared_ptr<SetNavigationMode::Response> response)
 {
+  std::lock_guard<std::recursive_mutex> execution_lock(execution_mutex_);
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::string reason;
   if (!validate_envelope(request->stamp, request->ttl_ms, request->source_id, reason) ||

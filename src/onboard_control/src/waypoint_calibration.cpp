@@ -47,7 +47,7 @@ void OnboardControlNode::initialize_calibration()
       calibration_odometry_time_ = SteadyClock::now();
       record_receive(raw_diagnostic_, info, calibration_odometry_->header.stamp, entered, acquired);
       if (raw_fault_event_ns_ != 0 && !post_fault_raw_) {post_fault_raw_ = raw_diagnostic_;}
-    });
+    }, telemetry_subscription_options_);
   calibration_owner_client_ = create_client<CalibrationOwner>("/correction_service/set_calibration_owner");
   calibration_clear_client_ = create_client<CalibrationClear>("/correction_service/clear_window");
   calibration_start_client_ = create_client<CalibrationStart>("/correction_service/start");
@@ -58,7 +58,7 @@ void OnboardControlNode::initialize_calibration()
       std::lock_guard<std::recursive_mutex> lock(mutex_);
       calibration_status_ = *message;
       calibration_status_time_ = SteadyClock::now();
-    });
+    }, telemetry_subscription_options_);
   calibration_pose_subscription_ = create_subscription<geometry_msgs::msg::PoseStamped>(
     "/extnav/pose_fcu", rclcpp::QoS(10),
     [this](geometry_msgs::msg::PoseStamped::SharedPtr message) {
@@ -66,7 +66,7 @@ void OnboardControlNode::initialize_calibration()
       calibration_external_pose_ = *message;
       calibration_pose_time_ = SteadyClock::now();
       calibration_pose_stamp_ = rclcpp::Time(message->header.stamp).nanoseconds();
-    });
+    }, telemetry_subscription_options_);
   calibration_velocity_subscription_ = create_subscription<geometry_msgs::msg::TwistStamped>(
     "/extnav/velocity_fcu", rclcpp::QoS(10),
     [this](geometry_msgs::msg::TwistStamped::SharedPtr message) {
@@ -75,7 +75,7 @@ void OnboardControlNode::initialize_calibration()
       calibration_external_velocity_ = {velocity.x, velocity.y, velocity.z};
       calibration_velocity_time_ = SteadyClock::now();
       calibration_velocity_stamp_ = rclcpp::Time(message->header.stamp).nanoseconds();
-    });
+    }, telemetry_subscription_options_);
 }
 
 /** Preserve physical error in raw Odin, then rotate it into the FCU's evolving local frame. */

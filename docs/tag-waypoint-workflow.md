@@ -84,14 +84,29 @@ source install/setup.bash
   回调处理墙钟时间、回调间隔和锁等待。DDS时间戳为原始中间件证据，0可能表示不支持；
   不跨主机直接相减，也不把不同实现的接收时间点当成相同语义。
 - `[CONTROL_TIMING]`：仅记录≥100ms的控制周期间隔或已标记代码段耗时。
-  `control_lock_wait_ms`大指向状态锁竞争；`previous_work_ms`大指向上个控制周期内部耗时；
+  `control_lock_wait_ms`表示状态锁等待，`execution_lock_wait_ms`表示命令/输出串行锁等待；
+  `previous_work_ms`大指向上个控制周期内部耗时；
   二者都小时再结合DDS/回调时间检查调度或输入中断。
   `slow_operation`区分`status_graph`、`status_locked`、`control_dispatch`、
-  `control_reference`（含校准推进）和`control_publish`；`slow_age_at_event_ms`用于识别历史慢调用。
+  `control_reference`（含校准推进）、`control_publish`和`status_publish`；`slow_age_at_event_ms`用于识别历史慢调用。
   `status_ms`是最近一次完成的状态回调六段耗时：图查询、等锁、维护、导航状态构造、其余字段、发布。
   慢事件同样附带raw快照；回调间隔大但等锁小时，需继续区分默认回调组调度、DDS与源头，不能直接归咎Odin。
 
-高频路径只更新时间和定长内存快照，不格式化、不写盘、不增加高频话题。
+- `[CONTROL_OUTPUT]`：附在慢事件/故障后，`event_ns`关联快照，`publish_begin_ns`、命令序号、
+  Linux线程`tid`标识最近一次完成的输出。`wall_ms`与`cpu_ms`按compute/message/publish/relock排列，
+  分别为PD+DOB计算、取时及消息构造、DDS发布、重新获得状态锁；CPU值`-1`表示采样失败。
+  墙钟时间很大而线程CPU很小表明等待或未获调度；CPU也很大表明线程持续执行。
+  `voluntary_switches/involuntary_switches`和`minor_faults/major_faults`是整段输出的线程计数增量，
+  辅助区分主动等待、被抢占和缺页，不能仅凭计数认定某把DDS锁。旧输出须结合`publish_begin_ns`区分。
+- `[PUBLISH_INFLIGHT]`：≥100ms仍未完成的姿态/状态发布，每秒最多各一条；记录线程、命令、
+  已耗时及当时位置/速度/raw输入年龄。范围包含发布及其后的状态锁重获，不直接等同DDS阻塞；
+  完成后的分段时间可进一步区分。该行在调用返回前即可落盘，无需等待遥测保护触发。
+
+姿态和状态的消息发布在共享状态锁外；控制计算与状态转换仍受同步保护。命令/输出串行锁保持
+已开始的姿态发布先于LAND/取消处理，关键输入使用独立回调组继续更新；不添加输出队列或修改保护阈值。
+发布本身仍可能变慢，日志用于定位该剩余问题；本次未将离散结果、视频和避障消息的全部发布移出锁。
+
+高频路径仅采样固定数量的线程CPU/调度计数、更新时间和定长内存快照，不格式化、不写盘、不增加高频话题。
 独立1Hz回调用try-lock提取后释放控制锁，再写独占文件（不经过ROS/stdio标准输出锁）；每批最多一个故障快照和一个合并后的
-最慢耗时快照及一条raw后续接收证据，无无限队列。持续抖动的`count`是合并的事件数，不等于唯一超期周期数。
+最慢耗时快照（各附最近输出分段）、一条raw后续接收证据及最多两条在途发布记录，无无限队列。持续抖动的`count`是合并的事件数，不等于唯一超期周期数。
 此诊断只需原生重建`onboard_control`并在地面重启加载新版，无消息接口或配置变更。
