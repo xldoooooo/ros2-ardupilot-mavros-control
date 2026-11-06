@@ -1,0 +1,4 @@
+interface:
+  display_name: "ROS2–ArduPilot 多设备部署"
+  short_description: "同步本项目飞机与地面站，保留现场差异并核实原生构建和运行加载"
+  default_prompt: "使用 $project-deployment 完成本次指定设备的同步与部署，按改动范围验证并报告尚未加载或验收的部分。"

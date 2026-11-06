@@ -1,0 +1,4 @@
+interface:
+  display_name: "ROS2–ArduPilot 故障取证"
+  short_description: "对齐本项目事故与链路日志，区分已证事实、故障机制和待验证原因"
+  default_prompt: "使用 $project-forensics 分析本次故障，给出可追溯证据、原因判断的边界和下一步最小验证实验。"
