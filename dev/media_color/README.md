@@ -21,9 +21,9 @@
   --input ~/Media/ardupilot/public/examples \
   --output ~/Media/ardupilot/color-preview/selective --profile selective
 
-# 效果确认后，在 mini 本机处理完整素材；输出仍在 FTP public 根目录之外。
+# mini 部署后重新生成完整视频：使用原片备份，输出仍在 FTP public 根目录之外。
 .venv/bin/python dev/media_color/correct_media.py batch \
-  --input ~/Media/ardupilot/public/examples \
+  --input ~/Media/ardupilot/color-backups/20261106-approved-full-videos \
   --output ~/Media/ardupilot/color-staging/selective --profile selective
 ```
 
@@ -31,6 +31,10 @@
 单个文件失败会记入 `manifest.json` 并继续处理其他文件，最终以非零状态退出。
 每个结果完整解码后才改为正式文件名，并核对尺寸、视频帧率与时长，记录原片和结果 SHA-256。
 中断后的目录保留已完成文件及记录，重试需另选空目录。
+
+mini 已替换的 `public/examples/videos` 是校色成品。后续重新生成视频时，
+`--input` 应使用原片备份 `~/Media/ardupilot/color-backups/20261106-approved-full-videos`，
+不要再把公共目录中的成品作为原片输入；该备份仅含视频，本次未替换公共图片。
 
 `profiles.json` 定义固定曲线和饱和度：`natural` 较轻，`enhanced` 更明显。
 `selective` 默认沿用原版 `enhanced`，只把规则中明确列出的 2026-08-25
