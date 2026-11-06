@@ -7,7 +7,7 @@ mock: false
 # Solid-voxel checking also adds one voxel diagonal: total inflation is about 0.523 m.
 resolution_m: 0.1
 resolution_z_m: 0.1
-uav_radius_m: 0.35
+uav_radius_m: 0.18
 safety_margin_m: 0.0
 # Original QUBO clearance preference; this is not the map's inflation radius.
 safe_clearance_m: 0.3
@@ -32,7 +32,7 @@ candidates_per_layer: 8
 iterations: 1400
 restarts: 8
 input_timeout: 1.0
-replan_interval: 0.2
-replan_distance: 1.0
+replan_interval: 2.0
+replan_distance: 10.0
 # Metres: preserve a still-valid zero-speed terminal curve, matching the CPU backend's scheduler.
 near_goal_replan_distance: 0.3
