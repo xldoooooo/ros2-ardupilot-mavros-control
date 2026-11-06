@@ -29,6 +29,12 @@ _REFRESH_INTERVAL_MS = 4000
 _HTTP_TIMEOUT_SECONDS = 10
 # 初始列宽允许手动调整，避免每个单元格变化都触发全表内容测量。
 _TABLE_COLUMN_WIDTHS = (90, 240, 65, 75, 65, 110, 110, 260, 165, 100, 320)
+# 按钮动作提示独立于后台轮询，避免操作中和失败信息被定时刷新覆盖。
+_ACTION_LABELS = {
+    "refresh": "刷新列表", "preview": "读取图片", "directory": "检查并打开本机目录",
+    "open": "下载处理版录像，完成后打开", "save": "下载处理版",
+    "delete": "删除媒体", "rebuild": "提交原片重建",
+}
 # 显示实际记录状态，不把缓存清理等同于地面缺失。
 _STATE_LABELS = {
     "pending": "待上传", "queued": "待上传", "uploading": "上传中",
@@ -51,6 +57,7 @@ QMainWindow { background: transparent; }
 QFrame#subpanelWindowFrame { background: #f7f8fa; border: 1px solid #8595a5; border-radius: 8px; }
 QFrame#subpanelTitleBar { background: white; border-bottom: 1px solid #cfd6de; }
 QPushButton, QComboBox, QLineEdit { min-height: 29px; padding: 3px 8px; }
+QPushButton:disabled { color: #86909c; background: #edf0f3; }
 QTableWidget, QTextEdit { background: white; border: 1px solid #cfd6de; }
 QLabel#imagePreview { background: #182433; color: #d9e1e8; }
 """
@@ -192,7 +199,7 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         self._configure_window_chrome()
         self._build_ui()
         if config_error:
-            self.message.setText(config_error)
+            self.refresh_status.setText(config_error)
         self._timer = QTimer(self)
         self._timer.setInterval(_REFRESH_INTERVAL_MS)
         self._timer.timeout.connect(self.refresh)
@@ -255,7 +262,10 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         for button in (self.preview_button, self.open_button, self.directory_button, self.save_button, self.delete_button, self.rebuild_button):
             actions.addWidget(button)
         layout.addLayout(actions)
-        self.message = QLabel(f"后台：{self._client.api_url}；原片仅用于内部缓存与重建")
+        self.refresh_status = QLabel(f"后台：{self._client.api_url}；原片仅用于内部缓存与重建")
+        self.refresh_status.setWordWrap(True)
+        layout.addWidget(self.refresh_status)
+        self.message = QLabel("请选择文件后执行操作；停留在按钮上可查看用途与限制。")
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
         self.setCentralWidget(root)
@@ -277,6 +287,8 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         if name in self._busy or self._closed:
             return
         self._busy.add(name)
+        if name != "refresh":
+            self.message.setText(f"正在{_ACTION_LABELS.get(name, name)}…")
         self._selection_changed()
         bridge = self._bridge
 
@@ -304,7 +316,9 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         if self._closed:
             return
         if error:
-            self.message.setText(f"{name} 失败：{error}；列表保留上次读取结果")
+            label = self.refresh_status if name == "refresh" else self.message
+            suffix = "；列表保留上次读取结果" if name == "refresh" else ""
+            label.setText(f"{_ACTION_LABELS.get(name, name)}失败：{error}{suffix}")
         elif name == "refresh":
             self._records = result.get("records", [])
             storage = result.get("storage", {})
@@ -314,20 +328,24 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
             self.storage.setText(f"地面存储：{human_size(storage.get('bytes'))} / {limit}；统计范围：{scope}")
             self._update_filters()
             warning = f"；后台异常：{result['error']}" if result.get("error") else ""
-            self.message.setText(f"已读取 {len(self._records)} 条记录；后台 {self._client.api_url}{warning}")
+            self.refresh_status.setText(f"已读取 {len(self._records)} 条记录；后台 {self._client.api_url}{warning}")
         elif name == "preview":
             if str((self.selected_record() or {}).get("id", "")) == self._preview_id:
                 pixmap = QPixmap()
                 if pixmap.loadFromData(result):
                     self.preview.setPixmap(pixmap.scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                    self.message.setText("已显示处理版图片")
                 else:
                     self.message.setText("图片内容无法解码")
-        elif name == "open":
-            QDesktopServices.openUrl(QUrl.fromLocalFile(result))
-            self.message.setText(f"已打开处理版录像：{result}")
-        elif name == "directory":
-            QDesktopServices.openUrl(QUrl.fromLocalFile(result))
-            self.message.setText(f"已打开本机目录：{result}")
+            else:
+                self.message.setText("图片读取完成；当前选择已变化，请重新预览")
+        elif name in ("open", "directory"):
+            target = "处理版录像" if name == "open" else "本机目录"
+            if QDesktopServices.openUrl(QUrl.fromLocalFile(result)):
+                self.message.setText(f"已请求系统打开{target}：{result}")
+            else:
+                application = "播放器" if name == "open" else "文件管理器"
+                self.message.setText(f"打开{target}失败：系统未能启动默认{application}；路径：{result}")
         elif name == "save":
             self.message.setText(f"已下载：{result}")
         else:
@@ -407,12 +425,19 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         processed = bool(record.get("id")) and record.get("variant") in ("experiment", "rebuilt")
         available = processed and (bool(record.get("download_url")) or record.get("state") in ("ready", "completed"))
         action_busy = bool(self._busy - {"refresh", "preview"})
+        self.refresh_button.setEnabled("refresh" not in self._busy)
         self.preview_button.setEnabled(available and record.get("kind") == "image" and "preview" not in self._busy)
         self.open_button.setEnabled(available and record.get("kind") == "video" and not action_busy)
         self.save_button.setEnabled(available and not action_busy)
         self.directory_button.setEnabled(bool(record.get("path")) and not action_busy)
         self.delete_button.setEnabled(bool(record.get("id")) and not action_busy)
         self.rebuild_button.setEnabled(bool(record.get("id")) and record.get("kind") == "video" and record.get("variant") == "original" and not action_busy)
+        self.preview_button.setToolTip("选中可下载的处理版图片后预览；原始缓存不提供下载")
+        self.open_button.setToolTip("选中可下载的处理版录像后，用本机默认播放器打开")
+        self.directory_button.setToolTip("打开选中文件在本机的目录；远端后台文件请用另存下载")
+        self.save_button.setToolTip("选中可下载的处理版文件后另存；原始缓存不提供下载")
+        self.delete_button.setToolTip("删除选中的后台文件，需确认后执行")
+        self.rebuild_button.setToolTip("仅适用于原始录像缓存，提交后由后台生成处理版")
         if record:
             self.details.setPlainText(
                 f"飞机：{record.get('aircraft_id', '未知')}\n"
@@ -444,12 +469,16 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
         if not record:
             return
         cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "ardupilot-media-preview"
-        cache.mkdir(parents=True, exist_ok=True)
         name = Path(str(record.get("path") or "video.mp4")).name
         # ID只作为本地缓存前缀，防止后台路径逃逸缓存目录。
         prefix = str(record["id"]).replace("/", "_").replace("\\", "_")
-        self.message.setText("正在下载处理版录像，完成后打开…")
-        self._run("open", lambda: self._client.download(record, cache / f"{prefix}-{name}"))
+
+        def download_video() -> str:
+            """缓存目录检查和下载均在线程执行，磁盘错误也回显到窗口。"""
+            cache.mkdir(parents=True, exist_ok=True)
+            return self._client.download(record, cache / f"{prefix}-{name}")
+
+        self._run("open", download_video)
 
     def _open_directory(self) -> None:
         """后台核验本机目录后打开，选中行不访问可能阻塞的挂载点。"""
@@ -460,7 +489,7 @@ class FileManagerWindow(ShadowWindowChromeMixin, QMainWindow):
             def check_directory() -> str:
                 """只检查当前 GUI 机器的路径，远端后台路径不作本地猜测。"""
                 if not directory.is_dir():
-                    raise RuntimeError("本机不存在该目录；后台在其他机器时请使用另存下载")
+                    raise RuntimeError(f"本机不存在该目录：{directory}；后台在其他机器时请使用另存下载")
                 return str(directory)
 
             self._run("directory", check_directory)

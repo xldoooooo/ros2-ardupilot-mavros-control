@@ -251,7 +251,7 @@ def test_file_window_directory_probe_runs_only_on_click_in_worker(monkeypatch, t
         return original_is_dir(path)
 
     monkeypatch.setattr(Path, "is_dir", slow_is_dir)
-    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()))
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
     try:
         window._completed("refresh", {"records": [{
             "id": "video", "variant": "experiment", "kind": "video", "state": "ready",
@@ -270,6 +270,94 @@ def test_file_window_directory_probe_runs_only_on_click_in_worker(monkeypatch, t
         assert opened == [str(tmp_path)]
     finally:
         release.set()
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("action", ["directory", "open"])
+def test_file_window_reports_desktop_failure_across_refresh(media_api, monkeypatch, tmp_path, action):
+    """真实按钮完成目录检查/下载后，桌面拒绝打开应可见且不被轮询覆盖。"""
+    from PySide6.QtGui import QDesktopServices
+
+    url, records, _actions = media_api
+    records[:] = [{
+        "id": "video", "variant": "experiment", "kind": "video", "state": "ready",
+        "path": str(tmp_path / "video.mp4"),
+    }]
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda target: opened.append(target.toLocalFile()) or False)
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url=url)
+    try:
+        wait_for(app, lambda: bool(window._records))
+        window.table.selectRow(0)
+        button = window.directory_button if action == "directory" else window.open_button
+        assert button.isEnabled()
+        button.click()
+        assert action in window._busy
+        assert "正在" in window.message.text()
+        wait_for(app, lambda: bool(opened) and action not in window._busy)
+        assert "失败" in window.message.text()
+        assert opened[0] in window.message.text()
+        failure = window.message.text()
+        window.refresh()
+        wait_for(app, lambda: "refresh" not in window._busy)
+        assert window.message.text() == failure
+        assert button.isEnabled()
+        if action == "open":
+            assert Path(opened[0]).read_bytes() == b"processed-content"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_file_window_directory_error_remains_visible(monkeypatch, tmp_path):
+    """不存在的后台目录通过按钮报错，自动刷新仍保留该错误。"""
+    monkeypatch.setattr(FileManagerWindow, "refresh", lambda _self: None)
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url="http://127.0.0.1:1")
+    inventory = {"records": [{
+        "id": "video", "variant": "experiment", "kind": "video", "state": "ready",
+        "path": str(tmp_path / "absent" / "video.mp4"),
+    }]}
+    try:
+        window._completed("refresh", inventory, "")
+        window.table.selectRow(0)
+        window.directory_button.click()
+        wait_for(app, lambda: "directory" not in window._busy)
+        assert "本机不存在该目录" in window.message.text()
+        failure = window.message.text()
+        window._completed("refresh", inventory, "")
+        assert window.message.text() == failure
+        window._completed("refresh", None, "后台离线")
+        assert window.message.text() == failure
+        assert "后台离线" in window.refresh_status.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_file_window_video_cache_error_is_reported(monkeypatch, tmp_path):
+    """缓存目录无法创建时仍回到UI报错，而非槽函数抛错后无反馈。"""
+    monkeypatch.setattr(FileManagerWindow, "refresh", lambda _self: None)
+    blocked_cache = tmp_path / "cache-file"
+    blocked_cache.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(blocked_cache))
+    app = QApplication.instance() or QApplication([])
+    window = FileManagerWindow(api_url="http://127.0.0.1:1")
+    try:
+        window._completed("refresh", {"records": [{
+            "id": "video", "variant": "experiment", "kind": "video", "state": "ready",
+            "path": str(tmp_path / "video.mp4"),
+        }]}, "")
+        window.table.selectRow(0)
+        window.open_button.click()
+        wait_for(app, lambda: "open" not in window._busy)
+        assert "失败" in window.message.text()
+        assert str(blocked_cache) in window.message.text()
+        assert window.open_button.isEnabled()
+    finally:
         window.close()
         app.processEvents()
 
