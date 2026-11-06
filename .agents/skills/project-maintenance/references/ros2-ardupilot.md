@@ -3,7 +3,7 @@
 
 本技能属于含 `src/onboard_control/`、`drivers/odin/` 的ROS2–ArduPilot仓库。`agent/task/14-trim.md` 等本机资料存在时定向查阅，其八项维护范围为：MEMORY、报告、项目文档、agent临时目录、Git跟踪、备份、已有未提交改动、后续可清清单。
 
-- 纯维护不修改程序和运行参数，不修改或实施 TODO.md；已有代码/配置/TODO改动需要整理提交时保留其原内容。实机解锁、起飞只允许用户手动执行，清理无需连接飞机或启停机载服务。
+- 维护允许修正测试代码、夹具、分组及测试构建/执行入口，不借机修改产品程序和运行参数，不修改或实施 TODO.md；已有代码/配置/TODO改动需要整理提交时保留其原内容。测试维护按[测试指南](../../../../tests/README.md)执行，构建产物清理同时核对测试重建条件。实机解锁、起飞只允许用户手动执行，维护无需连接飞机或启停机载服务。
 - Python 使用项目 `.venv/bin/python`；当前主工程、Odin和外部定位的有效 build/install、逐机配置和本机依赖环境按实际入口核对，不因为“都能编译”就全部删掉。
 - 正式维护源码包含 `drivers/odin/`、`correction_service/extnav_patch/`、`fpga_avoidance/`；旧实验源码副本可能不同，先比差异。设备SDK静态库和 `intrinsics.yaml.old` 等镜头存档可能被构建或测试依赖。
 - `agent/codex/`、`agent/grok/` 是过程目录。重点找重复源码/构建树、从bag导出的点云与replay-input、DataFlash解析CSV、视频抽帧/校色预览、合成RTSP录像和SITL输出；保留原始MCAP/DB3/实飞BIN、标定/参数、唯一补丁和紧凑结果。

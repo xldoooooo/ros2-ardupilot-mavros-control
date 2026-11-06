@@ -1,4 +1,4 @@
 interface:
   display_name: "ROS2–ArduPilot 项目维护"
-  short_description: "按明确要求进行本项目的深度清理、批量归档或跨任务资料整理"
-  default_prompt: "使用 $project-maintenance 维护清理本 ROS2–ArduPilot 项目，保留手工笔记和原始证据，优先清理可重建派生产物，并将 report 根目录控制在50份以内。"
+  short_description: "按明确范围维护本项目的测试与分组、清理产物、归档报告和整理资料"
+  default_prompt: "使用 $project-maintenance 维护本 ROS2–ArduPilot 项目，一并检查修正测试及分组并按需验证，保留手工笔记和原始证据，清理可重建派生产物，并将 report 根目录控制在50份以内。"
