@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import pytest
 import yaml
+from rclpy.serialization import serialize_message
 from correction_service.estimator import QualitySnapshot
 from correction_service.journal import JobJournal
 from correction_service.window import (
@@ -149,9 +150,11 @@ def test_idle_capture_subscriptions_are_created_and_released_on_demand(correctio
     assert capture_topics.isdisjoint(subscription.topic_name for subscription in node.subscriptions)
     node._start_odometry_capture()
     node._start_image_capture()
-    assert capture_topics <= {subscription.topic_name for subscription in node.subscriptions}
+    assert node._synchronizer.running
+    assert node.config.topics["camera_image"] in {subscription.topic_name for subscription in node.subscriptions}
     assert node._stop_image_capture()
     assert node._stop_odometry_capture()
+    assert not node._synchronizer.running
     assert capture_topics.isdisjoint(subscription.topic_name for subscription in node.subscriptions)
 
 
@@ -193,11 +196,21 @@ def test_raw_capture_requires_fcu_frame_and_nonzero_installation_can_apply(
     raw.header.frame_id = "odom"
     raw.child_frame_id = "odin_imu"
     raw.pose.pose.orientation.w = 1.0
-    node._on_odometry(raw)
+    node._synchronizer._capture.add(
+        serialize_message(raw), node.get_clock().now().nanoseconds, time.monotonic()
+    )
+    node._on_odometry_fault()
+    with node._lock:
+        node._refresh_odometry_locked()
     assert node._latest_raw_transform is None
 
     raw.child_frame_id = "fcu"
-    node._on_odometry(raw)
+    node._synchronizer._capture.add(
+        serialize_message(raw), node.get_clock().now().nanoseconds, time.monotonic()
+    )
+    node._on_odometry_fault()
+    with node._lock:
+        node._refresh_odometry_locked()
     assert np.allclose(node._latest_raw_transform, np.eye(4))
     node._extnav.installation_rpy = np.array((0.0, -math.pi / 6.0, 0.0))
     candidate = _candidate(node)
@@ -209,6 +222,23 @@ def test_raw_capture_requires_fcu_frame_and_nonzero_installation_can_apply(
         - node.config.fcu_reference.lever_arm_m[:2]
     )
     assert math.isclose(evaluated.expected_position_jump_m, expected, abs_tol=1e-12)
+
+
+def test_native_cleanup_retains_faults_before_final_commit(correction_node, tmp_path):
+    """原生线程退出前的异常仍须令任务失败，不能被close清理吞掉。"""
+    from nav_msgs.msg import Odometry
+    node = correction_node
+    node._job = _job(node, tmp_path, _candidate(node))
+    node._start_odometry_capture()
+    raw = Odometry()
+    raw.header.frame_id, raw.child_frame_id = "odom", "odin_imu"
+    node._synchronizer._capture.add(
+        serialize_message(raw), node.get_clock().now().nanoseconds, time.monotonic()
+    )
+    assert node._stop_odometry_capture()
+    assert not node._synchronizer.running
+    with pytest.raises(RuntimeError, match="odom/fcu"):
+        node._raise_if_stopping(node._job)
 
 
 def test_window_commit_and_clear_increment_revision_without_touching_extnav(
@@ -1251,11 +1281,12 @@ def test_sampling_uses_only_requested_tag(
     job.expected_tag_id = target_id
     job.estimator = CorrectionEstimator(node.config.quality, node.config.keyframe)
     odometry = Odometry()
+    odometry.header.frame_id, odometry.child_frame_id = "odom", "fcu"
     odometry.header.stamp.sec = 1
     odometry.pose.pose.position.z = 1.0
     odometry.pose.pose.orientation.w = 1.0
     stamp_ns = 1_000_000_000
-    node._synchronizer.add(odometry, stamp_ns)
+    node._synchronizer._capture.add(serialize_message(odometry), stamp_ns, time.monotonic())
     odin_from_fcu = np.eye(4)
     odin_from_fcu[2, 3] = 1.0
     camera_from_tag = (

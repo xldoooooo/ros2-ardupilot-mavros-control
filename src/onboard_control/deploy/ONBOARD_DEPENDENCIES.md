@@ -127,7 +127,7 @@ unit 已在运行，安装器会保持原有安全拒绝。
 ```
 
 这两个入口仍执行各自原有的工具、依赖、源码 overlay、接口版本与配置检查，并完成构建、现场配置
-保留、unit 校验和 `daemon-reload`；它们只跳过末尾的 `enable --now`。修正服务直接构建并验证本包 `correction_service/uvc_camera_node`，
+保留、unit 校验和 `daemon-reload`；它们只跳过末尾的 `enable --now`。修正服务构建 `correction_native` 并验证原 `correction_service/uvc_camera_node` 入口，
 不需要联合标定目录或相机 overlay。新飞机默认相机路径、镜头
 标定和 by-path 设备名不能沿用旧机结论；逐项核对并完成台架验证后，才可去掉 `--install-only`
 分别重跑正常安装器以启用和启动服务。

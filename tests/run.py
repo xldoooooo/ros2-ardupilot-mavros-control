@@ -73,6 +73,7 @@ RULES = {
     "*onboard_video.sh": ("video",),
     "correction_service/*": ("correction",),
     "src/correction_interfaces/*": ("correction", "flight", "waypoints"),
+    "src/correction_native/*": ("correction",),
     "*onboard_correction.sh": ("correction",),
     "src/guided_sim/*": ("waypoints", "runtime"),
     "src/avoidance_bridge/*": ("runtime", "flight", "waypoints"),

@@ -13,6 +13,7 @@ from tests import run
     [
         ("video_service/camera_app/controller.py", {"video"}),
         ("correction_service/correction_service/window.py", {"correction"}),
+        ("src/correction_native/src/odometry.cpp", {"correction"}),
         ("src/correction_interfaces/msg/CorrectionStatus.msg", {"correction", "flight", "waypoints"}),
         ("ground_station_core/upstream/protocol.py", {"upstream"}),
         ("ground_station_core/waypoint_io.py", {"waypoints", "upstream"}),

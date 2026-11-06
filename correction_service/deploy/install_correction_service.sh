@@ -44,7 +44,7 @@ usage() {
   cat <<'EOF'
 Usage: ./correction_service/deploy/install_correction_service.sh [--install-only]
 
-Build correction_interfaces/correction_service, verify the in-package UVC driver
+Build correction_interfaces/correction_native/correction_service, verify the UVC driver
 and configuration, install odin-correction.service, then enable/start
 the independent node. The node remains idle with the camera closed until a
 ground start request. The installer refuses an active flight service because it
@@ -97,6 +97,8 @@ correction_user="${SUDO_USER:-$(id -un)}"
 correction_home="$(getent passwd "${correction_user}" | cut -d: -f6)"
 [[ -n "${correction_home}" ]] || die "cannot resolve home for ${correction_user}"
 source_setup /opt/ros/jazzy/setup.bash
+source "${WORKSPACE_ROOT}/scripts/lib/build_dependencies.bash"
+build_ensure_correction_dependencies
 for command_name in colcon ros2 v4l2-ctl python3; do
   command -v "${command_name}" >/dev/null 2>&1 ||
     die "required command is missing: ${command_name}"
@@ -111,15 +113,21 @@ assert yaml.safe_load("ok: true")["ok"] is True
 PY
 (
   cd -- "${WORKSPACE_ROOT}"
-  colcon build \
-    --packages-select correction_interfaces correction_service \
-    --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
+  "${WORKSPACE_ROOT}/.venv/bin/python" -m colcon build \
+    --packages-select correction_interfaces correction_native correction_service \
+    --parallel-workers "$(nproc)" \
+    --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF -DCMAKE_BUILD_TYPE=Release \
+      -DPython3_EXECUTABLE="${WORKSPACE_ROOT}/.venv/bin/python"
 )
 source_setup "${WORKSPACE_ROOT}/install/local_setup.bash"
 interfaces_prefix="$(ros2 pkg prefix correction_interfaces)"
 service_prefix="$(ros2 pkg prefix correction_service)"
 [[ -x "${service_prefix}/lib/correction_service/uvc_camera_node" ]] ||
   die "in-package UVC camera executable is missing"
+native_prefix="$(ros2 pkg prefix correction_native)"
+[[ -x "${native_prefix}/lib/correction_native/uvc_camera_node" ]] ||
+  die "native UVC camera executable is missing"
+"${WORKSPACE_ROOT}/.venv/bin/python" -c 'import _correction_native'
 verify_manifest_version "${interfaces_prefix}/share/correction_interfaces/package.xml"
 verify_manifest_version "${service_prefix}/share/correction_service/package.xml"
 ros2 interface show correction_interfaces/msg/CalibrationKeyframe >/dev/null

@@ -10,7 +10,6 @@ import math
 import subprocess
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import cv2
@@ -30,10 +29,6 @@ from correction_service.geometry import (
     world_tag_transform,
 )
 from correction_service.journal import JobJournal
-from correction_service.synchronizer import (
-    OdometrySynchronizer,
-    is_apply_time_source_safe,
-)
 
 from correction_service.config import load_config
 
@@ -139,22 +134,6 @@ def test_lens_controls_apply_in_file_order_then_verify_final_values(
     ]
     assert sleeps == [0.2]
     assert readback == config.lens_controls
-
-
-def _stamp(nanoseconds: int) -> SimpleNamespace:
-    """构造只含 sec/nanosec 的测试时间。"""
-    return SimpleNamespace(
-        sec=nanoseconds // 1_000_000_000,
-        nanosec=nanoseconds % 1_000_000_000,
-    )
-
-
-def _odom(header_ns: int, name: str = "sample") -> SimpleNamespace:
-    """构造同步器需要的最小 odometry 替身。"""
-    return SimpleNamespace(
-        header=SimpleNamespace(stamp=_stamp(header_ns)),
-        name=name,
-    )
 
 
 def test_calibration_config_loads_explicit_values_without_profile_defaults(tmp_path) -> None:
@@ -428,35 +407,6 @@ def test_detector_pnp_accounts_for_distortion_without_double_correction() -> Non
     assert np.allclose(
         detected.camera_from_tag_standard[:3, :3], detected_rotation, atol=1e-10
     )
-
-
-def test_synchronizer_never_hides_bad_same_epoch_header_with_arrival_time() -> None:
-    """同 epoch 的 header 超限时必须拒绝，不能因接收时刻接近而伪装匹配。"""
-    config = load_config(CONFIG_DIR)
-    synchronizer = OdometrySynchronizer(config.synchronization)
-    image_ns = 100_000_000_000
-    synchronizer.add(_odom(image_ns + 100_000_000), image_ns)
-
-    assert synchronizer.match(image_ns) is None
-
-
-def test_synchronizer_explicitly_reports_epoch_mismatch_fallback() -> None:
-    """相机 header 与 Odin header 不同 epoch 时才允许接收时钟有限回退。"""
-    config = load_config(CONFIG_DIR)
-    synchronizer = OdometrySynchronizer(config.synchronization)
-    image_ns = 100_000_000_000
-    message = _odom(8_000_000_000_000, "fallback")
-    synchronizer.add(message, image_ns + 4_000_000)
-
-    matched = synchronizer.match(image_ns)
-
-    assert matched is not None
-    assert matched.message.name == "fallback"
-    assert matched.time_source == "arrival_history"
-    assert math.isclose(matched.delta_ms, 4.0)
-    assert is_apply_time_source_safe(matched.time_source)
-    assert is_apply_time_source_safe("header")
-    assert not is_apply_time_source_safe("mixed")
 
 
 def test_estimator_converges_across_yaw_wrap_only_after_all_gates() -> None:

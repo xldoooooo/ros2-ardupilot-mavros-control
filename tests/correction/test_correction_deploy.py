@@ -124,7 +124,7 @@ def test_correction_unit_has_no_flight_service_dependency() -> None:
     for directive in ("Requires=", "PartOf=", "BindsTo="):
         assert not any(line.startswith(directive) for line in active_lines)
     assert 'systemctl is-active --quiet "${FLIGHT_SERVICE}"' in installer
-    assert "correction_interfaces correction_service" in installer
+    assert "correction_interfaces correction_native correction_service" in installer
     assert 'CORRECTION_PACKAGE_VERSION="2.0.0"' in installer
     assert "installed CorrectionStatus is not 2.0" in installer
     assert "correction_interfaces/srv/ApplySavedCorrection" in installer
@@ -183,11 +183,12 @@ def test_onboard_sparse_checkout_and_build_include_correction_packages() -> None
     launcher = _text(PROJECT_ROOT / "scripts/onboard/start_onboard_control.sh")
 
     assert 'CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"' in helper
+    assert 'CORRECTION_NATIVE_SPARSE_PATH="/src/correction_native/"' in helper
     assert 'CORRECTION_SERVICE_SPARSE_PATH="/correction_service/"' in helper
     assert 'CORRECTION_START_SPARSE_PATH="/scripts/onboard/start_onboard_correction.sh"' in helper
     assert 'CORRECTION_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_correction.sh"' in helper
     assert (
-        "guided_interfaces correction_interfaces onboard_control correction_service"
+        "guided_interfaces correction_interfaces correction_native onboard_control correction_service"
         in helper
     )
     assert "for onboard_package in guided_interfaces onboard_control" in launcher

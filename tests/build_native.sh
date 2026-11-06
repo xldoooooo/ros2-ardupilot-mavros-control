@@ -14,7 +14,7 @@ cd "${project_root}"
 export CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)"
 export MAKEFLAGS="-j$(nproc)"
 colcon build --base-paths src \
-    --packages-select guided_interfaces correction_interfaces onboard_control avoidance_bridge guided_sim \
+    --packages-select guided_interfaces correction_interfaces correction_native onboard_control avoidance_bridge guided_sim \
     --parallel-workers "$(nproc)" --cmake-force-configure \
     --cmake-args -DCMAKE_BUILD_TYPE=Release -DAMENT_CMAKE_SYMLINK_INSTALL=OFF \
     -DPython3_EXECUTABLE="${project_root}/.venv/bin/python"

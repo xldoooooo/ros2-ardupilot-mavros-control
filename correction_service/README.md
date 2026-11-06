@@ -296,24 +296,33 @@ N/下一次序号、Tag 顺序、每个 keyframe 的 P/Q/质量、最长 O/W 基
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select correction_interfaces correction_service
+.venv/bin/python -m colcon build --packages-select correction_interfaces correction_native correction_service \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
 source install/setup.bash
 ros2 run correction_service correction_node --ros-args \
   -p config_dir:="$PWD/config/aircraft/uav002/correction"
 ```
 
-采集节点 `correction_service/uvc_camera_node` 随本包安装，直接打开 `camera.conf` 指定的系统
+原生数据面位于 `src/correction_native/`：C++ 接收并校验完整频率的 Odin 消息、维护历史和时间匹配，
+Python 仅在处理观测或检查应用跳变时读取状态；异常通过 guard condition 交给原状态机。
+原生 DDS 发现上下文随服务保留，任务结束后仍实际销毁高频订阅并清空历史；idle 不接收400Hz数据。
+滑窗、质量门、服务接口、CAS 应用与未知结果对账仍由 `node.py` 管理。AprilTag 搜索、原有缩图、
+自适应亚像素精修及 IPPE square PnP 在同库 C++ 中执行，检测默认 `image_scale` 保持配置值。
+
+采集入口 `correction_service/uvc_camera_node` 用 `exec` 加载原生节点，直接打开 `camera.conf` 指定的系统
 UVC 设备，以 V4L2 mmap 读取 MJPEG，并用已有 OpenCV 依赖解码为原始 `mono8`；不裁剪、不旋转、
 不去畸变。采集时间直接来自内核 `CLOCK_MONOTONIC` 缓冲区时间戳，按帧龄映射至 ROS 系统时钟；
 不按声明 fps 推算时间，不以到达时间掩盖无效时间戳。超过原有 `max_capture_age_ms` 的帧仍丢弃。
-仅要求 Linux V4L2、设备访问权限及已有的 Python/OpenCV/ROS、`v4l2-ctl` 依赖，无 Jetson 专属解码
+构建增加 `pybind11-dev` 和 ROS `pybind11_vendor`；安装入口自动补齐。原生模块选择 Python `cv2`
+实际加载的 OpenCV 动态库。若 JetPack 开发头与 Python 版本不同，构建入口仅下载并解包匹配的
+Ubuntu 头文件到 `build/correction_native/opencv/`，不替换系统 OpenCV。首次构建需要可访问 apt
+软件源，后续复用缓存。运行仍使用 Linux V4L2、设备访问权限及已有的 Python/OpenCV/ROS、`v4l2-ctl`，无 Jetson 专属解码
 或联合标定工作区依赖。启动脚本只加载 ROS 与本工作区 `local_setup.bash`，避免旧构建记录的外部
 underlay 被重新引入。升级时须更新活动及命名档案的 `[driver]` 为 `package = correction_service`、
 `executable = uvc_camera_node`，重建本包并重启独立修正服务；旧外部 driver 配置会明确拒绝。
 标定配置中 `source_path` 仅记录外参数据或机械推导报告的来源，不在运行时读取那个路径。
 
-节点启动后为 idle。生产安装只能在用户确认的未解锁维护窗口进行；安装前应由用户停止可能
-冲突的机载服务。本仓库代理不得自行部署、重启、解锁或起飞实机。
+节点启动后为 idle。部署与重启按用户已授权的地面维护范围进行；严禁代理自行解锁或起飞实机。
 
 ```bash
 ./correction_service/deploy/install_extnav_correction.sh

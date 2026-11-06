@@ -17,6 +17,8 @@ readonly GUIDED_SPARSE_PATH="/src/guided_interfaces/"
 # Keep ignore rules available so build outputs stay out of update's dirty-tree check.
 readonly GITIGNORE_SPARSE_PATH="/.gitignore"
 readonly CORRECTION_INTERFACES_SPARSE_PATH="/src/correction_interfaces/"
+# Native Odin reception and UVC/AprilTag hot paths are a correction runtime dependency.
+readonly CORRECTION_NATIVE_SPARSE_PATH="/src/correction_native/"
 readonly ONBOARD_SPARSE_PATH="/src/onboard_control/"
 # Odin owns its separate build/install tree beneath the project drivers directory.
 readonly DRIVERS_SPARSE_PATH="/drivers/"
@@ -124,6 +126,8 @@ validate_workspace_layout() {
     die "guided_interfaces is missing from ${WORKSPACE_ROOT}/src"
   [[ -f "${WORKSPACE_ROOT}/src/correction_interfaces/package.xml" ]] ||
     die "correction_interfaces is missing from ${WORKSPACE_ROOT}/src"
+  [[ -f "${WORKSPACE_ROOT}/src/correction_native/package.xml" ]] ||
+    die "correction_native is missing from ${WORKSPACE_ROOT}/src"
   [[ -f "${WORKSPACE_ROOT}/src/onboard_control/package.xml" ]] ||
     die "onboard_control is missing from ${WORKSPACE_ROOT}/src"
   [[ -x "${WORKSPACE_ROOT}/drivers/odin/build.sh" ]] ||
@@ -178,7 +182,7 @@ update_checkout() {
   # The checkout was initialized in non-cone mode; older Git treats --no-cone here as a path.
   git -C "${WORKSPACE_ROOT}" sparse-checkout set \
     "${GITIGNORE_SPARSE_PATH}" \
-    "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" \
+    "${GUIDED_SPARSE_PATH}" "${CORRECTION_INTERFACES_SPARSE_PATH}" "${CORRECTION_NATIVE_SPARSE_PATH}" \
     "${ONBOARD_SPARSE_PATH}" "${DRIVERS_SPARSE_PATH}" "${CORRECTION_SERVICE_SPARSE_PATH}" \
     "${CONFIG_SPARSE_PATH}" "${CONFIG_HELPER_SPARSE_PATH}" "${SYSTEM_SPARSE_PATH}" "${NAVIGATION_SWITCH_SPARSE_PATH}" \
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
@@ -254,19 +258,21 @@ build_workspace() {
   require_command colcon
   validate_workspace_layout
   build_ensure_control_dependencies
+  build_ensure_correction_dependencies
   # Keep the driver isolated from the flight workspace; colcon rebuilds incrementally.
   ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}" "${WORKSPACE_ROOT}/drivers/odin/build.sh"
   (
     cd -- "${WORKSPACE_ROOT}"
-    colcon build \
+    "${WORKSPACE_ROOT}/.venv/bin/python" -m colcon build \
       --base-paths src correction_service \
       --packages-select \
-        guided_interfaces correction_interfaces onboard_control correction_service \
+        guided_interfaces correction_interfaces correction_native onboard_control correction_service \
         avoidance_bridge \
       --cmake-force-configure \
       --cmake-args \
         -DCMAKE_BUILD_TYPE=Release \
-        -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
+        -DAMENT_CMAKE_SYMLINK_INSTALL=OFF \
+        -DPython3_EXECUTABLE="${WORKSPACE_ROOT}/.venv/bin/python"
   )
 }
 
@@ -278,10 +284,10 @@ test_workspace() {
   require_command colcon
   (
     cd -- "${WORKSPACE_ROOT}"
-    colcon test \
+    "${WORKSPACE_ROOT}/.venv/bin/python" -m colcon test \
       --base-paths src correction_service \
       --packages-select \
-        guided_interfaces correction_interfaces onboard_control correction_service \
+        guided_interfaces correction_interfaces correction_native onboard_control correction_service \
         avoidance_bridge \
       --event-handlers console_direct+
     colcon test-result --verbose

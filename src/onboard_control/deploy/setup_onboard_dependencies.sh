@@ -144,7 +144,8 @@ fi
 
 # A complete onboard build also compiles the project-contained Odin driver.
 run_root apt-get install -y \
-  libopencv-dev libpcl-dev libssl-dev libusb-1.0-0-dev libyaml-cpp-dev pkg-config \
+  libopencv-dev pybind11-dev libpcl-dev libssl-dev libusb-1.0-0-dev libyaml-cpp-dev pkg-config \
+  "ros-${ROS_DISTRO}-pybind11-vendor" \
   "ros-${ROS_DISTRO}-ament-index-cpp" \
   "ros-${ROS_DISTRO}-cv-bridge" \
   "ros-${ROS_DISTRO}-image-transport" \

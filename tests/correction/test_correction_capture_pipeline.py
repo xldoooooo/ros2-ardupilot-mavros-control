@@ -1,73 +1,10 @@
-"""验证采集与解码解耦、最新压缩帧覆盖和唯一采样节拍；不连接硬件。"""
+"""验证检测直接消费调度后的新帧，不引入第二次采样节拍。"""
 
 import queue
 import threading
 from types import SimpleNamespace
 
-import pytest
-
-from correction_service.uvc_capture import LatestFrameCapture
 from correction_service.node import CorrectionServiceNode
-
-
-def test_capture_keeps_latest_compressed_frame_while_consumer_is_busy():
-    """下游不取帧时继续采集，仅返回最新 JPEG 和原始时间戳对象。"""
-    supplied = queue.Queue()
-    samples = [(b"first", object()), (b"second", object()), (b"latest", object())]
-
-    class Capture:
-        negotiated_fps = (60, 1)
-        closed = False
-
-        def read_latest(self):
-            """设备读取有界等待，让真实采集线程独立运行。"""
-            try:
-                return supplied.get(timeout=.02)
-            except queue.Empty:
-                return None
-
-        def close(self):
-            """记录设备释放，供验证线程先退出。"""
-            self.closed = True
-
-    device = Capture()
-    reader = LatestFrameCapture(device)
-    try:
-        for index, sample in enumerate(samples, start=1):
-            supplied.put(sample)
-            with reader._condition:
-                assert reader._condition.wait_for(lambda: reader.frames_received == index, 1.)
-        assert reader.frames_received == 3
-        assert reader.read_latest() is samples[-1]
-        assert reader.read_latest(timeout=.03) is None
-    finally:
-        reader.close()
-    assert device.closed
-    assert not reader._thread.is_alive()
-
-
-def test_capture_error_is_forwarded_and_device_is_released():
-    """设备异常立即唤醒消费端，并在退出时释放采集设备。"""
-    class Capture:
-        negotiated_fps = (60, 1)
-        closed = False
-
-        def read_latest(self):
-            """模拟读取失败，不伪造旧帧维持输出。"""
-            raise OSError("disconnected")
-
-        def close(self):
-            """记录设备关闭。"""
-            self.closed = True
-
-    device = Capture()
-    reader = LatestFrameCapture(device)
-    try:
-        with pytest.raises(RuntimeError, match="disconnected"):
-            reader.read_latest()
-    finally:
-        reader.close()
-    assert device.closed
 
 
 def test_detector_consumes_all_selected_frames_without_second_rate_gate():

@@ -19,6 +19,7 @@ readonly ros_setup
 runtime_source_setup "${ros_setup}"
 source "${project_root}/scripts/lib/build_dependencies.bash"
 build_ensure_control_dependencies
+build_ensure_correction_dependencies
 
 # PySide6 requires the cursor library when using X11 or XWayland.
 if [[ "$(dpkg-query -W -f='${Status}' libxcb-cursor0 2>/dev/null || true)" != 'install ok installed' ]]; then
@@ -74,17 +75,18 @@ fi
 # GPU drivers are host-specific; the relay can run with its software fallback.
 echo "[ground-setup] GPU video driver setup: video_service/deploy/GROUND_VIDEO_DEPLOYMENT.md"
 
-colcon build \
+"${project_root}/.venv/bin/python3" -m colcon build \
   --packages-select \
-    guided_interfaces onboard_control guided_sim correction_interfaces correction_service \
-  --cmake-args -DCMAKE_BUILD_TYPE=Release
+    guided_interfaces onboard_control guided_sim correction_interfaces correction_native correction_service \
+  --parallel-workers "$(nproc)" \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="${project_root}/.venv/bin/python3"
 
 runtime_source_setup "${project_root}/install/setup.bash"
-colcon test \
+"${project_root}/.venv/bin/python3" -m colcon test \
   --packages-select \
-    guided_interfaces onboard_control guided_sim correction_interfaces correction_service \
+    guided_interfaces onboard_control guided_sim correction_interfaces correction_native correction_service \
   --event-handlers console_direct+
-colcon test-result --verbose
+"${project_root}/.venv/bin/python3" -m colcon test-result --verbose
 
 "${project_root}/.venv/bin/python3" ground_station.py --check-environment
 "${project_root}/.venv/bin/python3" -m ground_station_core.startup

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
-from nav_msgs.msg import Odometry
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
@@ -52,6 +51,7 @@ from project_configuration import config_file
 
 from . import INTERFACE_VERSION
 from .camera_process import CameraProcess
+from .native_odometry import NativeOdometrySynchronizer
 from .config import ServiceConfig, format_tag_csv, load_config, save_tag_config
 from .detector import AprilTagDetector
 from .estimator import CorrectionEstimator, CorrectionSample, QualitySnapshot
@@ -63,7 +63,6 @@ from .geometry import (
 )
 from .journal import JobJournal, configure_service_logger
 from .synchronizer import (
-    OdometrySynchronizer,
     is_apply_time_source_safe,
     stamp_to_nanoseconds,
 )
@@ -211,7 +210,10 @@ class CorrectionServiceNode(Node):
 
         self._service_logger = configure_service_logger(self.config.logging)
         self._detector = AprilTagDetector(self.config.intrinsics, self.config.detection)
-        self._synchronizer = OdometrySynchronizer(self.config.synchronization)
+        self._odometry_fault_guard = self.create_guard_condition(self._on_odometry_fault)
+        self._synchronizer = NativeOdometrySynchronizer(
+            self.config.synchronization, self._odometry_fault_guard.trigger
+        )
         self._lock = threading.RLock()
         self._job: _Job | None = None
         self._automatic_owner = ""
@@ -223,9 +225,6 @@ class CorrectionServiceNode(Node):
         self._last_sequences: dict[str, int] = {}
         self._extnav = _ExtnavSnapshot()
         self._raw_received_monotonic = 0.0
-        self._raw_stamp_ns = 0
-        self._raw_arrival_ros_ns = 0
-        self._raw_frame_pair: tuple[str, str] | None = None
         self._latest_raw_transform: np.ndarray | None = None
         self._local_session_id = ""
         self._odom_subscription = None
@@ -267,6 +266,10 @@ class CorrectionServiceNode(Node):
             CorrectionResult, topics["correction_result"], transient_results
         )
         self._raw_odometry_topic = topics["raw_odometry"]
+        self._synchronizer.prepare(
+            self.resolve_topic_name(self._raw_odometry_topic), self.get_namespace(),
+            self.context.get_domain_id(), self.get_parameter("use_sim_time").value,
+        )
         self._camera_image_topic = topics["camera_image"]
         self.create_subscription(
             ExtnavCorrectionStatus,
@@ -318,76 +321,26 @@ class CorrectionServiceNode(Node):
         )
         self._publish_status()
 
-    def _on_odometry(self, message: Odometry) -> None:
-        """只缓存未经 Tag 修正的 odom←FCU，并监测时钟/session 异常。"""
+    def _on_odometry_fault(self) -> None:
+        """原生接收器仅在异常时唤醒executor，保留原有失效和任务失败语义。"""
         with self._lock:
             if not self._odom_capture_active:
                 return
-        now_monotonic = time.monotonic()
-        arrival_ros_ns = self.get_clock().now().nanoseconds
-        stamp_ns = stamp_to_nanoseconds(message.header.stamp)
-        frame_pair = (str(message.header.frame_id), str(message.child_frame_id))
-        if frame_pair != ("odom", "fcu"):
-            with self._lock:
-                reason = f"原始里程计必须为 odom/fcu，收到 {frame_pair}"
-                self._invalidate_window_locked(reason)
-                job = self._job
-                if job is not None and job.active:
-                    self._fail_job_locked(job, reason)
-            return
-        gap = (
-            now_monotonic - self._raw_received_monotonic
-            if self._raw_received_monotonic > 0.0
-            else 0.0
-        )
-        discontinuity = ""
-        if self._raw_received_monotonic > 0.0 and gap > 2.0:
-            discontinuity = f"任务 Odin 断流 {gap:.3f}s"
-        elif self._raw_stamp_ns > 0 and stamp_ns < self._raw_stamp_ns - 250_000_000:
-            discontinuity = "任务 Odin header 时间戳回退"
-        elif (
-            self._raw_arrival_ros_ns > 0
-            and arrival_ros_ns < self._raw_arrival_ros_ns - 250_000_000
-        ):
-            discontinuity = "主机 ROS 时钟回退"
-        elif self._raw_frame_pair is not None and frame_pair != self._raw_frame_pair:
-            discontinuity = "任务 Odin frame_id 改变"
-        if discontinuity:
-            with self._lock:
-                self._invalidate_window_locked(discontinuity)
-                job = self._job
-                if job is not None and job.active:
-                    self._fail_job_locked(job, discontinuity)
-            self._synchronizer.clear()
-            self._local_session_id = f"local-{stamp_ns}-{uuid.uuid4().hex[:8]}"
-        elif not self._local_session_id:
-            self._local_session_id = f"local-{stamp_ns}-{uuid.uuid4().hex[:8]}"
+            for reason, invalidate in self._synchronizer.faults():
+                if invalidate:
+                    self._invalidate_window_locked(reason)
+                if self._job is not None and self._job.active:
+                    self._fail_job_locked(self._job, reason)
 
-        pose = message.pose.pose
-        try:
-            raw_transform = transform_from_pose(
-                np.array((pose.position.x, pose.position.y, pose.position.z)),
-                np.array(
-                    (
-                        pose.orientation.x,
-                        pose.orientation.y,
-                        pose.orientation.z,
-                        pose.orientation.w,
-                    )
-                ),
-            )
-        except ValueError as exc:
-            with self._lock:
-                job = self._job
-                if job is not None and job.active:
-                    self._fail_job_locked(job, f"原始 Odin 位姿无效：{exc}")
+    def _refresh_odometry_locked(self) -> None:
+        """按需读取真实到达时刻及最新raw，避免用轮询时刻延长新鲜度。"""
+        if not self._odom_capture_active:
             return
-        self._raw_received_monotonic = now_monotonic
-        self._raw_stamp_ns = stamp_ns
-        self._raw_arrival_ros_ns = arrival_ros_ns
-        self._raw_frame_pair = frame_pair
-        self._latest_raw_transform = raw_transform
-        self._synchronizer.add(message, arrival_ros_ns)
+        state = self._synchronizer.snapshot()
+        self._local_session_id = state.session
+        if state.valid:
+            self._raw_received_monotonic = state.received
+            self._latest_raw_transform = np.asarray(state.transform).reshape(4, 4)
 
     def _start_odometry_capture(self) -> None:
         """为一个采样或 apply_saved 操作创建有界高频订阅。"""
@@ -397,39 +350,38 @@ class CorrectionServiceNode(Node):
             raise RuntimeError("Odin 任务订阅尚未释放")
         self._synchronizer.clear()
         self._raw_received_monotonic = 0.0
-        self._raw_stamp_ns = 0
-        self._raw_arrival_ros_ns = 0
-        self._raw_frame_pair = None
         self._latest_raw_transform = None
         self._local_session_id = ""
         self._odom_capture_active = True
         try:
-            self._odom_subscription = self.create_subscription(
-                Odometry,
-                self._raw_odometry_topic,
-                self._on_odometry,
-                qos_profile_sensor_data,
+            self._synchronizer.start(
+                self.resolve_topic_name(self._raw_odometry_topic), self.get_namespace(),
+                self.context.get_domain_id(), self.get_parameter("use_sim_time").value,
             )
+            self._odom_subscription = self._synchronizer
         except Exception:
             self._odom_capture_active = False
             raise
 
     def _stop_odometry_capture(self) -> bool:
-        """关闭回调门并销毁订阅；失败会锁存资源故障而不是继续新任务。"""
+        """等待原生回调结束并销毁订阅；失败会锁存资源故障。"""
         with self._lock:
-            self._odom_capture_active = False
             subscription = self._odom_subscription
             self._odom_subscription = None
         released = True
-        if subscription is not None and not self.destroy_subscription(subscription):
-            released = False
-            self._resource_fault = "无法销毁任务 Odin odometry 订阅"
-            self._service_logger.error(self._resource_fault)
+        if subscription is not None:
+            try:
+                subscription.close()
+            except Exception as exc:
+                released = False
+                self._resource_fault = f"无法销毁任务 Odin odometry 订阅：{exc}"
+                self._service_logger.error(self._resource_fault)
+        with self._lock:
+            # close已等待原生线程结束，不能丢弃清理期间最后到达的异常。
+            self._on_odometry_fault()
+            self._odom_capture_active = False
         self._synchronizer.clear()
         self._raw_received_monotonic = 0.0
-        self._raw_stamp_ns = 0
-        self._raw_arrival_ros_ns = 0
-        self._raw_frame_pair = None
         self._latest_raw_transform = None
         self._local_session_id = ""
         return released
@@ -467,6 +419,7 @@ class CorrectionServiceNode(Node):
         while time.monotonic() < deadline:
             self._raise_if_stopping(job)
             with self._lock:
+                self._refresh_odometry_locked()
                 extnav_ready, reason = self._extnav_ready_locked()
                 if not extnav_ready:
                     raise RuntimeError(reason)
@@ -1232,6 +1185,8 @@ class CorrectionServiceNode(Node):
             if snapshot.diverged:
                 raise RuntimeError(snapshot.reason)
             if snapshot.converged:
+                # 原生异常可能在图像计算期间到达，冻结前须交给原状态机处理。
+                self._raise_if_stopping(job)
                 with self._lock:
                     job.state = CorrectionStatus.STATE_CONVERGED
                     job.message = "停留段收敛，正在冻结滑窗候选"
@@ -1607,6 +1562,7 @@ class CorrectionServiceNode(Node):
         self, candidate: WindowCandidate
     ) -> WindowCandidate:
         """核对物理参数并在同一新鲜 raw 上计算实际 FCU 中心跳变。"""
+        self._refresh_odometry_locked()
         ready, reason = self._extnav_ready_locked()
         if not ready:
             return replace(candidate, can_apply=False, apply_reason=reason)
@@ -2047,6 +2003,7 @@ class CorrectionServiceNode(Node):
 
     def _raise_if_stopping(self, job: _Job) -> None:
         """提交前响应 stop；提交后 stop 不撤销已发出的服务请求。"""
+        self._on_odometry_fault()
         with self._lock:
             if job.failure_reason:
                 raise RuntimeError(job.failure_reason)
@@ -2562,6 +2519,7 @@ class CorrectionServiceNode(Node):
             thread.join(timeout=12.0)
         self._stop_image_capture()
         self._stop_odometry_capture()
+        self._synchronizer.shutdown()
 
 
 class _UserStopped(Exception):

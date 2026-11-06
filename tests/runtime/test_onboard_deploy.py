@@ -513,7 +513,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     assert script.count("  source_planner_overlay\n") == 2
     assert script.count("--base-paths src correction_service") == 2
     assert '${AVOIDANCE_WORKSPACE:-${WORKSPACE_ROOT%/*}/dyn_small_obs_avoidance-ros2}/install/setup.bash' in script
-    assert script.index('ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}"') < script.index("    colcon build")
+    assert script.index('ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}"') < script.index("-m colcon build")
     assert "/ground_station_core/" not in script
     assert "/src/guided_sim/" not in script
     assert "/scripts/ground/start_ground_all.sh" not in script
