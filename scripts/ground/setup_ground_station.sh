@@ -20,6 +20,11 @@ runtime_source_setup "${ros_setup}"
 source "${project_root}/scripts/lib/build_dependencies.bash"
 build_ensure_control_dependencies
 
+# PySide6 requires the cursor library when using X11 or XWayland.
+if [[ "$(dpkg-query -W -f='${Status}' libxcb-cursor0 2>/dev/null || true)" != 'install ok installed' ]]; then
+  command sudo apt-get install -y --no-upgrade libxcb-cursor0
+fi
+
 for command in colcon cmake g++ python3; do
   command -v "${command}" >/dev/null 2>&1 || {
     echo "[ground-setup] required command is missing: ${command}" >&2

@@ -10,7 +10,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y ffmpeg python3-venv python3-opencv python3-numpy python3-yaml ocl-icd-libopencl1 clinfo
+sudo apt install -y ffmpeg python3-venv python3-opencv python3-numpy python3-yaml ocl-icd-libopencl1 clinfo libxcb-cursor0
 
 # 已有项目环境时保留；新环境需要访问上述系统 Python 包。
 test -x .venv/bin/python || python3 -m venv --system-site-packages .venv
@@ -19,7 +19,8 @@ test -x .venv/bin/python || python3 -m venv --system-site-packages .venv
 ```
 
 完整地面站入口 `scripts/ground/setup_ground_station.sh` 会创建项目环境并安装
-`requirements-gui.txt`（含 PyAV），检查 FFmpeg/FFprobe/MediaMTX，并构建 ROS 包。
+`requirements-gui.txt`（含 PyAV），补齐 PySide6 在 X11/XWayland 下需要的 `libxcb-cursor0`，
+检查 FFmpeg/FFprobe/MediaMTX，并构建 ROS 包。
 **该入口不安装或升级 NVIDIA 驱动。** GPU 驱动按下面对应硬件步骤准备；
 CPU 后端无需显卡驱动。RTSP 发布另需按视频 README 安装并配置 MediaMTX，
 文件输出自检则不需要启动 MediaMTX。
