@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""由 odom->map TF 和 odom->imu 里程计解算 map->imu 位姿并打印。"""
+"""由 odom->map TF 和 odom->fcu 里程计解算 map->fcu 位姿并打印。"""
 
 import math
 import time
@@ -60,21 +60,21 @@ def rotate_vector(q: Quaternion, vector: Vector3) -> Vector3:
 def compose_map_pose(
     odom_to_map_translation: Vector3,
     odom_to_map_rotation: Quaternion,
-    odom_to_imu_position: Vector3,
-    odom_to_imu_rotation: Quaternion,
+    odom_to_body_position: Vector3,
+    odom_to_body_rotation: Quaternion,
 ) -> Tuple[Vector3, Quaternion]:
-    """计算 T_map_imu = inverse(T_odom_map) * T_odom_imu。"""
+    """计算 T_map_body = inverse(T_odom_map) * T_odom_body。"""
     q_odom_map = normalize_quaternion(odom_to_map_rotation)
-    q_odom_imu = normalize_quaternion(odom_to_imu_rotation)
+    q_odom_body = normalize_quaternion(odom_to_body_rotation)
     q_map_odom = quaternion_conjugate(q_odom_map)
 
     displacement_in_odom = tuple(
-        odom_to_imu_position[index] - odom_to_map_translation[index]
+        odom_to_body_position[index] - odom_to_map_translation[index]
         for index in range(3)
     )
     position_in_map = rotate_vector(q_map_odom, displacement_in_odom)
     rotation_in_map = normalize_quaternion(
-        quaternion_multiply(q_map_odom, q_odom_imu)
+        quaternion_multiply(q_map_odom, q_odom_body)
     )
     return position_in_map, rotation_in_map
 
@@ -169,7 +169,7 @@ class OdomPoseInMap(Node):
                 self.get_logger().warning(f"ignored invalid odom->map TF: {error}")
 
     def _on_odometry(self, message: Odometry) -> None:
-        """使用最近收到的 odom->map TF 解算当前 map->imu 位姿并限频打印。"""
+        """使用最近收到的 odom->map TF 解算当前 map->fcu 位姿并限频打印。"""
         if message.header.frame_id != self.odom_frame:
             self.get_logger().warning(
                 f"ignored odometry frame '{message.header.frame_id}', "
@@ -214,7 +214,7 @@ class OdomPoseInMap(Node):
 
         stamp = message.header.stamp.sec + message.header.stamp.nanosec * 1.0e-9
         roll, pitch, yaw = quaternion_to_rpy(map_rotation)
-        child_frame = message.child_frame_id or "imu"
+        child_frame = message.child_frame_id or "fcu"
         print(
             f"{stamp:.9f} {self.map_frame} {child_frame} "
             f"{map_position[0]:+.6f} {map_position[1]:+.6f} "
