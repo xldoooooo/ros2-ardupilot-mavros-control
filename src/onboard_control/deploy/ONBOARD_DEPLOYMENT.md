@@ -18,7 +18,7 @@ git sparse-checkout init --no-cone
 git sparse-checkout set '/.gitignore' '/project_configuration.py' \
   '/src/guided_interfaces/' '/src/correction_interfaces/' '/src/onboard_control/' \
   '/src/avoidance_bridge/' '/drivers/' '/config/' '/system/' \
-  '/correction_service/' '/video_service/' '/scripts/onboard/' '/scripts/lib/'
+  '/correction_service/' '/video_service/' '/scripts/onboard/' '/scripts/lib/' '/scripts/diagnostics/'
 git checkout main
 ```
 

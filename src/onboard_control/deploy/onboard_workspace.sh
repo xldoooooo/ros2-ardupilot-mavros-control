@@ -37,6 +37,8 @@ readonly VIDEO_START_SPARSE_PATH="/scripts/onboard/start_onboard_video.sh"
 readonly VIDEO_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_video.sh"
 readonly DRONE_START_SPARSE_PATH="/scripts/onboard/components/"
 readonly RUNTIME_SPARSE_PATH="/scripts/lib/"
+# Manual diagnostics travel with the checkout but never join the service startup chain.
+readonly DIAGNOSTICS_SPARSE_PATH="/scripts/diagnostics/"
 readonly ONBOARD_CONTROL_START_SPARSE_PATH="/scripts/onboard/start_onboard_control.sh"
 readonly ONBOARD_CONTROL_STOP_SPARSE_PATH="/scripts/onboard/stop_onboard_control.sh"
 # The client is included by /src/onboard_control/; include its operator entry too.
@@ -188,7 +190,7 @@ update_checkout() {
     "${CORRECTION_START_SPARSE_PATH}" "${CORRECTION_STOP_SPARSE_PATH}" \
     "${VIDEO_SPARSE_PATH}" \
     "${VIDEO_START_SPARSE_PATH}" "${VIDEO_STOP_SPARSE_PATH}" \
-    "${DRONE_START_SPARSE_PATH}" "${RUNTIME_SPARSE_PATH}" \
+    "${DRONE_START_SPARSE_PATH}" "${RUNTIME_SPARSE_PATH}" "${DIAGNOSTICS_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_START_SPARSE_PATH}" \
     "${ONBOARD_CONTROL_STOP_SPARSE_PATH}" \
     "${FCU_REBOOT_SPARSE_PATH}" \

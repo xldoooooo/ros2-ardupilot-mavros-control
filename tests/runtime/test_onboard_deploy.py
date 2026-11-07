@@ -501,6 +501,7 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "/scripts/onboard/stop_onboard_video.sh",
         "/scripts/onboard/components/",
         "/scripts/lib/",
+        "/scripts/diagnostics/",
         "/scripts/onboard/start_onboard_control.sh",
         "/scripts/onboard/stop_onboard_control.sh",
     ):
