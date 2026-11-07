@@ -99,8 +99,9 @@ private:
   void on_navigation_status(const std_msgs::msg::String::SharedPtr message);
   /** Cache only Odin's native odom<-map transform; MAVROS's map is a separate world. */
   void on_navigation_tf(const tf2_msgs::msg::TFMessage::SharedPtr message);
-  /** Check map localization and extnav identity without affecting legacy odom operation. */
-  bool navigation_ready(const SteadyTime & now, std::string & reason) const;
+  /** Check map health; only the control tick may recover an existing navigation hold. */
+  bool navigation_ready(
+    const SteadyTime & now, std::string & reason, bool allow_hold_recovery = false) const;
   /** Convert an immutable task waypoint with the currently accepted map relationship. */
   guided_interfaces::msg::Waypoint local_waypoint(const guided_interfaces::msg::Waypoint & waypoint) const;
   /** Update map goals, replan changed segments and hold on loss/divergence. */

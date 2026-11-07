@@ -27,7 +27,7 @@ index,x,y,z,yaw,is_inspection,is_calibration,calibration_tag_id,continue_window
 
 本任务首个校准点总是清空残留滑窗并执行 FIRST，忽略它的沿窗选项；**清窗不清除 extnav 已生效修正**。后续点沿窗时执行 NEXT，不沿窗则清窗开启新 FIRST 段。窗口长度沿用校准服务配置；同一 Tag 尚在窗口内时不能再次沿窗加入，退出窗口或新开段后可重用同一真实 Tag 参数。
 
-沿窗依赖本任务记录的服务实例、Odin session、窗口 revision 与有效历史；重启、过期或手动修改历史不会静默改成 FIRST。到点之前及校准结束后仍允许手动面板操作，但修改历史后不能继续依赖原窗口。
+沿窗依赖本任务记录的服务实例、Odin session、窗口 revision 与有效历史；重启或手动修改历史不会静默改成 FIRST。窗口时间间隔/跨度超限仅记日志警告，不阻止沿窗或触发降落。到点之前及校准结束后仍允许手动面板操作，但修改历史后不能继续依赖原窗口。
 
 状态机非阻塞运行：申请独占 → 必要清窗 → 启动 FIRST/NEXT → 核对本次 job 的应用状态及 extnav revision/最终样本 → 等待实际 MAVROS EKF 与修正后辅助 pose 的 XY/yaw 一致、低速且持续稳定 → 推进下一点。ACK 或固定延时不能单独推进任务。
 

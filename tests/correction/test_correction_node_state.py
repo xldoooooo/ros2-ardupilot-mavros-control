@@ -184,6 +184,34 @@ def _job(node: Any, tmp_path: Path, candidate: WindowCandidate):
     )
 
 
+def test_sampling_drops_reordered_images_without_failing(correction_node, tmp_path, monkeypatch):
+    """大幅倒序和重复相机帧不终止采样，下一条新帧仍能正常收敛。"""
+    import queue
+    from sensor_msgs.msg import Image
+
+    node = correction_node
+    job = _job(node, tmp_path, _candidate(node))
+    job.last_image_stamp_ns = 10_000_000_000
+    images = queue.Queue()
+    for seconds in (9, 8, 10, 11):
+        image = Image()
+        image.header.stamp.sec = seconds
+        images.put(image)
+    monkeypatch.setattr(node, "_image_queue", images)
+    processed = []
+
+    def process(job, image, stamp):
+        """记录真正送入检测的帧，并模拟正常收敛。"""
+        processed.append(stamp)
+        job.snapshot = SimpleNamespace(diverged=False, converged=True)
+
+    monkeypatch.setattr(node, "_process_image", process)
+    monkeypatch.setattr(node, "_freeze_candidate_locked", lambda job: None)
+    node._sample_until_candidate(job, SimpleNamespace(ensure_running=lambda: None))
+    assert processed == [11_000_000_000]
+    assert job.last_image_stamp_ns == 11_000_000_000
+
+
 def test_raw_capture_requires_fcu_frame_and_nonzero_installation_can_apply(
     correction_node,
 ) -> None:
@@ -1015,21 +1043,6 @@ def test_owner_start_keeps_first_next_tag_validation_and_default_window(correcti
     assert not start(CorrectionStatus.OPERATION_FIRST, 0).accepted
     assert "相同 Tag ID" in start(CorrectionStatus.OPERATION_NEXT, 0).message
     assert "未配置 Tag" in start(CorrectionStatus.OPERATION_NEXT, max(node.config.tags) + 1).message
-    saved_window = node._window
-    node._window = (replace(saved_window[0], created_monotonic=(
-        time.monotonic() - node.config.window.maximum_keyframe_gap_seconds - 1.0
-    )),)
-    assert "过期" in start(CorrectionStatus.OPERATION_NEXT, 1).message
-    node._window = (replace(saved_window[0], odin_session_id="old-session"),)
-    assert "session 已失效" in start(CorrectionStatus.OPERATION_NEXT, 1).message
-    node._window = saved_window
-    sequence += 1
-    response = node._on_clear_window(ClearWindow.Request(
-        source_id=source, sequence=sequence,
-        expected_service_instance_id=node._service_instance_id,
-        expected_window_revision=node._window_revision,
-    ), ClearWindow.Response())
-    assert response.accepted
 
     def no_camera_capture():
         """测试只覆盖请求准入，不订阅传感器或启动相机。"""
@@ -1043,6 +1056,35 @@ def test_owner_start_keeps_first_next_tag_validation_and_default_window(correcti
     monkeypatch.setattr(node, "_start_image_capture", no_camera_capture)
     monkeypatch.setattr(node, "_start_odometry_capture", no_camera_capture)
     monkeypatch.setattr(node, "_run_sampling_job", finish_admission_test)
+    saved_window = node._window
+    aged = replace(saved_window[0], created_monotonic=(
+        time.monotonic() - node.config.window.maximum_keyframe_gap_seconds - 1.0
+    ))
+    node._window = (replace(aged, tag_id=2, created_monotonic=(
+        aged.created_monotonic - node.config.window.maximum_window_span_seconds - 1.0
+    )), aged)
+    before = (node._window, node._window_revision, node._extnav)
+    node._pending_candidate = _candidate(node)
+    assert node._window_state_locked() == "application_unknown"
+    node._pending_candidate = None
+    assert node._window_state_locked() == "two_point_limited"
+    assert start(CorrectionStatus.OPERATION_NEXT, 1).accepted
+    node._job.thread.join(timeout=2.)
+    assert (node._window, node._window_revision, node._extnav) == before
+    assert "滑窗时间超过配置，仅告警" in (
+        node.config.logging.directory / "correction_service.log"
+    ).read_text()
+    node._window = (replace(saved_window[0], odin_session_id="old-session"),)
+    assert "session 已失效" in start(CorrectionStatus.OPERATION_NEXT, 1).message
+    node._window = saved_window
+    sequence += 1
+    response = node._on_clear_window(ClearWindow.Request(
+        source_id=source, sequence=sequence,
+        expected_service_instance_id=node._service_instance_id,
+        expected_window_revision=node._window_revision,
+    ), ClearWindow.Response())
+    assert response.accepted
+
     response = start(CorrectionStatus.OPERATION_FIRST, 0)
     assert response.accepted
     node._job.thread.join(timeout=2.0)

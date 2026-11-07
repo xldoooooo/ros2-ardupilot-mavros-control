@@ -168,7 +168,8 @@ void OnboardControlNode::on_navigation_tf(const tf2_msgs::msg::TFMessage::Shared
       navigation_tf_valid_ = false;
       continue;
     }
-    if (navigation_tf_valid_) {
+    // An invalid/interrupted observation must not erase the airborne jump baseline.
+    if (navigation_tf_valid_ || (armed_ && navigation_tf_time_ != SteadyTime{})) {
       Eigen::Vector3d local_origin = Eigen::Vector3d::Zero();
       if (navigation_extnav_) {
         local_origin = {navigation_extnav_->lever_arm_x_m, navigation_extnav_->lever_arm_y_m,
@@ -192,11 +193,14 @@ void OnboardControlNode::on_navigation_tf(const tf2_msgs::msg::TFMessage::Shared
 }
 
 /** Explain whether the selected task frame can currently be used. */
-bool OnboardControlNode::navigation_ready(const SteadyTime & now, std::string & reason) const
+bool OnboardControlNode::navigation_ready(
+  const SteadyTime & now, std::string & reason, const bool allow_hold_recovery) const
 {
   if (navigation_switch_pending_) {reason = "定位模式正在重启切换，等待机载服务重新连接"; return false;}
   if (!navigation_fault_.empty()) {reason = navigation_fault_; return false;}
-  if (navigation_hold_started_) {reason = "定位保护已取消任务，请降落并解除武装后重新确认"; return false;}
+  if (navigation_hold_started_ && !allow_hold_recovery) {
+    reason = "定位保护已取消任务，等待定位恢复"; return false;
+  }
   if (navigation_frame_ == "odom") {reason = "odom 本地任务坐标"; return true;}
   if (navigation_frame_ != "map") {reason = "当前 Odin 工作模式不支持飞行，请选择 odom 或重定位"; return false;}
   const auto age = [&now](SteadyTime time) {return std::chrono::duration<double>(now - time).count();};
@@ -260,7 +264,7 @@ void OnboardControlNode::navigation_tick(const SteadyTime & now, const double dt
       navigation_extnav_->lever_arm_y_m, navigation_extnav_->lever_arm_z_m);
   }
   std::string reason;
-  bool ready = navigation_ready(now, reason);
+  bool ready = navigation_ready(now, reason, true);
   if (ready && navigation_frame_ == "map" && !waypoint_coordinates_local_ &&
     active_task_ == ActiveTask::kWaypoint && !task_waypoints_.empty())
   {
@@ -314,6 +318,14 @@ void OnboardControlNode::navigation_tick(const SteadyTime & now, const double dt
   const bool map_flight = navigation_frame_ != "odom" || navigation_hold_started_ ||
     (armed_navigation_identity_ && armed_navigation_identity_->rfind("odom\n", 0) != 0) || !navigation_fault_.empty();
   if (!map_flight || active_task_ == ActiveTask::kLand || (!armed_ && active_task_ == ActiveTask::kNone)) {return;}
+  if (ready && navigation_hold_started_ && !failsafe_land_requested_) {
+    // Recovered observations cancel this timer, never a latched identity/jump fault or LAND.
+    navigation_hold_started_.reset();
+    if (lease_active_locked()) {
+      enter_hover("地图定位已恢复，保持悬停，等待新指令");
+      failsafe_reason_.clear();
+    }
+  }
   if (!ready && !navigation_hold_started_) {
     cancel_active_task("地图定位保护：" + reason);
     if (!armed_) {set_status_message("拒绝飞行：" + reason, StatusLogLevel::kError); return;}

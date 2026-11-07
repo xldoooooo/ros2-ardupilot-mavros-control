@@ -96,7 +96,7 @@ def test_unlocalized_map_rejects_takeoff_and_local_return(navigation_node):
     h.until(lambda: abs(h.status[-1].target_yaw + .5) < 1.e-6)
 
 
-@pytest.mark.parametrize("fault", ["jump", "timeout", "session"])
+@pytest.mark.parametrize("fault", ["jump", "timeout", "session", "recovered", "invalid_then_jump"])
 def test_navigation_fault_holds_then_lands_and_rejects_airborne_switch(navigation_node, fault):
     """Observe the actual HOLD mode and fake LAND request after invalidating navigation."""
     from guided_interfaces.msg import ControlStatus
@@ -114,17 +114,59 @@ def test_navigation_fault_holds_then_lands_and_rejects_airborne_switch(navigatio
     checkpoint = len(h.status)
     if fault == "jump":
         h.translation[0] += 3.
-    elif fault == "timeout":
+    elif fault in ("timeout", "recovered"):
         h.tf_enabled = False
+    elif fault == "invalid_then_jump":
+        h.rotation = (0., 0., 0., 0.)
     else:
         h.driver_session = "replacement-session"
     h.until(lambda: any(status.control_mode == ControlStatus.MODE_FAILSAFE_HOLD
                         for status in h.status[checkpoint:]))
     assert not h.status[-1].navigation_ready
+    if fault == "recovered":
+        h.tf_enabled = True
+        h.until(lambda: h.status[-1].navigation_ready
+                and h.status[-1].control_mode == ControlStatus.MODE_HOVER)
+        h.spin(.8)  # Beyond the previous navigation HOLD deadline.
+        assert "LAND" not in h.mode_calls
+        assert h.status[-1].control_mode == ControlStatus.MODE_HOVER
+        assert h.execute_navigation().accepted
+        h.tf_enabled = False
+    elif fault == "jump":
+        h.translation[0] -= 3.
+    elif fault == "session":
+        h.driver_session = "navigation-test-session"
+    elif fault == "invalid_then_jump":
+        h.translation[0] += 3.
+        h.rotation = (0., 0., math.sin(math.pi / 4), math.cos(math.pi / 4))
     h.until(lambda: "LAND" in h.mode_calls)
     assert any(status.control_mode == ControlStatus.MODE_FAILSAFE_HOLD
                for status in h.status[checkpoint:])
     assert not h.arm_calls
+
+
+@pytest.mark.parametrize("avoidance_node", [{"link_loss_land_timeout_seconds": .8}], indirect=True)
+def test_recovered_lease_starts_a_new_outage_hold(navigation_node):
+    """Recovered heartbeats reset the deadline; a later sustained outage still requests LAND."""
+    from guided_interfaces.msg import ControlStatus
+    from guided_interfaces.srv import FlightCommand
+
+    h = navigation_node
+    h.state.armed = True
+    h.until(lambda: h.status[-1].armed)
+    assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
+    h.leased = False
+    h.until(lambda: not h.status[-1].lease_active
+            and h.status[-1].control_mode == ControlStatus.MODE_FAILSAFE_HOLD)
+    h.leased = True
+    h.until(lambda: h.status[-1].lease_active)
+    h.spin(1.)  # Recovery outlasts the first outage's original LAND deadline.
+    assert "LAND" not in h.mode_calls
+    h.leased = False
+    h.until(lambda: not h.status[-1].lease_active)
+    h.spin(.2)
+    assert "LAND" not in h.mode_calls
+    h.until(lambda: "LAND" in h.mode_calls)
 
 
 def test_odom_without_driver_preserves_local_waypoints(navigation_node):

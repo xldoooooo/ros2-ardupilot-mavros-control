@@ -2409,7 +2409,10 @@ void OnboardControlNode::enforce_safety(const SteadyTime & now)
     return;
   }
 
-  if (!lease_active_locked()) {
+  if (lease_active_locked()) {
+    // Each continuous outage gets its own hold period after heartbeats recover.
+    link_loss_started_.reset();
+  } else {
     if (!link_loss_started_.has_value()) {
       trigger_link_loss_hold(now);
     }

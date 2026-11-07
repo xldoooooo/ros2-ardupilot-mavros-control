@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, replace
 from itertools import pairwise
@@ -187,13 +188,19 @@ def solve_weighted_se2(
     ordered = tuple(sorted(keyframes, key=lambda item: item.created_monotonic))
     window_span = ordered[-1].created_monotonic - ordered[0].created_monotonic
     if window_span > settings.maximum_window_span_seconds:
-        return _invalid("滑窗时间跨度已超限，必须清空后重采")
-    if any(
-        right.created_monotonic - left.created_monotonic
-        > settings.maximum_keyframe_gap_seconds
-        for left, right in pairwise(ordered)
-    ):
-        return _invalid("相邻 keyframe 间隔已超限，必须清空后重采")
+        logging.getLogger(__name__).warning(
+            "滑窗时间跨度 %.1fs 超过 %.1fs，仅告警，继续配准",
+            window_span, settings.maximum_window_span_seconds,
+        )
+    largest_gap = max(
+        (right.created_monotonic - left.created_monotonic for left, right in pairwise(ordered)),
+        default=0.0,
+    )
+    if largest_gap > settings.maximum_keyframe_gap_seconds:
+        logging.getLogger(__name__).warning(
+            "相邻 keyframe 间隔 %.1fs 超过 %.1fs，仅告警，继续配准",
+            largest_gap, settings.maximum_keyframe_gap_seconds,
+        )
 
     p = np.asarray(
         [(item.world_x_m, item.world_y_m) for item in keyframes], dtype=np.float64

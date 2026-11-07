@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -230,8 +231,10 @@ def test_fifo_successfully_evicts_oldest_only_after_full_consistency_check() -> 
     assert math.isclose(target_result.yaw_rad, yaw, abs_tol=1e-12)
 
 
-def test_window_rejects_excessive_time_span_and_adjacent_gap() -> None:
-    """同 session 也不得跨越超限的窗口跨度或停留段间隔。"""
+def test_window_time_span_and_adjacent_gap_only_warn(caplog, monkeypatch) -> None:
+    """时间跨度/间隔仅告警，不改变同 session 的配准结果。"""
+    logger = logging.getLogger(solve_weighted_se2.__module__)
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
     yaw = 0.0
     translation = (0.0, 0.0)
     too_far = CONFIG.window.maximum_window_span_seconds + 1.0
@@ -252,10 +255,11 @@ def test_window_rejects_excessive_time_span_and_adjacent_gap() -> None:
     )
     gap_result = solve_weighted_se2(gap_frames, CONFIG.window)
 
-    assert not span_result.valid
-    assert "时间跨度" in span_result.reason
-    assert not gap_result.valid
-    assert "间隔" in gap_result.reason
+    assert span_result.valid and gap_result.valid
+    for result in (span_result, gap_result):
+        assert (result.x_m, result.y_m, result.yaw_rad) == (0., 0., 0.)
+    assert "时间跨度" in caplog.text and "keyframe 间隔" in caplog.text
+    assert "仅告警" in caplog.text
 
 
 def test_duplicate_tag_and_nonfinite_input_are_rejected() -> None:

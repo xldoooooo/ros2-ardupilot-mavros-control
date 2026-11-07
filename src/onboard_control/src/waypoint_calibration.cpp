@@ -209,7 +209,7 @@ void OnboardControlNode::start_waypoint_calibration(const SteadyTime & now)
   if (next && (status.service_instance_id != task_calibration_instance_ ||
     extnav.odin_session_id != task_calibration_session_ ||
     status.window_revision != task_calibration_window_revision_ ||
-    status.window_count == 0 || status.window_state == "stale" ||
+    status.window_count == 0 ||
     status.window_state == "application_unknown"))
   {
     fail_active_task("自动校准必需窗口已失效/被修改，不能静默改为首次校准", true); return;

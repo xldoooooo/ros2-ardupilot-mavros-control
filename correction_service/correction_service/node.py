@@ -241,6 +241,8 @@ class CorrectionServiceNode(Node):
 
         self._service_instance_id = uuid.uuid4().hex
         self._window_revision = 0
+        # 仅去重同一窗口的时间告警，不参与任何窗口/飞行门控。
+        self._window_time_warning: tuple[int, bool, bool] | None = None
         self._window_size = self.config.window.default_size
         self._successful_calibrations = 0
         self._window: tuple[CalibrationKeyframe, ...] = ()
@@ -755,9 +757,7 @@ class CorrectionServiceNode(Node):
             if any(item.tag_id == expected_tag_id for item in self._window):
                 response.message = "当前窗口已含相同 Tag ID，不能增加独立基线"
                 return response
-            if self._window and self._window_is_stale_locked():
-                response.message = "滑窗已过期，必须先清空再重新首次校准"
-                return response
+            self._warn_window_time_limits_locked()
 
             self._window_size = window_size
             job_id = uuid.uuid4().hex[:12]
@@ -1182,11 +1182,7 @@ class CorrectionServiceNode(Node):
                 self._check_first_tag_timeout(job)
                 continue
             image_stamp_ns = stamp_to_nanoseconds(image.header.stamp)
-            if (
-                job.last_image_stamp_ns > 0
-                and image_stamp_ns < job.last_image_stamp_ns - 250_000_000
-            ):
-                raise RuntimeError("相机采集时钟回退，丢弃本次停留段")
+            # 所有重复/倒序帧均丢弃，保留最新采样时刻和当前停留段。
             if image_stamp_ns <= job.last_image_stamp_ns:
                 continue
             job.last_image_stamp_ns = image_stamp_ns
@@ -2067,20 +2063,25 @@ class CorrectionServiceNode(Node):
             extnav_untouched=True,
         )
 
-    def _window_is_stale_locked(self) -> bool:
-        """窗口整体过期时拒绝偷偷淘汰至单点再当作首次。"""
+    def _warn_window_time_limits_locked(self) -> None:
+        """窗口间隔/跨度超过配置时仅记录告警，保留窗口与事务状态。"""
         if not self._window:
-            return False
+            return
         ordered = tuple(sorted(self._window, key=lambda item: item.created_monotonic))
-        if (
-            time.monotonic() - ordered[-1].created_monotonic
-            > self.config.window.maximum_keyframe_gap_seconds
-        ):
-            return True
-        return (
-            ordered[-1].created_monotonic - ordered[0].created_monotonic
-            > self.config.window.maximum_window_span_seconds
+        gap = time.monotonic() - ordered[-1].created_monotonic
+        span = ordered[-1].created_monotonic - ordered[0].created_monotonic
+        warning = (
+            self._window_revision,
+            gap > self.config.window.maximum_keyframe_gap_seconds,
+            span > self.config.window.maximum_window_span_seconds,
         )
+        if any(warning[1:]) and warning != self._window_time_warning:
+            self._service_logger.warning(
+                "滑窗时间超过配置，仅告警：间隔 %.1f/%.1fs，跨度 %.1f/%.1fs；保留窗口和修正",
+                gap, self.config.window.maximum_keyframe_gap_seconds,
+                span, self.config.window.maximum_window_span_seconds,
+            )
+        self._window_time_warning = warning
 
     def _finish_job(self, job: _Job, *, success: bool, message: str) -> None:
         """冻结互相独立的保存、应用、资源事实并发布可靠终态。"""
@@ -2441,12 +2442,11 @@ class CorrectionServiceNode(Node):
 
     def _window_state_locked(self) -> str:
         """生成 GUI 门控所需的权威窗口状态。"""
+        self._warn_window_time_limits_locked()
         if self._pending_candidate is not None:
             return "application_unknown"
         if not self._window:
             return "empty"
-        if self._window_is_stale_locked():
-            return "stale"
         if len(self._window) == 1:
             return "rough"
         if len(self._window) == 2:
