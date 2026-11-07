@@ -15,7 +15,7 @@
 | Odin、点云、安装外参 | [项目驱动](../drivers/odin/README.md)、[驱动源码](../drivers/odin/src/odin_ros_driver/) | 以本项目驱动为准；业务 Odometry 为 FCU 中心，下游不重复补偿安装杆臂；配置见 [配置索引](../config/README.md) |
 | Tag 采样、估计、定位修正 | [修正服务](../correction_service/README.md)、[Python状态机/滑窗](../correction_service/correction_service/)、[原生接收/采集/检测](../src/correction_native/) | [生产 extnav](../correction_service/extnav_patch/README.md)、[correction_interfaces](../src/correction_interfaces/)；自动航点校准还需查 [waypoint_calibration.cpp](../src/onboard_control/src/waypoint_calibration.cpp)及[工作流](tag-waypoint-workflow.md)。修正 ACK 不等于 EKF 已融合 |
 | 上位机业务、巡检回执 | [upstream](../ground_station_core/upstream/)、[协议说明](websocket/上位机-WebSocket%20对接.md) | 经 ROS 客户端到机载；图片/录像结果来自 [ground_media_reader.py](../ground_station_core/ground_media_reader.py)及媒体服务 |
-| 视频、录像、媒体交付 | [video_service](../video_service/README.md)、[ground_media_reader.py](../ground_station_core/ground_media_reader.py) | 飞机采集与地面处理为独立进程；与飞行事件、上位机结果及本机媒体偏好关联 |
+| 视频、录像、媒体交付 | [video_service](../video_service/README.md)、[ground_media_reader.py](../ground_station_core/ground_media_reader.py) | 飞机采集与地面处理为独立进程；公网直播复制转推在 `public_stream.py`，FTP发布在 `remote_ftp.py`，交付调度在 `ground_media.py` |
 | 配置、启动、部署、日志 | [配置索引](../config/README.md)、[启动与日志](startup-and-logs.md)、[机载部署](../src/onboard_control/deploy/ONBOARD_DEPLOYMENT.md) | [onboard脚本](../scripts/onboard/)、[ground脚本](../scripts/ground/)、[共享构建依赖](../scripts/lib/build_dependencies.bash)；按设备核对配置、源码、原生构建与运行产物 |
 
 ## 验证与按需资料

@@ -143,6 +143,46 @@ CPU 也失败时明确报错退出，不反复重试掩盖输入、网络或磁�
 AMD 着色器为 `shaders/undistort.hook`；面板提示逻辑在 `camera_app/relay_status.py`。
 `relay_config.py` 将媒体配置中的可选 GPU 参数传给中继；设备设置使用当前主机配置，不随历史录像固定。
 
+## 公网直播与 FTP
+
+公网地址及凭据仅写入不提交 Git 的 `config/ground/media.json`。局域网原始流、
+机载上传及本机 HTTP 文件管理继续使用现有地址。`fps` 省略或为 null 时保留源帧率；
+例如设置为 `60` 并将 `bitrate` 设为 `"15M"`，使地面直播与录像使用该编码档位。
+源视频也需达到 60 fps；提高配置值不会补出真实运动帧。仿真直播需在
+`config/ground/simulation_media.json` 中设置相同的 `fps`、`bitrate`。
+实时处理只抽帧，不填补原视频时间缺口。
+
+```json
+"public_stream": {
+  "enabled": true,
+  "streams": {"uav002": "rtsp://video.example:18554/live/uav002?secret=<TOKEN>"}
+},
+"remote_ftp": {
+  "enabled": true,
+  "url": "ftp://<USER>:<PASSWORD>@files.example:2121/",
+  "directory": ".",
+  "timeout": 60
+},
+"local_ftp_enabled": false
+```
+
+以上为对象内字段片段。公网转推从本机 `<编号>/rectified` 复制同一批 H.264 编码包，
+不再去畸变或编码，断线独立重试。仅支持显式映射的 `uav001/uav002/simulation`，
+`loop/rectified` 全天轮播始终不参与公网转推。`/api/media` 的 `public_streams` 提供每路状态。
+
+远程 FTP 保留 `public` 根内目录；服务端需将账号根目录对应到媒体根。
+先上传临时文件，再校验大小及正式回执路径，成功后才开放 08/09 的 FTP 路径。
+上传失败在后台重试，本地预览和下载仍可使用；录像沿用既有落地交付超时。
+上传结果保存在现有媒体索引的元数据，重启后不重复上传未变化的已确认文件。
+仿真返回现有样例路径，启用公网前须先将配置中的样例目录同步到同一 FTP 根；
+更换样例后也需同步，不会把样例文件改成实时编码档位。
+
+恢复局域网时关闭 `public_stream.enabled`、`remote_ftp.enabled`，恢复本机 FTP 开关及原编码值；
+如文件中保留 `_local_configuration`，按其中原值恢复。仿真 `fps` 恢复 null 即使用原复制路线。
+修改后在无活动录像时重启 `ground-media.service`，并重新启动仿真媒体。
+维护入口为 `public_stream.py`（直播转推）、`remote_ftp.py`（单文件发布），
+调度与回执门控仍由 `ground_media.py` 负责。
+
 ## 地面面板
 
 从项目根目录独立打开：

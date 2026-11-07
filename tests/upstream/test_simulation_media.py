@@ -49,6 +49,11 @@ def test_config_precedence_and_template_is_not_loaded(tmp_path, monkeypatch):
     assert media.public_root == tmp_path / "shared"
     assert media.videos_dir == tmp_path / "shared" / "v"
     assert media.rtsp_url == "rtsp://localhost/demo"
+    (directory / "media.json").write_text(json.dumps({
+        "remote_ftp": {"enabled": True, "path_prefix": "/ftp/s12/"},
+    }))
+    prefixed = SimulationMedia(EventLog(), explicit)
+    assert prefixed._ftp_path(prefixed.public_root / "uav002" / "video.mp4") == "/ftp/s12/uav002/video.mp4"
     (directory / "media.json").unlink()
     explicit.write_text('[]')
     media = SimulationMedia(EventLog(), explicit)
@@ -202,16 +207,17 @@ def test_publish_failure_is_logged_and_retry_is_cancellable(tmp_path, monkeypatc
         media.close()
 
 
-@pytest.mark.parametrize("source_codec", ["libx264", "mpeg4"])
+@pytest.mark.parametrize("source_codec,fps", [("libx264", None), ("mpeg4", None), ("libx264", 30)])
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="需要 FFmpeg")
 @pytest.mark.integration
-def test_real_rtsp_decodes_on_isolated_port(tmp_path, monkeypatch, source_codec):
+def test_real_rtsp_decodes_on_isolated_port(tmp_path, monkeypatch, source_codec, fps):
     """同一个RTSP接收连接跨片段和两轮循环，逐帧核对颜色顺序，无黑帧。"""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     url = f"rtsp://127.0.0.1:{port}/uav002/rectified"
-    media = _make_media(tmp_path, monkeypatch, rtsp_url=url)
+    media = _make_media(tmp_path, monkeypatch, rtsp_url=url, fps=fps, bitrate="10M")
+    multiplier = 3 if fps else 1
     for name, color in (("b.mp4", "blue"), ("a.mp4", "red")):
         subprocess.run([
             "ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color={color}:size=128x96:rate=10",
@@ -219,21 +225,24 @@ def test_real_rtsp_decodes_on_isolated_port(tmp_path, monkeypatch, source_codec)
         ], check=True, capture_output=True, timeout=15)
     # 保留含B帧输入的启动负PTS，不让测试接收器默认CFR丢掉首帧。
     receiver = subprocess.Popen([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "ffmpeg", "-hide_banner", "-loglevel", "info" if fps else "error", "-nostdin",
         "-rtsp_flags", "listen", "-rtsp_transport", "tcp", "-listen_timeout", "8",
-        "-copyts", "-i", url, "-frames:v", "27", "-threads", "1", "-vf", "scale=1:1",
+        "-copyts", "-i", url, "-frames:v", str(27 * multiplier), "-threads", "1", "-vf", "scale=1:1",
         "-fps_mode", "passthrough", "-pix_fmt", "rgb24", "-f", "rawvideo", "-",
     ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         media.start()
         output, error = receiver.communicate(timeout=15)
         assert receiver.returncode == 0, error.decode(errors="replace")
-        assert len(output) == 27 * 3, (len(output), error)
+        assert len(output) == 27 * multiplier * 3, (len(output), error)
         colors = ["red" if output[i] > output[i + 2] else "blue" for i in range(0, len(output), 3)]
-        assert colors == (["red"] * 6 + ["blue"] * 6) * 2 + ["red"] * 3
+        assert colors == (["red"] * (6 * multiplier) + ["blue"] * (6 * multiplier)) * 2 + ["red"] * (3 * multiplier)
         assert all(max(output[i:i + 3]) > 200 for i in range(0, len(output), 3))
-        expected = "copy" if source_codec == "libx264" else "libx264"
+        expected = "copy" if source_codec == "libx264" and not fps else "libx264"
         assert any(f"（{expected}）" in event.message for event in media._events.snapshot())
+        if fps:
+            assert "1920x1080" in error.decode(errors="replace")
+            assert "30 fps" in error.decode(errors="replace")
     finally:
         media.close()
         if receiver.poll() is None:

@@ -227,10 +227,17 @@ class UpstreamCommunicationService:
     def save_configuration(self, url: str, client_no: str) -> None:
         """持久化面板最后填入的有效 URL 和无人机编号。"""
         self._validate_configuration(url, client_no)
-        payload = {
+        try:
+            payload = json.loads(self._config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        # 保留同一文件中的现场旧配置，面板重连不能抹掉恢复入口。
+        payload.update({
             "url": url.strip(),
             "client_no": client_no.strip(),
-        }
+        })
         target = self._config_path
         temporary = target.with_name(
             f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp"

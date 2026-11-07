@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import errno
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
@@ -26,9 +27,13 @@ sys.path.insert(0, str(PROJECT))
 from video_service.media_store import MediaStore, atomic_json, safe_component
 from video_service.camera_app.relay_status import status_path
 from video_service.relay_config import gpu_arguments, project_path
+from video_service.public_stream import PublicStreamRelay
+from video_service.remote_ftp import RemoteFTP
 
 # A landed inspection must finish video delivery within this configurable interval.
 DEFAULT_DELIVERY_TIMEOUT_SECONDS = 600.0
+# Retry failed FTP transfers without holding up local processing or flight notices.
+REMOTE_FTP_RETRY_SECONDS = 5.0
 
 
 def load_settings(path=None):
@@ -76,6 +81,23 @@ class GroundMedia:
         self._uploads = {}
         self._deliveries = {}
         self._jobs = {}
+        self.public_stream = PublicStreamRelay(settings)
+        remote = settings.get('remote_ftp') or {}
+        self.remote_ftp_enabled = bool(remote.get('enabled', False))
+        self._remote_ftp = None
+        self._remote_ftp_error = ''
+        self._remote_ftp_retry = {}
+        self._remote_ftp_thread = None
+        self._remote_destination = ''
+        if self.remote_ftp_enabled:
+            try:
+                self._remote_ftp = RemoteFTP(remote)
+                destination = [self._remote_ftp.host, self._remote_ftp.port, self._remote_ftp.user,
+                               self._remote_ftp.directory, str(self._remote_ftp.path_prefix)]
+                self._remote_destination = hashlib.sha256(json.dumps(destination).encode()).hexdigest()
+            except (TypeError, ValueError) as exc:
+                self._remote_ftp_error = f'公网 FTP 配置无效：{exc}'
+                logging.warning(self._remote_ftp_error)
         try:
             timeout = float(settings.get('delivery_timeout_seconds', DEFAULT_DELIVERY_TIMEOUT_SECONDS))
         except (TypeError, ValueError):
@@ -100,9 +122,14 @@ class GroundMedia:
     def start(self):
         """Start network services and workers independently of preview windows."""
         self._start_mediamtx()
-        self._start_ftp()
+        if self.config.get('local_ftp_enabled', True):
+            self._start_ftp()
         for target in (self._ingest_loop, self._photo_loop, self._stream_loop):
             threading.Thread(target=target, daemon=True).start()
+        if self._remote_ftp is not None:
+            self._remote_ftp_thread = threading.Thread(target=self._remote_ftp_loop, daemon=True,
+                                                       name='remote-media-ftp')
+            self._remote_ftp_thread.start()
 
     def _start_mediamtx(self):
         """Expose corrected streams only; raw paths are readable on loopback only."""
@@ -148,13 +175,16 @@ class GroundMedia:
     def relay_command(self, source, target, progress, intrinsics=None, options=None):
         """Use current host GPU devices for both live processing and historical rebuilds."""
         options = options or self.config
-        return [sys.executable, str(PROJECT / 'video_service/ground_relay.py'),
+        command = [sys.executable, str(PROJECT / 'video_service/ground_relay.py'),
                 '--input', source, '--output', str(target), '--backend', options.get('backend', 'auto'),
                 '--intrinsics', str(intrinsics or options['intrinsics']),
                 '--bitrate', str(options.get('bitrate', '8M')), '--gop', str(options.get('gop', 60)),
                 '--chroma-location', options.get('chroma_location', 'left'),
                 '--cpu-threads', str(options.get('cpu_threads', 4)), '--progress', str(progress),
                 *gpu_arguments(self.config)]
+        if options.get('fps'):
+            command += ['--fps', str(options['fps'])]
+        return command
 
     def session(self, payload):
         """Merge idempotent aircraft notices without restarting a closed session."""
@@ -213,7 +243,7 @@ class GroundMedia:
                 session['intrinsics'] = str(calibration)
                 session['options'] = {key: self.config.get(key, default) for key, default in
                                       [('backend', 'auto'), ('bitrate', '8M'), ('gop', 60),
-                                       ('chroma_location', 'left'), ('cpu_threads', 4)]}
+                                       ('chroma_location', 'left'), ('cpu_threads', 4), ('fps', None)]}
                 session['options']['intrinsics'] = str(calibration)
             session['metadata'].update(payload)
             session['last_seen'] = time.time()
@@ -347,6 +377,7 @@ class GroundMedia:
         while not self.stop.wait(0.5):
             try:
                 paths = self._paths()
+                self.public_stream.sync(paths)
                 with self.lock:
                     for aircraft, session in list(self.sessions.items()):
                         if time.time() < session['next_retry']:
@@ -533,7 +564,12 @@ class GroundMedia:
                     self.fail_delivery(dict(delivery, error='两端均无可用原片，也无可播放地面录像'))
 
     def _complete_delivery(self, delivery, record):
-        """Freeze the selected local/rebuilt recording; no further original upload is needed."""
+        """Freeze the selected recording after its configured FTP destination is ready."""
+        if self.remote_ftp_enabled and not self._remote_path(record):
+            if delivery.get('state') != 'uploading':
+                delivery.update(state='uploading', error='等待录像上传公网 FTP')
+                self._save_sessions()
+            return
         delivery.update(state='ready', error='', record_id=record['id'])
         self._save_sessions()
         logging.info('Video delivery ready: %s/%s record=%s state=%s',
@@ -583,6 +619,66 @@ class GroundMedia:
             except Exception as exc:
                 self.error = str(exc)
 
+    def _remote_path(self, record):
+        """Return a confirmed remote path only while it matches this finalized local file."""
+        if not self.store.public_url(record):
+            return ''
+        receipt = record.get('metadata', {}).get('remote_ftp', {})
+        if receipt.get('state') != 'ready' or receipt.get('destination') != self._remote_destination:
+            return ''
+        try:
+            stat = Path(record['path']).stat()
+        except OSError:
+            return ''
+        if receipt.get('size') != stat.st_size or receipt.get('mtime_ns') != stat.st_mtime_ns:
+            return ''
+        return receipt.get('path', '')
+
+    def _publish_remote(self):
+        """Upload one pending public file, prioritizing photos and newest media over archives."""
+        if self._remote_ftp is None:
+            return
+        records = sorted(self.store.records(), key=lambda record: (record['kind'] == 'video',
+                                                                  -record['created_at']))
+        for record in records:
+            if self.stop.is_set():
+                return
+            if (not self.store.public_url(record) or record['state'] not in {'ready', 'incomplete'}
+                    or self._remote_path(record)
+                    or self._session_failed(record['aircraft_id'], record['session_id'])
+                    or time.monotonic() < self._remote_ftp_retry.get(record['id'], 0)):
+                continue
+            receipt = dict(state='uploading', destination=self._remote_destination, path='', error='')
+            try:
+                stat = Path(record['path']).stat()
+                receipt.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+                self.store.update(record['id'], metadata={**record['metadata'], 'remote_ftp': receipt})
+                remote_path = self._remote_ftp.upload(self.root / 'public', record['path'])
+                receipt.update(state='ready', path=remote_path)
+                self._remote_ftp_error = ''
+                self._remote_ftp_retry.pop(record['id'], None)
+                logging.info('Remote FTP media ready: %s', record['id'])
+            except Exception as exc:
+                self._remote_ftp_error = f'公网 FTP 上传失败，将重试：{exc}'
+                receipt.update(state='error', error=str(exc))
+                self._remote_ftp_retry[record['id']] = time.monotonic() + REMOTE_FTP_RETRY_SECONDS
+                logging.warning('Remote FTP media %s: %s', record['id'], exc)
+            if not self.stop.is_set():
+                with self.lock:
+                    current = self.store.get(record['id'])
+                    if current and current.get('path') == record['path']:
+                        self.store.update(record['id'], metadata={**current['metadata'], 'remote_ftp': receipt})
+            return
+
+    def _remote_ftp_loop(self):
+        """Keep WAN transfers outside the ingestion, recording, and GUI threads."""
+        while not self.stop.wait(1):
+            try:
+                self._publish_remote()
+            except Exception as exc:
+                self._remote_ftp_error = f'公网 FTP 队列错误：{exc}'
+                logging.warning('Remote FTP queue: %s', exc)
+
     def inventory(self):
         """Expose only processed download URLs while retaining private-file state in the catalog."""
         records = self.store.records()
@@ -611,8 +707,19 @@ class GroundMedia:
             if record.get('path') and not relative and record['state'] in {'ready', 'incomplete'}:
                 record.update(state='missing', error='地面处理文件缺失，下载暂不可用')
             record['download_url'] = f"http://{public}:{self.config.get('api_port', 8090)}/api/file?id={record['id']}" if relative else ''
-            record['download_directory'] = f"ftp://{public}:{self.config.get('ftp_port', 2121)}/{quote(str(Path(relative).parent))}/" if relative else ''
-            record['ftp_path'] = '/' + relative if relative else ''
+            remote_path = self._remote_path(record) if self.remote_ftp_enabled else ''
+            if self.remote_ftp_enabled:
+                receipt = record.get('metadata', {}).get('remote_ftp', {})
+                record['remote_ftp_state'] = 'ready' if remote_path else receipt.get('state', 'pending')
+                record['remote_ftp_error'] = receipt.get('error', '')
+                host = self._remote_ftp.host if self._remote_ftp else ''
+                port = self._remote_ftp.port if self._remote_ftp else 21
+                record['download_directory'] = (f"ftp://{host}:{port}{quote(str(Path(remote_path).parent))}/"
+                                                if remote_path else '')
+                record['ftp_path'] = remote_path
+            else:
+                record['download_directory'] = f"ftp://{public}:{self.config.get('ftp_port', 2121)}/{quote(str(Path(relative).parent))}/" if relative else ''
+                record['ftp_path'] = '/' + relative if relative else ''
         with self.lock:
             streams = [dict(aircraft_id=aircraft, session_id=item['session_id'],
                             state='recording' if item.get('record_started') else 'starting',
@@ -621,9 +728,14 @@ class GroundMedia:
         storage = self.store.storage()
         with self.lock:
             deliveries = [dict(item) for item in self._deliveries.values()]
+        public_streams = self.public_stream.status()
+        public_error = ('公网直播连接中断，正在重试' if any(
+            item['state'] == 'retrying' for item in public_streams.values()) else '')
         return dict(records=records, storage=storage, streams=streams, deliveries=deliveries,
+                    public_streams=public_streams,
                     delivery_timeout_seconds=self.delivery_timeout_seconds,
-                    error='；'.join(filter(None, [self.error, storage.get('error', '')])))
+                    error='；'.join(filter(None, [self.error, storage.get('error', ''),
+                                                 self._remote_ftp_error, public_error])))
 
     def rebuild(self, record_id):
         """Reprocess a complete original with the session's frozen calibration and settings."""
@@ -687,6 +799,9 @@ class GroundMedia:
     def close(self):
         """Finalize owned media without touching the ROS flight-control stack."""
         self.stop.set()
+        self.public_stream.close()
+        if self._remote_ftp_thread is not None:
+            self._remote_ftp_thread.join(timeout=self._remote_ftp.timeout + 2)
         with self.lock:
             for session in self.sessions.values():
                 self._finish(session, '地面媒体服务关闭，实时会话中断')

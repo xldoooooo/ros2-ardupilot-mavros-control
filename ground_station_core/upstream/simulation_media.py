@@ -58,6 +58,10 @@ class SimulationMedia:
         self.pictures_dir = _path(config.get("pictures_dir", "examples/pictures"), self.public_root)
         port = config.get("rtsp_port", media.get("rtsp_port", 8554))
         self.rtsp_url = str(config.get("rtsp_url") or f"rtsp://127.0.0.1:{port}/uav002/rectified")
+        self._fps = config.get("fps")
+        self._bitrate = str(config.get("bitrate", "10M"))
+        remote = media.get("remote_ftp") or {}
+        self._ftp_prefix = str(remote.get("path_prefix", "")).strip("/") if remote.get("enabled") else ""
 
     def _read_config(self, path: Path) -> dict:
         """配置缺省使用默认值，损坏时仅告警，不影响地面站其他功能。"""
@@ -135,7 +139,8 @@ class SimulationMedia:
 
     def _ftp_path(self, path: Path) -> str:
         """转换已检查的本地文件为 FTP 虚拟根路径，不添加主机或协议。"""
-        return "/" + "/".join(path.relative_to(self.public_root).parts)
+        relative = "/".join(path.relative_to(self.public_root).parts)
+        return "/" + "/".join(part for part in (self._ftp_prefix, relative) if part)
 
     def photo_path(self) -> str:
         """随机选择一张现有图片；没有图片时仅告警并返回空字符串。"""
@@ -197,10 +202,14 @@ class SimulationMedia:
         if code or not codec.strip():
             self._events.warn("simulation-media", f"无法探测视频 {video.name}：{error[-2000:]}")
             return False
-        encoding = ["-c:v", "copy"] if codec.strip() == "h264" else [
+        encoding = ["-c:v", "copy"] if codec.strip() == "h264" and not self._fps else [
             "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
             "-pix_fmt", "yuv420p", "-threads", "2",
         ]
+        if self._fps:
+            # 仅统一直播编码，源文件和 FTP 样例保持原样。
+            encoding += ["-vf", f"scale=1920:1080,fps={float(self._fps)}",
+                         "-b:v", self._bitrate, "-g", str(round(float(self._fps) * 2)), "-bf", "0"]
         self._events.info(
             "simulation-media",
             f"尝试连续发布 {len(videos)} 个仿真片段，从 {video.name} 开始（{encoding[1]}）",

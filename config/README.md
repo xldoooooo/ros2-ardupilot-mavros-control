@@ -24,6 +24,12 @@
 | `aircraft/<编号>/correction/tag_pose.csv` | Tag 尺寸和地图位置。 |
 | `aircraft/<编号>/correction.env` | 独立修正服务的 ROS 通信配置。 |
 | `ground/video.json` | 本机地面视频工具保存的偏好，不提交 Git。 |
+| `ground/media.json` | 地面存储、直播编码、公网 RTSP 转推和远程 FTP；参照 `media.example.conf`，凭据只放此类本机配置。 |
+| `ground/simulation_media.json` | 仿真样例目录和直播帧率；参照同名 example，原文件与独立轮播不受直播编码影响。 |
+
+上位机 WebSocket 地址和编号保存在 `~/.config/ros2-ardupilot-ground-station/upstream.json`，
+也可用 `UPSTREAM_CONFIG_PATH` 指定文件。现场地址和凭据不提交 Git。
+配置中的 `_local_configuration` 仅保留原值供人工恢复，运行时不读取；面板保存 WebSocket 地址时保留此内容。
 
 控制超时在所选 `aircraft/<编号>/control.yaml` 的 `ros__parameters` 下配置，例如
 `pose_timeout_seconds` 同时用于 FCU 位姿/速度和自动校准 raw/extnav 数据检查。

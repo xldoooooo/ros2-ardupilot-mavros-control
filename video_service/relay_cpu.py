@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack
 from fractions import Fraction
+import math
 from pathlib import Path
 import signal
 import tempfile
@@ -36,10 +37,14 @@ def run_cpu(args, calibration):
     output_format = 'rtsp' if output_options else None
     width, height = calibration.width, calibration.height
     count, first_time, last_pts, started, last_progress = 0, None, -1, time.monotonic(), 0.0
+    last_source_pts = -1
     with av.open(args.input, options=input_options, timeout=(15, 15)) as source:
         stream = source.streams.video[0]
         stream.codec_context.thread_count = args.cpu_threads
-        rate = stream.average_rate or stream.guessed_rate or Fraction(30, 1)
+        fps = getattr(args, 'fps', None)
+        fps_value = Fraction(str(fps)) if fps else None
+        rate = fps_value or stream.average_rate or stream.guessed_rate or Fraction(30, 1)
+        last_slot = -1
         # A fine timebase preserves network gaps and VFR instead of manufacturing CFR frames.
         time_base = Fraction(1, 90000)
         with ExitStack() as outputs:
@@ -80,8 +85,15 @@ def run_cpu(args, calibration):
                 if args.duration and relative >= args.duration:
                     break
                 pts = round(relative / time_base)
-                if pts <= last_pts:
+                if pts <= last_source_pts:
                     raise ValueError('Source timestamps moved backwards; output stopped without hiding the discontinuity')
+                last_source_pts = pts
+                if fps:
+                    # Match GPU select: skip extra source frames, retaining gaps in the source clock.
+                    slot = math.floor(relative * fps_value + Fraction(1, 100000))
+                    if slot <= last_slot:
+                        continue
+                    last_slot = slot
                 # Keep full-range camera YUV values; an implicit yuvj420p→yuv420p conversion rescales them.
                 raw = (frame.to_ndarray() if frame.format.name in ('yuv420p', 'yuvj420p')
                        else frame.to_ndarray(format='yuvj420p' if frame.color_range == 2 else 'yuv420p')).reshape(-1)

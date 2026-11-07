@@ -2,8 +2,10 @@
 
 import argparse
 from collections import deque
+from fractions import Fraction
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -36,6 +38,15 @@ def bitrate_value(value):
     if result <= 0:
         raise argparse.ArgumentTypeError('Bitrate must be positive')
     return result
+
+
+def frame_step(args):
+    """Return an exact integer sampling ratio without rounding a requested 30 fps down to 25."""
+    source, target = getattr(args, 'source_fps', None), getattr(args, 'fps', None)
+    if not source or not target:
+        return None
+    ratio = Fraction(str(source)) / Fraction(str(target))
+    return int(ratio) if ratio.denominator == 1 and ratio >= 1 else None
 
 
 def build_command(args, backend, shader_path, input_url=None, output_url=None, probe=False):
@@ -74,9 +85,23 @@ def build_command(args, backend, shader_path, input_url=None, output_url=None, p
         encoder = ['-c:v', 'h264_nvenc', '-gpu', str(args.cuda_device), '-preset', 'p4', '-tune', 'll']
     if source.startswith('rtsp://'):
         command += ['-rtsp_transport', 'tcp', '-timeout', '15000000', *RTSP_PROBE_OPTIONS]
+    fps = getattr(args, 'fps', None)
+    step = frame_step(args)
+    if fps:
+        if step is not None:
+            # Unlike select, framestep updates the encoder's rate-control clock as well as dropping frames.
+            filters += f',framestep={step}'
+        else:
+            filters += (f",select='isnan(prev_selected_t)+gt(floor((t-start_t)*{fps}+0.00001),"
+                        f"floor((prev_selected_t-start_t)*{fps}+0.00001))'")
     command += ['-threads', '2', '-i', source, '-map', '0:v:0', '-an', '-vf', filters,
-                *encoder, '-b:v', args.bitrate, '-g', str(args.gop), '-bf', '0',
-                '-fps_mode', 'passthrough', '-chroma_sample_location', args.chroma_location]
+                *encoder, '-b:v', args.bitrate, '-g', str(args.gop), '-bf', '0']
+    if fps:
+        command += ['-enc_time_base', '1/90000']
+        if step is None:
+            # The noninteger fallback preserves timing; its rate-control limitation is warned at startup.
+            command += ['-bsf:v', f'h264_metadata=tick_rate={2 * fps}']
+    command += ['-fps_mode', 'passthrough', '-chroma_sample_location', args.chroma_location]
     if args.color_range != 'auto':
         command += ['-color_range', args.color_range]
     if probe:
@@ -130,7 +155,8 @@ def validate_source(args, calibration):
     command = [args.ffprobe, '-v', 'error']
     if args.input.startswith('rtsp://'):
         command += ['-rtsp_transport', 'tcp', '-timeout', '15000000', *RTSP_PROBE_OPTIONS]
-    command += ['-select_streams', 'v:0', '-show_entries', 'stream=width,height,color_range', '-of', 'json', args.input]
+    command += ['-select_streams', 'v:0', '-show_entries',
+                'stream=width,height,color_range,avg_frame_rate,r_frame_rate', '-of', 'json', args.input]
     result = subprocess.run(command, capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     if result.returncode:
         raise RuntimeError(f'无法读取输入视频：{result.stderr.strip()}')
@@ -138,6 +164,18 @@ def validate_source(args, calibration):
     if not streams:
         raise RuntimeError('输入没有视频轨道')
     args.color_range = streams[0].get('color_range', 'auto')
+    args.source_fps = None
+    for name in ('avg_frame_rate', 'r_frame_rate'):
+        try:
+            rate = Fraction(streams[0].get(name, '0/1'))
+        except (ValueError, ZeroDivisionError):
+            continue
+        if rate > 0:
+            args.source_fps = rate
+            break
+    if getattr(args, 'fps', None) and frame_step(args) is None:
+        logging.warning('输入帧率 %s 与目标 %s 非整数比例或未知；GPU 使用时间戳抽帧，实际帧率及码率可能偏离目标',
+                        args.source_fps or '未知', args.fps)
     actual = streams[0]['width'], streams[0]['height']
     if actual != (calibration.width, calibration.height):
         raise ValueError(f'输入尺寸 {actual} 与标定 {calibration.width}×{calibration.height} 不符，请选择对应标定')
@@ -153,6 +191,8 @@ def cpu_command(args):
         command += ['--duration', str(args.duration)]
     if args.frames:
         command += ['--frames', str(args.frames)]
+    if getattr(args, 'fps', None):
+        command += ['--fps', str(args.fps)]
     if getattr(args, 'recording', None):
         command += ['--recording', str(args.recording)]
     return command
@@ -199,7 +239,7 @@ def supervise(args, calibration, state):
             report('starting')
             fixture = root / 'probe.mp4'
             reason = run_probe([args.ffmpeg, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
-                                f'color=size={calibration.width}x{calibration.height}:rate=30',
+                                f'color=size={calibration.width}x{calibration.height}:rate={getattr(args, "source_fps", None) or 30}',
                                 '-frames:v', '2', '-c:v', 'libx264', '-threads', '2', '-y', str(fixture)])
             if reason:
                 failures.append(f'GPU探测样本生成失败：{reason}')
@@ -331,6 +371,7 @@ def main():
     parser.add_argument('--opencl-device', default=',device_type=gpu,platform_vendor=NVIDIA')
     parser.add_argument('--chroma-location', choices=('left', 'center'), default='left')
     parser.add_argument('--bitrate', default='8M')
+    parser.add_argument('--fps', type=float, help='Limit output frame rate without filling source timestamp gaps')
     parser.add_argument('--gop', type=int, default=60)
     parser.add_argument('--cpu-threads', type=int, default=4)
     parser.add_argument('--ffmpeg', default='ffmpeg')
@@ -351,6 +392,8 @@ def main():
     state = dict(pid=os.getpid(), output=args.output, backend='', state='starting', warning='', detail='')
     try:
         args.bitrate_value = bitrate_value(args.bitrate)
+        if args.fps is not None and (not math.isfinite(args.fps) or args.fps <= 0):
+            raise ValueError('FPS must be positive and finite')
         if args.cpu_threads <= 0 or args.gop <= 0 or (args.frames is not None and args.frames <= 0) or (args.duration is not None and args.duration <= 0):
             raise ValueError('Threads, GOP, frames and duration must be positive')
         if args.recording:
