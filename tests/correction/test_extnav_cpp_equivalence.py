@@ -166,8 +166,10 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
         raw.header.stamp.nanosec += 1
         pair.publish(raw)
 
-        # Duplicate/small-regression samples must not refresh any output or replace
-        # the cache. Keep the existing large-regression session reset boundary.
+        # Reordering on either side of the former 250 ms boundary must leave the
+        # live correction and output unchanged, then allow the next fresh sample.
+        assert pair.call(job_id="before-reordering").accepted
+        pair.compare_state(correction_valid=True, revision=3)
         previous_sessions = [item["status"][-1].odin_session_id for item in pair.endpoints]
         raw.header.stamp.sec, raw.header.stamp.nanosec = (101, 0)
         pair.publish(raw)
@@ -177,22 +179,24 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
                             for item in pair.endpoints]
         rejected = copy.deepcopy(raw)
         rejected.pose.pose.position.x = -123.0
-        for stamp in ((101, 0), (100, 850_000_000), (100, 750_000_000)):
+        for stamp in ((101, 0), (100, 850_000_000), (100, 750_000_000),
+                      (100, 749_999_999), (99, 0)):
             rejected.header.stamp.sec, rejected.header.stamp.nanosec = stamp
             for endpoint in pair.endpoints:
                 endpoint["publisher"].publish(rejected)
         pair.wait(lambda: all(_stamp_ns(item["status"][-1]) > rejected_at
                              for item in pair.endpoints), "status after rejected samples")
-        pair.compare_state(raw_messages=pair.sent, final_sample_available=True)
+        pair.compare_state(raw_messages=pair.sent, final_sample_available=True,
+                           correction_valid=True, revision=3)
         pair.assert_stopped()
         assert all(item[key][-1] is message
                    for item, previous in zip(pair.endpoints, before_rejection)
                    for key, message in previous.items())
         assert previous_sessions == [item["status"][-1].odin_session_id for item in pair.endpoints]
-        raw.header.stamp.sec, raw.header.stamp.nanosec = (100, 749_999_999)
+        raw.header.stamp.sec, raw.header.stamp.nanosec = (102, 0)
         pair.publish(raw)
-        assert all(item["status"][-1].odin_session_id != previous
-                   for item, previous in zip(pair.endpoints, previous_sessions))
+        pair.compare_state(correction_valid=True, revision=3)
+        assert previous_sessions == [item["status"][-1].odin_session_id for item in pair.endpoints]
         for frame_field in ("header", "child"):
             previous_sessions = [item["status"][-1].odin_session_id for item in pair.endpoints]
             broken = copy.deepcopy(raw)
@@ -267,16 +271,24 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
         _check_auxiliary_reader_churn(pair, raw)
         assert pair.call(job_id="before-gap").accepted
         pair.compare_state(correction_valid=True, final_sample_available=False)
-        raw.header.stamp.nanosec += 1
+        raw.header.stamp.sec, raw.header.stamp.nanosec = (200, 0)
         pair.publish(raw)
         revision = pair.endpoints[0]["status"][-1].revision
+        previous_sessions = [item["status"][-1].odin_session_id for item in pair.endpoints]
+        # Repeated traffic must still time out and stay unavailable beyond the gap.
+        repeated_until = time.monotonic() + 3.0
+        while time.monotonic() < repeated_until:
+            for endpoint in pair.endpoints:
+                endpoint["publisher"].publish(raw)
+            pair.executor.spin_once(timeout_sec=0.02)
         pair.compare_state(odin_available=False, correction_valid=False,
-                           final_sample_available=False)
+                           final_sample_available=False, raw_messages=pair.sent)
         assert all(not item["status"][-1].odin_session_id for item in pair.endpoints)
         assert pair.endpoints[0]["status"][-1].revision == revision + 1
         pair.assert_stopped()
         assert not pair.call().accepted
-        raw.header.stamp.sec = 200
+        # A genuine clock restart can recover after the same existing timeout.
+        raw.header.stamp.sec = 10
         raw.header.stamp.nanosec = 0
         pair.publish(raw)
         assert all(item["status"][-1].odin_session_id not in previous_sessions

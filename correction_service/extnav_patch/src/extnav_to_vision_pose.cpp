@@ -116,10 +116,8 @@ public:
     const auto status_topic = declare_parameter("correction_status_topic", "/extnav/correction_status");
     const auto service_name = declare_parameter("set_correction_service", "/extnav/set_correction");
     session_gap_ = declare_parameter("odin_session_gap_seconds", 2.0);
-    const double regression = declare_parameter("odin_stamp_regression_seconds", 0.25) * kNanosecondsPerSecond;
-    // Python int(float) truncates and rejects nonfinite values; do not tighten other limits.
-    if (!std::isfinite(regression)) {throw std::invalid_argument("invalid Odin stamp regression");}
-    stamp_regression_ns_ = std::trunc(static_cast<long double>(regression));
+    // Accept legacy configuration; regression magnitude no longer identifies a restart.
+    declare_parameter("odin_stamp_regression_seconds", 0.25);
     max_translation_ = declare_parameter("max_correction_translation_m", 100.0);
     roll_ = declare_parameter("roll_cam", 0.0);
     pitch_ = declare_parameter("pitch_cam", 0.0);
@@ -232,25 +230,20 @@ private:
 
     const double received = monotonic_seconds();
     const auto stamp = stamp_nanoseconds(message);
-    // Keep the existing reset threshold, but never replace a sample with a duplicate
-    // or a small regression. Rejected samples must not refresh the accepted-raw age.
+    const double gap = last_raw_time_ > 0.0 ? received - last_raw_time_ : 0.0;
+    // A late packet must not reset a live session. After the existing accepted-data
+    // timeout, allow a restarted clock; identical stamps never refresh availability.
     if (last_stamp_ > 0 && stamp > 0 &&
-      (stamp == last_stamp_ || (stamp < last_stamp_ &&
-      static_cast<long double>(stamp) >= static_cast<long double>(last_stamp_) - stamp_regression_ns_)))
+      (stamp == last_stamp_ || (stamp < last_stamp_ && gap <= session_gap_)))
     {
       return;
     }
     const auto frame = std::make_pair(message.header.frame_id, message.child_frame_id);
-    const double gap = last_raw_time_ > 0.0 ? received - last_raw_time_ : 0.0;
     std::string reason;
     if (!odin_available_ || session_.empty()) {
       reason = "首个 Odin 样本";
     } else if (gap > session_gap_) {
       reason = "Odin 断流 " + decimal(gap, 3) + "s 后恢复";
-    } else if (last_stamp_ > 0 && stamp > 0 &&
-      static_cast<long double>(stamp) < static_cast<long double>(last_stamp_) - stamp_regression_ns_)
-    {
-      reason = "Odin 时间戳回退";
     } else if (last_frame_ && frame != *last_frame_) {
       reason = "Odin frame_id 改变";
     }
@@ -510,7 +503,6 @@ private:
   Correction correction_ = correction(0.0, 0.0, 0.0);
   double roll_ = 0.0, pitch_ = 0.0, yaw_ = 0.0;
   double session_gap_ = 2.0, max_translation_ = 100.0;
-  long double stamp_regression_ns_ = 0.0;
   bool corrected_has_readers_ = false;
   bool odin_available_ = false, correction_valid_ = false;
   double last_raw_time_ = 0.0;

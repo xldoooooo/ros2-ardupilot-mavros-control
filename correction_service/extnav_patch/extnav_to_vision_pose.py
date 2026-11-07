@@ -260,6 +260,7 @@ class OdometryBridge(Node):
         self.declare_parameter("correction_status_topic", "/extnav/correction_status")
         self.declare_parameter("set_correction_service", "/extnav/set_correction")
         self.declare_parameter("odin_session_gap_seconds", 2.0)
+        # 兼容旧配置；不再用回退幅度判断设备重启。
         self.declare_parameter("odin_stamp_regression_seconds", 0.25)
         self.declare_parameter("max_correction_translation_m", 100.0)
 
@@ -277,9 +278,6 @@ class OdometryBridge(Node):
         self.yaw_cam = float(self.get_parameter("yaw_cam").value)
         self.session_gap_seconds = float(
             self.get_parameter("odin_session_gap_seconds").value
-        )
-        self.stamp_regression_ns = int(
-            float(self.get_parameter("odin_stamp_regression_seconds").value) * 1e9
         )
         self.max_correction_translation_m = float(
             self.get_parameter("max_correction_translation_m").value
@@ -403,29 +401,23 @@ class OdometryBridge(Node):
             return
         now_monotonic = time.monotonic()
         stamp_ns = _stamp_nanoseconds(message)
-        # 沿用重启回退阈值；重复及小幅倒序不覆盖缓存，也不刷新已接纳样本年龄。
-        if self.last_raw_stamp_ns > 0 and stamp_ns > 0 and (
-            stamp_ns == self.last_raw_stamp_ns
-            or self.last_raw_stamp_ns - self.stamp_regression_ns <= stamp_ns < self.last_raw_stamp_ns
-        ):
-            return
-        frame_pair = (message.header.frame_id, message.child_frame_id)
         gap = (
             now_monotonic - self.last_raw_monotonic
             if self.last_raw_monotonic > 0.0
             else 0.0
         )
+        # 迟到包不重置活跃会话；沿用接纳数据超时恢复重启时钟，重复戳始终不刷新可用性。
+        if self.last_raw_stamp_ns > 0 and stamp_ns > 0 and (
+            stamp_ns == self.last_raw_stamp_ns
+            or (stamp_ns < self.last_raw_stamp_ns and gap <= self.session_gap_seconds)
+        ):
+            return
+        frame_pair = (message.header.frame_id, message.child_frame_id)
         new_session_reason = ""
         if not self.odin_available or not self.odin_session_id:
             new_session_reason = "首个 Odin 样本"
         elif gap > self.session_gap_seconds:
             new_session_reason = f"Odin 断流 {gap:.3f}s 后恢复"
-        elif (
-            self.last_raw_stamp_ns > 0
-            and stamp_ns > 0
-            and stamp_ns < self.last_raw_stamp_ns - self.stamp_regression_ns
-        ):
-            new_session_reason = "Odin 时间戳回退"
         elif self.last_frame_pair is not None and frame_pair != self.last_frame_pair:
             new_session_reason = "Odin frame_id 改变"
         if new_session_reason:

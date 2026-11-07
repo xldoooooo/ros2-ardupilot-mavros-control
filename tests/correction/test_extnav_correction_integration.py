@@ -353,7 +353,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         _wait_for(lambda: bridge.latest_output is not None)
         assert bridge.odin_session_id != previous_session
 
-        # Source changes rebuild the session; malformed input must erase the old output.
+        # A clock restart waits for the existing gap; malformed geometry still clears output.
         for change in ("stamp", "quaternion", "nan_quaternion", "inf_quaternion", "position"):
             previous_session = bridge.odin_session_id
             processed_before = bridge.raw_messages
@@ -370,6 +370,10 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
                 raw.pose.pose.orientation.w = 1.0
                 raw.pose.pose.position.x = math.nan
             publisher.publish(raw)
+            if change == "stamp":
+                _wait_for(lambda: not bridge.odin_available, timeout=4.0)
+                assert bridge.raw_messages == processed_before
+                publisher.publish(raw)
             _wait_for(lambda: bridge.raw_messages > processed_before)
             if change == "stamp":
                 assert bridge.odin_session_id != previous_session
