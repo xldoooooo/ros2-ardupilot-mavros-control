@@ -85,7 +85,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
 {
   control_frequency_hz_ = declare_parameter<double>("control_frequency", 100.0);
   status_frequency_hz_ = declare_parameter<double>("status_frequency", 10.0);
-  pose_timeout_seconds_ = declare_parameter<double>("pose_timeout_seconds", 0.4);
+  pose_timeout_seconds_ = declare_parameter<double>("pose_timeout_seconds", 0.5);
   state_timeout_seconds_ = declare_parameter<double>("state_timeout_seconds", 2.0);
   fcu_parameter_check_initial_delay_seconds_ =
     declare_parameter<double>("fcu_parameter_check_initial_delay_seconds", 2.0);

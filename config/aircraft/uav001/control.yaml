@@ -17,7 +17,7 @@
     navigation_retarget_blend_seconds: 1.0  # Smooth small straight-flight endpoint corrections.
 
     # 遥测新鲜度、失联处理与命令时效安全阈值
-    pose_timeout_seconds: 0.40  # 位姿或速度遥测最大允许断流时间，单位：秒。
+    pose_timeout_seconds: 0.50  # 位姿或速度遥测最大允许断流时间，单位：秒。
     state_timeout_seconds: 2.0  # 飞控连接状态最大允许断流时间，单位：秒。
     # 连接后主动异步拉参数；早检查、未同步时重试，不跳过推力参数值校验。
     fcu_parameter_check_initial_delay_seconds: 2.0  # 首次只读检查延迟，单位：秒。

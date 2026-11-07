@@ -344,7 +344,7 @@ private:
   // Parameters with safety significance are declared once and reported in logs.
   double control_frequency_hz_{100.0};
   double status_frequency_hz_{10.0};
-  double pose_timeout_seconds_{0.4};
+  double pose_timeout_seconds_{0.5};
   double state_timeout_seconds_{2.0};
   // Cache fallback delay; live parameter events may verify sooner.
   double fcu_parameter_check_initial_delay_seconds_{2.0};

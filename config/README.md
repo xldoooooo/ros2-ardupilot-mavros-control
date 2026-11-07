@@ -24,3 +24,7 @@
 | `aircraft/<编号>/correction/tag_pose.csv` | Tag 尺寸和地图位置。 |
 | `aircraft/<编号>/correction.env` | 独立修正服务的 ROS 通信配置。 |
 | `ground/video.json` | 本机地面视频工具保存的偏好，不提交 Git。 |
+
+控制超时在所选 `aircraft/<编号>/control.yaml` 的 `ros__parameters` 下配置，例如
+`pose_timeout_seconds` 同时用于 FCU 位姿/速度和自动校准 raw/extnav 数据检查。
+省略 ROS 参数时采用代码缺省值；编辑后重启对应服务生效，不能把 `0` 当作通用禁用开关。

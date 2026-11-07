@@ -1,4 +1,4 @@
-"""Verify deferred telemetry evidence and the native 400 ms LAND protection."""
+"""Verify deferred telemetry evidence and the configured native LAND protection."""
 from types import SimpleNamespace
 
 import pytest
@@ -41,10 +41,10 @@ def test_telemetry_fault_is_frozen_and_logged_once(calibration_node, tmp_path, f
     fields = dict(token.split("=", 1) for token in lines[0].split() if "=" in token)
     assert fields["event"] == "telemetry_fault"
     assert fields["velocity_valid"] == "1"
-    assert float(fields["pose_timeout_ms"]) == 400.
+    assert float(fields["pose_timeout_ms"]) == 500.
     if failure == "velocity_timeout":
         assert fields["pose_valid"] == "1"
-        assert float(fields["velocity_age_ms"]) > 400.
+        assert float(fields["velocity_age_ms"]) > 500.
     else:
         assert fields["pose_valid"] == "0"
     assert "control_period_ms=" in lines[0] and "control_lock_wait_ms=" in lines[0]
@@ -145,11 +145,11 @@ def test_sampling_raw_fault_keeps_payload_and_late_recovery(calibration_node, tm
     raw_line, = [line for line in text.splitlines() if line.startswith("[RAW_ODOMETRY]")
                  and f"event_ns={fields['event_ns']} " in line]
     assert f"job={job} " in raw_line and "revision=0 follow_fusion=0" in raw_line
-    assert "present=1" in raw_line and "timeout_ms=400.000" in raw_line
+    assert "present=1" in raw_line and "timeout_ms=500.000" in raw_line
     assert "phase=before stream=raw_odin" in text and "dds_source_ns=" in text
     if failure == "stale":
         raw_fields = dict(token.split("=", 1) for token in raw_line.split() if "=" in token)
-        assert float(raw_fields["age_ms"]) > 400.
+        assert float(raw_fields["age_ms"]) > 500.
         assert "phase=first_after stream=raw_odin" not in text
     elif failure == "frame":
         assert "child=wrong_body" in raw_line
