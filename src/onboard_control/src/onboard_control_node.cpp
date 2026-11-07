@@ -414,6 +414,7 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     control_callback_group_);
   status_timer_ = create_wall_timer(status_period, std::bind(&OnboardControlNode::status_tick, this));
   initialize_control_diagnostics();
+  initialize_tracking_diagnostics();
 
   RCLCPP_INFO(
     get_logger(),
@@ -2485,6 +2486,8 @@ void OnboardControlNode::publish_attitude_setpoint(
     trigger_failsafe_land("PD+DOB 产生非有限控制输出");
     return;
   }
+  capture_tracking_sample(control_vehicle, output, dt_seconds,
+    use_acceleration_feedforward, use_output_jerk);
   const auto compute_finished = sample_thread_timing();
   mavros_msgs::msg::AttitudeTarget message;
   message.header.stamp = get_clock()->now();

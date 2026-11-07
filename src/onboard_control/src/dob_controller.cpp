@@ -224,6 +224,8 @@ ControlOutput DobController::compute(
   }
   output.thrust = std::clamp(output.thrust, 0.0, 1.0);
   output.acceleration = motion_acceleration;
+  output.mapped_acceleration = total_acceleration;
+  output.mapped_acceleration.z() -= parameters_.gravity;
   output.disturbance = disturbance_;
   output.valid = output.attitude.coeffs().allFinite() && std::isfinite(output.thrust);
   previous_input_ = motion_acceleration;

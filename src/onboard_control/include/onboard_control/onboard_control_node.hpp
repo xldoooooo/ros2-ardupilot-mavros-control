@@ -28,6 +28,7 @@
 #include <guided_interfaces/msg/avoidance_result.hpp>
 #include <guided_interfaces/msg/control_heartbeat.hpp>
 #include <guided_interfaces/msg/control_status.hpp>
+#include <guided_interfaces/msg/tracking_sample.hpp>
 #include <guided_interfaces/msg/motion_intent.hpp>
 #include <guided_interfaces/msg/video_capture.hpp>
 #include <guided_interfaces/msg/video_control.hpp>
@@ -79,6 +80,11 @@ public:
   explicit OnboardControlNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
 private:
+  /** Register subscriber matching; no diagnostic timer or samples exist while idle. */
+  void initialize_tracking_diagnostics();
+  /** Copy one real computation only while an opt-in diagnostic subscriber is connected. */
+  void capture_tracking_sample(const VehicleKinematics & state, const ControlOutput & output,
+    double dt_seconds, bool feedforward, bool output_jerk);
   using SteadyClock = std::chrono::steady_clock;
   using SteadyTime = SteadyClock::time_point;
   using FlightCommand = guided_interfaces::srv::FlightCommand;
@@ -681,6 +687,15 @@ private:
   std::unique_ptr<std::FILE, int (*)(std::FILE *)> diagnostic_log_{nullptr, &std::fclose};
   rclcpp::CallbackGroup::SharedPtr diagnostic_callback_group_;
   rclcpp::TimerBase::SharedPtr diagnostic_timer_;
+
+  // Guarded by mutex_; latest-only storage keeps slow diagnostics out of the control path.
+  bool tracking_requested_{false};
+  std::optional<guided_interfaces::msg::TrackingSample> tracking_sample_;
+  std::uint64_t tracking_sequence_{0};
+  std::uint64_t tracking_session_{0};
+  rclcpp::CallbackGroup::SharedPtr tracking_callback_group_;
+  rclcpp::TimerBase::SharedPtr tracking_timer_;
+  rclcpp::Publisher<guided_interfaces::msg::TrackingSample>::SharedPtr tracking_publisher_;
 
   // Timer diagnostics and publisher-conflict protection.
   SteadyTime last_control_tick_{};

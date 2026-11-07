@@ -38,6 +38,8 @@ from tests import run
         ("scripts/onboard/switch_navigation_mode.sh", {"runtime", "flight", "waypoints"}),
         ("src/onboard_control/src/waypoint_calibration.cpp", {"flight", "waypoints"}),
         ("src/onboard_control/src/control_diagnostics.cpp", {"flight"}),
+        ("src/onboard_control/src/tracking_diagnostics.cpp", {"flight"}),
+        ("scripts/diagnostics/analyze_hover.py", {"flight"}),
         ("src/onboard_control/src/navigation_frame.cpp", {"flight", "waypoints"}),
         ("tests/video/test_camera_service.py", {"video"}),
         ("tests/test_camera_service.py", {"video"}),

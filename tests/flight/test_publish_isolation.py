@@ -81,6 +81,35 @@ def test_attitude_delay_keeps_inputs_fresh(publish_delay_library, tmp_path, monk
     assert 0. <= float(re.search(r"velocity_age_ms=([\d.]+)", timing)[1]) < 100.
 
 
+def test_tracking_publish_delay_keeps_control_running(publish_delay_library, tmp_path, monkeypatch, request):
+    """A slow opt-in diagnostic publish cannot hold either flight lock or stop setpoints."""
+    from guided_interfaces.msg import TrackingSample
+    from guided_interfaces.srv import FlightCommand
+    from rclpy.qos import qos_profile_sensor_data
+
+    monkeypatch.setenv("LD_PRELOAD", str(publish_delay_library))
+    monkeypatch.setenv("ONBOARD_TEST_TRIGGER", str(tmp_path / "trigger"))
+    monkeypatch.setenv("ONBOARD_TEST_TOPIC", "/avoidance_executor_double_onboard/tracking_sample")
+    monkeypatch.setenv("ONBOARD_TEST_DELAY_MS", "600")
+    h = request.getfixturevalue("calibration_node")
+    assert h.command(FlightCommand.Request.COMMAND_HOVER).accepted
+    samples = []
+    subscription = h.node.create_subscription(
+        TrackingSample, h.mavros.replace("_mavros", "_onboard") + "/tracking_sample",
+        samples.append, qos_profile_sensor_data)
+    try:
+        h.until(lambda: len(samples) > 5)
+        before = len(h.attitudes)
+        (tmp_path / "trigger").touch()
+        h.spin(.5)
+        assert len(h.attitudes) > before + 20
+        h.until(lambda: (tmp_path / "trigger.returned").exists())
+        assert h.status[-1].controller_active and not h.land_calls
+        h.until(lambda: samples[-1].sequence > samples[0].sequence + 40)
+    finally:
+        h.node.destroy_subscription(subscription)
+
+
 def test_land_waits_for_inflight_output_without_blocking_inputs(publish_delay_library, tmp_path, monkeypatch, request):
     """LAND follows the started publish, while the independent input group keeps receiving."""
     from guided_interfaces.srv import FlightCommand

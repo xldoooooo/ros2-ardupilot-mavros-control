@@ -42,6 +42,7 @@ extern "C" rcl_ret_t rcl_publish(
   const bool permitted = topic &&
     (std::strcmp(topic, "/avoidance_executor_double_mavros/setpoint_raw/attitude") == 0 ||
     std::strcmp(topic, "/mavros/local_position/pose") == 0 ||
+    std::strcmp(topic, "/avoidance_executor_double_onboard/tracking_sample") == 0 ||
     std::strcmp(topic, "/avoidance_executor_double_onboard/status") == 0);
   if (trigger && selected && isolation && domain && permitted &&
     std::strcmp(isolation, "LOCALHOST") == 0 && std::atoi(domain) >= 150 &&

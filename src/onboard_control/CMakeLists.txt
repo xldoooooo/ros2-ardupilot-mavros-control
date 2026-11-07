@@ -44,6 +44,7 @@ add_executable(onboard_control_node
   src/navigation_frame.cpp
   src/waypoint_calibration.cpp
   src/control_diagnostics.cpp
+  src/tracking_diagnostics.cpp
 )
 target_include_directories(onboard_control_node PRIVATE include ${EIGEN3_INCLUDE_DIRS})
 ament_target_dependencies(onboard_control_node

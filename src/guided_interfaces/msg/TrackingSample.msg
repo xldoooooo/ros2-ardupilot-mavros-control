@@ -1,0 +1,39 @@
+# Opt-in, same-cycle PD+DOB snapshot. All vectors use FCU local ENU axes.
+std_msgs/Header header
+uint64 session_id
+uint64 sequence
+float64 monotonic_s
+float64 dt_s
+float64 pose_age_s
+float64 velocity_age_s
+uint8 control_mode
+uint8 tracking_controller
+bool calibration_active
+bool acceleration_feedforward
+bool output_jerk
+geometry_msgs/Point position
+geometry_msgs/Vector3 velocity
+geometry_msgs/Point reference_position
+geometry_msgs/Vector3 reference_velocity
+geometry_msgs/Vector3 reference_acceleration
+geometry_msgs/Vector3 disturbance
+# DOB's input history; before attitude limits when both configured jerk limits are zero.
+geometry_msgs/Vector3 controller_acceleration
+# After tilt/minimum-Z limits, before thrust clipping; excludes gravity. Not measured acceleration.
+geometry_msgs/Vector3 mapped_acceleration
+geometry_msgs/Quaternion attitude
+geometry_msgs/Quaternion attitude_setpoint
+float64 reference_yaw
+float64 thrust
+float64 hover_throttle
+float64 wn_xy
+float64 zeta_xy
+float64 wn_z
+float64 zeta_z
+float64 observer_xy
+float64 observer_z
+float64 max_acceleration_xy
+float64 max_acceleration_z
+float64 max_disturbance
+float64 max_tilt_rad
+float64 gravity

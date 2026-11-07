@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CommandResult.msg"
   "msg/ControlHeartbeat.msg"
   "msg/ControlStatus.msg"
+  "msg/TrackingSample.msg"
   "msg/MotionIntent.msg"
   "msg/PolynomialSegment.msg"
   "msg/VideoCapture.msg"

@@ -54,6 +54,8 @@ struct ControlOutput
   double thrust{0.0};
   Eigen::Vector3d acceleration{Eigen::Vector3d::Zero()};
   Eigen::Vector3d disturbance{Eigen::Vector3d::Zero()};
+  // Diagnostic mapping result before thrust clipping; excludes gravity.
+  Eigen::Vector3d mapped_acceleration{Eigen::Vector3d::Zero()};
   bool valid{false};
 };
 

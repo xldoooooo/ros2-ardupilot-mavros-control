@@ -96,6 +96,8 @@ RULES = {
     ),
     "src/onboard_control/src/fcu_reboot.cpp": ("flight",),
     "src/onboard_control/src/control_diagnostics.cpp": ("flight",),
+    "src/onboard_control/src/tracking_diagnostics.cpp": ("flight",),
+    "scripts/diagnostics/*": ("flight",),
     "src/onboard_control/src/navigation_frame.cpp": ("flight", "waypoints"),
     "src/onboard_control/include/onboard_control/navigation_frame.hpp": ("flight", "waypoints"),
     "src/onboard_control/src/waypoint_calibration.cpp": ("flight", "waypoints"),
