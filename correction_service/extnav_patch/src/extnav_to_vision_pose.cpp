@@ -49,6 +49,9 @@ struct Snapshot
   std::uint64_t revision;
   std::string session;
   std::string reference;
+  builtin_interfaces::msg::Time source_stamp;
+  bool vision_published = false;
+  bool control_published = false;
 };
 
 /** Read the same Linux monotonic time base used for gaps and raw age in Python. */
@@ -229,6 +232,14 @@ private:
 
     const double received = monotonic_seconds();
     const auto stamp = stamp_nanoseconds(message);
+    // Keep the existing reset threshold, but never replace a sample with a duplicate
+    // or a small regression. Rejected samples must not refresh the accepted-raw age.
+    if (last_stamp_ > 0 && stamp > 0 &&
+      (stamp == last_stamp_ || (stamp < last_stamp_ &&
+      static_cast<long double>(stamp) >= static_cast<long double>(last_stamp_) - stamp_regression_ns_)))
+    {
+      return;
+    }
     const auto frame = std::make_pair(message.header.frame_id, message.child_frame_id);
     const double gap = last_raw_time_ > 0.0 ? received - last_raw_time_ : 0.0;
     std::string reason;
@@ -271,7 +282,8 @@ private:
         fcu_components(raw, corrected ? &*corrected : nullptr, origin_, sample_valid),
         rotate(rotation_matrix(normalize(corrected ? corrected->quaternion : raw.quaternion)),
           {w.x, w.y, w.z}),
-        sample_valid, sample_revision, sample_session, sample_valid ? kCorrectedReference : kLocalReference};
+        sample_valid, sample_revision, sample_session, sample_valid ? kCorrectedReference : kLocalReference,
+        stamp > 0 ? message.header.stamp : static_cast<builtin_interfaces::msg::Time>(now())};
     } catch (const std::exception & error) {
       invalidate(std::string("飞控中心转换异常，停止重复发布旧样本：") + error.what());
     }
@@ -446,7 +458,7 @@ private:
 #endif
   }
 
-  /** Build a final pose with the existing publication-time stamp and odom frame. */
+  /** Build a final pose with the caller's clock domain and the odom frame. */
   PoseStamped pose_message(const builtin_interfaces::msg::Time & stamp) const
   {
     PoseStamped message;
@@ -456,11 +468,12 @@ private:
     return message;
   }
 
-  /** Vision always uses the same frozen FCU geometry as the auxiliary outputs. */
+  /** Forward each selected source sample once, retaining its acquisition timestamp. */
   void publish_vision()
   {
-    if (!latest_) {return;}
-    vision_pub_->publish(pose_message(now()));
+    if (!latest_ || latest_->vision_published) {return;}
+    vision_pub_->publish(pose_message(latest_->source_stamp));
+    latest_->vision_published = true;
     ++final_pose_messages_;
   }
 
@@ -468,6 +481,10 @@ private:
   void publish_control()
   {
     if (!latest_) {return;}
+    // Preserve timer accounting, but do not refresh stale auxiliary observations.
+    ++final_pose_messages_;
+    if (latest_->control_published) {return;}
+    latest_->control_published = true;
     const bool pose_needed = pose_pub_->get_subscription_count() > 0;
     const bool velocity_needed = velocity_pub_->get_subscription_count() > 0;
     if (pose_needed || velocity_needed) {
@@ -486,8 +503,6 @@ private:
         velocity_pub_->publish(message);
       }
     }
-    // Preserve the original one-count-per-valid-control-tick status contract.
-    ++final_pose_messages_;
   }
 
   // FCU-to-IMU metadata also preserves the legacy local-origin translation.

@@ -12,7 +12,6 @@ import pytest
 from tests.support.extnav import (
     DEFAULT_PARAMETERS,
     ProcessPair,
-    _assert_ros_equal,
     _collector,
     _stamp_ns,
     native_executable,
@@ -64,15 +63,13 @@ def _check_parameters_and_qos(pair):
 
 
 def _check_auxiliary_reader_churn(pair, raw):
-    """Keep control timer accounting and restore its frozen sample after reader churn."""
+    """Keep timer accounting and resume readers only with a new source sample."""
     from geometry_msgs.msg import PoseStamped, TwistStamped
 
     channels = (("pose", "pose_fcu_topic", PoseStamped),
                 ("velocity", "vel_fcu_topic", TwistStamped))
-    previous = {}
     for item in pair.endpoints:
         for key, _, _ in channels:
-            previous[item["label"], key] = copy.deepcopy(item[key][-1])
             pair.node.destroy_subscription(item[f"{key}_subscription"])
     pair.wait(lambda: all(not pair.node.get_subscriptions_info_by_topic(item["parameters"][parameter])
                          for item in pair.endpoints for _, parameter, _ in channels),
@@ -85,32 +82,21 @@ def _check_auxiliary_reader_churn(pair, raw):
                          for item, before in zip(pair.endpoints, baseline)),
               "next status with no auxiliary readers")
     after = [item["status"][-1] for item in pair.endpoints]
-    pair.wait(lambda: all(_stamp_ns(item["vision"][-1]) > _stamp_ns(status)
-                         for item, status in zip(pair.endpoints, after)),
-              "vision samples spanning timer accounting interval")
     for item, before, status in zip(pair.endpoints, baseline, after):
-        vision_count = sum(_stamp_ns(before) < _stamp_ns(message) <= _stamp_ns(status)
-                           for message in item["vision"])
         # The shared counter includes each control tick even with both readers gone.
-        assert status.final_pose_messages - before.final_pose_messages > vision_count, (
+        assert status.final_pose_messages > before.final_pose_messages, (
             f"{item['label']} control timer accounting stopped without readers"
         )
         assert status.final_sample_available and status.raw_messages == pair.sent
-    resumed_at = time.time_ns()
     for item in pair.endpoints:
         for key, parameter, message_type in channels:
             item[f"{key}_subscription"] = pair.node.create_subscription(
                 message_type, item["parameters"][parameter], _collector(item[key]), 10
             )
-    pair.wait(lambda: all(_stamp_ns(item[key][-1]) >= resumed_at
+    pair.wait(lambda: all(item[f"{key}_subscription"].get_publisher_count() == 1
                          for item in pair.endpoints for key, _, _ in channels),
-              "auxiliary outputs resume without new raw")
-    for item in pair.endpoints:
-        for key, _, _ in channels:
-            expected = previous[item["label"], key]
-            actual = copy.deepcopy(item[key][-1])
-            actual.header.stamp = expected.header.stamp
-            _assert_ros_equal(expected, actual, path=f"{item['label']}.{key}.reader_resume")
+              "auxiliary readers rejoined")
+    pair.assert_stopped()
     raw.header.stamp.nanosec += 1
     raw.pose.pose.position.x += 0.123
     pair.publish(raw)
@@ -180,15 +166,30 @@ def test_extnav_cpp_matches_python_process_contract(installation_rpy, monkeypatc
         raw.header.stamp.nanosec += 1
         pair.publish(raw)
 
-        # A regression exactly at the threshold is tolerated; one nanosecond more
-        # starts a new session. Zero stamps do not trigger the regression rule.
+        # Duplicate/small-regression samples must not refresh any output or replace
+        # the cache. Keep the existing large-regression session reset boundary.
         previous_sessions = [item["status"][-1].odin_session_id for item in pair.endpoints]
         raw.header.stamp.sec, raw.header.stamp.nanosec = (101, 0)
         pair.publish(raw)
-        raw.header.stamp.sec, raw.header.stamp.nanosec = (100, 750_000_000)
-        pair.publish(raw)
+        rejected_at = time.time_ns()
+        before_rejection = [dict((key, item[key][-1])
+                                 for key in ("corrected", "pose", "vision", "velocity"))
+                            for item in pair.endpoints]
+        rejected = copy.deepcopy(raw)
+        rejected.pose.pose.position.x = -123.0
+        for stamp in ((101, 0), (100, 850_000_000), (100, 750_000_000)):
+            rejected.header.stamp.sec, rejected.header.stamp.nanosec = stamp
+            for endpoint in pair.endpoints:
+                endpoint["publisher"].publish(rejected)
+        pair.wait(lambda: all(_stamp_ns(item["status"][-1]) > rejected_at
+                             for item in pair.endpoints), "status after rejected samples")
+        pair.compare_state(raw_messages=pair.sent, final_sample_available=True)
+        pair.assert_stopped()
+        assert all(item[key][-1] is message
+                   for item, previous in zip(pair.endpoints, before_rejection)
+                   for key, message in previous.items())
         assert previous_sessions == [item["status"][-1].odin_session_id for item in pair.endpoints]
-        raw.header.stamp.nanosec = 499_999_999
+        raw.header.stamp.sec, raw.header.stamp.nanosec = (100, 749_999_999)
         pair.publish(raw)
         assert all(item["status"][-1].odin_session_id != previous
                    for item, previous in zip(pair.endpoints, previous_sessions))

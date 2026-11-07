@@ -292,7 +292,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         published_before = bridge.corrected_messages
         processed_before = bridge.raw_messages
         for index in range(8):
-            raw.header.stamp.nanosec = index * 2_500_000
+            raw.header.stamp.nanosec = (index + 1) * 2_500_000
             publisher.publish(raw)
             time.sleep(0.0025)
         _wait_for(lambda: bridge.raw_messages == processed_before + 8)
@@ -306,6 +306,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         discovered_at = time.monotonic()
         _wait_for(lambda: bridge.corrected_has_subscribers, timeout=0.5)
         assert time.monotonic() - discovered_at < 0.5
+        raw.header.stamp.nanosec += 2_500_000
         publisher.publish(raw)
         _wait_for(lambda: bridge.corrected_messages > published_before)
 
@@ -324,6 +325,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         response = client.call_async(request)
         _wait_for(response.done)
         assert not response.result().accepted and bridge.revision == revision
+        raw.header.stamp.nanosec += 2_500_000
         publisher.publish(raw)
         _wait_for(lambda: bridge.latest_output is not None)
         assert bridge.latest_output.correction_revision == revision
@@ -333,6 +335,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         response = client.call_async(clear)
         _wait_for(response.done)
         assert response.result().accepted and bridge.latest_output is None
+        raw.header.stamp.nanosec += 2_500_000
         publisher.publish(raw)
         _wait_for(lambda: bridge.latest_output is not None)
         assert not bridge.latest_output.correction_valid
@@ -345,6 +348,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         _wait_for(lambda: not bridge.odin_available and bridge.latest_output is None)
         assert bridge.raw_messages == processed_before
         raw.child_frame_id = "fcu"
+        raw.header.stamp.nanosec += 2_500_000
         publisher.publish(raw)
         _wait_for(lambda: bridge.latest_output is not None)
         assert bridge.odin_session_id != previous_session
@@ -353,6 +357,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
         for change in ("stamp", "quaternion", "nan_quaternion", "inf_quaternion", "position"):
             previous_session = bridge.odin_session_id
             processed_before = bridge.raw_messages
+            raw.header.stamp.nanosec += 2_500_000
             if change == "stamp":
                 raw.header.stamp.sec = 10
             elif change == "quaternion":
@@ -371,6 +376,7 @@ def test_extnav_identity_atomic_apply_and_session_invalidation(monkeypatch) -> N
             else:
                 assert bridge.latest_output is None
         raw.pose.pose.position.x = 1.0
+        raw.header.stamp.nanosec += 2_500_000
         publisher.publish(raw)
         _wait_for(lambda: bridge.latest_output is not None)
     finally:

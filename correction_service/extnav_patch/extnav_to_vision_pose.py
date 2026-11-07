@@ -56,6 +56,9 @@ class _FcuOutputSnapshot:
         "position",
         "quaternion",
         "velocity",
+        "source_stamp",
+        "vision_published",
+        "control_published",
     )
 
     def __init__(
@@ -69,6 +72,7 @@ class _FcuOutputSnapshot:
         correction_revision,
         odin_session_id,
         horizontal_reference_mode,
+        source_stamp,
     ):
         """保存不可重新解释的单样本数值；调用方不再修改其中数组。"""
         self.position = position
@@ -79,6 +83,9 @@ class _FcuOutputSnapshot:
         self.correction_revision = correction_revision
         self.odin_session_id = odin_session_id
         self.horizontal_reference_mode = horizontal_reference_mode
+        self.source_stamp = source_stamp
+        self.vision_published = False
+        self.control_published = False
 
 
 def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple[float, ...]:
@@ -396,6 +403,12 @@ class OdometryBridge(Node):
             return
         now_monotonic = time.monotonic()
         stamp_ns = _stamp_nanoseconds(message)
+        # 沿用重启回退阈值；重复及小幅倒序不覆盖缓存，也不刷新已接纳样本年龄。
+        if self.last_raw_stamp_ns > 0 and stamp_ns > 0 and (
+            stamp_ns == self.last_raw_stamp_ns
+            or self.last_raw_stamp_ns - self.stamp_regression_ns <= stamp_ns < self.last_raw_stamp_ns
+        ):
+            return
         frame_pair = (message.header.frame_id, message.child_frame_id)
         gap = (
             now_monotonic - self.last_raw_monotonic
@@ -727,6 +740,9 @@ class OdometryBridge(Node):
             correction_revision=int(correction_revision),
             odin_session_id=str(correction_session),
             horizontal_reference_mode=reference_mode,
+            source_stamp=(copy.deepcopy(raw_message.header.stamp)
+                          if _stamp_nanoseconds(raw_message) > 0
+                          else self.get_clock().now().to_msg()),
         )
 
     def _apply_transform(self, position, quaternion, linear, angular):
@@ -775,23 +791,26 @@ class OdometryBridge(Node):
         return message
 
     def vision_timer_callback(self) -> None:
-        """按配置频率向 MAVROS 发布最终修正后的视觉位姿。"""
-        data = self._get_data()
-        if data is None:
+        """每个选中样本只发一次，并向 MAVROS 保留源采样时间。"""
+        output = self.latest_output
+        if output is None or output.vision_published:
             return
-        position, _velocity, quaternion, stamp = data
-        self.vis_pub.publish(self._make_pose(stamp, position, quaternion))
+        self.vis_pub.publish(self._make_pose(output.source_stamp, output.position, output.quaternion))
+        output.vision_published = True
         self.final_pose_messages += 1
 
     def ctrl_timer_callback(self) -> None:
-        """按 100 Hz 发布与 MAVROS 使用同一修正快照的控制位姿/速度。"""
-        data = self._get_data()
-        if data is None:
+        """保持主机发布时间及控制计数，但不重复刷新旧位姿和速度。"""
+        output = self.latest_output
+        if output is None:
             return
-        position, velocity, quaternion, stamp = data
-        self.pose_fcu_pub.publish(self._make_pose(stamp, position, quaternion))
-        self.vel_fcu_pub.publish(self._make_twist(stamp, velocity, self.latest_output.angular))
         self.final_pose_messages += 1
+        if output.control_published:
+            return
+        output.control_published = True
+        stamp = self.get_clock().now().to_msg()
+        self.pose_fcu_pub.publish(self._make_pose(stamp, output.position, output.quaternion))
+        self.vel_fcu_pub.publish(self._make_twist(stamp, output.velocity, output.angular))
 
 
 def main(args=None) -> None:

@@ -252,6 +252,7 @@ class ProcessPair:
 
     def publish(self, raw, *, final=True, corrected=True):
         """Send one identical input and compare messages after both callbacks finish."""
+        earliest = time.time_ns()
         for endpoint in self.endpoints:
             endpoint["publisher"].publish(raw)
         self.sent += 1
@@ -271,20 +272,26 @@ class ProcessPair:
             assert messages[0].header == raw.header
             assert messages[0].child_frame_id == raw.child_frame_id
         if final:
-            # Wait for output generated after the callback was acknowledged. This
-            # excludes queued timer messages belonging to the previous snapshot.
-            earliest = time.time_ns()
+            # Each source is emitted once: it can arrive before the status timer ACK.
             self.wait(
                 lambda: all(
                     item[key] and _stamp_ns(item[key][-1]) >= earliest
-                    for item in self.endpoints for key in ("pose", "vision", "velocity")
-                ), "fresh timer output for acknowledged sample",
+                    for item in self.endpoints for key in ("pose", "velocity")
+                ) and all(
+                    item["vision"] and (
+                        _stamp_ns(item["vision"][-1]) == _stamp_ns(raw)
+                        if _stamp_ns(raw) > 0 else _stamp_ns(item["vision"][-1]) >= earliest
+                    ) for item in self.endpoints
+                ), "source-stamped vision and host-stamped auxiliary outputs",
             )
             for key in ("pose", "vision", "velocity"):
                 messages = [copy.deepcopy(item[key][-1]) for item in self.endpoints]
                 for message in messages:
                     assert message.header.frame_id == "odom"
-                    assert _stamp_ns(message) > _stamp_ns(raw)
+                    if key == "vision" and _stamp_ns(raw) > 0:
+                        assert message.header.stamp == raw.header.stamp
+                    else:
+                        assert _stamp_ns(message) >= earliest
                     message.header.stamp.sec = 0
                     message.header.stamp.nanosec = 0
                 _assert_ros_equal(*messages, path=key)
@@ -326,14 +333,16 @@ class ProcessPair:
         # Let already-queued DDS messages drain before measuring quiescence.
         drain_until = time.monotonic() + 0.08
         self.wait(lambda: time.monotonic() >= drain_until, "drain timer messages")
-        stamps = [tuple(_stamp_ns(item[key][-1]) if item[key] else None
+        messages = [tuple(item[key][-1] if item[key] else None
                         for key in ("pose", "vision", "velocity"))
                   for item in self.endpoints]
         stop_until = time.monotonic() + 0.12
         self.wait(lambda: time.monotonic() >= stop_until, "observe stopped outputs")
-        assert stamps == [tuple(_stamp_ns(item[key][-1]) if item[key] else None
-                                for key in ("pose", "vision", "velocity"))
-                          for item in self.endpoints], self.diagnostics("stale output")
+        assert all(previous is (item[key][-1] if item[key] else None)
+                   for item, before in zip(self.endpoints, messages)
+                   for key, previous in zip(("pose", "vision", "velocity"), before)), (
+            self.diagnostics("stale output")
+        )
 
     def close(self):
         """Stop only children created by this harness and release the isolated context."""
