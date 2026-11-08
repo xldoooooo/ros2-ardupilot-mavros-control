@@ -99,8 +99,8 @@ def test_hardware_inspection_completes_all_countdowns_without_confirmation(monke
         ros.current_snapshot = _operational_snapshot(armed=True)
         window._refresh()
         assert [name for name, _args in ros.calls] == ["takeoff", "waypoints"]
-        assert ros.calls[-1][1][4] == ("photo-8",)
-        assert ("mission", (2, "inspection", (8,))) in window._upstream.calls
+        assert ros.calls[-1][1][4] == ("photo-8", "")
+        assert ("mission", (2, "inspection", (8, 0))) in window._upstream.calls
 
         ros.results.append(CommandResult(2, 2, "waypoints", True, "巡检完成"))
         window._refresh()

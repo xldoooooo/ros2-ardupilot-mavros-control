@@ -522,6 +522,8 @@ class EnvironmentInitializer:
                 str(ONBOARD_PARAM_FILE),
                 "-p",
                 "fcu_parameter_check_initial_delay_seconds:=2.0",
+                "-p",
+                "simulation_calibration:=true",
             ],
             setup_files=ros_setup_files(),
             extra_environment=simulation_environment,

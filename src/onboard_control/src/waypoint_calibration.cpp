@@ -19,6 +19,8 @@ constexpr double kCalibrationStatusTimeout = 3.0;
 constexpr double kOwnerRenewInterval = 2.0;
 // A yaw mismatch above five degrees cannot certify that FCU fusion has settled.
 constexpr double kFusionYawTolerance = 5.0 * 3.14159265358979323846 / 180.0;
+// Camera-free SITL demonstrates the arrival action without changing flight execution.
+constexpr double kSimulationCalibrationWaitSeconds = 5.0;
 
 /** Inspect an asynchronous response without blocking the 100 Hz control thread. */
 template<typename Future>
@@ -32,6 +34,7 @@ bool ready(const Future & future)
 void OnboardControlNode::initialize_calibration()
 {
   calibration_timeout_seconds_ = declare_parameter("calibration_timeout_seconds", 120.0);
+  simulation_calibration_ = declare_parameter("simulation_calibration", false);
   if (!std::isfinite(calibration_timeout_seconds_) || calibration_timeout_seconds_ <= 0.0) {
     throw std::invalid_argument("calibration_timeout_seconds must be positive");
   }
@@ -162,6 +165,7 @@ bool OnboardControlNode::validate_calibration_task(
     reason = "校准点仅支持 odom 绝对坐标＋直线/遇障悬停，不支持 map、自主避障或 local_coordinates";
     return false;
   }
+  if (simulation_calibration_) {return true;}
   if (!calibration_status_ || !calibration_status_->service_available ||
     std::chrono::duration<double>(now - calibration_status_time_).count() > kCalibrationStatusTimeout ||
     !calibration_owner_client_->service_is_ready() || !calibration_start_client_->service_is_ready() ||
@@ -199,6 +203,13 @@ bool OnboardControlNode::validate_calibration_task(
 /** Begin exactly once, keeping the point index and the immutable remaining goals. */
 void OnboardControlNode::start_waypoint_calibration(const SteadyTime & now)
 {
+  if (simulation_calibration_) {
+    calibration_started_ = now;
+    calibration_stage_ = CalibrationStage::kSimulationWait;
+    calibration_detail_ = "仿真校准：保持当前航点，等待 5 秒";
+    set_status_message(calibration_detail_);
+    return;
+  }
   if (!calibration_status_ || !navigation_extnav_) {
     fail_active_task("自动校准缺少权威服务/extnav状态", true); return;
   }
@@ -253,6 +264,15 @@ void OnboardControlNode::start_waypoint_calibration(const SteadyTime & now)
 /** Reconcile application with new bridge samples and the actual MAVROS EKF output. */
 void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
 {
+  if (calibration_stage_ == CalibrationStage::kSimulationWait) {
+    if (std::chrono::duration<double>(now - calibration_started_).count() <
+      kSimulationCalibrationWaitSeconds) {return;}
+    calibration_stage_ = CalibrationStage::kIdle;
+    calibration_detail_ = "仿真校准：5 秒等待完成";
+    set_status_message(calibration_detail_);
+    complete_waypoint();
+    return;
+  }
   using Status = correction_interfaces::msg::CorrectionStatus;
   const auto fail = [this](const std::string & reason) {
       calibration_detail_ = "自动校准失败：" + reason;
@@ -448,6 +468,10 @@ void OnboardControlNode::update_waypoint_calibration(const SteadyTime & now)
 void OnboardControlNode::stop_waypoint_calibration()
 {
   if (calibration_stage_ == CalibrationStage::kIdle) {return;}
+  if (calibration_stage_ == CalibrationStage::kSimulationWait) {
+    calibration_stage_ = CalibrationStage::kIdle;
+    return;
+  }
   if (calibration_using_raw_velocity_) {
     // A pose callback can precede cancellation but follow the last control tick.
     // Reframe history without overwriting a new hover reference; stale raw must not block cancel.

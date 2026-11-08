@@ -12,6 +12,11 @@
 
 校准点只支持 **odom 绝对坐标＋直线/遇障悬停**；map、自主避障、`local_coordinates` 暂不支持。无校准点的原有策略不受此限制。旧上位机 `taskPoints` 仍显式视为巡检点，无需改变 V2.2 协议。
 
+上位机03可使用[本地航线适配](../config/ground/route_profiles/README.md)补充校准点；手动
+上传入口不应用该规则。地面站SITL启动专用参数 `simulation_calibration:=true`，仅将校准
+动作替换为保持当前目标等待5秒；入点判定、拍照时序、索引推进和取消仍使用同一执行器。
+实机参数默认为false，继续执行下述真实校准状态机。
+
 CSV 表头如下，`yaw` 单位为度，程序/ROS 中为弧度：
 
 ```csv

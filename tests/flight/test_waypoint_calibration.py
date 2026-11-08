@@ -11,6 +11,34 @@ from tests.support.avoidance_node import avoidance_node, _issued_acceleration
 from tests.support.calibration_node import calibration_node, execute, point
 
 
+@pytest.mark.parametrize("avoidance_node", [{
+    "waypoint_hold_seconds": .1, "simulation_calibration": True,
+}], indirect=True)
+def test_simulation_waits_five_seconds_and_keeps_existing_arrival_actions(avoidance_node):
+    """Camera-free simulation captures combined points first and never captures plain calibration."""
+    from guided_interfaces.msg import CommandResult, VideoCapture
+
+    h = avoidance_node
+    captures = []
+    subscription = h.node.create_subscription(VideoCapture, "/video_service/capture", captures.append, 10)
+    try:
+        assert execute(h, [point(inspection=True), point(tag=1),
+                           point(calibration=False), point(calibration=False, inspection=True)]).accepted
+        h.until(lambda: h.status[-1].calibration_active and len(captures) == 1)
+        assert captures[0].waypoint_index == 1
+        h.spin(4.)
+        assert h.status[-1].waypoint_index == 1
+        h.until(lambda: h.status[-1].waypoint_index == 2 and h.status[-1].calibration_active)
+        h.spin(4.)
+        assert h.status[-1].waypoint_index == 2 and len(captures) == 1
+        h.until(lambda: any(r.final and r.command == "waypoints" for r in h.results))
+        assert h.results[-1].status == CommandResult.STATUS_SUCCEEDED
+        h.until(lambda: len(captures) == 2)
+        assert [capture.waypoint_index for capture in captures] == [1, 4]
+    finally:
+        h.node.destroy_subscription(subscription)
+
+
 @pytest.mark.parametrize("avoidance_node", [{"waypoint_hold_seconds": .1}], indirect=True)
 def test_calibration_validates_sequence_and_modes(calibration_node):
     """Unknown/same-window Tags and unsupported frames/modes reject before any action."""

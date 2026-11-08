@@ -73,6 +73,7 @@ from ..upstream import (
     UpstreamCommand,
     UpstreamCommunicationService,
 )
+from ..upstream.route_adapter import AdaptedRoute, adapt_route
 from ..waypoint_io import (
     WaypointExportError,
     WaypointImportError,
@@ -195,6 +196,9 @@ class GroundStationWindow(QMainWindow):
         self._waypoint_preview_active = False
         self._upstream_point_indexes: tuple[int, ...] = ()
         self._upstream_photo_nos: tuple[str, ...] = ()
+        self._upstream_route: AdaptedRoute | None = None
+        self._upstream_route_error = ""
+        self._upstream_setting_route = False
         self._upstream_sequence: _UpstreamFlightSequence | None = None
         self._upstream_countdown: ShadowMessageBox | None = None
         self._abnormal_return_latched = False
@@ -1251,9 +1255,23 @@ class GroundStationWindow(QMainWindow):
                     command, "当前任务状态不允许替换航点列表"
                 )
                 return
+            # 新 02 先撤销旧执行副本；失败后不能让 03 继续使用上一轮航线。
+            self._upstream_route = None
+            self._upstream_route_error = "本轮航线尚未成功适配，请重新下发 02"
+            try:
+                route = adapt_route(
+                    command.waypoints, command.point_indexes, command.photo_nos,
+                    command.raw_payload.get("routId", command.raw_payload.get("routeId", "")),
+                )
+            except ValueError as exc:
+                self._upstream_route_error = str(exc)
+                self._reject_upstream_command(command, str(exc))
+                return
             self.waypoints.replace_waypoints(command.waypoints, "上位机命令 02")
             self._upstream_point_indexes = command.point_indexes
             self._upstream_photo_nos = command.photo_nos
+            self._upstream_route = route
+            self._upstream_route_error = ""
             try:
                 self._upstream.block_standby()
             except Exception as exc:
@@ -1335,7 +1353,11 @@ class GroundStationWindow(QMainWindow):
         self, command: UpstreamCommand, snapshot: VehicleSnapshot
     ) -> None:
         """把 03 组合为起飞、巡检航点和末点降落。"""
-        values = self.waypoints.waypoints
+        if self._upstream_route_error:
+            self._reject_upstream_command(command, self._upstream_route_error + "；请重新下发 02")
+            return
+        route = self._upstream_route
+        values = route.waypoints if route is not None else self.waypoints.waypoints
         if not values:
             self._reject_upstream_command(command, "GUI 航点列表为空，请先下发命令 02")
             return
@@ -1361,8 +1383,8 @@ class GroundStationWindow(QMainWindow):
             phase="takeoff",
             command_id=command.command_id,
             waypoints=values,
-            point_indexes=self._point_indexes_for(values),
-            photo_nos=self._photo_nos_for(values),
+            point_indexes=route.point_indexes if route is not None else self._point_indexes_for(values),
+            photo_nos=route.photo_nos if route is not None else self._photo_nos_for(values),
             strategy=(WaypointFlightStrategy.STRAIGHT if self._connection_mode == "simulation"
                       else self.waypoints.selected_strategy()),
             reference_generator=self.waypoints.selected_reference_generator(),
@@ -1376,6 +1398,15 @@ class GroundStationWindow(QMainWindow):
             self._reject_upstream_command(command, str(exc))
             self.waypoints.set_result(str(exc), running=False)
             return
+        if route is not None:
+            self._upstream_setting_route = True
+            try:
+                self.waypoints.replace_waypoints(values, route.name)
+            finally:
+                self._upstream_setting_route = False
+            self._upstream_point_indexes = route.point_indexes
+            self._upstream_photo_nos = route.photo_nos
+            self._events.info("upstream", f"命令 03 使用 {route.name}，共 {len(values)} 点")
         self._upstream_sequence = sequence
         try:
             self._upstream.block_standby()
@@ -2215,6 +2246,10 @@ class GroundStationWindow(QMainWindow):
 
     def _on_waypoints_changed(self, message: str) -> None:
         """记录编辑；预览开启后持续替换快照，空列表也会清除旧 Marker。"""
+        if not self._upstream_setting_route and self._upstream_route is not None:
+            # 手动编辑仍可按原入口上传；上位机 03 必须重新接收业务身份映射。
+            self._upstream_route = None
+            self._upstream_route_error = "本地航点已编辑，原上位机点号和照片映射已失效"
         # 普通 GUI 编辑采用当前顺序号；命令 02 的原始点号会在替换后重新写回。
         self._upstream_point_indexes = tuple(
             range(1, len(self.waypoints.waypoints) + 1)

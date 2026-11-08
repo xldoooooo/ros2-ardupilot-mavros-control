@@ -42,9 +42,14 @@ def test_land_button_and_upstream_land_bypass_pending_and_workflow_locks() -> No
 
 @pytest.mark.parametrize("navigation_frame,landing_x", [("odom", 0.0), ("map", 2.0)])
 def test_inspection_standby_locks_takeoff_until_sequence_really_completes(
-    navigation_frame, landing_x,
+    navigation_frame, landing_x, tmp_path, monkeypatch,
 ) -> None:
     """03 保留落地延时，机库外的 map 末点也能接续下一轮巡检。"""
+    if navigation_frame == "map":
+        # 此例验证原有无校准地图任务；默认双校准方案不适用于 map。
+        from ground_station_core.upstream import route_adapter
+        (tmp_path / "default.yaml").write_text("name: 无校准航线\n", encoding="utf-8")
+        monkeypatch.setattr(route_adapter, "PROFILE_DIRECTORY", tmp_path)
     window, ros = _window(replace(
         _operational_snapshot(armed=False), navigation_frame=navigation_frame,
     ))
@@ -106,8 +111,8 @@ def test_inspection_standby_locks_takeoff_until_sequence_really_completes(
         window._handle_upstream_command(execute)
         assert ros.calls[-1][0] == "takeoff"
         assert window._upstream_sequence.phase == "takeoff"
-        assert window._upstream_sequence.point_indexes == (9,)
-        assert window._upstream_sequence.photo_nos == ("round-2",)
+        assert window._upstream_sequence.point_indexes == ((9, 0) if navigation_frame == "odom" else (9,))
+        assert window._upstream_sequence.photo_nos == (("round-2", "") if navigation_frame == "odom" else ("round-2",))
     finally:
         _close_window(window)
 
@@ -179,9 +184,9 @@ def test_upstream_commands_route_only_to_active_environment_and_sync_gui() -> No
         )
         window._refresh()
         assert ros.calls[-1][0] == "waypoints"
-        assert ros.calls[-1][1][4] == ("1",)
+        assert ros.calls[-1][1][4] == ("1", "")
         assert window._waypoint_running
-        assert ("mission", (2, "inspection", (8,))) in upstream.calls
+        assert ("mission", (2, "inspection", (8, 0))) in upstream.calls
         assert upstream.mission_waypoints == window._upstream_sequence.waypoints
         assert upstream.mission_waypoints[0].is_inspection
         assert not window.waypoints.send_button.isEnabled()

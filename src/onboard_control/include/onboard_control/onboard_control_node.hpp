@@ -438,7 +438,7 @@ private:
   bool takeoff_waiting_for_height_{false}, takeoff_request_accepted_{false};
 
   // Auto calibration owns only the current arrival action, not the flight controller.
-  enum class CalibrationStage { kIdle, kClaim, kClear, kStart, kRun, kFusion };
+  enum class CalibrationStage { kIdle, kClaim, kClear, kStart, kRun, kFusion, kSimulationWait };
   using CalibrationOwner = correction_interfaces::srv::SetCalibrationOwner;
   using CalibrationClear = correction_interfaces::srv::ClearWindow;
   using CalibrationStart = correction_interfaces::srv::StartCorrection;
@@ -464,6 +464,8 @@ private:
   bool calibration_hold_initialized_{false}, calibration_using_raw_velocity_{false};
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr calibration_odometry_subscription_;
   double calibration_timeout_seconds_{120.0};  // Entire arrival calibration including FCU fusion.
+  // Set only by the ground station's SITL launcher; production keeps the real service path.
+  bool simulation_calibration_{false};
   rclcpp::Subscription<correction_interfaces::msg::CorrectionStatus>::SharedPtr calibration_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr calibration_pose_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr calibration_velocity_subscription_;

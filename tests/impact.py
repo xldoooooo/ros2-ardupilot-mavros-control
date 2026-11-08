@@ -60,6 +60,7 @@ SELF_TESTS = ("tests/test_selection.py", "tests/test_build_native.py")
 # 同一个文件可命中多条规则，取并集；跨模块调用点必须包含消费方闭环。
 RULES = {
     "ground_station.py": ("runtime", "ground-gui"),
+    "requirements-gui.txt": ("runtime", "upstream"),
     "ground_station_core/bootstrap.py": ("runtime",),
     "ground_station_core/startup.py": ("runtime",),
     "ground_station_core/ground_media_reader.py": ("upstream",),

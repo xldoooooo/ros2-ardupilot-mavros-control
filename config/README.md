@@ -26,6 +26,7 @@
 | `ground/video.json` | 本机地面视频工具保存的偏好，不提交 Git。 |
 | `ground/media.json` | 地面存储、直播编码、公网 RTSP 转推和远程 FTP；参照 `media.example.conf`，凭据只放此类本机配置。 |
 | `ground/simulation_media.json` | 仿真样例目录和直播帧率；参照同名 example，原文件与独立轮播不受直播编码影响。 |
+| `ground/route_profiles/*.yaml` | 上位机巡检航线默认/按 `routId` 选择的航点适配；见[配置说明](ground/route_profiles/README.md)。 |
 
 上位机 WebSocket 地址和编号保存在 `~/.config/ros2-ardupilot-ground-station/upstream.json`，
 也可用 `UPSTREAM_CONFIG_PATH` 指定文件。现场地址和凭据不提交 Git。
