@@ -342,8 +342,9 @@ OnboardControlNode::OnboardControlNode(const rclcpp::NodeOptions & options)
     mavros_prefix_ + "/global_position/gp_origin",
     rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local(),
     std::bind(&OnboardControlNode::on_global_origin, this, std::placeholders::_1));
+  // Process the latest heartbeat without waiting for retransmission of a missing sample.
   heartbeat_subscription_ = create_subscription<guided_interfaces::msg::ControlHeartbeat>(
-    interface_prefix_ + "/heartbeat", rclcpp::QoS(10).reliable(),
+    interface_prefix_ + "/heartbeat", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort(),
     std::bind(&OnboardControlNode::on_heartbeat, this, std::placeholders::_1), telemetry_subscription_options_);
   motion_subscription_ = create_subscription<guided_interfaces::msg::MotionIntent>(
     interface_prefix_ + "/motion_intent", rclcpp::QoS(20).reliable(),

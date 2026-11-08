@@ -1054,8 +1054,13 @@ class GroundStationRosController:
             executor = SingleThreadedExecutor(context=context)
             executor.add_node(node)
 
+            # 心跳只取最新值，避免可靠传输等待缺包时阻塞续租。
             heartbeat_publisher = node.create_publisher(
-                ControlHeartbeat, f"{INTERFACE_PREFIX}/heartbeat", 10
+                ControlHeartbeat, f"{INTERFACE_PREFIX}/heartbeat",
+                rclpy.qos.QoSProfile(
+                    depth=1,
+                    reliability=rclpy.qos.ReliabilityPolicy.BEST_EFFORT,
+                ),
             )
             motion_publisher = node.create_publisher(
                 MotionIntent, f"{INTERFACE_PREFIX}/motion_intent", 20
