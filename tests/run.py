@@ -10,176 +10,36 @@ import shlex
 import subprocess
 import sys
 
-# 源码与构建产物统一相对仓库根目录解析。
+# 直接脚本执行与模块导入使用同一个仓库内的测试规则。
 ROOT = Path(__file__).resolve().parents[1]
-# 功能分组与地面公共依赖的消费组。
-GROUPS = ("runtime", "flight", "waypoints", "upstream", "video", "correction", "ui")
-GROUND = ("runtime", "flight", "waypoints", "upstream", "ui")
-# 同一个文件可命中多条规则，取并集；跨模块调用点必须包含消费方闭环。
-RULES = {
-    "ground_station.py": GROUND,
-    "ground_station_core/bootstrap.py": ("runtime",),
-    "ground_station_core/startup.py": ("runtime",),
-    "ground_station_core/ground_media_reader.py": ("upstream",),
-    "ground_station_core/environment.py": (
-        "runtime",
-        "flight",
-        "waypoints",
-        "upstream",
-    ),
-    "ground_station_core/process_manager.py": ("runtime",),
-    "ground_station_core/event_log.py": GROUND,
-    "ground_station_core/config.py": GROUPS,
-    "project_configuration.py": GROUPS,
-    "config/*": GROUPS,
-    "system/*": ("runtime", "video", "correction"),
-    "ground_station_core/models.py": GROUND,
-    "ground_station_core/__init__.py": GROUND,
-    "ground_station_core/ros_controller.py": (
-        "flight",
-        "waypoints",
-        "runtime",
-        "upstream",
-    ),
-    "ground_station_core/waypoint_io.py": ("waypoints", "upstream"),
-    "ground_station_core/upstream/*": ("upstream",),
-    "ground_station_core/upstream/status_projector.py": ("upstream", "video"),
-    "ground_station_core/upstream/mapping.py": ("upstream", "flight"),
-    "ground_station_core/qt_ui/main_window.py": GROUPS,
-    "ground_station_core/qt_ui/operations_panel.py": (
-        "flight",
-        "runtime",
-        "waypoints",
-        "upstream",
-        "ui",
-    ),
-    "ground_station_core/qt_ui/state.py": (
-        "flight",
-        "runtime",
-        "waypoints",
-        "upstream",
-    ),
-    "ground_station_core/qt_ui/waypoint_panel.py": ("waypoints",),
-    "ground_station_core/qt_ui/upstream_panel.py": ("upstream",),
-    "ground_station_core/qt_ui/log_panel.py": ("ui",),
-    "ground_station_core/qt_ui/log_history.py": ("ui",),
-    "ground_station_core/qt_ui/cached_shadow.py": GROUPS,
-    "ground_station_core/qt_ui/theme.py": GROUPS,
-    "ground_station_core/qt_ui/widgets.py": GROUPS,
-    "ground_station_core/qt_ui/window_chrome.py": GROUPS,
-    "ground_station_core/qt_ui/__init__.py": GROUPS,
-    "video_service/*": ("video",),
-    "video_service/camera_panel.py": ("video", "ui"),
-    "*onboard_video.sh": ("video",),
-    "correction_service/*": ("correction",),
-    "src/correction_interfaces/*": ("correction", "flight", "waypoints"),
-    "src/correction_native/*": ("correction",),
-    "*onboard_correction.sh": ("correction",),
-    "src/guided_sim/*": ("waypoints", "runtime"),
-    "src/avoidance_bridge/*": ("runtime", "flight", "waypoints"),
-    "drivers/odin/*": ("runtime", "flight", "correction"),
-    "scripts/onboard/start_avoidance.sh": ("runtime", "flight", "waypoints"),
-    "scripts/onboard/stop_avoidance.sh": ("runtime", "flight", "waypoints"),
-    "scripts/onboard/switch_navigation_mode.sh": ("runtime", "flight", "waypoints"),
-    # The removable module has an explicit independent test entry; default groups never import it.
-    "fpga_avoidance/*": (),
-    "src/onboard_control/src/main.cpp": ("flight", "waypoints", "video"),
-    "src/onboard_control/src/onboard_control_node.cpp": (
-        "flight",
-        "waypoints",
-        "video",
-    ),
-    "src/onboard_control/include/onboard_control/onboard_control_node.hpp": (
-        "flight",
-        "waypoints",
-        "video",
-    ),
-    "src/onboard_control/src/fcu_reboot.cpp": ("flight",),
-    "src/onboard_control/src/control_diagnostics.cpp": ("flight",),
-    "src/onboard_control/src/tracking_diagnostics.cpp": ("flight",),
-    "scripts/diagnostics/*": ("flight",),
-    "src/onboard_control/src/navigation_frame.cpp": ("flight", "waypoints"),
-    "src/onboard_control/include/onboard_control/navigation_frame.hpp": ("flight", "waypoints"),
-    "src/onboard_control/src/waypoint_calibration.cpp": ("flight", "waypoints"),
-    "src/onboard_control/test/test_navigation_frame.cpp": ("waypoints",),
-    "src/onboard_control/src/avoidance_execution.cpp": ("flight", "waypoints"),
-    "src/onboard_control/include/onboard_control/avoidance_trajectory.hpp": ("flight", "waypoints"),
-    "src/onboard_control/test/test_avoidance_trajectory.cpp": ("flight", "waypoints"),
-    "src/onboard_control/src/dob_controller.cpp": ("flight", "waypoints"),
-    "src/onboard_control/include/onboard_control/dob_controller.hpp": ("flight", "waypoints"),
-    "src/onboard_control/src/reference_generator.cpp": ("waypoints",),
-    "src/onboard_control/include/onboard_control/reference_generator.hpp": (
-        "waypoints",
-    ),
-    "src/onboard_control/include/onboard_control/waypoint_arrival_tracker.hpp": (
-        "waypoints",
-    ),
-    "src/onboard_control/config/*": ("flight", "waypoints"),
-    "src/onboard_control/launch/*": ("runtime", "flight"),
-    "src/onboard_control/deploy/*": ("runtime", "correction"),
-    "src/onboard_control/scripts/*": ("flight",),
-    "src/onboard_control/test/test_dob_controller.cpp": ("flight",),
-    "src/onboard_control/test/test_reference_generator.cpp": ("waypoints",),
-    "src/onboard_control/test/test_waypoint_arrival_tracker.cpp": ("waypoints",),
-    "src/onboard_control/CMakeLists.txt": ("runtime", "flight", "waypoints", "video"),
-    "src/onboard_control/package.xml": ("runtime", "flight", "video"),
-    "src/guided_interfaces/*": ("flight", "waypoints", "upstream", "video", "runtime"),
-    "scripts/lib/*": ("runtime", "flight", "video", "correction"),
-    "scripts/onboard/components/*": ("runtime", "flight", "video", "correction"),
-    "*onboard_control.sh": ("runtime", "flight", "video", "correction"),
-    "scripts/onboard/reboot_fcu.sh": ("flight",),
-    "scripts/ground/start_ground_all.sh": ("runtime",),
-    "scripts/ground/setup_ground_station.sh": ("runtime", "video", "correction"),
-    "tests/support/__init__.py": GROUPS,
-    "tests/support/qt.py": GROUPS,
-    "tests/support/avoidance_node.py": ("flight",),
-    "tests/support/calibration_node.py": ("flight",),
-    "tests/support/navigation_node.py": ("flight",),
-    "tests/support/extnav.py": ("correction",),
-    "tests/support/mavros_param_retry_fixture.py": ("flight",),
-    "tests/support/mavros_telemetry_fixture.py": ("flight",),
-    "tests/conftest.py": GROUPS,
-    "tests/__init__.py": GROUPS,
-    "tests/run.py": GROUPS,
-    "tests/run.sh": GROUPS,
-    "pytest.ini": GROUPS,
-    "tests/build_native.sh": ("flight", "waypoints", "correction"),
-    "tests/test_selection.py": (),
-    "tests/test_qt_gui.py": GROUPS,
-    "tests/test_bootstrap.py": ("runtime", "flight", "video"),
-    "tests/test_onboard_deploy.py": ("runtime", "video"),
-    "tests/test_ros_controller.py": ("flight", "waypoints"),
-}
-# 允许 --changed 的基线早于目录重构：旧路径删除仍归入迁移后的闭环。
-for _group in GROUPS:
-    for _test in (ROOT / "tests" / _group).glob("test_*.py"):
-        RULES.setdefault(f"tests/{_test.name}", (_group,))
-# 纯文档/实验记录不触发产品回归；未知代码报错，避免漏测或擅自全量。
-IGNORED = ("*.md", "docs/*", "agent/*", ".gitignore")
-# CTest 套件清单；与 onboard_control/CMakeLists.txt 的注册对应。
-CPP_TESTS = {
-    "flight": ("test_dob_controller",),
-    "waypoints": ("test_navigation_frame", "test_reference_generator", "test_waypoint_arrival_tracker", "test_avoidance_trajectory"),
-}
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tests.impact import CHECKS, CPP_TESTS, GROUPS, IGNORED, RULES, SELF_TESTS
+
+
+def matching_rules(path: str) -> list[tuple[str, tuple[str, ...]]]:
+    """返回路径的实际命中规则，供选择与预览共用。"""
+    if any(fnmatchcase(path, pattern) for pattern in IGNORED):
+        return [("文档/记录", ())]
+    parts = Path(path).parts
+    if len(parts) > 2 and parts[0] == "tests" and parts[1] in GROUPS:
+        if Path(path).name.startswith("test_") and path.endswith(".py") and (ROOT / path).is_file():
+            return [("本次测试文件", (path,))]
+        return [(f"tests/{parts[1]}/*", (parts[1],))]
+    return [(pattern, groups) for pattern, groups in RULES.items()
+            if fnmatchcase(path, pattern)]
 
 
 def select_groups(paths: list[str]) -> tuple[set[str], list[str]]:
-    """合并改动的闭环，并返回没有归属规则的路径。"""
+    """合并闭环、专项与本次测试文件，返回没有归属规则的路径。"""
     selected: set[str] = set()
     unknown = []
     for path in paths:
-        if any(fnmatchcase(path, pattern) for pattern in IGNORED):
-            continue
-        parts = Path(path).parts
-        if len(parts) > 2 and parts[0] == "tests" and parts[1] in GROUPS:
-            selected.add(parts[1])
-            continue
-        matches = [
-            groups for pattern, groups in RULES.items() if fnmatchcase(path, pattern)
-        ]
+        matches = matching_rules(path)
         if not matches:
             unknown.append(path)
-        for groups in matches:
+        for _pattern, groups in matches:
             selected.update(groups)
     return selected, unknown
 
@@ -198,17 +58,29 @@ def changed_paths(base: str) -> list[str]:
     return sorted(paths)
 
 
+def python_command(paths: list[str], pytest_args: list[str], level: str) -> list[str]:
+    """构造 Python 检查，并去除业务目录已覆盖的专项文件或用例。"""
+    paths = list(dict.fromkeys(paths))
+    paths = [path for path in paths if not any(
+        path != other and (path.startswith(other + "/") or path.startswith(other + "::"))
+        for other in paths
+    )]
+    options = list(pytest_args)
+    if level != "all":
+        options.extend(["-m", "not integration" if level == "unit" else "integration"])
+    return [sys.executable, "-m", "pytest", "-q", *paths, *options]
+
+
 def commands(groups: set[str], pytest_args: list[str], level: str = "all") -> list[list[str]]:
     """每次 pytest 只收集所选目录；C++ 测试沿用现有 CTest 注册。"""
     paths = [f"tests/{group}" for group in GROUPS if group in groups]
     if "correction" in groups:
         paths.append("correction_service/test")
-    options = list(pytest_args)
-    if level != "all":
-        options.extend(["-m", "not integration" if level == "unit" else "integration"])
-    result = (
-        [[sys.executable, "-m", "pytest", "-q", *paths, *options]] if paths else []
-    )
+    for check, targets in CHECKS.items():
+        if check in groups:
+            paths.extend(targets)
+    paths.extend(sorted(target for target in groups if target.startswith("tests/")))
+    result = [python_command(paths, pytest_args, level)] if paths else []
     cpp = [
         name for group, names in CPP_TESTS.items() if group in groups for name in names
     ]
@@ -255,7 +127,7 @@ def execute(command: list[str]) -> int:
         missing = expected - registered
         if missing:
             print("缺少 CTest 套件：" + ", ".join(sorted(missing))
-                  + "；先运行 bash tests/build_native.sh。", file=sys.stderr)
+                  + "；先运行 bash tests/build_native.sh --packages onboard_control。", file=sys.stderr)
             return 1
     return int(subprocess.run(command, cwd=ROOT).returncode != 0)
 
@@ -264,10 +136,12 @@ def main() -> int:
     """展示选择后执行；失败继续汇总，但保留非零返回码。"""
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--group", nargs="+", choices=GROUPS)
+    mode.add_argument("--group", nargs="+", choices=(*GROUPS, *CHECKS))
     mode.add_argument("--all", action="store_true")
     mode.add_argument("--changed", nargs="?", const="HEAD", metavar="BASE")
     mode.add_argument("--files", nargs="+", metavar="PATH")
+    mode.add_argument("--tests", nargs="+", metavar="TEST",
+                      help="定向 Python 文件或 node ID；不附带业务组/C++ 检查")
     parser.add_argument(
         "--list", action="store_true", help="仅显示计划，不收集或运行测试"
     )
@@ -277,30 +151,45 @@ def main() -> int:
     if pytest_args[:1] == ["--"]:
         pytest_args = pytest_args[1:]
     changed = []
-    if args.all or args.group:
+    if args.tests:
+        groups = set()
+    elif args.all or args.group:
         groups = set(GROUPS if args.all else args.group)
     else:
         changed = (
-            args.files
+            [Path(path).relative_to(ROOT).as_posix() if Path(path).is_absolute()
+             else Path(path).as_posix() for path in args.files]
             if args.files is not None
             else changed_paths(args.changed or "HEAD")
         )
         groups, unknown = select_groups(changed)
         if unknown:
             parser.error(
-                "以下路径尚未分组，请补充 RULES 或显式指定 --group："
+                "以下路径尚未分组，请补充 tests/impact.py 的 RULES 或显式指定 --group："
                 + ", ".join(unknown)
             )
-    print(
-        "测试组：" + (", ".join(group for group in GROUPS if group in groups) or "无"),
-        flush=True,
-    )
-    plan = commands(groups, pytest_args, args.level)
-    if args.all or any(path in changed for path in
-                       ("tests/run.py", "tests/run.sh", "tests/test_selection.py")):
-        plan.insert(
-            0, [sys.executable, "-m", "pytest", "-q", "tests/test_selection.py"]
-        )
+    scopes = [group for group in (*GROUPS, *CHECKS) if group in groups]
+    scopes.extend(sorted(target for target in groups if target.startswith("tests/")))
+    label = "定向 Python" if args.tests else ", ".join(scopes) or "无"
+    print("测试范围：" + label, flush=True)
+    print(f"层级：{args.level}（业务范围与执行层级分别选择）", flush=True)
+    if changed:
+        print("选择来源：" + ("本次显式文件" if args.files else
+              f"工作区差异，基线 {args.changed or 'HEAD'}"))
+        for path in changed:
+            for pattern, targets in matching_rules(path):
+                print(f"  {path} -> {pattern} -> {', '.join(targets) or '不触发产品组'}")
+    plan = ([python_command(args.tests, pytest_args, args.level)] if args.tests
+            else commands(groups, pytest_args, args.level))
+    self_checks = set(SELF_TESTS) if args.all else set()
+    if any(path in changed for path in
+           ("tests/run.py", "tests/run.sh", "tests/impact.py", "tests/test_selection.py")):
+        self_checks.add("tests/test_selection.py")
+    if any(path in changed for path in ("tests/build_native.sh", "tests/test_build_native.py")):
+        self_checks.add("tests/test_build_native.py")
+    if self_checks:
+        # 产品的 -k/-m/路径过滤不能排除入口自身检查。
+        plan.insert(0, python_command(sorted(self_checks), [], "all"))
     result = 0
     for command in plan:
         print("+ " + shlex.join(command), flush=True)

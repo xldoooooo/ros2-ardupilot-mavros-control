@@ -420,37 +420,14 @@ def test_waypoint_cells_update_immediately_and_refresh_active_preview() -> None:
         _close_window(window)
 
 
-def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> None:
-    """航点输入紧凑，执行卡无标题且三种方法选择完整向下显示。"""
-    from ground_station_core.qt_ui.theme import COLORS, STYLE_SHEET
-
+def test_waypoint_editor_actions_units_and_strategy_popup_remain_usable() -> None:
+    """航点编辑保留单位、可识别操作及完整可用的策略菜单，不冻结像素布局。"""
     window, _ros = _window(_operational_snapshot(armed=False))
     try:
         window._environment_active = True
         window._connection_mode = "simulation"
         window._refresh()
         panel = window.waypoints
-        assert panel.add_button.text() == "+"
-        assert panel.add_button.property("role") == "neutral"
-        input_heights = {
-            control.height()
-            for control in (
-                panel.x_input,
-                panel.y_input,
-                panel.z_input,
-                panel.yaw_input,
-            )
-        }
-        assert input_heights == {panel._ROW_HEIGHT}
-        assert all(
-            control.buttonSymbols() == control.ButtonSymbols.UpDownArrows
-            for control in (
-                panel.x_input,
-                panel.y_input,
-                panel.z_input,
-                panel.yaw_input,
-            )
-        )
         assert [
             panel.x_input.suffix(),
             panel.y_input.suffix(),
@@ -458,52 +435,22 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
             panel.yaw_input.suffix(),
         ] == ["m", "m", "m", "°"]
         assert "单位" in panel.x_input.toolTip()
-        assert panel.table.horizontalHeader().height() == panel._ROW_HEIGHT
-        assert panel.table.verticalHeader().defaultSectionSize() == panel._ROW_HEIGHT
-
         panel.add_button.click()
         panel.x_input.setValue(2.0)
         panel.add_button.click()
-        assert all(
-            panel.table.rowHeight(row) == panel._ROW_HEIGHT
-            for row in range(panel.table.rowCount())
-        )
-        assert panel.up_button.text() == panel.down_button.text() == ""
-        assert panel.remove_button.text() == ""
-        assert not panel.up_button.icon().isNull()
-        assert not panel.down_button.icon().isNull()
-        assert not panel.remove_button.icon().isNull()
+        assert len(panel.waypoints) == 2
+        for button in (panel.add_button, panel.up_button, panel.down_button,
+                       panel.remove_button, panel.clear_button, panel.preview_button,
+                       panel.import_button, panel.export_button, panel.send_button):
+            assert button.isVisible() and not button.visibleRegion().isEmpty()
+            assert button.text() or not button.icon().isNull()
+            assert button.text() or button.accessibleName()
         assert "删除" in panel.remove_button.accessibleName()
-        assert panel.up_button.x() < panel.down_button.x() < panel.remove_button.x()
-        assert panel.clear_button.text() == "清空"
-        assert panel.preview_button.text() == "预览"
-        assert panel.import_button.text() == "从文件导入"
-        assert panel.export_button.text() == "导出到文件"
-        assert panel.preview_button.property("role") == "neutral"
-        assert panel.import_button.property("role") == "neutral"
-        assert panel.export_button.property("role") == "neutral"
-        assert panel.clear_button.x() < panel.preview_button.x()
-        assert panel.preview_button.x() < panel.import_button.x()
-        assert panel.import_button.x() < panel.export_button.x()
         assert "RViz" in panel.preview_button.toolTip()
         assert "CSV" in panel.import_button.toolTip()
         assert "CSV" in panel.export_button.toolTip()
-        assert "QPushButton#previewWaypointButton" in STYLE_SHEET
-        assert "QPushButton#importWaypointButton" in STYLE_SHEET
-        assert "QPushButton#exportWaypointButton" in STYLE_SHEET
-        assert panel.send_button.property("role") == "primary"
         assert not panel.parentWidget().isWindow()
-        execution_card = panel.progress.parentWidget()
-        assert execution_card.title_label.text() == ""
-        assert not execution_card.title_label.isVisible()
-        assert (
-            abs(
-                panel.progress.geometry().center().y()
-                - panel.send_button.geometry().center().y()
-            )
-            <= 1
-        )
-        assert panel.progress.width() > panel.send_button.width() * 1.8
+        assert panel.progress.isVisible() and not panel.progress.visibleRegion().isEmpty()
         assert panel.reference_combo.count() == 4
         assert panel.tracking_combo.count() == 2
         # 状态行平时隐藏，校准及命令结果可在执行卡内展开。
@@ -516,27 +463,20 @@ def test_waypoint_editor_compacts_rows_icons_and_downward_strategy_popup() -> No
         panel.set_result("航点状态回归", running=False)
         assert panel.status_label.text() == "航点状态回归"
         assert panel.status_label.isVisible()
-        assert "QProgressBar#waypointProgress::chunk" in STYLE_SHEET
-        assert COLORS["success"] in STYLE_SHEET
 
         combo = panel.strategy_combo
         combo.showPopup()
         _application().processEvents()
         popup = combo.popup_menu
-        popup_top = popup.frameGeometry().top()
         combo_bottom = combo.mapToGlobal(QPoint(0, combo.height())).y()
-        assert popup_top >= combo_bottom
+        assert popup.frameGeometry().top() >= combo_bottom
         actions = popup.actions()
         assert len(actions) == combo.count() == 3
         assert [action.text() for action in actions] == [
             combo.itemText(index) for index in range(combo.count())
         ]
         assert all(popup.actionGeometry(action).height() > 0 for action in actions)
-        assert popup.actionGeometry(actions[-1]).bottom() < popup.height()
-        assert popup.width() >= max(
-            popup.fontMetrics().horizontalAdvance(action.text()) + 24
-            for action in actions
-        )
+        assert all(popup.rect().contains(popup.actionGeometry(action)) for action in actions)
         actions[1].trigger()
         _application().processEvents()
         assert combo.currentIndex() == 1

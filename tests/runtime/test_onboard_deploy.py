@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import textwrap
 from xml.etree import ElementTree
@@ -509,12 +510,6 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
     assert "video_service/deploy/install_onboard_video_service.sh" in script
     assert "src/onboard_control/deploy/install_onboard_service.sh" in script
     assert '"${WORKSPACE_ROOT}/drivers/odin/build.sh"' in script
-    # 新消息 ABI 的原生消费端必须同时纳入构建和测试。
-    assert script.count("        avoidance_bridge \\\n") == 2
-    assert script.count("  source_planner_overlay\n") == 2
-    assert script.count("--base-paths src correction_service") == 2
-    assert '${AVOIDANCE_WORKSPACE:-${WORKSPACE_ROOT%/*}/dyn_small_obs_avoidance-ros2}/install/setup.bash' in script
-    assert script.index('ONBOARD_ROS_DISTRO="${ROS_DISTRO_RESOLVED}"') < script.index("-m colcon build")
     assert "/ground_station_core/" not in script
     assert "/src/guided_sim/" not in script
     assert "/scripts/ground/start_ground_all.sh" not in script
@@ -539,6 +534,54 @@ def test_onboard_checkout_and_smoke_test_are_hardware_isolated() -> None:
         "sudo apt",
     ):
         assert forbidden not in script
+
+
+def test_build_and_test_include_the_same_native_interface_consumers(tmp_path) -> None:
+    """以替身执行现有 build/test 函数，核对包集合而非源码缩进或出现次数。"""
+    calls = tmp_path / "calls.log"
+    for relative in ("drivers/odin/build.sh", ".venv/bin/python"):
+        stub = tmp_path / relative
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text('#!/bin/bash\n[[ "$TEST_PLANNER_READY" == 1 ]] || exit 1\n'
+                        + ('[[ "$ONBOARD_ROS_DISTRO" == jazzy ]] || exit 1\n'
+                           if relative.startswith("drivers/") else "")
+                        + 'printf "%s\\n" "$*" >> "$CALL_LOG"\n')
+        stub.chmod(0o755)
+    environment = dict(os.environ, ONBOARD_WORKSPACE=str(tmp_path),
+                       WORKSPACE_SCRIPT=str(WORKSPACE_SCRIPT), CALL_LOG=str(calls),
+                       ONBOARD_ROS_DISTRO="jazzy")
+    result = run_bash('''
+set -e
+source "$WORKSPACE_SCRIPT" --help >/dev/null
+# All external operations are replaced before invoking the original functions.
+export ONBOARD_ROS_DISTRO=not-the-resolved-distro
+source_underlay() { export TEST_PLANNER_READY=0; }
+source_planner_overlay() { export TEST_PLANNER_READY=1; }
+source_overlay() { :; }
+require_command() { :; }
+validate_workspace_layout() { :; }
+build_ensure_control_dependencies() { :; }
+build_ensure_correction_dependencies() { :; }
+colcon() { printf '%s\\n' "$*" >> "$CALL_LOG"; }
+build_workspace
+test_workspace
+''', environment)
+    assert result.returncode == 0, result.stderr
+    commands = [shlex.split(line) for line in calls.read_text().splitlines()]
+    consumers = {}
+    for command in commands:
+        if command[:2] != ["-m", "colcon"]:
+            continue
+        start = command.index("--packages-select") + 1
+        stop = next((i for i in range(start, len(command))
+                     if command[i].startswith("--")), len(command))
+        consumers[command[2]] = set(command[start:stop])
+        base = command.index("--base-paths") + 1
+        assert {"src", "correction_service"} <= set(command[base:start - 1])
+    expected = {"guided_interfaces", "correction_interfaces", "correction_native",
+                "onboard_control", "correction_service", "avoidance_bridge"}
+    assert consumers["build"] == consumers["test"]
+    assert expected <= consumers["build"]
 
 
 @pytest.mark.integration

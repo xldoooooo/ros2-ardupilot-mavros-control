@@ -1,5 +1,6 @@
 """验证增量选择不会漏掉跨模块边界，也不会收集独立模块。"""
 
+import ast
 from pathlib import Path
 import subprocess
 
@@ -17,7 +18,9 @@ from tests import run
         ("src/correction_interfaces/msg/CorrectionStatus.msg", {"correction", "flight", "waypoints"}),
         ("ground_station_core/upstream/protocol.py", {"upstream"}),
         ("ground_station_core/waypoint_io.py", {"waypoints", "upstream"}),
-        ("ground_station_core/qt_ui/waypoint_panel.py", {"waypoints"}),
+        ("ground_station_core/qt_ui/waypoint_panel.py", {"waypoint-gui"}),
+        ("ground_station_core/qt_ui/main_window.py", {"ground-gui"}),
+        ("ground_station_core/qt_ui/state.py", {"ground-gui"}),
         ("src/avoidance_bridge/src/avoidance_bridge.cpp", {"runtime", "flight", "waypoints"}),
         ("fpga_avoidance/workspace/src/fpga_uav_planner_ros2/setup.py", set()),
         ("src/onboard_control/src/fcu_reboot.cpp", {"flight"}),
@@ -27,8 +30,11 @@ from tests import run
             "src/onboard_control/src/onboard_control_node.cpp",
             {"flight", "waypoints", "video"},
         ),
-        ("ground_station_core/qt_ui/window_chrome.py", set(run.GROUPS)),
-        ("ground_station_core/qt_ui/cached_shadow.py", set(run.GROUPS)),
+        ("ground_station_core/qt_ui/window_chrome.py", {"gui"}),
+        ("ground_station_core/qt_ui/cached_shadow.py", {"gui"}),
+        ("tests/support/qt.py", {"gui"}),
+        ("tests/impact.py", set()),
+        ("tests/build_native.sh", set()),
         ("ground_station_core/qt_ui/log_history.py", {"ui"}),
         ("ground_station_core/startup.py", {"runtime"}),
         ("ground_station_core/ground_media_reader.py", {"upstream"}),
@@ -41,7 +47,7 @@ from tests import run
         ("src/onboard_control/src/tracking_diagnostics.cpp", {"flight"}),
         ("scripts/diagnostics/analyze_hover.py", {"flight"}),
         ("src/onboard_control/src/navigation_frame.cpp", {"flight", "waypoints"}),
-        ("tests/video/test_camera_service.py", {"video"}),
+        ("tests/video/test_camera_service.py", {"tests/video/test_camera_service.py"}),
         ("tests/test_camera_service.py", {"video"}),
         ("tests/test_ros_controller.py", {"flight", "waypoints"}),
         ("README.md", set()),
@@ -50,7 +56,11 @@ from tests import run
         ("scripts/ground/start_ground_all.sh", {"runtime"}),
         ("scripts/onboard/reboot_fcu.sh", {"flight"}),
         ("project_configuration.py", set(run.GROUPS)),
-        ("config/aircraft/uav001/control.yaml", set(run.GROUPS)),
+        ("config/aircraft/uav001/control.yaml", {"flight", "waypoints"}),
+        ("config/aircraft/uav002/video/camera.conf", {"video"}),
+        ("config/aircraft/uav002/correction/tag_pose.csv", {"correction", "flight", "waypoints"}),
+        ("config/aircraft/uav001/aircraft.yaml", {"configuration"}),
+        ("config/aircraft.local.env.example", {"configuration"}),
         ("system/systemd/ros2-ardupilot-onboard.service", {"runtime", "video", "correction"}),
     ],
 )
@@ -74,7 +84,8 @@ def test_tracked_product_sources_have_an_impact_rule() -> None:
     """用实际产品源码清单发现新增漏项，而非只复述已知规则。"""
     paths = subprocess.check_output(["git", "ls-files", "-z"], cwd=run.ROOT).decode().split("\0")
     product = [path for path in paths
-               if Path(path).suffix in {".py", ".sh", ".bash", ".cpp", ".hpp", ".h", ".msg", ".srv"}
+               if (Path(path).suffix in {".py", ".sh", ".bash", ".cpp", ".hpp", ".h", ".msg", ".srv"}
+                   or path.startswith("config/"))
                and not path.startswith(("agent/", "dev/", ".agents/"))]
     assert run.select_groups(product)[1] == []
 
@@ -117,6 +128,81 @@ def test_plan_collects_only_selected_directories_and_cpp_suites() -> None:
     assert "test_waypoint_arrival_tracker" in waypoint[1][-1]
     assert "test_avoidance_trajectory" in waypoint[1][-1]
     assert "test_dob_controller" not in waypoint[1][-1]
+
+
+def test_gui_changes_cover_callers_without_native_or_media_pipeline_regression() -> None:
+    """共享窗口变更覆盖起飞/恢复/倒计时及独立窗口，但不附带算法和推流套件。"""
+    groups, unknown = run.select_groups(["ground_station_core/qt_ui/cached_shadow.py"])
+    assert not unknown
+    plan = run.commands(groups, [])
+    assert len(plan) == 1
+    paths = plan[0][4:]
+    assert "tests/runtime/test_ground_startup.py" in paths
+    assert "tests/flight/test_takeoff_voltage.py" in paths
+    assert "tests/upstream/test_upstream_countdown.py" in paths
+    assert "tests/correction/test_correction_panel.py" in paths
+    assert any(path.startswith("tests/video/test_camera_service.py::") for path in paths)
+    assert "tests/flight" not in paths
+    assert "tests/video/test_public_stream.py" not in paths
+    mixed = run.commands(groups | {"video"}, [])[0][4:]
+    assert "tests/video" in mixed
+    assert not any(path.startswith("tests/video/") for path in mixed)
+    assert run.commands(set(run.GROUPS) | set(run.CHECKS), []) == run.commands(set(run.GROUPS), [])
+    changes = ["ground_station_core/qt_ui/waypoint_panel.py",
+               "tests/waypoints/test_waypoints_gui.py"]
+    selected, unknown = run.select_groups(changes)
+    assert not unknown
+    assert len(run.commands(selected, [])) == 1
+    assert "tests/waypoints" not in run.commands(selected, [])[0]
+
+
+def test_changed_test_file_stays_targeted_but_shared_fixture_selects_consumers() -> None:
+    """修改用例只执行自身，组内共享夹具和已删除用例仍验证所属闭环。"""
+    target = "tests/waypoints/test_waypoints_gui.py"
+    selected, unknown = run.select_groups([target])
+    assert not unknown and run.commands(selected, [])[0][4:] == [target]
+    assert run.select_groups(["tests/video/conftest.py"]) == ({"video"}, [])
+    assert run.select_groups(["tests/waypoints/test_deleted_case.py"]) == ({"waypoints"}, [])
+
+
+def test_specialized_checks_reference_existing_files_and_cases() -> None:
+    """实际解析专项目标，防止文件迁移或函数更名后专项失效。"""
+    valid = set(run.GROUPS) | set(run.CHECKS)
+    assert all(set(targets) <= valid for targets in run.RULES.values())
+    for targets in run.CHECKS.values():
+        for target in targets:
+            path, *names = target.split("::")
+            file = run.ROOT / path
+            assert file.exists(), target
+            if names:
+                functions = {node.name for node in ast.parse(file.read_text()).body
+                             if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+                assert names[0] in functions, target
+
+
+@pytest.mark.parametrize("changed, expected", [
+    ("tests/impact.py", "tests/test_selection.py"),
+    ("tests/build_native.sh", "tests/test_build_native.py"),
+])
+def test_metadata_and_build_entry_changes_run_their_own_checks(monkeypatch, capsys, changed, expected):
+    """维护映射/构建入口不触发产品全量，预览仍说明命中原因。"""
+    calls = []
+    monkeypatch.setattr(run, "execute", lambda command: calls.append(command) or 0)
+    monkeypatch.setattr(run.sys, "argv", ["run.py", "--files", changed,
+                                        "--", "-k", "product_case"])
+    assert run.main() == 0
+    assert len(calls) == 1 and calls[0][4:] == [expected]
+    assert f"{changed} -> {changed}" in capsys.readouterr().out
+
+
+def test_explicit_python_target_uses_runner_environment_without_implicit_suites(monkeypatch):
+    """定向测试保留 pytest 选项，不附带整个业务目录或 C++。"""
+    target = "tests/waypoints/test_waypoint_panel.py"
+    calls = []
+    monkeypatch.setattr(run, "execute", lambda command: calls.append(command) or 0)
+    monkeypatch.setattr(run.sys, "argv", ["run.py", "--tests", target, "--", "-x"])
+    assert run.main() == 0
+    assert len(calls) == 1 and calls[0][4:] == [target, "-x"]
 
 
 def test_git_selection_includes_commits_index_worktree_and_renames(

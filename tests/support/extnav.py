@@ -371,7 +371,7 @@ def native_executable() -> Path:
     if not executable.is_file() or not os.access(executable, os.X_OK):
         pytest.fail(
             f"Native extnav test executable unavailable: {executable}. "
-            "Run bash tests/build_native.sh to build the candidate with "
+            "Run bash tests/build_native.sh --packages extnav_bridge to build the candidate with "
             "correction_interfaces enabled, or set EXTNAV_CPP_EXECUTABLE. "
             "Use --level unit to run without native integration tests.",
             pytrace=False,

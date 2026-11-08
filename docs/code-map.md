@@ -20,7 +20,7 @@
 
 ## 验证与按需资料
 
-- 产品测试以 [测试指南](../tests/README.md)和 [tests/run.py](../tests/run.py) 的影响映射为准，不在地图复制测试组规则。先运行 `bash tests/run.sh --files <本次相关文件...> --list`，再按结果及实际消费者验证，避免混入工作区其他任务。
+- 产品测试以 [测试指南](../tests/README.md)和 [影响映射/专项清单](../tests/impact.py)为准，[执行器](../tests/run.py)负责生成计划，不在地图复制测试组规则。先运行 `bash tests/run.sh --files <本次相关文件...> --list`，再按命中规则及实际消费者验证，避免混入工作区其他任务。共享界面可选专项，定向 Python 用例用 `--tests`。
 - 接口/C++ 修改先按测试指南运行 `bash tests/build_native.sh`，不能用旧二进制通过替代新源码验证。FPGA 使用独立 `bash fpga_avoidance/test.sh`；外部 CPU 规划器还有自身验证范围。
 - 部署使用 [project-deployment](../.agents/skills/project-deployment/SKILL.md)，故障复盘使用 [project-forensics](../.agents/skills/project-forensics/SKILL.md)；项目级维护才使用 [project-maintenance](../.agents/skills/project-maintenance/SKILL.md)。
 - 本机 `MEMORY.md` 存在时，修改前按标题查相关风险；部署前查目标设备、漏同步项及现场保留约束。只有需要历史证据时才查本机 `agent/report/topics/INDEX.md`，再定向读报告。
