@@ -26,7 +26,7 @@ from correction_service.window import (
     solve_weighted_se2,
 )
 
-from correction_service.config import load_config
+from correction_service.config import TagPose, load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG = load_config(PROJECT_ROOT / "config" / "aircraft" / "simulation" / "correction")
@@ -103,6 +103,11 @@ def test_two_point_equal_weight_recovers_known_transform_across_yaw_wrap() -> No
 def test_two_tag_baseline_uses_tag_centers_from_raw_fcu_camera_chain() -> None:
     """两次不同机体姿态的完整观测链仍以 Tag 中心配准，不能用拍摄位置。"""
     config = load_config(PROJECT_ROOT / "config/aircraft/uav002/correction")
+    # 固定合成 Tag 布局，保留相机外参链，不依赖现场 Tag 编号和坐标。
+    config = replace(config, tags={
+        0: TagPose(tag_id=0, x=0.0, y=0.0, z=0.0, yaw_rad=0.0, size_m=0.15),
+        1: TagPose(tag_id=1, x=0.0, y=-1.635, z=0.0, yaw_rad=0.0, size_m=0.15),
+    })
     world_from_odin = homogeneous(rotation_z(0.37), np.array((0.8, -0.6, 0.0)))
     frames = []
     for tag_id, attitude in ((0, (0.17, -0.11, 0.6)), (1, (-0.12, 0.08, -0.4))):
