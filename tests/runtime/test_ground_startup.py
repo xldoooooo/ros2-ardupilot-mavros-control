@@ -3,8 +3,11 @@
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from ground_station_core import startup
 from ground_station_core.event_log import EventLog
+from ground_station_core.models import FlightMode
 from ground_station_core.qt_ui.main_window import GroundStationWindow
 from tests.support.qt import (
     _FakeEnvironment,
@@ -86,8 +89,9 @@ def test_failed_first_connection_retries_and_simulation_stays_selected(tmp_path)
         _close_window(window)
 
 
-def test_returning_link_maintains_origin_only_after_disarm(tmp_path) -> None:
-    """已有会话掉线后等待飞机返回，已解锁时不会重新执行连接维护。"""
+@pytest.mark.parametrize("auto_connect", [False, True])
+def test_returning_link_maintains_origin_only_after_disarm(tmp_path, auto_connect) -> None:
+    """已有会话恢复不依赖首次自动连接开关，维护成功前禁止再次起飞。"""
     environment = _FakeEnvironment()
     window, ros = _startup_window(tmp_path / "startup.json", environment)
     maintenance_attempts = []
@@ -101,27 +105,70 @@ def test_returning_link_maintains_origin_only_after_disarm(tmp_path) -> None:
 
     environment.maintain_hardware_connection = maintain
     try:
-        window.auto_connect_checkbox.setChecked(True)
+        window.auto_connect_checkbox.setChecked(auto_connect)
         window._auto_connect_hardware()
+        if not auto_connect:
+            assert not window._environment_active and environment.last_origin is None
+            window._connect_hardware_workflow()
         window._auto_connect_next_attempt = 0
         ros.current_snapshot = replace(ros.current_snapshot, onboard_available=False)
-        window._auto_connect_hardware()
+        # 10 Hz 刷新须立即锁住恢复状态，不能等待较慢的自动连接定时器。
+        window._refresh()
         assert window._auto_reconnect_required
         environment.last_origin = None
         window._waypoint_preview_active = True
-        ros.current_snapshot = replace(ros.current_snapshot, onboard_available=True, armed=True)
+        ros.current_snapshot = replace(
+            ros.current_snapshot, onboard_available=True, armed=True,
+            active_mode=FlightMode.HOVER, controller_active=True,
+        )
+        window._refresh()
+        assert window._availability.land and window._availability.hover
         window._auto_connect_hardware()
         assert not maintenance_attempts
-        ros.current_snapshot = replace(ros.current_snapshot, armed=False)
+        ros.current_snapshot = replace(
+            ros.current_snapshot, armed=False, active_mode=FlightMode.IDLE,
+            controller_active=False, autopilot_mode="LAND", message_rates_configured=True,
+        )
+        window._refresh()
+        assert not window.operations.takeoff_button.isEnabled()
+        assert "恢复初始化" in window._availability.flight_reason
+        assert window._takeoff(upstream=True) is None and not ros.calls
         window._auto_connect_hardware()
         assert maintenance_attempts == [window.operations.origin()]
         assert window._environment_active and window._connection_mode == "hardware"
         assert window._waypoint_preview_active and window._auto_reconnect_required
+        assert not window.operations.takeoff_button.isEnabled()
         window._auto_connect_next_attempt = 0
         window._auto_connect_hardware()
         assert len(maintenance_attempts) == 2
         assert not window._auto_reconnect_required and not ros.calls
+        assert window.operations.takeoff_button.isEnabled()
         assert not environment.cleanup_calls and environment.last_origin is None
+    finally:
+        _close_window(window)
+
+
+def test_takeoff_confirmation_rechecks_connection_recovery(tmp_path) -> None:
+    """确认期间飞机断线后即使遥测返回，也须等原点维护成功才发送起飞。"""
+    environment = _FakeEnvironment()
+    window, ros = _startup_window(tmp_path / "startup.json", environment)
+
+    def confirm(*_args, **_kwargs):
+        """模拟起飞确认框打开期间飞机断线并恢复遥测。"""
+        online = ros.current_snapshot
+        ros.current_snapshot = replace(online, connected=False)
+        window._refresh()
+        ros.current_snapshot = online
+        window._refresh()
+        return True
+
+    try:
+        window._connect_hardware_workflow()
+        assert window.operations.takeoff_button.isEnabled()
+        window._confirm_action = confirm
+        assert window._takeoff() is None
+        assert window._auto_reconnect_required and not ros.calls
+        assert not window.operations.takeoff_button.isEnabled()
     finally:
         _close_window(window)
 

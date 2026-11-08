@@ -56,6 +56,7 @@ def derive_availability(
     environment_active: bool,
     connection_mode: str = "none",
     pending_mode: str = "none",
+    connection_recovery_pending: bool = False,
     waypoint_count: int,
     waypoint_running: bool,
     flight_sequence_active: bool = False,
@@ -96,6 +97,8 @@ def derive_availability(
         reason = "机载服务尚未连接飞控"
     elif not snapshot.control_authority:
         reason = "当前地面站没有控制权"
+    elif connection_recovery_pending and not snapshot.armed:
+        reason = "实机连接恢复初始化尚未完成，等待消息频率与原点确认"
     elif not snapshot.navigation_ready:
         reason = f"{snapshot.navigation_frame} 定位未就绪：{snapshot.navigation_detail or '等待重定位'}"
     elif not snapshot.local_position_valid:
@@ -156,6 +159,7 @@ def derive_availability(
         origin_settings=origin_settings,
         takeoff=(
             control_ready
+            and not connection_recovery_pending
             and avoidance_available
             and not voltage_reason
             and not snapshot.vehicle_abnormal

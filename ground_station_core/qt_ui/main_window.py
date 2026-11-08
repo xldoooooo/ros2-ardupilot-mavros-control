@@ -897,8 +897,7 @@ class GroundStationWindow(QMainWindow):
     def _auto_connect_hardware(self) -> None:
         """补齐首次/失败连接与未解锁时的重启维护，不发送任何飞行动作。"""
         if (
-            not self.auto_connect_checkbox.isChecked()
-            or self._shutting_down
+            self._shutting_down
             or self._workflow_busy
             or self._communication_busy
             or self._navigation_switch_target is not None
@@ -938,6 +937,9 @@ class GroundStationWindow(QMainWindow):
                 self._workflow_busy = False
                 self._pending_environment_mode = "none"
                 self._refresh()
+            return
+        # 自动连接开关仅控制新建会话；已有实机会话始终补齐断线后的初始化。
+        if not self.auto_connect_checkbox.isChecked():
             return
         self._auto_connect_next_attempt = time.monotonic() + self._AUTO_CONNECT_INTERVAL_MS / 1000
         self._events.info("startup", f"自动尝试连接实机服务；原点={self.operations.origin()}")
@@ -1906,9 +1908,15 @@ class GroundStationWindow(QMainWindow):
         self._ros.request_reboot_fcu()
         self._refresh()
 
-    def _takeoff_voltage_allowed(self) -> bool:
-        """发送起飞前复核落地电压；拒绝时记录日志并提示操作者。"""
-        reason = takeoff_voltage_reason(self._ros.snapshot(), self._connection_mode)
+    def _takeoff_preflight_allowed(self) -> bool:
+        """发送起飞前复核连接恢复与落地电压，并提示拒绝原因。"""
+        snapshot = self._ros.snapshot()
+        if self._connection_mode == "hardware" and (
+            self._auto_reconnect_required or not snapshot.onboard_available or not snapshot.connected
+        ):
+            reason = "实机连接恢复初始化尚未完成，等待消息频率与原点确认"
+        else:
+            reason = takeoff_voltage_reason(snapshot, self._connection_mode)
         if not reason:
             return True
         self._events.warn("takeoff", f"拒绝起飞：{reason}")
@@ -1920,7 +1928,7 @@ class GroundStationWindow(QMainWindow):
         self, *, refresh_after_queue: bool = True, upstream: bool = False
     ) -> int | None:
         """复用起飞入口；实机人工确认，上位机倒计时后执行。"""
-        if not self._takeoff_voltage_allowed():
+        if not self._takeoff_preflight_allowed():
             return None
         altitude = self.operations.takeoff_altitude()
         strategy = self.waypoints.selected_strategy()
@@ -1942,8 +1950,8 @@ class GroundStationWindow(QMainWindow):
                 auto_execute=upstream,
             ):
                 return None
-            # 确认/倒计时期间仍在接收遥测，须按最新落地状态和电压复核。
-            if not self._takeoff_voltage_allowed():
+            # 确认/倒计时期间仍在接收遥测，须复核连接恢复状态与落地电压。
+            if not self._takeoff_preflight_allowed():
                 return None
             actor = "上位机倒计时结束，自动" if upstream else "操作者确认"
             self._events.warn(
@@ -2345,6 +2353,11 @@ class GroundStationWindow(QMainWindow):
     def _refresh(self) -> None:
         """统一刷新快照、按钮状态、命令结果和日志，不跨线程触碰 Qt。"""
         snapshot = self._ros.snapshot()
+        if self._environment_active and self._connection_mode == "hardware" and (
+            not snapshot.onboard_available or not snapshot.connected
+        ):
+            # 遥测先恢复不代表原点已初始化；保持锁定直到原有维护流程成功。
+            self._auto_reconnect_required = True
         try:
             upstream_connected = bool(self._upstream.snapshot().connected)
         except Exception as exc:
@@ -2377,6 +2390,9 @@ class GroundStationWindow(QMainWindow):
             environment_active=self._environment_active,
             connection_mode=self._connection_mode,
             pending_mode=self._pending_environment_mode,
+            connection_recovery_pending=(
+                self._connection_mode == "hardware" and self._auto_reconnect_required
+            ),
             waypoint_count=len(self.waypoints.waypoints),
             waypoint_running=self._waypoint_running,
             flight_sequence_active=self._upstream_sequence is not None,
