@@ -1,4 +1,4 @@
-"""验证双校准适配、业务映射及配置失败/手动编辑后的 03 隔离。"""
+"""验证三校准适配、业务映射及配置失败/手动编辑后的 03 隔离。"""
 
 from dataclasses import replace
 
@@ -33,11 +33,12 @@ def test_default_route_preserves_business_identity_and_original_points():
     """首点附加校准，插入固定纯校准点，原业务坐标和照片不变。"""
     task = _task()
     route = adapt_route(task.waypoints, task.point_indexes, task.photo_nos, "unknown")
-    assert route.waypoints[0] == task.waypoints[0]._replace(is_calibration=True)
-    assert route.waypoints[1] == Waypoint(5., 0., 1., 0., False, True, 1, True)
-    assert route.waypoints[2] == task.waypoints[1]
-    assert route.point_indexes == (41, 0, 99)
-    assert route.photo_nos == ("photo-A", "", "photo-B")
+    assert route.waypoints[0] == task.waypoints[0]._replace(is_calibration=True, calibration_tag_id=7)
+    assert route.waypoints[1] == Waypoint(5.84, 0., 0.8, 0., False, True, 8, True)
+    assert route.waypoints[2] == Waypoint(20.03, 0., 0.8, 0., False, True, 1, True)
+    assert route.waypoints[3] == task.waypoints[1]
+    assert route.point_indexes == (41, 0, 0, 99)
+    assert route.photo_nos == ("photo-A", "", "", "photo-B")
     assert not task.waypoints[0].is_calibration
     assert adapt_route(task.waypoints, task.point_indexes, task.photo_nos) == route
 
@@ -104,9 +105,9 @@ def test_upstream_03_uses_frozen_route_and_edit_requires_new_02():
         window._handle_upstream_command(_execute())
         sequence = window._upstream_sequence
         assert sequence is not None
-        assert len(sequence.waypoints) == 3
-        assert sequence.point_indexes == (41, 0, 99)
-        assert sequence.photo_nos == ("photo-A", "", "photo-B")
+        assert len(sequence.waypoints) == 4
+        assert sequence.point_indexes == (41, 0, 0, 99)
+        assert sequence.photo_nos == ("photo-A", "", "", "photo-B")
         assert window.waypoints.waypoints == sequence.waypoints
         window._abort_upstream_sequence("测试编辑")
         window._pending_commands.clear()

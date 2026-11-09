@@ -1,17 +1,25 @@
 # 无 routId 或没有专用配置时使用；坐标为任务系绝对 ENU，yaw_deg 单位为度。
-name: 默认双 Tag 校准
+name: 默认三 Tag 校准
 
 # first 按收到的列表顺序取首点，不要求其业务 index 等于 1。
 point_overrides:
   - point_index: first
     calibration:
-      tag_id: 0
+      tag_id: 7
       continue_window: false
 
 insert_points:
+  - local_id: calibration-tag-8
+    after_point: first
+    position: [5.84, 0.0, 0.8]
+    yaw_deg: 0
+    is_inspection: false
+    calibration:
+      tag_id: 8
+      continue_window: true
   - local_id: calibration-tag-1
     after_point: first
-    position: [5.0, 0.0, 1.0]
+    position: [20.03, 0.0, 0.8]
     yaw_deg: 0
     is_inspection: false
     calibration:
