@@ -1,3 +1,4 @@
-# Optional manual offline analysis tools; the recorder only needs ROS and Python's standard library.
+# Manual diagnostic tools; ROS recording additionally uses the existing project ROS environment.
 numpy>=1.26,<3
+PyYAML>=6,<7
 matplotlib>=3.6,<4
