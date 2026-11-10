@@ -25,8 +25,9 @@ SLAM 点云、设备内部算法、WIWC 外参载荷及 `odom←map` 不作安�
 设备相机重投影单独订阅 `/odin1/odometry_imu`（标准低频原始 IMU 诊断流，仅有读者时发布），
 它沿用 SDK 的混合速度约定，只供传感器几何/诊断，禁止用作飞控或 Tag 标定输入。
 
-水平旋转台可用[独立校准工具](../../docs/odin-turntable-calibration.md)估计 `odin_x/y`，
-保留固定 pitch 和 Z。工具只采集、计算候选与离线预测；更新外参后须重新采集验收。
+水平旋转台可用[独立校准工具](../../docs/odin-turntable-calibration.md)估计 `odin_x/y`；
+加入固定 FCU 转心的俯仰/滚转动作后，可用 `--fit-z` 联合估计 XYZ，安装 pitch 仍固定。
+工具只采集、计算候选与离线预测；更新外参后须重新采集验收。
 
 ## 构建
 
