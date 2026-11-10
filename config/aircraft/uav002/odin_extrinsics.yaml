@@ -5,8 +5,8 @@
     roll_cam: 0.0
     pitch_cam: -0.4363323129985824
     yaw_cam: 0.0
-    odin_x: 0.1
-    odin_y: -0.029
+    odin_x: 0.120513
+    odin_y: -0.025172
     odin_z: 0.06
     # Installation is fixed; no startup gravity calibration.
     auto_installation: false
